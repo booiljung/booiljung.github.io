@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/sensor_data_processing/__pointcloud/introduction_to_pointcloud/chapter_15/1509/" rel="canonical"/>
+<link href="../../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>RANSAC을 이용한 초기 정합 - 실험 도서관</title>
+<link href="../../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "RANSAC(Random Sample Consensus) \uac1c\uc694", url: "#_top", children: [
+          ]},
+          {title: "RANSAC \uc54c\uace0\ub9ac\uc998 \ub2e8\uacc4", url: "#ransac", children: [
+          ]},
+          {title: "RANSAC\uc758 \ubc18\ubcf5 \ud69f\uc218", url: "#ransac_1", children: [
+          ]},
+          {title: "\uc784\uacc4\uac12 \uc124\uc815", url: "#_1", children: [
+          ]},
+          {title: "RANSAC\uc758 \uac15\uc810\uacfc \ud55c\uacc4", url: "#ransac_2", children: [
+          ]},
+          {title: "\ubcc0\ud658 \ud589\ub82c\uc758 \ucd08\uae30 \ucd94\uc815", url: "#_2", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../../js/base.js"></script>
+<script src="../../../../../js/google_analytics.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/MathJax.js?config=TeX-MML-AM_CHTML"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<p>포인트클라우드 정합(Registration) 과정에서 중요한 단계 중 하나는 초기 정합을 수행하는 것이다. 초기 정합은 두 포인트클라우드가 서로 다른 위치에서 스캔된 경우에도 일정한 상관관계를 발견하는 작업으로, 이후 정밀한 정합 단계에서 중요한 기초가 된다. 이 과정에서 흔히 사용되는 방법 중 하나가 바로 RANSAC(Random Sample Consensus)이다.</p>
+<h2 id="ransacrandom-sample-consensus">RANSAC(Random Sample Consensus) 개요</h2>
+<p>RANSAC은 데이터 세트에서 이상치(outliers)를 무시하고 모델을 학습하기 위한 반복적이고 확률적인 알고리즘이다. 포인트클라우드의 초기 정합에서는 두 포인트클라우드 사이의 변환 행렬을 추정하는 데 사용된다. 이 변환 행렬은 회전 행렬과 이동 벡터로 구성되며, 일반적으로 다음과 같은 형태로 표현된다:</p>
+<div class="arithmatex">
+<div class="MathJax_Preview">
+\mathbf{T} = \begin{bmatrix}
+\mathbf{R} &amp; \mathbf{t} \\
+\mathbf{0} &amp; 1
+\end{bmatrix}
+</div>
+<script type="math/tex; mode=display">
+\mathbf{T} = \begin{bmatrix}
+\mathbf{R} & \mathbf{t} \\
+\mathbf{0} & 1
+\end{bmatrix}
+</script>
+</div>
+<p>여기서:
+- <span class="arithmatex"><span class="MathJax_Preview">\mathbf{R}</span><script type="math/tex">\mathbf{R}</script></span>은 <span class="arithmatex"><span class="MathJax_Preview">3 \times 3</span><script type="math/tex">3 \times 3</script></span> 회전 행렬이다.
+- <span class="arithmatex"><span class="MathJax_Preview">\mathbf{t}</span><script type="math/tex">\mathbf{t}</script></span>는 <span class="arithmatex"><span class="MathJax_Preview">3 \times 1</span><script type="math/tex">3 \times 1</script></span> 이동 벡터이다.</p>
+<p>RANSAC을 통해 두 포인트클라우드 간의 일치하는 점들(상관점, correspondences)을 기반으로 변환 행렬을 추정한다.</p>
+<h2 id="ransac">RANSAC 알고리즘 단계</h2>
+<ol>
+<li>
+<p><strong>모델 선택 및 데이터 샘플링</strong>:<br/>
+   먼저, 두 포인트클라우드 간의 상관점을 임의로 선택하여 샘플을 추출한다. 이 샘플들은 정합에 사용할 수 있는 최소한의 데이터 포인트들로, 포인트클라우드 정합에서는 보통 3쌍의 상관점을 선택한다. 이를 통해 변환 행렬 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{T}</span><script type="math/tex">\mathbf{T}</script></span>를 계산할 수 있다.</p>
+</li>
+<li>
+<p><strong>모델 추정</strong>:<br/>
+   샘플로부터 초기 변환 행렬 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{T}</span><script type="math/tex">\mathbf{T}</script></span>를 계산한다. 이때 변환 행렬은 회전 행렬 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{R}</span><script type="math/tex">\mathbf{R}</script></span>와 이동 벡터 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{t}</span><script type="math/tex">\mathbf{t}</script></span>를 포함한다. 변환 행렬은 다음과 같은 형태로 정의된다:</p>
+</li>
+</ol>
+<div class="arithmatex">
+<div class="MathJax_Preview">
+   \mathbf{T}(\mathbf{p}_i) = \mathbf{R} \mathbf{p}_i + \mathbf{t}
+</div>
+<script type="math/tex; mode=display">
+   \mathbf{T}(\mathbf{p}_i) = \mathbf{R} \mathbf{p}_i + \mathbf{t}
+</script>
+</div>
+<p>여기서:
+   - <span class="arithmatex"><span class="MathJax_Preview">\mathbf{p}_i</span><script type="math/tex">\mathbf{p}_i</script></span>는 첫 번째 포인트클라우드에서 선택된 점이다.
+   - 변환 후의 점 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{T}(\mathbf{p}_i)</span><script type="math/tex">\mathbf{T}(\mathbf{p}_i)</script></span>는 두 번째 포인트클라우드의 대응점과 비교된다.</p>
+<ol>
+<li><strong>일치도 계산</strong>:<br/>
+   계산된 변환 행렬을 바탕으로 변환된 포인트와 대상 포인트 간의 거리를 측정한다. 이때 거리 오차 <span class="arithmatex"><span class="MathJax_Preview">d</span><script type="math/tex">d</script></span>는 유클리드 거리로 정의할 수 있다:</li>
+</ol>
+<div class="arithmatex">
+<div class="MathJax_Preview">
+   d = \|\mathbf{T}(\mathbf{p}_i) - \mathbf{q}_i\|
+</div>
+<script type="math/tex; mode=display">
+   d = \|\mathbf{T}(\mathbf{p}_i) - \mathbf{q}_i\|
+</script>
+</div>
+<p>여기서 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{q}_i</span><script type="math/tex">\mathbf{q}_i</script></span>는 두 번째 포인트클라우드에서의 대응점이다.</p>
+<ol>
+<li>
+<p><strong>모델 평가</strong>:<br/>
+   변환 행렬을 이용해 데이터 포인트들이 얼마나 잘 일치하는지 평가한다. 일반적으로 거리 오차 <span class="arithmatex"><span class="MathJax_Preview">d</span><script type="math/tex">d</script></span>가 일정 임계값 이하인 포인트들이 "내부자(inliers)"로 간주된다. 이때 내부자의 개수를 최대화하는 변환 행렬이 가장 좋은 정합 결과로 선택된다.</p>
+</li>
+<li>
+<p><strong>최적 모델 선택</strong>:<br/>
+   여러 번의 반복을 통해 가장 많은 내부자를 생성하는 변환 행렬 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{T}</span><script type="math/tex">\mathbf{T}</script></span>를 선택한다. 이 과정은 확률적으로 수행되며, 반복 횟수는 데이터 세트의 특성에 따라 조정된다.</p>
+</li>
+</ol>
+<p>RANSAC의 반복 과정은 다음과 같이 나타낼 수 있다:</p>
+<div class="mermaid">flowchart TD
+    A(데이터 샘플링) --&gt; B(변환 행렬 추정)
+    B --&gt; C(거리 계산)
+    C --&gt; D(내부자 확인)
+    D --&gt; E{최적 모델인가?}
+    E --&gt;|아니오| A
+    E --&gt;|예| F(최종 변환 행렬 선택)
+</div>
+<p>RANSAC을 통해 최적의 초기 변환 행렬을 추정할 수 있으며, 이 결과는 후속 정밀 정합(예: ICP 알고리즘)의 시작점으로 사용된다.</p>
+<h2 id="ransac_1">RANSAC의 반복 횟수</h2>
+<p>RANSAC 알고리즘은 샘플링과 모델 평가를 반복하는 방식으로 작동한다. 하지만 전체 데이터 세트에서 가장 적합한 변환 행렬을 찾기 위해 몇 번이나 반복해야 하는지 결정하는 것이 중요하다. 반복 횟수는 성공 확률 <span class="arithmatex"><span class="MathJax_Preview">p</span><script type="math/tex">p</script></span>, 내부자가 될 확률 <span class="arithmatex"><span class="MathJax_Preview">w</span><script type="math/tex">w</script></span>, 샘플 크기 <span class="arithmatex"><span class="MathJax_Preview">k</span><script type="math/tex">k</script></span>에 따라 결정된다. 반복 횟수 <span class="arithmatex"><span class="MathJax_Preview">N</span><script type="math/tex">N</script></span>는 다음 식으로 계산된다:</p>
+<div class="arithmatex">
+<div class="MathJax_Preview">
+N = \frac{\log(1 - p)}{\log(1 - w^k)}
+</div>
+<script type="math/tex; mode=display">
+N = \frac{\log(1 - p)}{\log(1 - w^k)}
+</script>
+</div>
+<p>여기서:
+- <span class="arithmatex"><span class="MathJax_Preview">p</span><script type="math/tex">p</script></span>는 최소한 하나의 좋은 모델을 찾을 확률이다.
+- <span class="arithmatex"><span class="MathJax_Preview">w</span><script type="math/tex">w</script></span>는 샘플이 내부자가 될 확률이다.
+- <span class="arithmatex"><span class="MathJax_Preview">k</span><script type="math/tex">k</script></span>는 모델을 추정하는 데 필요한 최소한의 점의 수이다(예: 포인트클라우드 정합에서는 보통 3점).</p>
+<p>이 식을 통해 RANSAC의 반복 횟수를 계산할 수 있으며, 이 값은 데이터 세트의 특성과 노이즈의 양에 따라 달라질 수 있다.</p>
+<h2 id="_1">임계값 설정</h2>
+<p>RANSAC 알고리즘에서는 내부자와 외부자를 구분하기 위한 임계값 <span class="arithmatex"><span class="MathJax_Preview">t</span><script type="math/tex">t</script></span>를 설정해야 한다. 이 임계값은 두 점 사이의 거리로 측정되며, 보통 정합할 때 사용되는 포인트의 밀도와 데이터의 잡음 수준에 따라 조정된다. 임계값이 너무 크면 외부자까지 내부자로 간주될 수 있으며, 너무 작으면 실제 내부자도 외부자로 처리될 수 있다.</p>
+<p>임계값은 다음과 같은 방식으로 정의된다:</p>
+<div class="arithmatex">
+<div class="MathJax_Preview">
+t = \alpha \cdot \sigma
+</div>
+<script type="math/tex; mode=display">
+t = \alpha \cdot \sigma
+</script>
+</div>
+<p>여기서:
+- <span class="arithmatex"><span class="MathJax_Preview">\alpha</span><script type="math/tex">\alpha</script></span>는 사용자 정의 상수이다.
+- <span class="arithmatex"><span class="MathJax_Preview">\sigma</span><script type="math/tex">\sigma</script></span>는 데이터 세트의 표준 편차로, 포인트 간 거리의 분산을 나타낸다.</p>
+<p>이러한 임계값 설정은 RANSAC의 성능에 중요한 영향을 미치며, 최적의 값을 찾는 것이 필수적이다.</p>
+<h2 id="ransac_2">RANSAC의 강점과 한계</h2>
+<p>RANSAC은 이상치(outliers)가 많은 데이터에서 매우 유용한 알고리즘이다. 포인트클라우드 정합에서는 환경의 복잡성과 노이즈로 인해 이상치가 발생하는 경우가 많기 때문에, RANSAC을 통해 신뢰할 수 있는 초기 정합을 얻는 것이 가능하다.</p>
+<p>그러나 RANSAC에는 몇 가지 한계점도 존재한다. 첫째, 반복 횟수에 따라 계산 비용이 증가할 수 있다. 특히 데이터 포인트의 수가 많고 이상치 비율이 높을수록 반복 횟수가 많아져 성능이 저하될 수 있다. 둘째, RANSAC은 임의 샘플링을 기반으로 하기 때문에, 항상 최적의 변환 행렬을 찾지 못할 가능성도 있다.</p>
+<h2 id="_2">변환 행렬의 초기 추정</h2>
+<p>RANSAC을 통해 추정된 변환 행렬 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{T}</span><script type="math/tex">\mathbf{T}</script></span>는 포인트클라우드 정합의 초기값으로 사용된다. 이때 회전 행렬 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{R}</span><script type="math/tex">\mathbf{R}</script></span>과 이동 벡터 <span class="arithmatex"><span class="MathJax_Preview">\mathbf{t}</span><script type="math/tex">\mathbf{t}</script></span>는 다음과 같이 계산된다:</p>
+<div class="arithmatex">
+<div class="MathJax_Preview">
+\mathbf{R}, \mathbf{t} = \arg\min_{\mathbf{R}, \mathbf{t}} \sum_{i=1}^{n} \|\mathbf{T}(\mathbf{p}_i) - \mathbf{q}_i\|^2
+</div>
+<script type="math/tex; mode=display">
+\mathbf{R}, \mathbf{t} = \arg\min_{\mathbf{R}, \mathbf{t}} \sum_{i=1}^{n} \|\mathbf{T}(\mathbf{p}_i) - \mathbf{q}_i\|^2
+</script>
+</div>
+<p>여기서:
+- <span class="arithmatex"><span class="MathJax_Preview">\mathbf{T}(\mathbf{p}_i) = \mathbf{R} \mathbf{p}_i + \mathbf{t}</span><script type="math/tex">\mathbf{T}(\mathbf{p}_i) = \mathbf{R} \mathbf{p}_i + \mathbf{t}</script></span>는 첫 번째 포인트클라우드에서 변환된 점이다.
+- <span class="arithmatex"><span class="MathJax_Preview">\mathbf{q}_i</span><script type="math/tex">\mathbf{q}_i</script></span>는 두 번째 포인트클라우드의 대응점이다.</p>
+<p>이 변환 행렬은 이후 정밀 정합 알고리즘(예: ICP)에서 세부적으로 다듬어진다.</p>
+<br/>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+<script type="module">import mermaid from "https://unpkg.com/mermaid@10.4.0/dist/mermaid.esm.min.mjs";
+mermaid.initialize({});</script></body>
+</html>
