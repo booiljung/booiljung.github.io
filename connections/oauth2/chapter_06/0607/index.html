@@ -46,11 +46,62 @@ if (is_top_frame) { $('body').addClass('wm-top-page'); }
 <div class="container-fluid wm-page-content">
 <a name="_top"></a>
 <h1 id="_1">실무 예제: 단일 페이지 애플리케이션 연동<a class="headerlink" href="#_1" title="Permanent link">¶</a></h1>
+<p>단일 페이지 애플리케이션(Single Page Application, SPA)이 Implicit Grant 방식을 이용해 액세스 토큰을 얻으려면 브라우저를 통해 사용자가 직접 인증 서버에 접근하고, 인증 서버가 브라우저의 URL 해시(fragment) 영역에 토큰을 포함시켜 리다이렉트하는 과정을 거친다. 브라우저에서 동작하는 자바스크립트 코드가 이 해시 값을 분석하여 액세스 토큰을 꺼내면, 이후 API 요청마다 이 토큰을 헤더나 다른 전송 방식으로 포함시켜 자원 서버에 요청을 보낼 수 있다. 이때 특정한 백엔드 로직 없이 순수 자바스크립트로만 동작하는 모델을 가정하므로, SPA가 별도의 비밀 키(Client Secret)를 안전하게 보관하기 어렵고 보통 공개 클라이언트(Public Client)로 등록된다.</p>
+<p>암시적 그랜트를 사용하는 SPA는 사용자 친화적이라는 장점을 가진다. 사용자가 로그인 버튼을 클릭하거나 특정 동작을 진행하면서 OAuth2 인증 과정을 호출하면, 브라우저가 인증 서버의 권한 부여 엔드포인트로 이동하여 인증과정을 거친 뒤 액세스 토큰이 담긴 URL로 다시 돌아온다. 자바스크립트 코드는 이 URL에서 토큰만 파싱하고 이후 필요한 API를 호출한다. 그러나 이러한 편의성 뒤에는 토큰이 브라우저 주소창의 해시를 통해 노출된다는 취약점이 있을 수 있다. 해시 영역은 HTTP 요청에 포함되지 않지만, 사용자의 화면에 그대로 노출되고 브라우저 히스토리에 기록될 수도 있다. 또한 토큰이 길게 유지된다면 누군가가 공유된 PC에서 히스토리를 살펴보고 해시 값을 취득해 악용할 가능성도 배제할 수 없다.</p>
+<p>다음은 암시적 그랜트 방식의 SPA 동작 흐름을 단순화한 시퀀스 다이어그램이다. 여기서는 Resource Server가 아닌 JavaScript가 브라우저에서 직접 API를 호출한다는 특징만 강조한다. 만약 필요하다면 이 다이어그램에 프론트엔드와 백엔드 구성요소를 좀 더 세분화하여 추가 설명할 수도 있다.</p>
+<div class="mermaid">sequenceDiagram
+    participant User
+    participant Browser(SPA)
+    participant AuthServer
+    User-&gt;&gt;Browser(SPA): 로그인 요청
+    Browser(SPA)-&gt;&gt;AuthServer: Implicit Grant 인증 요청
+    AuthServer--&gt;&gt;Browser(SPA): 리다이렉트 (URL 해시 영역에 액세스 토큰)
+    Browser(SPA)-&gt;&gt;Browser(SPA): URL 해시 파싱 (액세스 토큰 획득)
+    Browser(SPA)-&gt;&gt;ResourceServer: API 호출 (헤더에 액세스 토큰 포함)
+    ResourceServer--&gt;&gt;Browser(SPA): 요청에 따른 응답 반환
+</div>
+<p>SPA 측면에서 구체적으로 구현하려면 초기 접속 시점에 브라우저 주소창에 해시 파라미터가 존재하는지 확인하여 액세스 토큰을 추출하고, 해당 토큰을 안전한 메모리 공간(변수나 상태 관리 라이브러리 등)에 저장한 뒤 API 호출 시마다 사용해야 한다. 토큰 수명이 만료되면 다시 인증 서버로 리다이렉트해 새로운 토큰을 발급받거나, 사용자로부터 재인증을 유도한다. 예시 코드는 매우 단순화된 형태지만 다음과 유사한 로직을 포함할 수 있다.</p>
+<pre><code>window.addEventListener("load", function() {
+  const hash = window.location.hash; 
+  let accessToken = null;
+
+  if (hash &amp;&amp; hash.includes("access_token")) {
+    const params = new URLSearchParams(hash.substring(1));
+    accessToken = params.get("access_token");
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
+
+  if (accessToken) {
+    // 토큰을 활용해 API를 호출하거나 상태 관리 라이브러리에 저장
+    fetch("/api/protected-resource", {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    })
+    .then(res =&gt; res.json())
+    .then(data =&gt; console.log("Protected data:", data))
+    .catch(err =&gt; console.error("Error fetching protected data:", err));
+  } else {
+    // 토큰이 없다면 인증 서버로 이동
+    const authUrl = "https://example.com/oauth/authorize"
+      + "?response_type=token"
+      + "&amp;client_id=YOUR_CLIENT_ID"
+      + "&amp;redirect_uri=https://your-spa-domain.com/callback"
+      + "&amp;scope=read+write";
+
+    window.location.href = authUrl;
+  }
+});
+</code></pre>
+<p>이 예시에서 해시를 확인하여 access_token이 존재하면 추출하고, 주소창의 해시를 제거해 사용자가 토큰 값을 직관적으로 노출하지 않게 만든다. 그런 다음 해당 토큰을 이용해 보호된 자원 서버에 접근하고, 만약 토큰이 없다면 인증 요청을 트리거한다. 암시적 그랜트는 이런 식으로 사용자 관점에서 빠르고 직관적인 워크플로우를 제공하지만, 해시를 통한 토큰 노출 문제나 토큰 탈취 가능성 등을 항상 주의해야 한다.</p>
+<p>최근에는 보다 안전한 대안으로 인증 코드 그랜트와 PKCE를 활용하는 방법이 많이 권장된다. SPA가 직접 권한 코드를 받아 토큰 교환을 시도할 수도 있고, Code + PKCE 방식을 사용하면 토큰 노출을 줄이고 중간자 공격 위협도 완화할 수 있다. 그러나 기존 시스템이 암시적 그랜트를 사용하거나, 인증 서버 환경상 Code + PKCE 지원이 어렵다면 암시적 그랜트를 사용할 수밖에 없는 상황이 있을 수 있다. 이런 경우에도 가능하면 토큰의 유효기간을 짧게 유지하고, HTTPS를 통한 전송을 강제하며, 히스토리나 브라우저 애플리케이션 로그에 민감정보가 노출되지 않도록 세심한 주의를 기울여야 한다.</p>
+<p>암시적 그랜트는 SPA가 빠르고 간단하게 OAuth2를 적용할 수 있다는 장점이 있으며, 브라우저를 통해 직관적으로 동작하기 때문에 사용자의 학습 곡선이 낮다. 그러나 이 흐름이 토큰 보호에 있어 근본적으로 가진 한계를 인지하고, 운영 환경에서 발생할 수 있는 실제 보안 위협들을 최소화할 수 있는 정책을 세워야 한다. 토큰의 저장 위치, 자동 로그아웃 시점, 만료 시간, SSL/TLS 적용, 신뢰할 수 없는 스크립트 로딩 등에 대해 철저한 검토가 필요하다. 궁극적으로는 안전한 인증 과정을 위해, 인증 서버와 클라이언트 모두 표준 규격과 보안 권장사항을 충실히 준수해야 한다.</p>
 <br/>
 <br/>
 </div>
 <footer class="container-fluid wm-page-content">
 <p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
 </footer>
-</body>
+<script>mermaid.initialize({});</script></body>
 </html>
