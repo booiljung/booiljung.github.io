@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_06/0606/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>UPDATE 문과 동시성 고려 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "UPDATE \uae30\ubcf8 \uad6c\uc870", url: "#_top", children: [
+          ]},
+          {title: "MVCC \uac1c\ub150\uacfc UPDATE \ub3d9\uc791 \ubc29\uc2dd", url: "#mvcc-update", children: [
+          ]},
+          {title: "\ud2b8\ub79c\uc7ad\uc158 \uaca9\ub9ac \uc218\uc900\uacfc \ub3d9\uc2dc\uc131", url: "#_1", children: [
+          ]},
+          {title: "\ub3d9\uc2dc\uc131 \ucda9\ub3cc\uacfc \uc7a0\uae08 \ub300\uae30", url: "#_2", children: [
+          ]},
+          {title: "WHERE \uc808\uacfc \ub3d9\uc2dc\uc131", url: "#where", children: [
+          ]},
+          {title: "UPDATE RETURNING \uad6c\ubb38", url: "#update-returning", children: [
+          ]},
+          {title: "UPDATE ... FROM \uad6c\ubb38\uacfc \uc870\uc778 \uc5c5\ub370\uc774\ud2b8", url: "#update-from", children: [
+          ]},
+          {title: "\ub3d9\uc2dc\uc131\uc744 \ub192\uc774\uae30 \uc704\ud55c \uc804\ub7b5", url: "#_3", children: [
+          ]},
+          {title: "\uc608\uc81c \uc2dc\ub098\ub9ac\uc624", url: "#_4", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0607/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0607/">
+        DELETE 문과 TRUNCATE 차이
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0605/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0605/">
+        INSERT 문과 반환값 처리
+      </a>
+</div>
+</div>
+<h2 id="update">UPDATE 기본 구조<a class="headerlink" href="#update" title="Permanent link">¶</a></h2>
+<p>UPDATE 문은 테이블에 이미 존재하는 데이터를 수정할 때 사용한다. 일반적인 문법은 테이블 이름 뒤에 SET 절을 통해 수정할 열과 값을 지정하고, WHERE 절로 어느 행을 수정할지 지정한다. 예시로 특정 고객 테이블에서 이름 컬럼을 변경하는 간단한 예시는 다음과 같다.</p>
+<pre><code>UPDATE customer
+SET name = '새이름'
+WHERE id = 123;
+</code></pre>
+<p>WHERE 절을 작성하지 않으면 해당 테이블의 모든 행을 업데이트하므로 주의가 필요하다. PostgreSQL에서 UPDATE 문을 실행할 때는 내부적으로 해당 행이 잠긴 상태가 되며, PostgreSQL의 MVCC(Multi-Version Concurrency Control) 구조 하에서 새로운 버전을 생성한다. 이때 수정 대상 행에 대한 잠금(lock)은 다른 트랜잭션의 UPDATE나 DELETE가 동시에 같은 행을 수정하지 못하도록 보호한다.</p>
+<h2 id="mvcc-update">MVCC 개념과 UPDATE 동작 방식<a class="headerlink" href="#mvcc-update" title="Permanent link">¶</a></h2>
+<p>PostgreSQL은 MVCC를 통해 동시에 여러 트랜잭션이 SELECT, INSERT, UPDATE, DELETE 등을 수행할 수 있도록 한다. 간단히 요약하면 다음과 같은 개념으로 동작한다.</p>
+<p>트랜잭션이 UPDATE를 수행할 때, 수정 대상 행의 기존 버전은 그대로 두고 새로운 버전의 행을 생성한다. 기존 버전은 해당 트랜잭션 이전 시점의 데이터를 참조해야 하는 다른 트랜잭션에서 계속 읽을 수 있고, 새로운 버전은 현재 UPDATE를 실행하는 트랜잭션이 참조할 수 있다. 트랜잭션이 커밋되면 새 버전이 유효한 최신 데이터가 되고, 이전 버전은 더 이상 필요가 없어지면 VACUUM 프로세스 등에 의해 정리된다.</p>
+<p>UPDATE 작업은 내부적으로 수정 행에 대해 배타적 잠금(Row Exclusive Lock)을 획득한다. 동일한 행을 동시에 수정하려는 다른 트랜잭션이 있으면 그 트랜잭션은 잠금을 대기하거나, 충돌 상황에 따라 롤백이 발생한다. PostgreSQL은 이 잠금 과정을 MVCC로 감싸면서, 가능한 한 높은 동시성을 유지하면서도 데이터 무결성을 지키도록 동작한다.</p>
+<h2 id="_1">트랜잭션 격리 수준과 동시성<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>트랜잭션 격리 수준은 여러 트랜잭션이 동시에 DB에 접근할 때 발생할 수 있는 데이터 조회 및 갱신 충돌을 어느 정도로 허용할지 결정하는 기준이다. PostgreSQL은 다음과 같은 표준 격리 수준을 지원한다.</p>
+<p>Read Uncommitted
+ Read Committed
+ Repeatable Read
+ Serializable</p>
+<p>PostgreSQL의 기본 격리 수준은 Read Committed이며, 이 격리 수준에서 UPDATE 문을 실행할 경우, 그 시점에 커밋된 최신 데이터를 기준으로 WHERE 절을 평가한다. 그 후에는 해당 행에 대한 잠금을 획득하고, 수정된 새로운 버전을 기록한다.</p>
+<p>트랜잭션이 Read Committed 수준에서 UPDATE를 수행하다가 다른 트랜잭션이 먼저 동일 행을 수정하고 커밋했다면, 첫 번째 트랜잭션은 다시 갱신 대상 행을 재평가하게 된다. 이렇게 함으로써 ‘잃어버린 수정(Lost Update)’ 문제를 방지한다.</p>
+<p>Repeatable Read와 Serializable 수준에서는 트랜잭션이 시작된 시점에 일관된 스냅숏을 사용하므로, 스냅숏 이후에 다른 트랜잭션이 UPDATE한 내용을 보지 못할 수 있다. 그러나 PostgreSQL은 자동으로 충돌을 감지하고 필요한 경우 오류를 발생시켜 롤백을 유도한다. 이 방식으로 비일관된 상태나 무결성 손상을 방지한다.</p>
+<h2 id="_2">동시성 충돌과 잠금 대기<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>트랜잭션이 동시에 같은 행에 대해 UPDATE를 시도하면 충돌이 발생한다. PostgreSQL에서 기본적으로는 한 트랜잭션이 행 잠금을 선점하면, 다른 트랜잭션은 그 잠금이 해제될 때까지 대기 상태에 들어간다. 대기 시간이 일정 시간을 초과하거나 데드락(교착상태)이 발생하면 잠금 대기 대신에 에러를 발생시키고 트랜잭션이 롤백될 수 있다.</p>
+<p>동시에 같은 행을 수정하려 하는 경우에 대한 PostgreSQL의 처리 방식은 다음과 같은 과정을 거친다.</p>
+<ol>
+<li>한 트랜잭션이 특정 행을 UPDATE하려고 할 때, 아직 커밋되지 않은 다른 트랜잭션이 해당 행을 선점하고 있다면 기다린다.</li>
+<li>선점한 트랜잭션이 커밋되면, 대기 중이던 트랜잭션은 업데이트 대상 행의 최신 버전을 다시 읽어 WHERE 조건을 재평가한다.</li>
+<li>해당 조건이 여전히 참이면 대기 중이던 트랜잭션이 UPDATE를 수행한다. 그렇지 않다면 그 시점에는 UPDATE가 적용되지 않고 넘어간다.</li>
+</ol>
+<p>이와 같은 과정에서 충돌이 빈번히 발생하면 애플리케이션 설계 또는 트랜잭션 분할 전략 등을 재검토할 필요가 있다.</p>
+<h2 id="where">WHERE 절과 동시성<a class="headerlink" href="#where" title="Permanent link">¶</a></h2>
+<p>UPDATE 문에서 WHERE 절의 사용은 동시성 측면에서도 중요하다. WHERE 절을 구체적으로 지정해야 불필요한 행 잠금이 줄어들고, 결과적으로 전체 시스템에서 더 높은 동시성을 유지할 수 있다. WHERE 절이 지나치게 광범위하면 업데이트할 필요가 없는 행도 잠금 대기나 충돌의 대상이 될 수 있으므로 적절한 인덱스와 함께 효율적인 WHERE 절을 설계해야 한다.</p>
+<p>특히 갱신 대상 행을 특정 짓는 키나 조건이 정확하지 않으면, 예상치 못한 다른 행까지 수정되거나 잠금이 걸려 성능 저하와 충돌 확률을 높일 수 있다.</p>
+<h2 id="update-returning">UPDATE RETURNING 구문<a class="headerlink" href="#update-returning" title="Permanent link">¶</a></h2>
+<p>PostgreSQL에서는 UPDATE 문 뒤에 RETURNING 절을 활용하여 갱신된 행의 정보를 즉시 확인할 수 있다. UPDATE 후 변경된 행이 어떻게 되었는지 확인하는 작업을 위해 별도의 SELECT를 사용하는 대신, UPDATE RETURNING으로 트랜잭션 안에서 바로 결과를 확인할 수 있다.</p>
+<pre><code>UPDATE product
+SET price = price * 1.1
+WHERE category = '전자제품'
+RETURNING product_id, price;
+</code></pre>
+<p>이렇게 하면 UPDATE가 실제로 변경한 행들의 product_id와 변경된 price를 반환하며, 이 값들을 응용 프로그램 측에서 활용할 수 있다. 이 또한 동시성 측면에서 유의미하다. 별도의 SELECT를 다시 수행하는 경우에 비해, 한 번의 문장으로 처리하여 트랜잭션 내에서 정합성을 더 쉽게 확보할 수 있다.</p>
+<h2 id="update-from">UPDATE ... FROM 구문과 조인 업데이트<a class="headerlink" href="#update-from" title="Permanent link">¶</a></h2>
+<p>PostgreSQL은 UPDATE ... FROM 구문을 통해 조인 결과를 이용한 업데이트를 지원한다. 다른 테이블의 값을 참조하여 조건을 만들거나 수정할 값으로 활용할 때 유용하다. 예시는 다음과 같다.</p>
+<pre><code>UPDATE orders
+SET total_price = orders.total_price + discount.amount
+FROM discount
+WHERE orders.discount_code = discount.code
+AND orders.id = 1001
+RETURNING orders.id, orders.total_price;
+</code></pre>
+<p>이와 같이 조인을 기반으로 UPDATE할 경우에도, 기본적인 동시성 제어는 동일하게 적용된다. 다만 WHERE 절과 조인 조건을 더욱 세밀하게 설계하여, 필요한 행만 업데이트하고 불필요한 충돌을 줄이도록 주의해야 한다.</p>
+<h2 id="_3">동시성을 높이기 위한 전략<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>PostgreSQL은 기본적으로 MVCC 구조를 통해 상당히 높은 동시성을 제공하지만, 테이블 및 행 수준의 잠금 때문에 충돌이 잦으면 성능이 저하될 수 있다. 이를 극복하기 위해서는 트랜잭션을 짧게 유지하거나, 트랜잭션이 특정 행을 잠그는 빈도가 줄어들도록 애플리케이션 로직을 조정하는 전략이 필요하다. 또한 자주 충돌하는 코드 구간을 찾고, 해당 구간을 UPDATE가 아니라 UPSERT 등으로 변경할 수 있는지, 혹은 일부 작업을 배치 형태로 처리할 수 있는지 등을 고려할 수 있다.</p>
+<h2 id="_4">예제 시나리오<a class="headerlink" href="#_4" title="Permanent link">¶</a></h2>
+<p>하나의 시나리오로, 두 트랜잭션이 동시에 같은 행을 업데이트하려고 할 경우를 살펴본다.</p>
+<p>첫 번째 트랜잭션이 다음 쿼리를 실행한다.</p>
+<pre><code>BEGIN;
+UPDATE account
+SET balance = balance - 100
+WHERE id = 10;
+-- 아직 COMMIT하지 않음
+</code></pre>
+<p>두 번째 트랜잭션도 거의 동시에 같은 행을 수정하려고 시도한다.</p>
+<pre><code>BEGIN;
+UPDATE account
+SET balance = balance + 50
+WHERE id = 10;
+-- COMMIT
+</code></pre>
+<p>두 번째 트랜잭션은 첫 번째 트랜잭션이 account 테이블의 id=10 행에 대한 잠금을 보유하고 있으므로 대기 상태에 들어간다. 첫 번째 트랜잭션이 COMMIT하면, 두 번째 트랜잭션은 id=10 행의 최신 버전을 다시 확인하고 나서 balance를 수정한다. 첫 번째 트랜잭션에서 이미 balance가 100만큼 감소해 있으므로, 두 번째 트랜잭션이 UPDATE를 할 때는 수정된 최신 balance에 추가로 50을 더한 값으로 적용하게 된다.</p>
+<p>이 과정을 통해 잃어버린 수정이 발생하지 않고, 일관된 결과를 얻을 수 있다. 만약 동시에 수정할 일이 매우 빈번하다면, 이 시나리오는 직렬화 비용이 높아져 성능의 병목으로 이어질 수 있으므로 트랜잭션의 범위나 업무 로직을 재설계하는 것이 좋다.</p>
+<hr/>
+<p>UPDATE 문은 기존 행을 수정하기 위한 가장 기본적인 SQL 구문이며, PostgreSQL의 MVCC 구조 하에서 높은 동시성을 제공한다. 그러나 동시에 같은 행을 수정하려고 하면 필연적으로 잠금과 대기가 발생할 수밖에 없다. 트랜잭션 격리 수준에 따라 어떤 순간의 데이터를 보고, UPDATE를 적용한 뒤에 재평가하는지가 달라진다. 이러한 동작 원리를 이해하면, WHERE 절을 보다 구체적으로 작성하거나 트랜잭션을 세분화함으로써 충돌을 줄이고 효율적인 시스템을 설계할 수 있다. 동시성 문제가 계속 발생한다면, PostgreSQL이 제공하는 MVCC와 잠금 메커니즘을 이해하고 적절한 설계 및 쿼리 최적화를 통해 해결 방안을 모색하는 것이 중요하다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0607/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0607/">
+        DELETE 문과 TRUNCATE 차이
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0605/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0605/">
+        INSERT 문과 반환값 처리
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>

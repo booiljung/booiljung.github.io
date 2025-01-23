@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_07/0708/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>이동 집계 함수(LAG, LEAD) - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "LAG \ud568\uc218", url: "#_top", children: [
+              {title: "\uc608\uc2dc: \uc9c1\uc804 \ub2ec \ub9e4\ucd9c\uc561 \uc870\ud68c", url: "#_1" },
+          ]},
+          {title: "LEAD \ud568\uc218", url: "#lead", children: [
+              {title: "\uc608\uc2dc: \ub2e4\uc74c \ub2ec \ub9e4\ucd9c\uc561 \ubbf8\ub9ac \ucc38\uc870\ud558\uae30", url: "#_2" },
+          ]},
+          {title: "\ud65c\uc6a9 \uc2dc \uc720\uc758\uc0ac\ud56d", url: "#_3", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0709/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0709/">
+        GROUPING SETS, ROLLUP, CUBE
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0707/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0707/">
+        순위 함수(RANK, DENSE_RANK 등)
+      </a>
+</div>
+</div>
+<p>이동 집계 함수는 SQL 윈도우 함수의 한 범주로서, 현재 행을 기준으로 일정 범위에 있는 이전 혹은 이후 행의 값을 참조할 수 있도록 해준다. PostgreSQL에서 이 기능은 LAG와 LEAD 함수로 제공된다. LAG는 현재 행 기준으로 ‘이전’의 데이터를, LEAD는 ‘이후’의 데이터를 가져온다. 이 두 함수는 테이블 내에서 레코드가 일정한 순서로 정렬되어 있어야 의미를 가지므로, 일반적으로 <code>ORDER BY</code> 절과 함께 사용된다. 또한 윈도우 함수이므로 <code>PARTITION BY</code>를 통해 그룹을 나누어 계산할 수도 있다.</p>
+<p>이동 집계 함수는 시계열 데이터나 순서가 중요한 데이터 분석에 매우 유용하다. 예를 들어 직전 달의 매출액을 참조하여 증감율을 계산하거나, 다음 달 예상값을 조회할 때 간단히 사용할 수 있다. PostgreSQL 16에서는 기본적인 동작 방법은 이전 버전들과 동일하나, 최적화나 기능 개선 사항이 포함되어 있다. 그러나 SQL 문법적 관점에서는 PostgreSQL 16에서도 표준 윈도우 함수의 사용 방식과 크게 다르지 않으므로, 핵심 문법과 동작 원리를 파악하는 것이 가장 중요하다.</p>
+<h2 id="lag">LAG 함수<a class="headerlink" href="#lag" title="Permanent link">¶</a></h2>
+<p>LAG 함수는 현재 행을 기준으로 일정 offset(기본값은 1)만큼 앞선 행의 값을 반환한다. 즉, 현재 행에서 바라보았을 때 과거 방향에 있는 행의 컬럼 데이터를 참조한다.</p>
+<p>LAG 함수는 다음과 같은 구조로 작성된다.</p>
+<pre><code class="language-sql">LAG(컬럼명 [, offset [, default값]]) OVER (
+  [PARTITION BY 파티션기준컬럼1, ...]
+  ORDER BY 정렬기준컬럼 [ASC|DESC], ...
+)
+</code></pre>
+<p>가장 기본적인 형태는 <code>LAG(컬럼명) OVER (ORDER BY 정렬기준컬럼)</code>이고, 여기에 필요한 경우 offset이나 default값을 지정해 준다. offset은 현재 행으로부터 얼마나 떨어진 행을 조회할 것인지 지정하는 역할이며, default값은 offset 범위를 벗어나 참조할 수 있는 이전 행이 없을 때 반환할 대체 값이다. offset을 지정하지 않으면 1로 간주된다.</p>
+<p>ORDER BY 절은 LAG 함수를 위해 반드시 지정해야 한다. PARTITION BY 절은 같은 테이블 내에서 특정 그룹별로 ‘이전 행’을 구분하여 계산하고 싶을 때 사용한다. 예를 들어 지역별, 혹은 부서별로 데이터를 구분하여 LAG를 적용해야 하는 경우에 유용하다.</p>
+<h3 id="_1">예시: 직전 달 매출액 조회<a class="headerlink" href="#_1" title="Permanent link">¶</a></h3>
+<p>다음 예시에서는 월별 매출 데이터가 저장된 테이블에서 직전 달 매출액을 조회하기 위해 LAG 함수를 사용한다.</p>
+<pre><code class="language-sql">SELECT
+  월,
+  매출액,
+  LAG(매출액, 1, 0) OVER (ORDER BY 월) AS 직전_달_매출액
+FROM 월별_매출;
+</code></pre>
+<p>이 예시는 월 열을 기준으로 이전 행(직전 달)의 매출액을 조회한다. 만약 이전 행이 존재하지 않는 경우(예: 가장 첫 달)는 default값으로 0을 반환하도록 설정했다. 그 결과, 첫 번째 행의 직전 달 매출액은 0이 되고, 나머지 행들은 월이 증가함에 따라 실제 이전 달 매출액이 표시된다.</p>
+<p>PARTITION BY를 활용하면 지역별, 혹은 분기별로 묶어서 조회할 수도 있다.</p>
+<pre><code class="language-sql">SELECT
+  지역,
+  월,
+  매출액,
+  LAG(매출액) OVER (PARTITION BY 지역 ORDER BY 월) AS 지역_직전_달_매출액
+FROM 지역별_월별_매출;
+</code></pre>
+<p>이 경우, 같은 지역 내에서 월 순서대로 이전 달 매출액을 각각 조회한다. 파티션이 달라지는 지역이 바뀔 경우에는 이전 달 매출이 독립적으로 계산된다.</p>
+<h2 id="lead">LEAD 함수<a class="headerlink" href="#lead" title="Permanent link">¶</a></h2>
+<p>LEAD 함수는 LAG 함수와 거의 동일한 문법을 가지나, 이전 행이 아니라 이후 행(현재 기준 미래 방향)에 있는 값들을 참조한다. LEAD 함수를 사용하면 현재 행을 기준으로 일정 offset만큼 뒤에 있는 행의 컬럼 값을 반환할 수 있다.</p>
+<p>LEAD 함수의 구조는 다음과 같다.</p>
+<pre><code class="language-sql">LEAD(컬럼명 [, offset [, default값]]) OVER (
+  [PARTITION BY 파티션기준컬럼1, ...]
+  ORDER BY 정렬기준컬럼 [ASC|DESC], ...
+)
+</code></pre>
+<p>offset은 미래 방향으로 몇 번째 행을 조회할지 결정한다. default값은 해당 행을 찾을 수 없을 때(예: 테이블 끝에 도달해 이후 행이 더 이상 존재하지 않는 경우) 반환할 값이다.</p>
+<p>ORDER BY 절 역시 LEAD 함수를 쓸 때 반드시 필요하고, PARTITION BY 절을 지정하면 파티션별로 독립적인 정렬 순서를 적용한다.</p>
+<h3 id="_2">예시: 다음 달 매출액 미리 참조하기<a class="headerlink" href="#_2" title="Permanent link">¶</a></h3>
+<p>아래 예시는 월별 매출 테이블에서 이번 달 데이터를 기준으로 다음 달 매출액을 함께 조회하는 경우를 보여준다.</p>
+<pre><code class="language-sql">SELECT
+  월,
+  매출액,
+  LEAD(매출액, 1, 0) OVER (ORDER BY 월) AS 다음_달_매출액
+FROM 월별_매출;
+</code></pre>
+<p>이 쿼리는 현재 행이 나타내는 월의 매출액과, 그 다음 행(다음 달)의 매출액을 동일한 행에서 나란히 비교할 수 있도록 해준다. 마지막 행에서 ‘다음 달’ 행이 존재하지 않으면 default값인 0이 반환된다.</p>
+<p>파트리션을 적용하면, 특정 그룹마다 다음 달에 해당하는 데이터를 확인할 수 있다. 예를 들어 다음 예시는 지역별로 다음 달 매출을 각각 구분하여 함께 보여준다.</p>
+<pre><code class="language-sql">SELECT
+  지역,
+  월,
+  매출액,
+  LEAD(매출액) OVER (PARTITION BY 지역 ORDER BY 월) AS 지역_다음_달_매출액
+FROM 지역별_월별_매출;
+</code></pre>
+<p>같은 지역에서만 월을 순서대로 정렬해 이후 데이터를 참조하므로, 지역이 바뀌면 해당 지역 내에서만 다시 1월부터 다음 달 매출을 계산하게 된다.</p>
+<h2 id="_3">활용 시 유의사항<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>LAG와 LEAD 함수는 구조가 유사하며, 전후 관계를 지정할 때 반드시 정렬할 열이 필요하다는 점이 중요하다. 테이블에서 레코드의 순서는 기본적으로 정해져 있지 않으므로, 어떤 기준으로 정렬할지를 명시해야만 원하는 이전 행 혹은 이후 행을 정확히 참조할 수 있다.</p>
+<p>PARTITION BY 절을 활용하지 않고 단순히 ORDER BY만 사용하면 테이블 전체가 하나의 파티션으로 간주되어, 전체 테이블 내에서 전후 행이 결정된다. 반대로 PARTITION BY를 지정하면 그룹이 나뉘어 그룹마다 독립적으로 순서가 매겨진다.</p>
+<p>offset이 현재 행으로부터 너무 멀리 떨어져서 참조할 행이 존재하지 않으면 default값이 반환된다. default값을 생략하면 NULL이 반환된다. 필요한 경우에는 default값을 설정해 두는 것이 결과 해석에 도움이 된다.</p>
+<p>결과를 필터링할 때 WHERE 절이 아닌 윈도우 함수 결과에 대한 조건을 바로 적용하려 한다면, 서브쿼리나 CTE(Common Table Expressions)를 사용해야 한다. 윈도우 함수는 SELECT 절에서 동시에 계산되는 것이므로, FROM이나 WHERE 단계에서 직접 참조할 수 없기 때문이다. 필요하다면 다음 예시처럼 쿼리를 중첩해서 작성할 수 있다.</p>
+<pre><code class="language-sql">WITH lag_result AS (
+  SELECT
+    월,
+    매출액,
+    LAG(매출액, 1, 0) OVER (ORDER BY 월) AS 직전_달_매출액
+  FROM 월별_매출
+)
+SELECT *
+FROM lag_result
+WHERE 직전_달_매출액 &gt; 1000000;
+</code></pre>
+<p>이렇게 작성하면 LAG 함수를 통해 직전 달 매출액을 구한 다음, 그 결과를 한 번 더 조회하며 필요한 필터링을 수행할 수 있다.</p>
+<p>이동 집계 함수(LAG, LEAD)는 PostgreSQL뿐만 아니라 표준 SQL 윈도우 함수 규격에도 포함되어 있다. 시계열 분석, 로그 분석, 주가 데이터 분석 등 순서가 중요한 데이터를 다룰 때 매우 유용하다. 신뢰할 수 있는 순서를 정의하고, 적절한 파티션을 설계하여 LAG나 LEAD를 적용하면 데이터 전후 관계를 좀 더 명확하게 파악하고 분석할 수 있다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0709/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0709/">
+        GROUPING SETS, ROLLUP, CUBE
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0707/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0707/">
+        순위 함수(RANK, DENSE_RANK 등)
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>

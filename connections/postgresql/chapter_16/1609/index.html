@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_16/1609/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>하이브리드 문서/관계형 검색 전략 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "JSON\uacfc XML \ubb38\uc11c \uac80\uc0c9\uc758 \ud575\uc2ec", url: "#_top", children: [
+          ]},
+          {title: "Full-Text Search\uc640\uc758 \uacb0\ud569", url: "#full-text-search", children: [
+          ]},
+          {title: "\uac80\uc0c9 \uc804\ub7b5 \uc124\uacc4 \uc2dc \uace0\ub824 \uc0ac\ud56d", url: "#_1", children: [
+          ]},
+          {title: "\uc9c8\uc758 \ucd5c\uc801\ud654\uc640 \uc2e4\ud589 \uacc4\ud68d \ubd84\uc11d", url: "#_2", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1610/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1610/">
+        PostgreSQL 16에서의 JSON 관련 개선점
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1608/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1608/">
+        함수 기반 검색과 랭킹
+      </a>
+</div>
+</div>
+<p>문서 지향 데이터와 관계형 데이터가 한 시스템 내에 공존할 때, 양쪽 모두에 대해 효율적으로 검색할 수 있는 전략을 수립하는 것은 생각보다 까다롭다. PostgreSQL은 JSON, XML 타입의 문서 저장 기능과 더불어, 이를 효율적으로 질의할 수 있는 다채로운 도구들을 제공한다. 동시에 전통적인 관계형 모델과도 유기적으로 결합하여, 단일 쿼리 안에서 문서 지향 필드와 관계형 필드를 동시에 검색할 수 있다. 이러한 방식을 흔히 하이브리드 검색이라고 부르며, PostgreSQL 16은 JSONB GIN 색인, Full-Text Search(FTS), XML 함수, 그리고 풍부한 연산자들을 결합하여 강력한 하이브리드 검색 환경을 제공한다.</p>
+<h2 id="json-xml">JSON과 XML 문서 검색의 핵심<a class="headerlink" href="#json-xml" title="Permanent link">¶</a></h2>
+<p>PostgreSQL에서 JSON 자료형은 json과 jsonb 두 가지가 있다. 일반적으로 검색 최적화와 부분 문서 추출이 잦은 환경에서는 jsonb를 사용한다. jsonb는 내부 구조가 바이너리로 저장되어 있기 때문에 GIN 혹은 GiST 색인을 사용할 수 있고, 경로 검색이나 존재 여부 검사 등의 연산도 빠르게 처리된다.</p>
+<p>XML 자료의 경우 PostgreSQL은 xml 타입을 제공하고 다양한 XPath 함수로 XML 문서를 검색할 수 있게 한다. 다만 JSON과 달리 XML 자체에 대해 직접 GIN 색인과 같은 전문화된 색인을 생성하지는 못하므로, 특정 XPath 결과를 추출하는 함수를 인덱스 표현식으로 삼아 B-Tree나 GIN 색인을 구성한다. 예를 들어 XPath 결과가 문자열 형태로 반환된다면, 그 문자열에 대해 텍스트 색인을 적용하는 식으로 하이브리드 문서 검색을 지원할 수 있다.</p>
+<h2 id="full-text-search">Full-Text Search와의 결합<a class="headerlink" href="#full-text-search" title="Permanent link">¶</a></h2>
+<p>하이브리드 검색에서 문서 내 문자열을 대상으로 Full-Text Search를 적용해야 하는 상황이 많다. PostgreSQL의 FTS는 텍스트를 tsvector 형태로 변환해 색인하고, tsquery를 사용해 검색어와 대조한다. JSONB 자료형 컬럼에 저장된 특정 필드를 추출해서 tsvector 컬럼으로 생성하거나, XML 문서에서 특정 노드를 추출한 뒤 그 결과로부터 tsvector를 만들어 관리하면, 구조화된 문서 내부의 텍스트까지 전방위로 검색이 가능하다.</p>
+<p>아래 예시는 JSONB 컬럼에 저장된 특정 키워드를 텍스트 색인하고, 관계형 컬럼과 함께 조건을 결합하는 단순한 시나리오를 보여준다.</p>
+<pre><code>CREATE TABLE hybrid_data (
+    id serial PRIMARY KEY,
+    title text,
+    doc jsonb,
+    doc_search tsvector
+);
+
+CREATE INDEX idx_hybrid_doc_search ON hybrid_data USING GIN (doc_search);
+CREATE INDEX idx_hybrid_doc_json ON hybrid_data USING GIN (doc jsonb_path_ops);
+
+INSERT INTO hybrid_data (title, doc) VALUES
+('PostgreSQL JSON 예제', '{"content": "이 문서는 PostgreSQL 16에서 JSON 검색을 시연"}'),
+('XML과 FTS 결합', '{"content": "XML 문서도 풀텍스트 검색과 통합 가능"}');
+
+UPDATE hybrid_data
+SET doc_search = to_tsvector('korean', doc-&gt;&gt;'content');
+</code></pre>
+<p>이후 다음과 같은 조건을 통해 JSON 필드 내부의 텍스트와 관계형 컬럼을 혼합한 검색을 할 수 있다.</p>
+<pre><code>SELECT id, title
+FROM hybrid_data
+WHERE doc_search @@ to_tsquery('korean', 'PostgreSQL &amp; 검색')
+  AND title LIKE '%PostgreSQL%';
+</code></pre>
+<p>JSON 문서 안의 content 필드를 Full-Text Search로 인덱싱하고, title은 전통적인 LIKE 연산을 사용하는 예제다. 또 다른 방식으로는 JSONB 내부의 구조(예: 키 값, 중첩된 객체, 배열 등)를 jsonb_path_ops로 인덱싱해 빠른 경로 검색을 할 수도 있다.</p>
+<p>XML 컬럼에 대해서도 비슷한 접근을 취할 수 있다. XPath를 사용해 특정 노드를 추출하고, 그 노드 내 텍스트를 tsvector 컬럼에 저장해 색인한다. 예를 들어 XML 문서에  태그가 주로 검색 대상이라면, 그 노드를 추출하는 함수를 인덱스 표현식으로 정의한다.</p>
+<h2 id="_1">검색 전략 설계 시 고려 사항<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>하이브리드 검색 전략을 세울 때 가장 중요한 것은 데이터의 구조와 사용 패턴을 명확히 파악하는 일이다. JSON이나 XML 문서가 매우 깊이 중첩되어 있고 특정 필드만 집중적으로 검색한다면, 해당 필드만 색인하는 것이 낫다. 전체 문서 내용이 검색 대상이라면, 문서 전체를 Full-Text Search 대상으로 삼되, 쿼리 범위를 가급적 축소할 수 있는 메타데이터 컬럼과 병행 검색하는 전략을 고려한다.</p>
+<p>JSONB GIN 색인은 범용적으로 빠른 검색을 가능하게 하지만, 원하는 조건에 따라서는 expression 인덱스(함수 기반 인덱스)나 partial 인덱스가 더 효과적일 수 있다. XML도 마찬가지로, XPath에 의해 추출되는 텍스트가 특정 패턴을 띠거나, 자주 질의되는 XPath 경로가 있다면 그 경로를 포함하는 전용 인덱스를 설계해 조회 비용을 낮추는 식으로 접근한다.</p>
+<p>Full-Text Search를 실제로 적용할 때는 사용하는 언어와 형태소 분석기 설정이 중요하다. PostgreSQL 16의 기본 제공 사전(korean, english 등)을 적절히 선택하거나, 필요한 경우 사용자 정의 사전을 구성해 텍스트를 효율적으로 나눈 뒤 tsvector 형태로 저장한다. 문서가 다국어로 섞여 있다면, 언어별로 분리 인덱스를 구성하는 전략도 유효하다.</p>
+<h2 id="_2">질의 최적화와 실행 계획 분석<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>하이브리드 검색이 복잡해질수록, 질의 최적화와 실행 계획 분석이 필수적이다. PostgreSQL의 EXPLAIN 명령과 함께 ANALYZE 옵션을 통해 실제 실행 계획을 살펴보면서, GIN 색인이 제대로 활용되는지, 불필요한 시퀀셜 스캔이 일어나는지 확인해야 한다.</p>
+<p>JSONB나 XML 함수가 자주 호출되는 쿼리는 CPU 부담이 커지므로, 가능한 한 색인을 통한 직접적 탐색이 이루어지도록 설계하는 것이 이상적이다. 필요하다면 materialized view를 구성해 미리 tsvector를 생성해 놓고 검색을 수행하거나, 자주 참조되는 XPath 결과를 캐싱하는 방법도 고려할 수 있다.</p>
+<p>아래 예시는 XML 문서의 특정 태그를 추출하고, 그 결과를 tsvector로 변환해 인덱싱한 뒤 검색하는 단순한 개념을 보여준다.</p>
+<pre><code>CREATE TABLE hybrid_xml_data (
+    id serial PRIMARY KEY,
+    info xml,
+    info_search tsvector
+);
+
+CREATE OR REPLACE FUNCTION extract_xml_text(xml) RETURNS text AS $$
+SELECT xpath('/root/description/text()', $1)::text;
+$$ LANGUAGE sql IMMUTABLE;
+
+CREATE INDEX idx_hybrid_xml_search ON hybrid_xml_data USING GIN (info_search);
+
+INSERT INTO hybrid_xml_data (info) VALUES
+('&lt;root&gt;&lt;description&gt;PostgreSQL 16에서 XML 하이브리드 검색&lt;/description&gt;&lt;/root&gt;');
+
+UPDATE hybrid_xml_data
+SET info_search = to_tsvector('korean', extract_xml_text(info));
+
+EXPLAIN ANALYZE
+SELECT *
+FROM hybrid_xml_data
+WHERE info_search @@ to_tsquery('korean', '하이브리드 &amp; 검색');
+</code></pre>
+<p>이 같은 구조를 통해서도 XML 데이터 내부의 특정 노드 내용을 Full-Text Search로 빠르게 검색한다. 동시에 XML이 아닌 다른 관계형 컬럼 조건과 결합할 수 있다.</p>
+<p>---과 확장 가능성</p>
+<p>PostgreSQL 16에서 JSON, XML, Full-Text Search를 결합하는 하이브리드 검색은 관계형 모델과 문서 지향 모델의 장점을 동시에 누릴 수 있게 해준다. 한편으로는 문서 구조를 풍부하게 표현하고, 다른 한편으로는 전통적인 SQL 연산자와 결합해 높은 성능과 정확도를 기대할 수 있다.</p>
+<p>이처럼 하이브리드 검색 전략을 제대로 세우려면, 각 컬럼의 자료 구조와 검색 패턴을 고려한 색인 설계와 함수 활용이 필수적이다. 원하는 검색 경험을 제공하기 위해서는 JSONB GIN 색인, XML 파싱 및 표현식 인덱스, 그리고 Full-Text Search가 상호보완적으로 작동하도록 구성해야 한다. 이후 실행 계획과 성능 모니터링으로 적절히 튜닝하면, 다양한 유형의 데이터를 하나의 쿼리로 검색하는 복합 시나리오를 무리 없이 지원할 수 있다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1610/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1610/">
+        PostgreSQL 16에서의 JSON 관련 개선점
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1608/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1608/">
+        함수 기반 검색과 랭킹
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>

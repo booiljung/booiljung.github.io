@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_16/1606/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>GIN/GiST 인덱스를 이용한 Full-Text Search - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "GIN \uc778\ub371\uc2a4\ub97c \uc774\uc6a9\ud55c Full-Text Search", url: "#_top", children: [
+          ]},
+          {title: "GiST \uc778\ub371\uc2a4\ub97c \uc774\uc6a9\ud55c Full-Text Search", url: "#gist-full-text-search", children: [
+          ]},
+          {title: "GIN\uacfc GiST \uc120\ud0dd \uace0\ub824\uc0ac\ud56d", url: "#gin-gist", children: [
+          ]},
+          {title: "\uc131\ub2a5 \ucd5c\uc801\ud654\uc640 \uad00\ub9ac", url: "#_1", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1607/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1607/">
+        JSON 검색과 Full-Text Search 결합
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1605/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1605/">
+        토큰화와 언어 사전 설정
+      </a>
+</div>
+</div>
+<p>PostgreSQL에서 제공하는 GIN(Generalized Inverted Index)과 GiST(Generalized Search Tree)는 Full-Text Search 기능을 가속화하는 핵심 인덱스 유형이다. 두 인덱스는 내부 구조와 검색 방식이 달라 특정 상황에서 각각의 장단점을 갖는다. 문서가 방대할 경우에는 GIN 인덱스가 일반적으로 더 효율적이며, GiST 인덱스는 문서와 함께 다른 공간 정보나 범위 검색 등을 결합해야 할 때 응용 범위가 넓다. PostgreSQL 16에서도 이 두 인덱스 유형은 여전히 Full-Text Search에서 중요한 역할을 한다.</p>
+<h2 id="gin-full-text-search">GIN 인덱스를 이용한 Full-Text Search<a class="headerlink" href="#gin-full-text-search" title="Permanent link">¶</a></h2>
+<p>GIN 인덱스는 대량의 텍스트를 빠르게 검색하기 위한 자료 구조를 제공한다. 문서를 토큰으로 분해하여 인덱스에 역색인 형태로 저장하므로, 특정 토큰(단어나 용어)이 들어간 레코드를 빠르게 찾을 수 있다. GIN은 검색 시간이 매우 빠르지만, 쓰기(INSERT, UPDATE) 작업이 많은 환경에서는 업데이트 비용이 상대적으로 높아질 수 있다.</p>
+<p>tsvector 자료형 컬럼에 GIN 인덱스를 생성하면 가장 직접적인 이점을 얻는다. tsvector는 Full-Text Search를 위해 토큰화된 텍스트를 저장하는 특수 자료형이다. 다음 예시는 tsvector 컬럼을 이용해 GIN 인덱스를 생성하고 검색하는 방식의 기초를 보여준다.</p>
+<pre><code>CREATE TABLE documents (
+    id serial PRIMARY KEY,
+    content text,
+    content_tsv tsvector
+);
+
+-- tsvector 컬럼에 대한 GIN 인덱스 생성
+CREATE INDEX documents_content_tsv_idx
+    ON documents
+    USING gin (content_tsv);
+
+-- 예시 데이터를 삽입할 때 content_tsv를 업데이트
+INSERT INTO documents (content, content_tsv)
+VALUES (
+    'PostgreSQL 16 introduces new features for performance and security.',
+    to_tsvector('english', 'PostgreSQL 16 introduces new features for performance and security.')
+);
+
+-- Full-Text Search 쿼리
+SELECT id, content
+FROM documents
+WHERE content_tsv @@ to_tsquery('english', 'performance &amp; security');
+</code></pre>
+<p>위 예시에서는 텍스트를 영어 토큰으로 분해하기 위해 to_tsvector('english', ...)와 to_tsquery('english', ...)를 사용했다. 실제 운영환경에서는 다양한 언어 설정이나 커스텀 딕셔너리를 적용하여 더욱 정교한 검색이 가능하다. GIN 인덱스는 주어진 토큰의 포함 여부를 빠르게 탐색해줄 수 있어 대규모 텍스트 데이터베이스에서 효율적인 질의 처리가 가능하다.</p>
+<p>GIN은 인덱스 유지 비용이 상대적으로 높을 수 있다. 예를 들어, INSERT나 UPDATE가 빈번하게 일어나는 테이블에 대용량 GIN 인덱스를 적용하면 성능 저하가 발생할 가능성이 있다. 이러한 상황을 완화하기 위해 PostgreSQL에서는 fastupdate 옵션을 제공한다. fastupdate 옵션을 사용하면 변경 사항이 한꺼번에 인덱스에 반영되어 급격한 성능 저하를 줄일 수 있다.</p>
+<pre><code>CREATE INDEX documents_content_tsv_idx
+    ON documents
+    USING gin (content_tsv)
+    WITH (fastupdate = on);
+</code></pre>
+<p>fastupdate는 인덱스 작성 속도와 검색 성능 사이에서 균형을 맞추는 역할을 한다. 완전히 중단 없는 인덱스 유지보수를 원하거나, 특정 시점에 배치 형태로 인덱스를 재작성하는 전략과 병행해서 사용할 수도 있다.</p>
+<h2 id="gist-full-text-search">GiST 인덱스를 이용한 Full-Text Search<a class="headerlink" href="#gist-full-text-search" title="Permanent link">¶</a></h2>
+<p>GiST는 다양한 데이터 구조를 추상화하여 지원하는 범용 인덱스 방식이다. 범위 검색, 위치 정보, 혹은 트리 구조를 포함하는 다른 자료형과의 결합에도 널리 쓰이는데, Full-Text Search에서도 GiST 접근 방법을 사용할 수 있다. GIN과 달리 인덱스가 트리 구조로 조직되므로, 단순히 역색인이 아니라 중복되는 토큰이나 추가적인 공간 정보를 함께 저장할 수 있다.</p>
+<p>GiST 인덱스로도 tsvector 자료형을 처리할 수 있다. 다음 예시에서는 GiST를 이용하여 인덱스를 생성하고 검색하는 과정을 간단히 보여준다.</p>
+<pre><code>CREATE TABLE articles (
+    id serial PRIMARY KEY,
+    body text,
+    body_tsv tsvector
+);
+
+-- tsvector 컬럼에 대한 GiST 인덱스 생성
+CREATE INDEX articles_body_tsv_idx
+    ON articles
+    USING gist (body_tsv);
+
+INSERT INTO articles (body, body_tsv)
+VALUES (
+    'PostgreSQL 16 also improves full-text searching capabilities.',
+    to_tsvector('english', 'PostgreSQL 16 also improves full-text searching capabilities.')
+);
+
+SELECT id, body
+FROM articles
+WHERE body_tsv @@ to_tsquery('english', 'improves &amp; capabilities');
+</code></pre>
+<p>GiST 인덱스는 GIN보다 쓰기 성능이 상대적으로 좋은 편이며, 다차원 검색도 결합할 수 있다는 장점이 있다. 예를 들어, 지리 정보를 저장하는 PostGIS와 Full-Text Search를 함께 사용하는 경우, 하나의 GiST 인덱스로 지리적 범위 조건과 텍스트 검색 조건을 동시에 효율적으로 처리할 수 있다. 하지만 토큰 단위의 검색에 특화된 역색인 구조가 아니므로, 순수한 텍스트 검색 성능만 놓고 본다면 GIN이 대체로 유리하다.</p>
+<h2 id="gin-gist">GIN과 GiST 선택 고려사항<a class="headerlink" href="#gin-gist" title="Permanent link">¶</a></h2>
+<p>두 인덱스 방식 모두 PostgreSQL의 Full-Text Search에서 공식적으로 지원된다. 대규모 텍스트 문서에 대한 단순 단어 검색이 주 목적이라면 GIN이 일반적으로 낫고, 텍스트 검색 외에도 공간 데이터나 범위 검색 조건 등을 동시에 적용해야 한다면 GiST가 더 유연하다. 또한 INSERT, UPDATE가 빈번한 테이블에서는 GIN 인덱스 유지 비용이 부담이 될 수 있으며, 그럴 경우 GiST 인덱스를 고려할 수 있다.</p>
+<p>GIN 인덱스가 제공하는 빠른 역색인 검색은 뉴스 기사, 블로그, 전자상거래 사이트의 상품 설명 등 검색 빈도가 월등히 높은 환경에서 큰 이점을 가져다준다. GiST 인덱스는 조금 더 범용적인 구조로, 다양한 데이터 타입과의 결합을 중요한 요소로 삼는 응용에서 채택이 유리하다. 실제 운영 환경에서는 데이터를 어떻게 저장하고 검색하는지, 업데이트 빈도는 어느 정도인지, 텍스트 외의 다른 검색 요구사항이 있는지 등을 종합하여 적절한 인덱스 방식을 결정해야 한다.</p>
+<h2 id="_1">성능 최적화와 관리<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>Full-Text Search가 포함된 테이블에서 GIN 또는 GiST 인덱스를 잘 관리하기 위해서는 VACUUM과 ANALYZE 작업을 주기적으로 수행하는 것이 좋다. PostgreSQL 16에서는 자동 VACUUM, 자동 ANALYZE가 기본값으로 활성화되어 있지만, 대량 업데이트가 발생하는 시점에는 수동으로 VACUUM을 실행하여 인덱스 부풀림을 제어하는 전략이 필요할 수 있다. 또한 인덱스 재작성(REINDEX)을 주기적으로 고려하여 성능 문제를 예방할 수 있다.</p>
+<p>정확한 검색 품질을 위해서는 적절한 텍스트 파서 및 검색 설정을 활용해야 하며, 언어별 스톱워드나 형태소 분석 등을 통해 쿼리 정확도를 높일 수 있다. 예를 들어, 한국어의 경우 형태소 분석기를 추가로 구성하면 Full-Text Search 정확도를 획기적으로 개선할 수 있다. 이를 위해 PostgreSQL 16에서도 다양한 텍스트 파서를 확장 모듈로 제공하거나, 사용자 정의 파서를 구성할 수 있다.</p>
+<p>결론적으로, PostgreSQL 16에서 Full-Text Search를 구현할 때 GIN과 GiST 인덱스를 적절히 사용하면 대용량 텍스트 데이터에 대해 효율적인 검색 성능을 확보할 수 있다. GIN은 일반적으로 순수 텍스트 검색에 특화되어 있으며, GiST는 텍스트와 다른 데이터 타입(지리 데이터, 범위 검색 등)을 함께 다룰 때 유리한 구조를 제공한다. 각 인덱스 특성을 충분히 이해하고 데이터 특성에 맞추어 사용한다면, PostgreSQL 16의 강력한 Full-Text Search 기능을 극대화할 수 있다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1607/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1607/">
+        JSON 검색과 Full-Text Search 결합
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1605/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1605/">
+        토큰화와 언어 사전 설정
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_10/1009/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>동시성 문제와 해결 전략 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "\ub3d9\uc2dc\uc131 \uc81c\uc5b4\uc758 \ud544\uc694\uc131", url: "#_top", children: [
+          ]},
+          {title: "PostgreSQL\uc5d0\uc11c \ubc1c\uc0dd\ud560 \uc218 \uc788\ub294 \ub3d9\uc2dc\uc131 \ubb38\uc81c", url: "#postgresql", children: [
+              {title: "Dirty Read", url: "#dirty-read" },
+              {title: "Non-repeatable Read", url: "#non-repeatable-read" },
+              {title: "Phantom Read", url: "#phantom-read" },
+              {title: "Write Skew\uc640 Lost Update", url: "#write-skew-lost-update" },
+          ]},
+          {title: "\ud2b8\ub79c\uc7ad\uc158 \uaca9\ub9ac \uc218\uc900\uacfc \uc774\uc0c1 \ud604\uc0c1", url: "#_2", children: [
+              {title: "Read Uncommitted", url: "#read-uncommitted" },
+              {title: "Read Committed", url: "#read-committed" },
+              {title: "Repeatable Read", url: "#repeatable-read" },
+              {title: "Serializable", url: "#serializable" },
+          ]},
+          {title: "PostgreSQL\uc758 \ub3d9\uc2dc\uc131 \uc81c\uc5b4 \uae30\ubc95", url: "#postgresql_1", children: [
+              {title: "MVCC (Multiversion Concurrency Control)", url: "#mvcc-multiversion-concurrency-control" },
+              {title: "\ud589 \uc218\uc900 \uc7a0\uae08(Row-level Lock)", url: "#row-level-lock" },
+              {title: "Serializable Snapshot Isolation", url: "#serializable-snapshot-isolation" },
+          ]},
+          {title: "\uc131\ub2a5\uacfc \ub3d9\uc2dc\uc131 \uc81c\uc5b4\uc758 \uade0\ud615", url: "#_3", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1010/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1010/">
+        최신 버전에서의 MVCC 개선점
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1008/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1008/">
+        SAVEPOINT와 부분 롤백
+      </a>
+</div>
+</div>
+<p>동시성 문제는 여러 트랜잭션이 동시에 실행될 때 발생하는 다양한 이상 현상들을 의미한다. 데이터베이스는 여러 사용자가 동시에 같은 데이터를 접근하고 수정할 수 있도록 해야 하지만, 그 과정에서 데이터를 왜곡하거나 일관성을 해치는 일이 일어나지 않도록 보호해야 한다. PostgreSQL은 MVCC(Multiversion Concurrency Control)와 다양한 잠금(Lock) 및 격리 수준(Isolation Level)을 통해 높은 동시성을 유지하면서도 데이터 무결성을 지키는 복합적인 전략을 갖추고 있다. 특히 PostgreSQL 16에서는 기존 버전의 안정적인 기능을 바탕으로 더욱 진화된 잠금 관리와 옵티마이저 최적화가 결합되어, 대규모 트랜잭션 처리에서도 일관성과 성능을 최대화하고자 한다.</p>
+<h2 id="_1">동시성 제어의 필요성<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>동시에 여러 트랜잭션이 진행되면 어떤 트랜잭션은 다른 트랜잭션이 수정 혹은 조회한 데이터를 참조할 수 있다. 이때 트랜잭션들이 상호 간섭 없이 독립적으로 수행된 것과 동일한 결과를 내도록 관리하는 것이 데이터베이스의 동시성 제어 목표다. 올바른 동시성 제어가 이루어지지 않으면, 서로 다른 트랜잭션 간에 충돌이 발생해 데이터가 잘못 갱신되거나, 한쪽 트랜잭션이 다른 트랜잭션의 임시 상태를 보게 되는 등 예기치 않은 문제가 생긴다.</p>
+<p>트랜잭션이란 한 개 이상의 SQL 문장을 하나의 논리적 단위로 묶는 것을 말한다. 은행 계좌 이체처럼 원자성, 일관성, 독립성, 지속성을 보장해야 하는 작업에서 트랜잭션은 매우 중요한 역할을 한다. 그러나 트랜잭션을 직렬적으로 실행하면 동시성은 사실상 사라져 성능 저하가 심해지므로, 가능한 한 병행 실행을 최대화하면서 데이터 무결성을 유지해야 하는 어려운 과제가 따른다.</p>
+<h2 id="postgresql">PostgreSQL에서 발생할 수 있는 동시성 문제<a class="headerlink" href="#postgresql" title="Permanent link">¶</a></h2>
+<h3 id="dirty-read">Dirty Read<a class="headerlink" href="#dirty-read" title="Permanent link">¶</a></h3>
+<p>Dirty Read는 한 트랜잭션이 아직 커밋되지 않은 데이터를 다른 트랜잭션이 읽는 상황을 말한다. 커밋되지 않은 수정 사항이 롤백된다면, Dirty Read를 한 트랜잭션은 허위 정보를 사용한 셈이 된다. PostgreSQL에서는 기본적으로 Dirty Read가 허용되지 않는다. 가장 낮은 격리 수준인 Read Uncommitted조차 내부적으로 Read Committed처럼 동작하기 때문에, 커밋되지 않은 데이터를 직접 읽는 상황은 발생하지 않는다.</p>
+<h3 id="non-repeatable-read">Non-repeatable Read<a class="headerlink" href="#non-repeatable-read" title="Permanent link">¶</a></h3>
+<p>Non-repeatable Read는 같은 트랜잭션 내에서 동일한 조건으로 두 번 이상 조회했을 때 결과가 달라지는 현상이다. 예를 들어 트랜잭션 T1이 어떤 행을 조회한 뒤, 트랜잭션 T2가 해당 행을 수정 혹은 삭제해 커밋하고, 다시 T1이 동일한 조건으로 조회할 때 데이터가 달라진 결과를 얻게 되는 경우다. PostgreSQL의 Read Committed 격리 수준에서 충분히 발생할 수 있다. 이를 방지하려면 Repeatable Read 이상의 격리 수준을 사용해야 한다.</p>
+<h3 id="phantom-read">Phantom Read<a class="headerlink" href="#phantom-read" title="Permanent link">¶</a></h3>
+<p>Phantom Read는 이전에 존재하지 않던 새로운 행이 나타나거나, 조건에 맞는 행이 사라지는 상황이다. Non-repeatable Read가 동일한 행의 값만 달라지는 문제라면, Phantom Read는 행 자체의 삽입 또는 삭제가 트랜잭션 도중에 일어나 조회 결과가 변하는 현상이다. PostgreSQL에서 Repeatable Read 수준을 사용하면 전통적인 의미의 Phantom Read는 대부분 차단되지만, SERIALIZABLE 격리 수준으로 설정해야 완벽하게 회피된다.</p>
+<h3 id="write-skew-lost-update">Write Skew와 Lost Update<a class="headerlink" href="#write-skew-lost-update" title="Permanent link">¶</a></h3>
+<p>Write Skew는 두 트랜잭션이 서로 다른 조건으로 데이터를 읽고 수정할 때, 직렬화되지 않는 결과를 초래하는 현상이다. 예컨대 병원에서 어떤 의사가 근무 중이라는 조건을 만족하는 의사 수가 일정 이하가 되지 않도록 하려 할 때, 두 트랜잭션이 동시에 “아직 근무 중인 의사가 충분하다”고 잘못 인식하고 새로운 스케줄을 추가해버릴 수 있다. 이 문제는 단순한 Row-level Lock으로 해결되지 않을 수도 있어서, PostgreSQL의 Serializable Snapshot Isolation 같은 고급 격리 메커니즘을 통해 예방한다.</p>
+<p>Lost Update는 여러 트랜잭션이 동일한 데이터를 동시에 갱신해 마지막에 커밋한 트랜잭션만이 반영되고, 다른 트랜잭션의 갱신 사항은 사라지는 문제다. PostgreSQL의 MVCC와 Row-level Lock으로 대부분 방지되지만, 트랜잭션이 충돌을 제대로 감지하지 못하고 재시도 로직이 없는 경우 발생할 수 있다.</p>
+<h2 id="_2">트랜잭션 격리 수준과 이상 현상<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<h3 id="read-uncommitted">Read Uncommitted<a class="headerlink" href="#read-uncommitted" title="Permanent link">¶</a></h3>
+<p>SQL 표준상 가장 낮은 격리 수준이지만, PostgreSQL에서는 내부적으로 Read Committed 방식으로 동작한다. 커밋되지 않은 데이터를 직접 읽는 Dirty Read는 허용되지 않는다. 그러나 다른 트랜잭션이 커밋한 변경 사항을 즉시 볼 수 있으므로, Non-repeatable Read나 Phantom Read가 발생한다.</p>
+<h3 id="read-committed">Read Committed<a class="headerlink" href="#read-committed" title="Permanent link">¶</a></h3>
+<p>PostgreSQL에서 기본으로 제공되는 격리 수준이다. 한 문장(Statement)이 실행될 때, 이미 커밋된 가장 최신 데이터를 참조한다. 트랜잭션 내에서 문장마다 독립적으로 스냅샷을 생성하기 때문에, 트랜잭션이 진행되는 동안 조회 결과가 바뀔 수 있다. Non-repeatable Read와 Phantom Read가 발생할 수 있으나, Dirty Read는 발생하지 않는다.</p>
+<h3 id="repeatable-read">Repeatable Read<a class="headerlink" href="#repeatable-read" title="Permanent link">¶</a></h3>
+<p>트랜잭션이 시작될 때 생성된 스냅샷을 트랜잭션이 끝날 때까지 일관되게 사용하는 격리 수준이다. 한 번 조회한 값은 트랜잭션 도중에 달라지지 않는다. Non-repeatable Read는 차단되지만, 특정한 조건에서 Phantom Read나 Write Skew가 발생할 여지가 남아 있다. PostgreSQL은 일반적인 Phantom Read를 Repeatable Read 격리 수준에서도 대부분 방지하지만, 완벽한 직렬화 보장을 위해서는 SERIALIZABLE 수준을 권장한다.</p>
+<h3 id="serializable">Serializable<a class="headerlink" href="#serializable" title="Permanent link">¶</a></h3>
+<p>가장 엄격한 격리 수준이며, 모든 트랜잭션을 직렬적으로 실행한 것과 동일한 결과를 보장하려고 시도한다. PostgreSQL 9.1 이후 도입된 “Serializable Snapshot Isolation(SSI)” 기법을 사용해, 각 트랜잭션이 서로 충돌하는지 여부를 추적하고 문제가 될 상황을 발견하면 한 트랜잭션을 롤백한다. 이를 통해 Phantom Read, Write Skew 등 모든 이상 현상을 원칙적으로 방지한다. 단, 충돌이 자주 일어날 경우 롤백 빈도가 높아져 성능 저하가 발생할 수 있으므로 주의가 필요하다.</p>
+<h2 id="postgresql_1">PostgreSQL의 동시성 제어 기법<a class="headerlink" href="#postgresql_1" title="Permanent link">¶</a></h2>
+<h3 id="mvcc-multiversion-concurrency-control">MVCC (Multiversion Concurrency Control)<a class="headerlink" href="#mvcc-multiversion-concurrency-control" title="Permanent link">¶</a></h3>
+<p>MVCC는 PostgreSQL의 핵심 동시성 제어 메커니즘이다. 한 행이 수정될 때마다 새로운 버전(튜플)을 생성하고, 트랜잭션은 자신이 시작될 때 유효한 튜플 버전만을 참조한다. 이를 통해 읽기 작업(SELECT)이 쓰기 작업(UPDATE, DELETE)에 의해 차단되지 않고 동시에 이루어질 수 있으며, “논리적”으로는 과거 시점 스냅샷을 참조하기에 일관된 읽기 일관성을 유지한다.</p>
+<p>MVCC 작동 방식의 특징은 트랜잭션 ID(XID)와 xmin, xmax 등의 필드를 활용한다는 점이다. 행(튜플)에 기록된 xmin은 해당 튜플을 삽입한 트랜잭션 ID이며, xmax는 해당 튜플을 삭제(또는 갱신)한 트랜잭션 ID다. 조회 시점의 트랜잭션 ID와 비교해 튜플이 현재 트랜잭션에서 보이는지 여부를 결정한다. 이로 인해 분산 락이나 테이블 전체에 대한 락을 걸지 않아도 동시성을 극대화할 수 있다.</p>
+<p>다만 MVCC는 오래된 튜플 버전을 계속 보관하므로, 주기적으로 VACUUM 작업을 통해 더 이상 필요하지 않은 튜플 버전을 정리해야 한다. PostgreSQL 16에서는 자동 VACUUM의 트리거 조건과 성능 면에서 추가적인 최적화가 이루어져, 대형 테이블에서도 MVCC 동작을 원활하게 유지하도록 개선이 이루어졌다.</p>
+<h3 id="row-level-lock">행 수준 잠금(Row-level Lock)<a class="headerlink" href="#row-level-lock" title="Permanent link">¶</a></h3>
+<p>PostgreSQL은 데이터를 갱신하려는 트랜잭션에 대해 해당 행에만 배타적 잠금을 설정한다. 이를 통해 불필요한 테이블 전체 혹은 페이지 수준의 잠금을 회피하여 동시성을 높인다. MVCC로 인해 SELECT는 일반적으로 락을 거의 요구하지 않으나, 특정 쿼리 힌트나 <code>SELECT FOR UPDATE</code>, <code>SELECT FOR SHARE</code> 등의 구문을 통해 명시적으로 행에 대한 잠금을 획득할 수도 있다.</p>
+<p>Row-level Lock은 동시성 문제가 발생할 때 가장 직접적으로 눈에 보이는 충돌 해결 방식이다. 예를 들어 두 트랜잭션이 동시에 같은 행을 UPDATE하려 하면, 먼저 잠금을 획득한 트랜잭션이 완료될 때까지 다른 트랜잭션은 대기한다. 이 대기 과정에서 데드락이 생길 수도 있으므로, PostgreSQL은 데드락 감지 로직을 통해 상호 교착 상태를 해소하고 한 트랜잭션을 강제 롤백하여 시스템을 보호한다.</p>
+<h3 id="serializable-snapshot-isolation">Serializable Snapshot Isolation<a class="headerlink" href="#serializable-snapshot-isolation" title="Permanent link">¶</a></h3>
+<p>PostgreSQL의 Serializable 격리 수준은 Snapshot Isolation만으로는 완벽하게 제어하기 어려운 Write Skew 등을 차단하기 위해 추가적인 검증 단계를 수행한다. 서로 다른 스냅샷을 기반으로 실행되는 트랜잭션들이 상호 충돌을 일으킬 여지가 있는지 추적하고, 충돌이 검출되면 트랜잭션을 롤백시킨다. 이는 트랜잭션 간에 직렬 실행과 동일한 효과를 보장하려는 고급 기법이다.</p>
+<p>충돌 검출 알고리즘은 트랜잭션 간의 “직렬화 그래프(Serialization Graph)”를 분석하여 사이클이 생기는지를 본다. 사이클이 생기면 직렬 실행과 동등하지 않은 결과가 발생할 수 있기 때문에, 해당 트랜잭션들 중 일부를 롤백한다. 이러한 방식은 트랜잭션별로 매우 높은 격리 수준을 제공하지만, 동시에 롤백될 위험도 커져 응답 시간 변동폭이 늘어나게 된다.</p>
+<p>아래는 간단한 트랜잭션 충돌 상황을 시각화한 예시다.</p>
+<div class="mermaid">sequenceDiagram
+    participant T1 as T1
+    participant T2 as T2
+    T1-&gt;&gt;DB: 트랜잭션 시작
+    T2-&gt;&gt;DB: 트랜잭션 시작
+    T1-&gt;&gt;DB: SELECT * FROM table WHERE id=1
+    T2-&gt;&gt;DB: SELECT * FROM table WHERE id=2
+    T1-&gt;&gt;DB: UPDATE table SET val=val+10 WHERE id=2
+    T2-&gt;&gt;DB: UPDATE table SET val=val+20 WHERE id=1
+    T1-&gt;&gt;DB: COMMIT
+    T2-&gt;&gt;DB: COMMIT (충돌이 감지되면 롤백될 수 있음)
+</div>
+<p>서로 다른 행에서 시작된 수정이 실제로는 인접한 로직을 교란할 수 있어 Serializable 격리에서는 내부적으로 충돌 가능성을 지속적으로 추적한다.</p>
+<h2 id="_3">성능과 동시성 제어의 균형<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>동시성 제어 수준이 높아질수록 데이터 무결성과 일관성은 좋아지지만, 잠금 충돌 및 롤백 빈도가 증가해 성능이 저하될 수 있다. PostgreSQL은 Read Committed 격리 수준을 기본값으로 삼아 합리적인 성능과 동시성 간의 타협점을 제시한다. 그러나 금융권과 같이 무결성이 절대적으로 중요한 경우에는 Serializable 격리 수준으로 설정해 안전한 트랜잭션 처리를 보장할 수 있다.</p>
+<p>MVCC가 제공하는 높은 동시성은 PostgreSQL의 강점이지만, VACUUM 관리를 소홀히 하면 쓸데없는 히스토리 튜플이 쌓여 오히려 성능에 악영향을 줄 수 있다. 따라서 정기적인 VACUUM와 autovacuum 설정이 매우 중요하다. PostgreSQL 16에서는 테이블 및 인덱스의 통계 정보를 자동으로 수집·분석하여 VACUUM 시작 시점을 더욱 지능적으로 결정하며, 병렬 VACUUM 성능 향상도 이루어졌다.</p>
+<p>결국 동시성 제어 전략은 트랜잭션 격리 수준, 잠금 정책, VACUUM 주기 등 여러 요소를 종합적으로 고려해야 한다. 시스템의 특성, 트랜잭션 충돌 빈도, 일관성 요구 사항을 면밀히 살펴 각 상황에 맞는 격리 수준과 잠금 전략을 선택하는 것이 PostgreSQL에서 효율적이고 안전한 동시성 제어를 달성하는 핵심이다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1010/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1010/">
+        최신 버전에서의 MVCC 개선점
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1008/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1008/">
+        SAVEPOINT와 부분 롤백
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+<script>mermaid.initialize({});</script></body>
+</html>

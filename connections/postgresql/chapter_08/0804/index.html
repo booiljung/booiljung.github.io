@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_08/0804/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>REFRESH MATERIALIZED VIEW의 활용 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "Materialized View \uac31\uc2e0 \uc2dc \uace0\ub824 \uc0ac\ud56d", url: "#_top", children: [
+          ]},
+          {title: "REFRESH MATERIALIZED VIEW \uae30\ubcf8 \ub3d9\uc791", url: "#refresh-materialized-view", children: [
+          ]},
+          {title: "CONCURRENTLY \uc635\uc158", url: "#concurrently", children: [
+          ]},
+          {title: "\ubd80\ubd84 \uac31\uc2e0\uacfc \ud65c\uc6a9 \uac00\ub2a5\uc131", url: "#_1", children: [
+          ]},
+          {title: "\uac31\uc2e0 \uc131\ub2a5 \ubc0f \uc7a0\uae08 \ucd5c\uc18c\ud654 \uc804\ub7b5", url: "#_2", children: [
+          ]},
+          {title: "\uc815\uae30\uc801 \uac31\uc2e0\uc744 \uc704\ud55c \uc6b4\uc601 \uc608\uc2dc", url: "#_3", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0805/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0805/">
+        파티션 테이블 생성과 관리
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0803/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0803/">
+        물리화된 뷰(Materialized View) 소개
+      </a>
+</div>
+</div>
+<p>Materialized View는 미리 계산된 결과 집합을 물리적으로 저장해 두었다가 필요한 시점에 활용함으로써 조회 성능을 높이는 데에 큰 의미가 있다. 그러나 데이터는 정적인 상태로 남아 있기 때문에 기본 테이블이 갱신되면 Materialized View도 일정 시점에 재계산하는 과정을 거쳐야 한다. PostgreSQL에서는 REFRESH MATERIALIZED VIEW 문을 통해 이 재계산 과정(갱신 작업)을 수행한다. 이 작업이 어떻게 이루어지고 어떤 옵션을 선택할 수 있는지 이해하는 것은 Materialized View 사용성 극대화에 필수적이다.</p>
+<h2 id="materialized-view">Materialized View 갱신 시 고려 사항<a class="headerlink" href="#materialized-view" title="Permanent link">¶</a></h2>
+<p>Materialized View를 갱신하면 내부적으로는 저장된 데이터를 삭제하고, 다시 쿼리를 실행하여 결과를 채워 넣는 과정이 진행된다. 일반적인 REFRESH MATERIALIZED VIEW 명령을 사용할 경우 대상 Materialized View가 특정 기간 동안 독점 잠금을 획득하기 때문에 다른 세션에서 해당 뷰를 읽거나 쓸 수 없게 된다. 이는 트래픽이 많은 운영 환경에서 사용 시 잠재적인 병목을 일으킬 수 있다.</p>
+<p>Materialized View가 비교적 자주 참조되고, 동시에 변경이 필요한 상황이라면 이 독점 잠금이 시스템 전반에 영향을 주지 않도록 전략이 필요하다.</p>
+<h2 id="refresh-materialized-view">REFRESH MATERIALIZED VIEW 기본 동작<a class="headerlink" href="#refresh-materialized-view" title="Permanent link">¶</a></h2>
+<p>Materialized View를 갱신하기 위해서는 단순히 REFRESH MATERIALIZED VIEW 명령 뒤에 대상 뷰 이름을 지정한다. PostgreSQL 16에서도 이 기본 골격에는 변함이 없으며 명령의 구성은 다음과 같은 형태이다.</p>
+<pre><code>REFRESH MATERIALIZED VIEW my_materialized_view;
+</code></pre>
+<p>이 기본 명령을 사용하면 작업이 완료되는 동안 해당 Materialized View는 독점 락(Exclusive Lock)을 획득한다. 실제로 내부 로직은 Materialized View의 기존 자료를 완전히 지우고, 뷰 정의에 해당하는 SELECT 쿼리를 다시 실행하여 결과를 재삽입한다. 따라서 REFRESH가 발생하는 동안에는 다른 세션이 해당 뷰를 읽거나 쓰는 것이 불가능하다. 데이터가 적고 재계산 비용이 크지 않은 소규모 환경에서는 이 방식만으로도 충분할 수 있지만, 대규모 트래픽이 몰리는 환경에서는 한 번의 REFRESH가 꽤 긴 시간 동안 독점 잠금을 유지하여 서비스 이용에 영향을 줄 수 있으므로 주의해야 한다.</p>
+<h2 id="concurrently">CONCURRENTLY 옵션<a class="headerlink" href="#concurrently" title="Permanent link">¶</a></h2>
+<p>운영 환경에서 Materialized View를 무중단 갱신하려면 REFRESH MATERIALIZED VIEW CONCURRENTLY 옵션을 고려할 수 있다. 이 옵션을 사용하면 기존 데이터를 유지한 상태에서 새로운 데이터를 병렬적으로 계산하여 최종 결과를 교체하므로, 독점 잠금으로 인한 서비스 정지 시간을 최소화할 수 있다. 명령어 예시는 다음과 같다.</p>
+<pre><code>REFRESH MATERIALIZED VIEW CONCURRENTLY my_materialized_view;
+</code></pre>
+<p>WITH CONCURRENTLY 옵션은 유용하지만 반드시 충족해야 하는 전제 조건이 있다. Materialized View에 대한 고유(UNIQUE) 인덱스를 포함하여 제대로 된 인덱스가 구축되어 있어야 한다. PostgreSQL은 이 인덱스를 사용하여 갱신 과정에서 중복 데이터나 차이점을 효율적으로 식별하고, 신규 결과를 기존 데이터와 비교해가며 트랜잭션 단위로 결과를 갱신한다. 이 과정을 통해 기존 데이터를 제거하지 않은 채 별도의 테이블로 신규 결과를 저장한 뒤, 내부적으로 한 번에 교체하게 된다. 이 때문에 갱신 작업 중에도 SELECT 쿼리를 통한 뷰 접근이 가능하다.</p>
+<p>하지만 CONCURRENTLY 옵션은 갱신 시간이 더 오래 걸릴 수 있고, 임시로 추가 저장공간을 필요로 한다는 점을 유의해야 한다. 시스템 자원의 상황이나 트래픽 특성을 고려하여 CONCURRENTLY 옵션의 사용 시점과 빈도를 결정하는 것이 바람직하다.</p>
+<h2 id="_1">부분 갱신과 활용 가능성<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>PostgreSQL에서 기본적으로 제공하는 REFRESH MATERIALIZED VIEW는 결과 집합 전체를 매번 다시 계산하는 방식이다. 부분적으로 변경된 영역만 갱신할 수 있다면 좋겠지만, 표준 PostgreSQL에서는 아직 ‘증분 갱신(incremental refresh)’을 공식적으로 지원하지 않는다. 새로운 버전들에서 Materialized View 관련 최적화가 조금씩 이루어지고는 있지만, 현재도 대규모 테이블을 대상으로 하는 경우 전체 재계산에 따른 리소스 사용량이 꽤나 클 수 있다.</p>
+<p>물론 확장 기능이나 자체 구현 로직, 또는 쿼리 분할 기법 등을 통해 제한적인 부분 갱신을 시도할 수 있는 여지는 있다. 예를 들어 뷰를 시간 파티션 개념으로 분할해 운용하거나, 자주 변하지 않는 영역은 별도의 정적 테이블로 분리한 뒤 조인해서 Materialized View를 구성하는 식으로 운영 효율을 높일 수 있다. 하지만 이는 표준 REFRESH MATERIALIZED VIEW 문의 동작 범주를 벗어나므로, 실제 환경에 맞는 맞춤 전략이 필요하다.</p>
+<h2 id="_2">갱신 성능 및 잠금 최소화 전략<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>Materialized View를 갱신할 때 필요한 계산 시간이 길어지면 잠금 유지 시간 또한 길어진다. 이를 최소화하기 위해서는 Materialized View 자체를 가능한 효율적으로 정의하는 것이 우선이다. 필요 이상으로 많은 조인, 복잡한 SELECT 절, 중복된 계산 로직 등을 최소화하는 것이 좋다.</p>
+<p>CONCURRENTLY 옵션을 적용해도 내부적으로는 임시 테이블 생성, 신규 데이터 계산, 차이점 식별, 트랜잭션 단위 업데이트가 순차적으로 이루어지므로, 대규모 연산에서는 CPU와 IO 자원을 상당히 소모할 수 있다. 특히 WHERE 절을 통해 기본 테이블에서 필요한 데이터만 추출하도록 설계하거나, 자동 갱신 빈도를 트래픽이 비교적 낮은 시간대로 설정해두는 방안을 검토할 수 있다.</p>
+<p>테이블 파티셔닝과 결합하여 사용하는 방법도 고려할 수 있다. 예를 들어 특정 기준으로 파티션화된 테이블을 참조하는 Materialized View라면, 새로운 파티션이 추가될 때마다 필요한 부분만 빠르게 계산한 뒤 전체 Materialized View를 갱신하는 전략을 쓸 수 있다. 조각별로 데이터를 나눠 두면 전체 테이블에 대한 풀 스캔을 줄이고, 파티션 단위 처리가 가능해져 갱신 부하가 줄어든다.</p>
+<h2 id="_3">정기적 갱신을 위한 운영 예시<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>Materialized View를 장기간 실무에서 운영하려면 정기적으로 REFRESH MATERIALIZED VIEW를 실행하는 스케줄러를 마련해야 한다. PostgreSQL 자체적으로는 특정 시간에 자동으로 REFRESH를 실행하는 기능이 없으므로, cron과 같은 외부 스케줄링 도구나 pgAgent 같은 DB 친화적인 스케줄링 툴을 활용할 수 있다.</p>
+<p>야간 등 트래픽이 비교적 적은 시간에 전체를 REFRESH하는 방식을 취하거나, 트래픽이 끊기지 않아야 하는 환경이라면 CONCURRENTLY 옵션과 함께 더 짧은 주기로 나누어 계속 갱신하는 방식을 선택할 수 있다. 운영 데이터가 많아질수록 REFRESH 시간이 증가할 수 있으므로 주기와 방식을 일정하지 않게 설정하고, 부하 추이와 데이터 적재 패턴을 분석해가며 조정해야 한다.</p>
+<p>--- 및 권장 사항</p>
+<p>REFRESH MATERIALIZED VIEW는 Materialized View 운용의 핵심이며, 데이터 일관성과 최신성을 유지하기 위한 필수 절차이다. 독점 잠금을 줄이려면 CONCURRENTLY 옵션을 고려해야 하고, 이에 필요한 인덱스 구성과 추가 자원 사용도 감수해야 한다. 기본적으로는 전체 재계산을 전제로 하기 때문에 대규모 환경에서의 효율성을 높이려면, 뷰 정의 최적화와 파티셔닝, 외부 스케줄링, 쿼리 재구성 등 다양한 기법을 함께 고려하는 것이 좋다.</p>
+<p>PostgreSQL 16에서는 전반적으로 성능 최적화와 새로운 기능들이 추가되었지만 Materialized View의 근본 동작 방식은 이전 버전과 유사하다. 따라서 여전히 REFRESH MATERIALIZED VIEW의 잠금 특성과 계산 부하를 분석한 뒤, 현업 환경에 맞는 적절한 선택과 튜닝을 수행하는 것이 성공적인 운용 전략이라 할 수 있다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0805/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0805/">
+        파티션 테이블 생성과 관리
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0803/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0803/">
+        물리화된 뷰(Materialized View) 소개
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>

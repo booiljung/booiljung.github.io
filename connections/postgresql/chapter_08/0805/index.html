@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_08/0805/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>파티션 테이블 생성과 관리 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "\ud30c\ud2f0\uc154\ub2dd \uae30\ubcf8 \uac1c\ub150", url: "#_top", children: [
+          ]},
+          {title: "\ud30c\ud2f0\uc158 \ud14c\uc774\ube14 \uc0dd\uc131", url: "#_2", children: [
+          ]},
+          {title: "\ud30c\ud2f0\uc158 \ud14c\uc774\ube14 \uad00\ub9ac", url: "#_3", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0806/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0806/">
+        파티션 키 전략과 성능
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0804/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0804/">
+        REFRESH MATERIALIZED VIEW의 활용
+      </a>
+</div>
+</div>
+<h2 id="_1">파티셔닝 기본 개념<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>데이터가 방대해짐에 따라 테이블 단위로 모든 데이터를 한곳에 저장하는 방식은 여러 면에서 비효율적일 수 있다. 특정 컬럼을 기준으로 구간이나 리스트, 혹은 해시 값을 통해 물리적으로 데이터가 분리되어 관리된다면, 필요한 데이터에만 빠르게 접근하여 입출력 비용을 줄이고 성능을 개선할 수 있다. PostgreSQL의 파티셔닝은 이러한 요구를 충족하기 위한 기능으로, 하나의 ‘논리적 테이블’을 여러 물리적 하위 테이블(파티션)로 나누어 저장한다. 이를 통해 INSERT나 SELECT, UPDATE, DELETE 시 파티션 프루닝(Partition Pruning)과 같은 최적화를 활용할 수 있고, 작업 부담을 여러 테이블에 균등하게 분산함으로써 병렬 처리나 인덱스 관리에도 이점을 얻을 수 있다.</p>
+<p>PostgreSQL 10부터 선언적 파티셔닝(Declarative Partitioning)이 도입되어, 이전에 사용되던 상속 테이블 기반 파티셔닝보다 훨씬 직관적이고 관리하기 쉬운 구문을 제공한다. PostgreSQL 16에서도 이러한 파티셔닝 기법은 계속 발전해 왔으며, 다양한 유형(범위, 리스트, 해시, 그리고 그 조합)을 지원한다. 파티션 관리 역시 명령어 차원에서 개선되어, 운영 환경에서 파티션을 손쉽게 추가하거나 제거하고, 필요한 경우 파티션 간의 데이터 재배치를 수행할 수 있다.</p>
+<h2 id="_2">파티션 테이블 생성<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>파티션 테이블을 생성하기 위해서는 우선 ‘부모 테이블’ 역할을 하는 메인 테이블을 만들고, <code>PARTITION BY</code> 절을 통해 어떤 기준으로 파티셔닝을 할 것인지를 정의해야 한다. 가장 간단한 예시는 날짜 컬럼을 기준으로 범위(RANGE) 파티셔닝을 구성하는 것이다. 예시로 주문 정보를 저장하는 테이블을 만들 때, 주문 일자(order_date) 컬럼을 기준으로 파티셔닝한다고 가정해보자.</p>
+<pre><code class="language-sql">CREATE TABLE orders (
+    order_id      bigserial PRIMARY KEY,
+    customer_id   bigint NOT NULL,
+    order_date    date NOT NULL,
+    amount        numeric(10,2) NOT NULL
+)
+PARTITION BY RANGE (order_date);
+</code></pre>
+<p>위 예시에서 orders 테이블은 선언적 파티셔닝을 사용하는 ‘부모 테이블’이 된다. 이 부모 테이블에는 실제 데이터가 직접 들어가지 않으며, 지정된 파티셔닝 키에 따라 자동으로 각 파티션 테이블로 라우팅된다.</p>
+<p>파티션 테이블(하위 테이블)을 생성하기 위해서는 <code>PARTITION OF</code> 구문과 함께 파티션 기준을 지정한다. 다음 예시는 특정 월 범위를 갖는 파티션들을 만들어두는 방식이다.</p>
+<pre><code class="language-sql">CREATE TABLE orders_2023_01
+PARTITION OF orders
+FOR VALUES FROM ('2023-01-01') TO ('2023-02-01');
+
+CREATE TABLE orders_2023_02
+PARTITION OF orders
+FOR VALUES FROM ('2023-02-01') TO ('2023-03-01');
+</code></pre>
+<p>이렇게 생성된 orders_2023_01, orders_2023_02 테이블은 orders 테이블로부터 구조를 자동으로 상속받으며, order_date 컬럼의 구간이 지정 범위를 벗어난 데이터는 다른 파티션에 삽입되거나, 해당 구간을 만족하는 파티션이 없으면 오류가 발생한다. 또한 필요할 경우 DEFAULT 파티션을 하나 추가하여 어떤 파티션에도 속하지 않는 데이터를 수용할 수 있다.</p>
+<p>리스트(List) 파티셔닝과 해시(Hash) 파티셔닝을 사용하려면 <code>PARTITION BY LIST(...)</code>나 <code>PARTITION BY HASH(...)</code> 구문을 사용하면 된다. 예컨대 지역 코드를 기준으로 리스트 파티셔닝을 구성하려면 부모 테이블을 만들 때 <code>PARTITION BY LIST (region_code)</code>로 선언하고, 하위 파티션을 생성할 때 <code>FOR VALUES IN ('KR', 'US')</code>와 같이 값들을 직접 지정한다. 해시 파티셔닝의 경우에는 <code>PARTITION BY HASH(...)</code> 구문과 함께 파티션 개수를 지정하는 방식을 자주 사용한다. PostgreSQL 16에서는 성능과 관리 효율성 측면에서 해시 파티셔닝이 더욱 향상된 것으로 알려져 있으며, 파티션 생성 시점에 해시 함수로부터 데이터가 골고루 분산되도록 설계할 수 있다.</p>
+<h2 id="_3">파티션 테이블 관리<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>파티셔닝을 도입하면 편리하지만, 운영 환경에서는 주기적인 파티션 생성, 데이터가 쌓여 활용도가 낮아진 파티션의 압축 또는 삭제, 파티션 간 데이터 재배치 등의 작업이 필요하다. PostgreSQL은 파티션 테이블을 동적으로 추가하거나 제거하는 명령어와 함께, 필요하다면 데이터를 새 파티션으로 옮기는 기능도 제공한다.</p>
+<p>부모 테이블에 새로운 파티션을 추가하려면 <code>ATTACH PARTITION</code> 명령어를 사용할 수 있다. 이미 데이터가 들어 있는 테이블을 파티션으로 편입시키려는 경우에도, 조건을 만족하면 <code>ATTACH PARTITION ...</code> 구문으로 붙일 수 있다. 다만 이 경우 테이블에 들어 있는 데이터가 파티션 조건을 만족하지 않으면 에러가 발생하기 때문에, 기존 데이터를 정리하거나 테이블 구조를 적절히 맞추어 두어야 한다.</p>
+<pre><code class="language-sql">CREATE TABLE orders_2023_03 (
+    LIKE orders INCLUDING ALL
+);
+
+ALTER TABLE orders
+ATTACH PARTITION orders_2023_03
+FOR VALUES FROM ('2023-03-01') TO ('2023-04-01');
+</code></pre>
+<p>기존 파티션을 제거하고 싶을 때는 <code>DETACH PARTITION</code>을 사용하거나, 파티션 테이블 자체를 DROP TABLE로 삭제하는 방법을 쓸 수 있다. <code>DETACH PARTITION</code>을 쓰면 파티션에서 분리된 테이블이 독립적인 일반 테이블로 남는다. 반면 <code>DROP TABLE ... CASCADE</code> 명령어를 사용하면 해당 파티션이 삭제되고 데이터도 함께 제거된다.</p>
+<p>파티션의 범위를 재조정해야 하는 상황도 발생할 수 있다. 예를 들어 기존 파티션 구간이 잘못 설정되었거나, 더 세분화 혹은 통합이 필요해졌다면, 새로운 파티션을 생성하고 데이터를 옮기는 과정을 거쳐야 한다. 이러한 작업은 일반적으로 다음 순서로 진행한다: 신규 파티션 테이블 생성, 기존 파티션에서 필요한 데이터만 INSERT/SELECT 혹은 <code>COPY</code>를 통해 신규 파티션으로 이관, 필요하다면 기존 파티션을 DETACH한 뒤 DROP TABLE로 삭제한다. 해시 파티셔닝의 경우에도 비슷한 접근이 가능하지만, 해시 키의 변경이나 파티션 개수 변경은 좀 더 주의 깊은 재분배 작업이 필요하다.</p>
+<p>PostgreSQL 16에서는 MERGE 문이 도입되면서 파티션 테이블에서도 MERGE 연산이 가능해졌으며, 파티션 프루닝 기능이 향상되어 불필요한 파티션에 대한 접근이 최소화된다. 또한 파티션 간 병렬 쿼리 최적화가 개선되어, 큰 규모의 데이터 웨어하우스 환경에서도 빠르고 안정적인 쿼리 성능을 기대할 수 있다.</p>
+<p>파티션 테이블에 인덱스를 적용할 때는 주의가 필요하다. 부모 테이블에 인덱스를 생성해도 각 파티션마다 별도의 인덱스가 생성되며, 부분 인덱스를 적용하려면 파티션 단위로 인덱스를 만들거나, 필요할 경우 파티션 전용으로 다른 인덱스 전략을 사용할 수 있다. 외래 키 제약이나 고유 제약 역시 파티션 단위로 관리되므로, 데이터 무결성을 유지하려면 각 파티션에 모두 제약을 설정하거나, 부모 테이블에 선언한 제약이 각 파티션까지 올바르게 전달되는지 확인해야 한다.</p>
+<p>파티션 테이블 관리는 효율성을 극대화하면서도, 데이터가 분산되어 있어 발생할 수 있는 일관성 이슈나 백업·복구 시의 주의 사항 등을 충분히 파악해야 한다. 통계나 쿼리 계획(플랜)도 파티션별로 수집되고 생성되므로, 상황에 따라 <code>ANALYZE</code> 명령어를 파티션 전체에 대해 수행해 통계 정보를 정확히 관리하는 것이 중요하다. 운영 환경에서 월별 파티션을 사용하는 경우, 매달 새 파티션을 생성하고 오래된 파티션을 아카이빙 또는 삭제하는 작업을 스케줄링하여 자동화하는 방식을 자주 쓴다. PostgreSQL의 확장 기능이나 크론(CRON) 작업을 통해 이 과정을 자동화하면, 파티션 관리의 부담을 크게 줄일 수 있다.</p>
+<p>이처럼 파티션 테이블을 생성하고 적절히 운영하면 방대한 데이터를 효과적으로 분산 관리할 수 있으며, 쿼리 성능과 유지 보수 측면에서 매우 유리하다. 다만 파티셔닝이 만능은 아니므로, 너무 잦은 파티션 분할은 오히려 관리 오버헤드를 높일 수 있으며, 파티션 키 선정이 적절하지 않다면 성능 이점을 크게 얻기 어렵다. PostgreSQL 16에서 제공하는 향상된 파티셔닝 기법을 활용하기 전에, 데이터의 성격과 사용 패턴을 면밀히 분석하여 최적의 파티션 전략을 수립하는 것이 바람직하다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0806/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0806/">
+        파티션 키 전략과 성능
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0804/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0804/">
+        REFRESH MATERIALIZED VIEW의 활용
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>

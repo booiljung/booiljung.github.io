@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_10/1010/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>최신 버전에서의 MVCC 개선점 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "\ub0b4\ubd80 \uad6c\uc870\uc640 \ub3d9\uc791 \ubc29\uc2dd\uc5d0 \ub300\ud55c \uc7ac\uc124\uacc4", url: "#_top", children: [
+          ]},
+          {title: "VACUUM \ubcd1\ub82c \ucc98\ub9ac \ubc0f \uc778\ub371\uc2a4 \uc5f0\uacc4 \ucd5c\uc801\ud654", url: "#vacuum", children: [
+          ]},
+          {title: "Snapshot \uad00\ub9ac\uc640 \ud2b8\ub79c\uc7ad\uc158 ID \uccb4\ud06c \ubc29\uc2dd\uc758 \uac1c\uc120", url: "#snapshot-id", children: [
+          ]},
+          {title: "\ud655\uc7a5\ub41c \ub3d9\uc2dc\uc131 \uc81c\uc5b4\uc640 \uc2e4\uc81c \uc6b4\uc601 \uc0ac\ub840", url: "#_2", children: [
+          ]},
+          {title: "\uac1c\ub150\uc801 \ud750\ub984\ub3c4", url: "#_3", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../../chapter_16/1601/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../../chapter_16/1601/">
+        JSON/JSONB 고급 활용
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1009/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1009/">
+        동시성 문제와 해결 전략
+      </a>
+</div>
+</div>
+<h2 id="_1">내부 구조와 동작 방식에 대한 재설계<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>PostgreSQL 16에서 가장 두드러지는 변화 중 하나는 MVCC 체계 전반에 걸친 내부 구조 최적화다. 기존의 MVCC는 각 트랜잭션이 필요로 하는 최소한의 스냅샷 정보를 보관하기 위해 다양한 자료 구조를 관리해 왔다. 이때 트랜잭션 ID 상태를 확인하기 위한 SLRU(Simple LRU) 영역이나 트랜잭션 스냅샷의 최소 유효 트랜잭션 ID를 확인하는 과정에서 발생하는 오버헤드가 전체 동시성 처리량에 간접적인 영향을 미쳤다. 최신 버전에서는 해당 스냅샷 정보와 관련된 내부 체크 방식을 개선하여, 실제로 MVCC가 실질적인 트랜잭션 격리를 유지하면서도 시스템 전반의 캐싱 효율을 높이는 데 중점을 두었다. 그 결과 트랜잭션이 동시에 여러 개 발생하는 환경에서도 스냅샷 생성과 관리가 좀 더 빠르게 이루어진다.</p>
+<p>PostgreSQL 16은 오래된 스냅샷을 추적하는 로직을 간소화함으로써, 불필요한 트랜잭션 ID 확인 과정을 줄였다. 이를 통해 대량 업데이트나 빈번한 INSERT가 발생하는 환경에서 특히 효과가 두드러진다. 기존에는 여러 트랜잭션이 동시에 시작되고 종료되는 상황에서, 시스템이 모든 트랜잭션의 ID와 해당 스냅샷을 매번 비교해야 했다. 이제는 내부적으로 가장 오래된 유효 스냅샷이나 트랜잭션 ID를 좀 더 정확하고 빠르게 산출하여, 전체 스캔 과정을 줄이고 캐시 미스를 완화한다. 그 결과 MVCC 계층에서 발생하는 부하가 감소하고, 대규모 OLTP 환경에서 동시성 제어가 보다 안정적으로 유지된다.</p>
+<h2 id="vacuum">VACUUM 병렬 처리 및 인덱스 연계 최적화<a class="headerlink" href="#vacuum" title="Permanent link">¶</a></h2>
+<p>MVCC가 효율적으로 동작하기 위해서는 일정 주기로 버려진(또는 더 이상 사용되지 않는) 버전 튜플을 정리해야 한다. PostgreSQL에서는 이를 VACUUM 작업을 통해 수행한다. 최신 버전에서는 VACUUM 병렬 처리를 더욱 폭넓게 지원하면서, MVCC 관점에서 불필요한 힙 튜플과 인덱스 정보를 좀 더 빠른 속도로 제거하도록 개선되었다. 병렬 VACUUM이 가능한 인덱스 타입이 확대되어, btree뿐만 아니라 GIN, GiST, SP-GiST 같은 인덱스들에서도 다중 워커를 활용할 수 있게 되었다.</p>
+<p>이로 인해 대용량 데이터베이스에서도 VACUUM 수행 시간이 크게 단축되고, 테이블 잠금 획득 시간이 줄어드는 효과가 있다. VACUUM FULL이나 CLUSTER 같은 작업에서 요구되던 일부 배타적 잠금이 완화된 것도 동시성 향상에 기여한다. 이러한 병렬 최적화는 내부적으로 MVCC 버전 정리에 필요한 메타데이터 접근 방식을 개선하는 결과를 낳았다. 특히 MVCC 관점에서 불필요한 페이지를 빨리 식별하고, 인덱스 메타 페이지 업데이트에 대한 경합이 완화되어 전체 트랜잭션이 지연 없이 진행될 수 있다.</p>
+<h2 id="snapshot-id">Snapshot 관리와 트랜잭션 ID 체크 방식의 개선<a class="headerlink" href="#snapshot-id" title="Permanent link">¶</a></h2>
+<p>스냅샷 관리 방식에서 또 다른 변화를 볼 수 있는데, 트랜잭션이 어떤 순간에든 참조할 수 있는 데이터 버전들을 보다 효율적으로 추적하는 로직이 추가되었다. MVCC 동작 과정에서 특정 시점을 기준으로 유효한 데이터를 식별하기 위해서는, 모든 트랜잭션이 공유하는 전역 트랜잭션 ID나 최소/최대 ID 같은 정보를 정확히 파악해야 한다. 기존에는 각 트랜잭션마다 해당 값을 개별적으로 추적하면서 동일하거나 유사한 정보를 여러 번 중복 계산하는 일이 잦았다.</p>
+<p>PostgreSQL 16은 이러한 중복 계산을 줄이기 위해 전역 스냅샷 레지스트리를 좀 더 지능적으로 운영한다. 현재 유효한 트랜잭션 ID 범위를 최소화하는 기법을 도입해, 데이터 페이지 또는 인덱스 블록을 읽을 때 발생하는 추가적인 행 상태 확인 작업을 줄였다. 이는 대규모 애플리케이션 환경에서 대량의 UPDATE가 반복적으로 일어날 때 특히 이점을 가진다. 동시에 읽기 전용 트랜잭션(read-only transaction)이 많은 워크로드에서도, 과도한 스냅샷 정보 업데이트를 피하게 되어 전체 처리량이 증가한다.</p>
+<p>다음과 같은 구성 파라미터가 MVCC 성능에 도움을 주도록 고안되었다. 필요에 따라 트랜잭션 ID 관리 정책을 미세 조정할 수 있는데, 예시로 <code>autovacuum_work_mem</code>이나 <code>maintenance_work_mem</code>을 조정함으로써 병렬 VACUUM 시 효율을 높일 수 있다. 또한 <code>max_parallel_maintenance_workers</code>를 설정해 인덱스 유지보수 시 여러 워커를 활용할 수 있다.</p>
+<pre><code># postgresql.conf 예시
+maintenance_work_mem = '1GB'
+max_parallel_maintenance_workers = 4
+</code></pre>
+<p>이렇게 설정하면 큰 규모의 테이블이나 인덱스에 대해 병렬 VACUUM을 수행할 때 작업 부하를 여러 프로세스에 분산할 수 있으므로 MVCC 관점에서 버전 정리를 더 빠르게 처리한다.</p>
+<h2 id="_2">확장된 동시성 제어와 실제 운영 사례<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>새로운 MVCC 개선 사항은 단순히 내부 구조 최적화에 머무르지 않고, 실제 애플리케이션 동시성 측면에서 직접적인 이점을 제공한다. 트랜잭션이 대량으로 몰리는 시점에, 예를 들어 수천 개 이상의 동시 연결이 UPDATE, INSERT, SELECT를 혼합해서 실행하는 상황에서도 과거 버전보다 지연이나 락 경합이 훨씬 줄었다는 보고가 있다. PostgreSQL 16의 MVCC 엔진은 빨라진 스냅샷 획득과 트랜잭션 ID 검사 과정을 통해 모든 트랜잭션이 일정 수준의 응답 시간을 유지하도록 설계되었다.</p>
+<p>대규모 OLTP 시스템이나 실시간 분석 워크로드에서 트랜잭션 처리가 이전보다 유연해졌으며, 병렬 VACUUM에 의해 백그라운드 정리 작업도 한결 안정적으로 이루어진다. 이로써 데이터베이스 관리자는 트랜잭션 격리 레벨을 원하는 대로 지정해도 큰 성능 저하 없이 다양한 격리 모델을 활용할 수 있다.</p>
+<h2 id="_3">개념적 흐름도<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>아래의 예시는 MVCC 체계를 거쳐 데이터가 업데이트되고 VACUUM으로 정리되는 과정을 단순화한 흐름도다. 여러 트랜잭션이 동시에 버전 정보를 갱신하고, VACUUM 과정에서 사용되지 않는 버전을 삭제하여 스토리지와 인덱스를 최적화하는 과정을 나타낸다.</p>
+<div class="mermaid">flowchart TB
+    A((BEGIN)) --&gt; B[트랜잭션 시작&lt;br&gt;스냅샷 획득]
+    B --&gt; C[INSERT 또는 UPDATE]
+    C --&gt; D[새로운 버전 생성]
+    D --&gt; E[다른 트랜잭션도&lt;br&gt;동시에 버전 생성]
+    E --&gt; F[트랜잭션 종료]
+    F --&gt; G((COMMIT))
+    G --&gt; H[VACUUM 실행&lt;br&gt;불필요 버전 제거]
+    H --&gt; I[MVCC 일관성&lt;br&gt;유지]
+</div>
+<p>이 흐름도는 모든 트랜잭션이 고유한 버전 체계를 공유하되, VACUUM이 주기적으로 개입하여 정리한다는 점을 잘 보여 준다. PostgreSQL 16에서 내부 알고리즘이 최적화되면서, VACUUM이 병렬로 동작할 수 있고 스냅샷 관리가 보다 효율적이라는 점이 핵심이다.</p>
+<hr/>
+<p>PostgreSQL 16의 MVCC 개선점은 눈에 보이지 않는 내부적인 최적화 작업이 대부분이지만, 사용자에게는 명확한 성능 향상과 안정성을 제공한다. 병렬 VACUUM을 비롯한 다양한 기법이 결합되어 대규모 트랜잭션이 집중되는 환경에서도 일관된 응답 시간을 유지하며, 오래된 버전 튜플이 빠르게 정리되어 스토리지 공간도 효율적으로 활용된다. 이러한 변경 사항은 기존 PostgreSQL 버전과의 호환성을 유지하면서도 전체 시스템 부하를 줄이는 방향으로 진화했기에, MVCC 기반의 동시성 제어가 필요한 다양한 워크로드에서 큰 이점을 얻을 수 있을 것이다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../../chapter_16/1601/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../../chapter_16/1601/">
+        JSON/JSONB 고급 활용
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1009/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1009/">
+        동시성 문제와 해결 전략
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+<script>mermaid.initialize({});</script></body>
+</html>

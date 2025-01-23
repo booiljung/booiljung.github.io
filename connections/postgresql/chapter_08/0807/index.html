@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_08/0807/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>하위 파티션(하위 테이블) 구조 이해 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "\ud558\uc704 \ud30c\ud2f0\uc158\uc758 \ud2b9\uc9d5", url: "#_top", children: [
+          ]},
+          {title: "\ud558\uc704 \ud30c\ud2f0\uc158 \uc0dd\uc131 \uc608\uc2dc", url: "#_2", children: [
+          ]},
+          {title: "\ud558\uc704 \ud30c\ud2f0\uc158\uc758 \ub0b4\ubd80 \ub3d9\uc791 \ubc29\uc2dd", url: "#_3", children: [
+          ]},
+          {title: "\ucffc\ub9ac \ubc0f \uc131\ub2a5 \uace0\ub824 \uc0ac\ud56d", url: "#_4", children: [
+          ]},
+          {title: "\ud558\uc704 \ud30c\ud2f0\uc158 \uc720\uc9c0\ubcf4\uc218", url: "#_5", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0808/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0808/">
+        파티션 지우기 및 추가하기
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0806/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0806/">
+        파티션 키 전략과 성능
+      </a>
+</div>
+</div>
+<p>하위 파티션(하위 테이블)은 상위 파티션을 다시 세분화하여 더 세밀하게 데이터를 관리하고자 할 때 사용한다. PostgreSQL 11 버전부터 다중 레벨 파티셔닝이 가능해졌고, 이후 16 버전에서도 이러한 아키텍처가 계속 발전했다. 테이블을 다단계로 나누면 트랜잭션 처리에서 원하는 레벨의 파티션에 접근하는 것이 용이해지며, 특정 날짜 범위나 카테고리별로 파티션을 분리하고, 그 안에서 다시 세분화할 수 있다. 이렇게 구성된 하위 파티션들은 상위 테이블과 동일한 테이블 구조를 유지하며, 각 하위 파티션은 물리적으로 독립된 테이블로서의 특성을 갖는다.</p>
+<h2 id="_1">하위 파티션의 특징<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>상위 파티션으로부터 상속받은 파티션 키를 기준으로 다시 세부 파티션을 구성하기 때문에, 하위 파티션 테이블에는 상위 테이블과 동일한 구조가 강제된다. 예를 들어 최상위 파티션이 날짜를 기준으로 분할되어 있고, 그 아래 단계에서 지역 코드를 기준으로 세분화한다면, 실제로는 날짜-지역 코드를 조합한 형태의 파티션 경계 조건이 적용된다. 이는 PostgreSQL이 파티션 자식 테이블(하위 테이블)에 자동으로 파티션 제약을 설정하기 때문이다.</p>
+<p>하위 파티션은 상위 파티션과 마찬가지로 물리적 테이블이다. 메타데이터 상으로는 상위 파티션과 계층 관계를 맺고 있으며, PostgreSQL 내부적으로는 특정 범위나 목록 또는 해시 조건을 만족하는 행만을 해당 하위 테이블에 저장한다. 이때 인덱스 또한 각각의 하위 파티션에 별도로 구성되어야 하며, 통계나 운영시스템에서의 관리 또한 독립적으로 이루어진다.</p>
+<h2 id="_2">하위 파티션 생성 예시<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>다음 예시는 날짜를 기준으로 최상위 파티션을 만든 뒤, 그 각 파티션 안에서 지역 코드를 기준으로 하위 파티션을 구성하는 방식이다. 최상위 테이블은 월 단위로 파티션을 나누고, 하위 파티션은 지역 코드를 목록으로 구분한다. 일부 코드가 생략되어 있지만, 기본적인 구성을 살펴보면 다음과 같다.</p>
+<pre><code>CREATE TABLE sales (
+    sale_id         bigserial PRIMARY KEY,
+    sale_date       date      NOT NULL,
+    region_code     text      NOT NULL,
+    amount          numeric
+)
+PARTITION BY RANGE (sale_date);
+
+CREATE TABLE sales_2023_01 PARTITION OF sales
+FOR VALUES FROM ('2023-01-01') TO ('2023-02-01')
+PARTITION BY LIST (region_code);
+
+CREATE TABLE sales_2023_01_asia PARTITION OF sales_2023_01
+FOR VALUES IN ('ASIA');
+
+CREATE TABLE sales_2023_01_europe PARTITION OF sales_2023_01
+FOR VALUES IN ('EUROPE');
+
+CREATE TABLE sales_2023_01_america PARTITION OF sales_2023_01
+FOR VALUES IN ('AMERICA');
+</code></pre>
+<p>상위 파티션인 <code>sales_2023_01</code> 테이블이 다시 <code>region_code</code>를 기준으로 LIST 파티션을 수행하여 <code>sales_2023_01_asia</code>, <code>sales_2023_01_europe</code>, <code>sales_2023_01_america</code>라는 하위 파티션이 생성된다. 하위 파티션 각각은 물리적으로 독립된 테이블이며, 주어진 <code>region_code</code> 값에만 해당하는 행을 갖게 된다.</p>
+<h2 id="_3">하위 파티션의 내부 동작 방식<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>가장 상위 테이블은 논리적으로 파티션 전부를 총괄하는 구조를 가진다. 어떤 쿼리가 들어올 때 PostgreSQL 옵티마이저는 파티션 프루닝(partition pruning)을 통해 접근해야 할 파티션(또는 하위 파티션)을 결정한다. 예를 들어 날짜 조건과 지역 코드 조건이 동시에 주어지면, 옵티마이저는 조건을 만족하는 최상위 파티션뿐 아니라 그 안에 있는 하위 파티션까지만 스캔하도록 쿼리를 최적화한다.</p>
+<p>실제로는 상위 파티션과 하위 파티션 각각에 대해 내부적으로 파티션 제약이 걸려 있다. 특정 날짜 범위나 목록에 속하지 않으면 그 파티션에 속하는 행이 들어갈 수 없으므로 데이터 무결성이 유지된다. 이를 확인하기 위해서는 psql에서 <code>\d+ 테이블명</code> 명령을 통해 파티션 제약을 확인하거나, <code>SELECT * FROM pg_inherits;</code>, <code>SELECT * FROM pg_partitioned_table;</code> 등의 시스템 카탈로그를 조회할 수 있다.</p>
+<p>하위 파티션에 대한 인덱스 역시 독립적으로 구성된다. 상위 테이블에 인덱스를 생성하더라도, 실제로는 모든 하위 파티션 각각에 대해서 인덱스가 자동으로 생성되는 파티션 인덱스가 만들어진다. 다만 인덱스 옵션이나 인덱스 알고리즘은 하위 파티션마다 다르게 지정할 수 없으며, 상위에서 지정한 인덱스 옵션이 하위 파티션에 상속되는 구조이다.</p>
+<h2 id="_4">쿼리 및 성능 고려 사항<a class="headerlink" href="#_4" title="Permanent link">¶</a></h2>
+<p>하위 파티션을 도입하면 데이터 세분화가 훨씬 용이해지는 장점이 있다. 특히 특정 컬럼 값에 따라 확연히 분리되는 업무 로직이 있는 경우, 두 단계 이상의 파티션을 도입함으로써 질의 성능 향상이나 유지보수 편의성을 기대할 수 있다. 한편 너무 많은 파티션을 생성하면 오히려 파티션 관리 비용과 카탈로그 항목이 크게 증가하게 된다. 적절한 파티션 키와 레벨 수를 결정하는 것이 중요하다.</p>
+<p>멀티 레벨 파티션 테이블은 각각 독립된 통계 정보를 가지므로 쿼리 계획 단계에서 더욱 세밀한 최적화가 일어날 수 있다. 예를 들어 특정 지역의 데이터에 극단적인 분포가 있더라도, 해당 지역을 위한 하위 파티션 통계만 반영되기 때문에 불필요한 스캔을 줄일 수 있다.</p>
+<h2 id="_5">하위 파티션 유지보수<a class="headerlink" href="#_5" title="Permanent link">¶</a></h2>
+<p>데이터가 누적됨에 따라 특정 날짜 범위나 특정 목록에 대해 하위 파티션을 추가 생성하거나 기존 파티션을 DROP하여 관리하는 것이 일반적이다. 예를 들어 월 단위의 파티션을 운영하던 중 새로운 달이 시작되면 해당 월 파티션을 생성하고, 과거에 필요 없는 데이터를 보관하거나 제거하기 위해 오래된 파티션을 DROP하거나 다른 스토리지로 옮기는 작업을 수행할 수 있다. 이러한 운영 과정에서 하위 파티션들은 상위 파티션과 동일한 방식으로 분리/통합이 가능하므로, 쿼리나 트랜잭션 차원에서 중단 없이 유지보수를 진행할 수 있다.</p>
+<p>하위 파티션에 대한 병렬 쿼리 성능도 주목할 만하다. 파티션이 물리적으로 분산된 상태라면, 병렬 워커 프로세스들이 여러 파티션을 동시에 처리할 수 있어 대용량 데이터 세트에 대해 좋은 성능을 제공한다. 통계 정보를 잘 갱신해 두는 것이 중요하며, <code>ANALYZE 하위파티션명</code> 명령을 통해 선택적으로 통계 정보를 갱신하거나, 상위 테이블에 대해 <code>ANALYZE</code>를 수행해 전체 파티션의 통계를 일괄적으로 업데이트할 수도 있다.</p>
+<hr/>
+<p>하위 파티션(하위 테이블)은 다단계 파티셔닝 구성에서 핵심이 되는 요소다. 날짜, 시간, 해시, 목록, 범위 등 다양한 기준을 조합해 계층적으로 분할하면 물리적으로 테이블이 더욱 잘게 나뉘어 쿼리나 유지보수 작업을 효율적으로 수행할 수 있다. PostgreSQL 16은 이전 버전에서 도입된 멀티 레벨 파티셔닝 기능을 한층 안정화하고, 파티션 프루닝 및 병렬 처리 최적화를 통해 대규모 데이터를 관리하기에 적합한 환경을 제공한다. 이러한 구조를 충분히 이해하고 적절한 파티션 키 설계를 병행한다면, 대형 OLTP 또는 DW 환경에서도 안정적이고 빠른 쿼리 응답을 보장받을 수 있다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../0808/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../0808/">
+        파티션 지우기 및 추가하기
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0806/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0806/">
+        파티션 키 전략과 성능
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>

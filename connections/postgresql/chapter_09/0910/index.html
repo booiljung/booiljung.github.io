@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_09/0910/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>성능 고려사항(인라인, 정적 최적화) - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "\uc778\ub77c\uc778 \uae30\ub2a5\uacfc \ucd5c\uc801\ud654 \uac1c\ub150", url: "#_top", children: [
+          ]},
+          {title: "\uc778\ub77c\uc778 \uac00\ub2a5\ud55c \ud568\uc218\uc758 \uc870\uac74", url: "#_2", children: [
+          ]},
+          {title: "\uc778\ub77c\uc778 \uc801\uc6a9 \uc608\uc2dc", url: "#_3", children: [
+          ]},
+          {title: "\uc815\uc801 \ucd5c\uc801\ud654\uc640 \ud568\uc218 \uc131\ub2a5", url: "#_4", children: [
+          ]},
+          {title: "\uc778\ub77c\uc778\ub418\uc9c0 \uc54a\ub294 \uacbd\uc6b0\uc758 \ubd80\uc218 \ud6a8\uacfc", url: "#_5", children: [
+          ]},
+          {title: "\uc131\ub2a5 \uac80\uc99d \ubc0f \ubaa8\ub2c8\ud130\ub9c1", url: "#_6", children: [
+          ]},
+          {title: "\ub9c8\uce58\uba70", url: "#_7", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../../chapter_10/1001/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../../chapter_10/1001/">
+        트랜잭션(Transaction) 기초
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0909/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0909/">
+        보안 관점의 함수(SECURITY INVOKER/DEFINER)
+      </a>
+</div>
+</div>
+<h2 id="_1">인라인 기능과 최적화 개념<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>PostgreSQL는 SQL 함수를 비롯해 특정 조건을 충족하는 함수를 질의 최적화 과정에서 인라인(Inline)할 수 있다. 인라인이란, 호출되는 함수를 별도의 함수 호출로 처리하지 않고 마치 원본 SQL 코드가 호출부에 직접 삽입된 것처럼 컴파일하거나 실행 플랜을 구성하는 최적화 기법을 말한다. 이는 함수 호출로 인한 부수적 오버헤드를 없애거나 크게 줄여주기 때문에, 쿼리의 성능 향상에 도움을 준다.</p>
+<p>인라인이 적용되기 위해서는 함수가 특정 형식의 SQL만을 담고 있어야 하며, 불필요한 절차적 로직이나 예외 처리가 없어야 한다. 예를 들어 순수 SQL 함수로서 DML이나 SELECT 문이 단일 구문으로 작성되어 있어야 하며, 내부에서 트랜잭션 제어문이나 복잡한 조건분기(PL/pgSQL 등)를 수행해서는 안 된다. 또한 함수의 안정성(immutable, stable, volatile 등)이 적절하게 설정되어 있어야 최적화가 제대로 이뤄진다.</p>
+<p>SQL 함수를 인라인화하면 내부 연산을 직접 쿼리로 펼치기 때문에 질의 계획 수립 시 최적화 범위가 넓어지며, 불필요한 중간 자료 구조 혹은 추가 비용이 줄어든다. 반면에 인라인이 불가능할 만큼 복잡도가 높은 함수는 별도의 프로시저로 호출되며, 이 경우 일반적인 함수 호출 오버헤드가 발생한다.</p>
+<h2 id="_2">인라인 가능한 함수의 조건<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>인라인은 PostgreSQL 내부 로직에 의해 자동으로 판별된다. 일반적으로 SQL 함수가 아래와 같은 특성을 지니면 인라인화될 가능성이 크다.</p>
+<ul>
+<li>호출 문장이 단일 SQL 구문으로 구성되어 있을 것</li>
+<li>함수 속성이 immutable 또는 stable로 설정되어 있을 것</li>
+<li>함수 내부에서 트랜잭션 제어나 보조 작업을 수행하지 않을 것</li>
+</ul>
+<p>가령 복수의 SQL 구문을 PL/pgSQL 블록으로 감싸거나 복잡한 제어문을 포함하고 있다면, PostgreSQL 최적화 엔진은 이를 인라인할 수 없다고 결정한다. 다만 PL/pgSQL 함수라도 내부 구조가 매우 단순하다면 부분적으로 최적화될 여지는 존재한다. 실제로 인라인이 됐는지 여부는 <code>EXPLAIN</code> 혹은 <code>EXPLAIN ANALYZE</code>로 실행 계획을 확인해 보면 알 수 있으며, 계획에서 별도 함수 호출 노드가 아닌, 함수의 SQL이 확장된 형태로 확인되면 인라인화가 적용된 것이다.</p>
+<h2 id="_3">인라인 적용 예시<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>아래와 같은 예시를 살펴보면 간단한 SQL 함수를 정의하고 쿼리에서 호출했을 때 인라인화 과정을 살펴볼 수 있다.</p>
+<pre><code>CREATE OR REPLACE FUNCTION add_values(a int, b int)
+RETURNS int
+AS $$
+  SELECT a + b
+$$ LANGUAGE sql IMMUTABLE;
+
+EXPLAIN SELECT add_values(10, 20);
+</code></pre>
+<p>위 함수는 매우 단순하며, IMMUTABLE 속성을 가진다. 이때 PostgreSQL 최적화 엔진은 내부적으로 <code>add_values(10, 20)</code>를 호출하는 대신 <code>10 + 20</code>으로 치환하여 실행 계획을 수립한다. <code>EXPLAIN</code>을 통해 확인하면 별도의 함수 스캔(Function Scan)이 아닌 단순 연산으로 표시되는 경우가 많다. 이는 해당 함수가 성공적으로 인라인되었음을 의미한다.</p>
+<h2 id="_4">정적 최적화와 함수 성능<a class="headerlink" href="#_4" title="Permanent link">¶</a></h2>
+<p>정적 최적화(Static Optimization)란 함수가 생성될 때부터 내부 구조나 속성에 따라 미리 최적화 기법을 적용하여, 런타임 시점의 추가 작업이나 오버헤드를 줄이는 방식이다. PostgreSQL에서 정적 최적화가 의미를 갖는 경우는 주로 다음과 같이 나뉜다.</p>
+<ul>
+<li>순수 SQL 함수가 인라인화될 수 있도록 미리 함수 속성(immutable, stable 등)을 정확히 기술</li>
+<li>PL/pgSQL 함수라 하더라도 불필요한 분기나 복잡한 로직을 최소화하여 실행 경로 단순화</li>
+<li>비필요하게 트리거나 다른 함수 호출을 중첩하지 않도록 구조 설계</li>
+</ul>
+<p>함수가 한 번 등록될 때 이미 최적화에 유리한 형태를 갖추고 있다면, 쿼리 플래너가 더욱 정교하게 경로를 탐색할 수 있다. 또한 PostgreSQL은 함수별로 비용(cost)을 기재할 수 있도록 지원하므로, 함수가 단순히 한두 번의 간단한 연산만 수행한다면 낮은 비용으로 설정해 두는 것이 좋다. 이렇게 해 놓으면 쿼리 플래너가 해당 함수를 호출하는 경로를 채택할 가능성이 높아진다.</p>
+<h2 id="_5">인라인되지 않는 경우의 부수 효과<a class="headerlink" href="#_5" title="Permanent link">¶</a></h2>
+<p>모든 함수가 인라인될 수 있는 것은 아니다. PL/pgSQL 함수처럼 다양한 절차적 로직, 조건분기, 예외 처리를 담고 있는 경우 혹은 복잡한 SQL 구문을 한꺼번에 실행하는 경우, PostgreSQL은 인라인 적용을 포기하고 단순한 함수 호출로 처리한다. 이때 나타나는 부수 효과는 다음과 같다.</p>
+<ul>
+<li>프로시저 호출 자체의 오버헤드 증가</li>
+<li>쿼리 최적화 범위 제한</li>
+<li>데이터 접근과 조건 평가에서 발생하는 추가 비용</li>
+</ul>
+<p>만약 복잡한 로직이 반드시 필요한 경우라면, 가능한 한 로직을 간소화하여 부분적 최적화 여지를 남기는 것이 좋다. 함수나 프로시저가 다루는 로직을 세분화하고, 각 부분을 별도 SQL 함수나 스칼라식으로 전환할 수 있다면 인라인 최적화나 정적 최적화 혜택을 일부 누릴 수 있다.</p>
+<h2 id="_6">성능 검증 및 모니터링<a class="headerlink" href="#_6" title="Permanent link">¶</a></h2>
+<p>함수의 성능 특성을 확인하기 위해서는 <code>EXPLAIN ANALYZE</code>를 사용해 실제 실행 계획과 실행 시간을 측정해 보는 것이 가장 명확한 방법이다. 특히 인라인이 제대로 적용되었는지, 함수 호출 방식이 실제 쿼리 엔진 내부에서 어떻게 처리되는지를 유심히 살펴야 한다. 필요하다면 함수를 여러 형태(순수 SQL, PL/pgSQL, 매개변수 유무 등)로 작성하고 각각의 실행 계획을 비교해 볼 수도 있다.</p>
+<p>인라인 적용 여부가 결과적으로 성능에 유의미한 차이를 가져오는지, 혹은 함수 호환성과 유지보수를 희생할 만큼의 이점이 있는지는 실제 워크로드 특성에 달려 있다. 간단한 수식 계산이나 단일 테이블 접근과 같은 작업이라면 인라인 최적화를 적극 고려해 볼 수 있지만, 업무 로직이 복잡할수록 유지보수성, 디버깅 편의성, 예외처리 등을 모두 종합해 선택해야 한다.</p>
+<h2 id="_7">마치며<a class="headerlink" href="#_7" title="Permanent link">¶</a></h2>
+<p>인라인과 정적 최적화는 PostgreSQL 함수와 프로시저를 설계할 때 성능 측면에서 상당히 중요한 고려 사항이다. 간단한 SQL 함수라면 자동으로 인라인될 수 있도록 가급적 순수 SQL 형태로 작성하고, 불필요한 제어 흐름을 배제하여 함수 호출 오버헤드를 줄이는 것이 좋다. 복잡한 로직이 필요하다면 PL/pgSQL 같은 절차적 언어를 사용할 수밖에 없겠지만, 코드 구조를 분리하거나 필요한 부분만 최적화해 PostgreSQL 쿼리 플래너가 가능한 한 많은 최적화 기회를 가질 수 있도록 유도해야 한다.</p>
+<p>적절한 함수 속성 지정과, 정교한 인라인 전략, 그리고 정적 최적화 기법을 잘 적용한다면, PostgreSQL 16 환경에서 함수와 프로시저의 성능을 극대화할 수 있다. 이는 단순히 실행 속도뿐만 아니라 리소스 사용량, 동시성 제어에도 좋은 영향을 주어 전체 시스템 효율성을 높이는 결과로 이어진다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../../chapter_10/1001/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../../chapter_10/1001/">
+        트랜잭션(Transaction) 기초
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../0909/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../0909/">
+        보안 관점의 함수(SECURITY INVOKER/DEFINER)
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>

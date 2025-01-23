@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_10/1008/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>SAVEPOINT와 부분 롤백 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "SAVEPOINT\uc758 \uac1c\ub150", url: "#_top", children: [
+          ]},
+          {title: "SAVEPOINT\uc758 \ub0b4\ubd80 \ub3d9\uc791", url: "#savepoint_1", children: [
+          ]},
+          {title: "\ubd80\ubd84 \ub864\ubc31\uc758 \ud544\uc694\uc131", url: "#_1", children: [
+          ]},
+          {title: "PostgreSQL\uc758 SAVEPOINT \uc0ac\uc6a9\ubc95", url: "#postgresql-savepoint", children: [
+          ]},
+          {title: "SAVEPOINT \uc2dc\ub098\ub9ac\uc624 \uc608\uc2dc", url: "#savepoint_2", children: [
+          ]},
+          {title: "\uc8fc\uc758\uc0ac\ud56d \ubc0f \ubaa8\ubc94 \uc0ac\ub840", url: "#_2", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1009/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1009/">
+        동시성 문제와 해결 전략
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1007/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1007/">
+        명시적 트랜잭션(START TRANSACTION, COMMIT, ROLLBACK)
+      </a>
+</div>
+</div>
+<p>트랜잭션은 데이터베이스 일관성을 유지하기 위해 원자성을 보장한다. 일반적인 트랜잭션의 개념에서 한 번 시작한 트랜잭션은 전체를 커밋하거나 전체를 롤백해야 한다. 그러나 복잡한 로직이나 대규모 DML(INSERT, UPDATE, DELETE) 작업이 하나의 트랜잭션 안에서 여러 단계로 이루어질 때, 특정 지점까지만 되돌리고 싶을 수도 있다. PostgreSQL은 이를 위해 <code>SAVEPOINT</code>와 <code>ROLLBACK TO SAVEPOINT</code>라는 강력한 기능을 제공한다.</p>
+<h2 id="savepoint">SAVEPOINT의 개념<a class="headerlink" href="#savepoint" title="Permanent link">¶</a></h2>
+<p>SAVEPOINT는 트랜잭션 내부에 ‘부분 체크포인트’를 설정하는 기능이다. 일반적인 트랜잭션이 “전체 또는 전무” 형태의 롤백을 수행하는 반면, SAVEPOINT를 사용하면 트랜잭션 내의 특정 지점까지만 되돌릴 수 있다. 이는 트랜잭션의 유연성을 높여 주며, 여러 단계로 나뉜 작업 중 일부만 취소하고 나머지 변경사항은 유지하고 싶을 때 유용하다.</p>
+<p>트랜잭션이 시작된 후 SAVEPOINT를 여러 번 설정할 수 있으며, 각각의 SAVEPOINT는 독립적인 ‘되돌림 지점(restore point)’ 역할을 한다. 특정 SAVEPOINT로 되돌리면, 해당 SAVEPOINT 이후에 이뤄진 작업만이 무효화되고, 트랜잭션은 여전히 유효 상태를 유지한다.</p>
+<h2 id="savepoint_1">SAVEPOINT의 내부 동작<a class="headerlink" href="#savepoint_1" title="Permanent link">¶</a></h2>
+<p>SAVEPOINT를 발행하면 PostgreSQL은 내부적으로 해당 시점에 대한 로그와 스냅샷 정보를 준비해 둔다. ROLLBACK TO SAVEPOINT가 호출될 경우, 그 시점 이후에 발생한 모든 변경 사항이 되돌아간다. 하지만 SAVEPOINT가 트랜잭션 전체를 종료시키지는 않으므로, 트랜잭션은 아직 종료되지 않은 상태로 남는다.</p>
+<p>이 구조적 특성 덕분에 대규모 트랜잭션이나 다단계 프로세스에서 발생할 수 있는 오류 상황에 유연하게 대처할 수 있다. 예를 들어, 한 단계에서 예상치 못한 충돌이나 예외가 발생하면 특정 SAVEPOINT까지만 롤백하고, 트랜잭션을 다시 이어갈 수 있다.</p>
+<h2 id="_1">부분 롤백의 필요성<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>하나의 트랜잭션에 여러 개의 로직이 포함되어 있을 때 모든 로직이 반드시 원자성을 공유할 필요가 없는 경우가 있다. 예를 들어, 대량의 데이터 처리를 수행하다가 중간 지점에서 데이터 중 일부만 문제가 생긴다면 전체 트랜잭션을 무효화하는 것은 비효율적일 수 있다.</p>
+<p>SAVEPOINT 기능이 없다면, 문제 발생 시 전체 트랜잭션을 롤백해야 하고, 이미 완료된 부분마저 다시 실행해야 한다. 이는 성능적, 논리적 측면에서 불필요한 오버헤드를 유발한다. 부분 롤백을 사용하면 트랜잭션 범위 내에서 정상 동작한 구간은 그대로 두고, 문제가 된 구간만 되돌릴 수 있다.</p>
+<h2 id="postgresql-savepoint">PostgreSQL의 SAVEPOINT 사용법<a class="headerlink" href="#postgresql-savepoint" title="Permanent link">¶</a></h2>
+<p>트랜잭션 시작 후, 원하는 시점에 <code>SAVEPOINT</code>를 설정할 수 있다. 예시는 다음과 같다.</p>
+<pre><code>BEGIN;
+
+INSERT INTO products VALUES (1, '상품1', 100);
+SAVEPOINT s1;
+
+UPDATE products SET price = 200 WHERE id = 1;
+SAVEPOINT s2;
+
+DELETE FROM products WHERE id = 1;
+
+ROLLBACK TO SAVEPOINT s2;
+
+COMMIT;
+</code></pre>
+<p>위 예제에서 처음 INSERT가 성공한 뒤 <code>s1</code>을 설정하고, 그 후 가격을 업데이트하고 <code>s2</code>를 설정한다. 마지막으로 제품을 삭제했을 때 문제가 있다고 가정하면, <code>ROLLBACK TO SAVEPOINT s2</code>로 돌아가 삭제 작업만 되돌린다. 이렇게 하면 INSERT 및 UPDATE는 유효 상태를 유지하고, 문제된 DELETE만 취소된다.</p>
+<p>SAVEPOINT를 설정할 때 이름을 지정하면, 이후 <code>ROLLBACK TO SAVEPOINT &lt;이름&gt;</code> 방식으로 특정 지점으로 되돌릴 수 있다. SAVEPOINT 이름은 중복 사용이 가능한데, 동일 이름의 SAVEPOINT가 이미 존재하는 경우 새로운 SAVEPOINT가 이전 SAVEPOINT를 대체한다.</p>
+<h2 id="savepoint_2">SAVEPOINT 시나리오 예시<a class="headerlink" href="#savepoint_2" title="Permanent link">¶</a></h2>
+<p>PostgreSQL에서 동시에 여러 사용자가 트랜잭션을 실행하는 상황을 생각해 볼 수 있다. 한 사용자가 대량 데이터를 갱신하는 트랜잭션을 실행 중이라고 해보자. 특정 시점에서 예외가 발생했다면, 트랜잭션 전체를 롤백하는 대신 부분 롤백을 수행하여 작업의 일부만 되돌리고, 계속해서 진행할 수 있다.</p>
+<p>아래는 SAVEPOINT를 사용하는 과정의 단순화된 시퀀스를 나타내는 예시다.</p>
+<div class="mermaid">sequenceDiagram
+    participant Client
+    participant Postgres
+    Client-&gt;&gt;Postgres: BEGIN
+    Client-&gt;&gt;Postgres: INSERT ...
+    Client-&gt;&gt;Postgres: SAVEPOINT s1
+    Client-&gt;&gt;Postgres: UPDATE ...
+    Client-&gt;&gt;Postgres: SAVEPOINT s2
+    Client-&gt;&gt;Postgres: DELETE ...
+    Client-&gt;&gt;Postgres: ROLLBACK TO SAVEPOINT s2
+    Client-&gt;&gt;Postgres: COMMIT
+</div>
+<p>INSERT 후에 s1을 생성하고, UPDATE 후에 s2를 생성한다. DELETE에서 문제가 발생하면 s2로 롤백하여 DELETE만 취소하고, 트랜잭션은 COMMIT으로 종료되어 나머지 변경사항은 확정된다.</p>
+<h2 id="_2">주의사항 및 모범 사례<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>SAVEPOINT는 트랜잭션 내에서 안전하게 부분 롤백을 수행할 수 있게 해 주지만, 남용하면 트랜잭션의 복잡도가 크게 증가한다. 트랜잭션에 매우 많은 SAVEPOINT가 존재하면, PostgreSQL의 내부 로그 및 잠금 구조가 복잡해져 성능 저하가 발생할 수 있다.</p>
+<p>오류가 발생할 가능성이 높은 구간이나 불확실한 로직을 분리할 때 선별적으로 SAVEPOINT를 사용하는 것이 좋다. 예외 상황을 처리하기 위한 로직을 트랜잭션 내부에 견고하게 설계하고, 필요 이상의 SAVEPOINT 남발을 지양해야 한다.</p>
+<p>SAVEPOINT로 롤백하는 것은 트랜잭션의 일부만 되돌리는 것이므로, 이미 발행된 다른 SAVEPOINT 지점들에는 영향을 주지 않는다. 다만 SAVEPOINT는 트랜잭션이 아직 종료되지 않은 상태에서만 유효하다. 트랜잭션이 COMMIT되거나 전체가 ROLLBACK되면, 설정된 SAVEPOINT도 사라진다.</p>
+<p>PostgreSQL 16에서도 SAVEPOINT의 기본 동작 원칙은 기존과 동일하게 유지된다. 대규모 트랜잭션이나 배치 작업, 혹은 복잡한 로직 처리가 필요한 애플리케이션 환경에서 이러한 부분 롤백 기능을 적절히 활용하면, 오류 복구와 유지보수 측면에서 큰 장점을 얻을 수 있다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1009/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1009/">
+        동시성 문제와 해결 전략
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1007/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1007/">
+        명시적 트랜잭션(START TRANSACTION, COMMIT, ROLLBACK)
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+<script>mermaid.initialize({});</script></body>
+</html>

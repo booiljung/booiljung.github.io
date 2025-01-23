@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="IE=edge" http-equiv="X-UA-Compatible"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://booiljung.github.io/connections/postgresql/chapter_10/1005/" rel="canonical"/>
+<link href="../../../../img/favicon.ico" rel="shortcut icon"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport">
+<title>잠금(Lock) 종류와 동작 방식 - 소프트웨어 융합</title>
+<link href="../../../../css/bootstrap-3.3.7.min.css" rel="stylesheet"/>
+<link href="../../../../css/font-awesome-4.7.0.css" rel="stylesheet"/>
+<link href="../../../../css/base.css" rel="stylesheet"/>
+<link href="../../../../css/highlight.css" rel="stylesheet"/>
+<link href="../../../../css/custom.css" rel="stylesheet"/>
+<!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+<!--[if lt IE 9]>
+        <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+        <script src="https://oss.maxcdn.com/libs/respond.js/1.3.0/respond.min.js"></script>
+    <![endif]-->
+<script src="../../../../js/jquery-3.2.1.min.js"></script>
+<script src="../../../../js/bootstrap-3.3.7.min.js"></script>
+<script src="../../../../js/highlight.pack.js"></script>
+<base target="_top"/>
+<script>
+      var base_url = '../../../..';
+      var is_top_frame = false;
+        
+        var pageToc = [
+          {title: "\uac1c\uc694", url: "#_top", children: [
+          ]},
+          {title: "\ud589 \ub2e8\uc704 \uc7a0\uae08(ROW LOCK)", url: "#row-lock", children: [
+          ]},
+          {title: "\ud14c\uc774\ube14 \ub2e8\uc704 \uc7a0\uae08(TABLE LOCK)", url: "#table-lock", children: [
+          ]},
+          {title: "\uc7a0\uae08 \ubaa8\ub4dc", url: "#_2", children: [
+          ]},
+          {title: "\uc7a0\uae08 \ucda9\ub3cc\uacfc \ub300\uae30", url: "#_3", children: [
+          ]},
+          {title: "\ud6a8\uacfc\uc801\uc778 \uc7a0\uae08 \uc0ac\uc6a9 \uc804\ub7b5", url: "#_4", children: [
+          ]},
+        ];
+
+    </script>
+<script src="../../../../js/base.js"></script>
+<script src="../../../../js/google_analytics.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+<script src="https://www.googletagmanager.com/gtag/js?id=G-3F4LHCTF88"></script>
+</meta></head>
+<body>
+<script>
+if (is_top_frame) { $('body').addClass('wm-top-page'); }
+</script>
+<div class="container-fluid wm-page-content">
+<a name="_top"></a>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1006/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1006/">
+        데드락(Deadlock) 개념과 해결법
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1004/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1004/">
+        MVCC(Multi-Version Concurrency Control)
+      </a>
+</div>
+</div>
+<h2 id="_1">개요<a class="headerlink" href="#_1" title="Permanent link">¶</a></h2>
+<p>PostgreSQL는 트랜잭션 격리와 데이터 무결성을 보장하기 위해 다양한 잠금(Lock) 메커니즘을 제공한다. 기본적으로 다중 버전 동시성 제어(MVCC, Multi-Version Concurrency Control)를 활용하므로 읽기 작업이 쓰기 작업을 크게 방해하지 않는 구조를 갖추고 있다. 그럼에도 불구하고 특정 시점에 수정 대상 행(row)이나 테이블(table)에 대해서는 잠금이 필요하다. 이 잠금은 단일 행에 대해서만 수행될 수도 있고 전체 테이블을 아우를 수도 있으며, 잠금 모드(lock mode)에 따라 다른 트랜잭션의 접근이 통제된다.</p>
+<p>특정 SQL 문장이 어떤 잠금을 획득하는지는 실행 계획이나 쿼리 종류(SELECT, INSERT, UPDATE, DELETE, DDL 등)에 따라 달라진다. 예를 들어 단순 조회 쿼리는 일반적으로 공유 잠금을 획득하지만, UPDATE나 DELETE와 같이 데이터를 변경하는 쿼리는 더 강력한 형태의 잠금을 요구한다. 또한 ALTER TABLE 등 스키마 변경을 수반하는 명령은 테이블 전체에 대해 배타적 잠금을 획득해야 하므로 대기 시간이 길어질 수 있다.</p>
+<p>PostgreSQL에서 제공되는 잠금은 크게 행 단위 잠금(ROW LOCK)과 테이블 단위 잠금(TABLE LOCK)으로 구분된다. 여기에 더해 다양한 잠금 모드가 조합되어 사용할 수 있으며, 잠금 충돌과 대기를 다루는 과정에서 데드락(Deadlock)을 피하기 위한 전략이 필요하다.</p>
+<h2 id="row-lock">행 단위 잠금(ROW LOCK)<a class="headerlink" href="#row-lock" title="Permanent link">¶</a></h2>
+<p>행 단위 잠금은 특정 행만 잠그는 방식으로, 동시에 같은 테이블 내에서 다른 행을 수정하거나 조회하려는 트랜잭션을 최대한 방해하지 않고 고립시킨다. PostgreSQL에서 MVCC를 통해 대부분의 읽기 작업(SELECT)은 버전 스냅샷을 참조하므로 다른 트랜잭션이 쓰기 잠금을 걸고 있는 행도 어느 정도까지는 충돌 없이 접근할 수 있다.</p>
+<p>데이터를 수정하거나 삭제할 때, PostgreSQL은 대상 행에 대해 특별한 행 단위 잠금을 획득한다. 예를 들어 UPDATE나 DELETE 문장은 수정 대상 행에 <code>RowExclusiveLock</code>에 준하는 잠금을 설정한다. SELECT 문장이라도 <code>SELECT ... FOR UPDATE</code>나 <code>SELECT ... FOR SHARE</code> 같은 문법을 사용하면 명시적으로 행 단위 잠금을 획득한다. 이렇게 획득된 행 잠금은 트랜잭션이 종료되거나 ROLLBACK될 때까지 유지되며, 해당 행을 동시에 수정하려는 다른 트랜잭션이 대기 상태에 들어갈 수 있다.</p>
+<p>행 단위 잠금은 매우 세밀한 수준의 잠금이므로 동시에 여러 트랜잭션이 동일 테이블의 다른 행을 수정하는 경우에도 병행 처리가 가능하다. 이로 인해 테이블 전체가 불필요하게 잠기지 않고, 동시성이 향상된다. PostgreSQL는 일반적으로 행 단위 잠금을 자동으로 사용하므로, 개발자가 대부분의 경우 별도의 설정을 할 필요는 없다.</p>
+<h2 id="table-lock">테이블 단위 잠금(TABLE LOCK)<a class="headerlink" href="#table-lock" title="Permanent link">¶</a></h2>
+<p>테이블 단위 잠금은 특정 테이블 전체를 대상으로 동작하는 잠금이며, 행 단위 잠금보다 훨씬 넓은 범위의 잠금을 획득한다. 일반적인 DML(INSERT, UPDATE, DELETE) 문장은 상황에 따라 내부적으로 테이블 단위 잠금을 추가로 획득할 수 있으나, 보통은 가장 약한 수준인 공유 잠금(Access Share Lock)이나 배타적 잠금(Exclusive Lock)만 부가적으로 획득한다.</p>
+<p>테이블 단위 잠금이 뚜렷하게 드러나는 예시는 DDL(예: ALTER TABLE, DROP TABLE, CREATE INDEX CONCURRENTLY 제외) 작업이다. 이 경우 PostgreSQL는 테이블 전체의 메타데이터와 구조를 변경하기 때문에 보다 강력한 잠금인 <code>AccessExclusiveLock</code>을 획득한다. 이는 해당 테이블에 대한 모든 읽기, 쓰기, 기타 DDL 작업이 완료될 때까지 대기하도록 만든다. 따라서 트랜잭션이 장시간 테이블 단위 잠금을 보유하면 해당 테이블에 대한 다른 작업이 모두 대기 상태에 빠져 심각한 성능 저하나 병목이 발생할 수 있다.</p>
+<p>PostgreSQL는 기본적으로 잠금 에스컬레이션(lock escalation)을 자주 하지 않는 편이어서, 행 단위 잠금이 누적되더라도 자동으로 테이블 단위 잠금으로 격상되는 사례는 드물다. 이 점은 SQL Server 같은 다른 DBMS와 구분되는 특징이다.</p>
+<h2 id="_2">잠금 모드<a class="headerlink" href="#_2" title="Permanent link">¶</a></h2>
+<p>PostgreSQL에서는 하나의 테이블에 대해 다양한 잠금 모드가 존재한다. 대표적인 잠금 모드를 나열하면 아래와 같다.</p>
+<ul>
+<li>Access Share (SELECT 시 주로 획득하는 가장 약한 공유 잠금)</li>
+<li>Row Share</li>
+<li>Row Exclusive</li>
+<li>Share Update Exclusive</li>
+<li>Share</li>
+<li>Share Row Exclusive</li>
+<li>Exclusive</li>
+<li>Access Exclusive (테이블 구조 변경 DDL 시 사용되는 가장 강한 배타적 잠금)</li>
+</ul>
+<p>행 단위 잠금의 경우에는 내부적으로 좀 더 단순화된 모드로 관리되지만, 결국 테이블에 대해서도 필요에 따라 위와 같은 모드가 조합되어 적용될 수 있다. 예를 들어 UPDATE 수행 시에는 해당 행에 대해 배타적 잠금을 획득하지만, 동시에 테이블 수준에서는 보통 RowExclusiveLock을 획득한다.</p>
+<p>이러한 잠금 모드들은 서로 충돌을 일으킬 수 있는데, 예를 들어 <code>Access Exclusive</code> 잠금을 이미 누가 획득했다면 다른 트랜잭션에서는 어떠한 형태의 공유 잠금도 부여받지 못하고 대기하게 된다. 반대로 <code>Access Share</code> 잠금은 다른 트랜잭션의 <code>Access Share</code> 잠금과 충돌하지 않으므로, 여러 트랜잭션이 동시에 테이블을 읽을 수 있다.</p>
+<h2 id="_3">잠금 충돌과 대기<a class="headerlink" href="#_3" title="Permanent link">¶</a></h2>
+<p>두 트랜잭션이 동시에 동일한 자원(행 또는 테이블)에 대해 상충되는 잠금을 요청하면 충돌(lock conflict)이 발생한다. 예를 들어 한 트랜잭션이 특정 행에 배타적 행 잠금을 획득했고 아직 커밋 또는 롤백을 하지 않았다면, 다른 트랜잭션이 그 행을 수정하려는 순간 대기 상태에 진입한다.</p>
+<p>또한 테이블 단위 잠금 수준에서 충돌이 일어나면 전체 트랜잭션 흐름이 정체될 수 있으므로, 잠금이 오래 유지되지 않도록 트랜잭션을 짧게 유지하는 것이 중요하다. DDL과 같은 강한 잠금은 되도록 한가한 시간대에 수행하거나, 알맞은 방식으로 병렬성을 최소화할 방법을 고려해야 한다.</p>
+<p>PostgreSQL는 잠금 대기 시 데드락(Deadlock)을 감지하기 위한 알고리즘을 내장하고 있으며, 데드락이 감지되면 관련 트랜잭션 중 하나를 강제로 종료(에러)하여 교착 상태를 해소한다. 이로 인해 트랜잭션이 예기치 못하게 실패할 수 있으므로, 애플리케이션 수준에서 재시도가 가능하도록 설계하는 것이 안전하다.</p>
+<h2 id="_4">효과적인 잠금 사용 전략<a class="headerlink" href="#_4" title="Permanent link">¶</a></h2>
+<p>트랜잭션을 설계할 때에는 잠금 획득으로 인한 충돌을 최소화하면서도 일관성을 보장하는 전략이 필요하다. 복잡한 비즈니스 로직을 작은 단위로 나누고, 가능한 한 트랜잭션 범위를 짧게 유지하면 잠금 경쟁이 완화된다. 또한 인덱스를 적절히 활용하고, 필요 이상의 범위를 UPDATE하거나 SELECT ... FOR UPDATE로 잠그지 않도록 주의해야 한다.</p>
+<p>PostgreSQL는 기본적으로 MVCC 구조가 강력하므로, 단순 SELECT가 대부분인 환경에서는 큰 문제가 발생하지 않는다. 하지만 대규모 UPDATE, DELETE, DDL 작업이 잦다면 잠금으로 인해 병목이 발생할 수 있으므로 주기적으로 모니터링하고 문제를 미연에 방지하는 노력이 필수적이다.</p>
+<p>잠금은 트랜잭션 격리수준과도 직접 관련이 있다. 예를 들어 READ COMMITTED 격리수준에서는 각 문장이 실행될 때마다 스냅샷을 새로 획득하며, 직렬화 수준(ISOLATION LEVEL SERIALIZABLE)에서는 더 엄격한 형태의 잠금 및 동시성 제어가 동반될 수 있다. 적절한 격리수준을 선택하는 것도 잠금 경쟁을 관리하는 중요한 요소다.</p>
+<p>행 단위 잠금과 테이블 단위 잠금, 그리고 다양한 잠금 모드에 대한 정확한 이해가 동시성 문제를 예방하고 성능 저하를 방지하는 핵심이다. PostgreSQL의 설계 철학상 가능한 한 세밀한 단위(행 단위)로 잠금이 이뤄지도록 되어 있으나, DDL 같은 구조 변경 작업은 어쩔 수 없이 테이블 전반에 영향을 주므로 사용 시점과 빈도를 신중히 결정해야 한다.</p>
+<br/>
+<div aria-label="navigation" class="row wm-article-nav-buttons" role="navigation">
+<div class="wm-article-nav pull-right">
+<a class="btn btn-xs btn-default pull-right" href="../1006/">
+        Next
+        <i aria-hidden="true" class="fa fa-chevron-right"></i>
+</a>
+<a class="btn btn-xs btn-link" href="../1006/">
+        데드락(Deadlock) 개념과 해결법
+      </a>
+</div>
+<div class="wm-article-nav">
+<a class="btn btn-xs btn-default pull-left" href="../1004/">
+<i aria-hidden="true" class="fa fa-chevron-left"></i>
+        Previous</a><a class="btn btn-xs btn-link" href="../1004/">
+        MVCC(Multi-Version Concurrency Control)
+      </a>
+</div>
+</div>
+<br/>
+</div>
+<footer class="container-fluid wm-page-content">
+<p>Documentation built with <a href="https://www.mkdocs.org/">MkDocs</a> using <a href="https://github.com/gristlabs/mkdocs-windmill">Windmill</a> theme by Grist Labs.</p>
+</footer>
+</body>
+</html>
