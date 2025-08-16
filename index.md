@@ -1,105 +1,84 @@
-## Contents
+# BIJUNG
 
-#### 최신 글
+지식 탐구와 소프트웨어 개발은 상호 보완적이며, 각 분야의 심층적인 이해가 소프트웨어 개발의 성공 가능성을 높인다는 것은 명백한 사실이다. 소프트웨어는 독립된 결과물이 아니라, 다양한 분야의 과정을 자동화하고 최적화하는 도구로서 의미를 가진다. 이에 따라, 특정 주제의 필요성을 느낄 때마다 그 주제에 대해 깊이 탐구하고자 하는 강한 동기를 가지게 된다. 그러나 한국어로 된 자료의 부족함은 종종 제약으로 작용하기에, 스스로 자료를 모으고 정리하는 과정에 집중한다. 이 과정에서 쌓인 지식이 노트로 축적되고, 그것이 체계화되어 궁극적으로 책으로 발전하게 되었다. 이 과정은 지식을 확장하기 위한 것이었지만, 동시에 그 결과물이 다른 사람들에게도 유익할 수 있다는 점에서 큰 보람을 느낀다.
 
-- 번역: git: [Git 커밋을 취소하는 방법](./technical_articles/git/how_to_undo_a_commit_in_git.md)
-- 번역: graphql: [graphql.org](./technical_articles/graphql/graphql.org/index.md)
-- mavlink: [MAVLink commands & messages index](technical_articles/mavlink/mavlink_commands_and_messages_index.md)
-- docker: [Docker UDP 서버 테스트](technical_articles/docker/docker_udp_server_test.md)
-- vscode: [DevContainer listen udp](technical_articles/vscode/devContainer_listen_udp.md)
-- vscode: [DevContainer에 docker-compose 적용](technical_articles/vscode/docker-compose-for-devcontainer.md)
-- WineHQ: [Kakao Talk on Ubuntu](technical_articles/linux/kakaotalk_on_ubuntu.md)
-- Python: [Decoration](technical_articles/python/python_decoration.md)
-- Ubuntu & Docker: [Ubuntu에서 Dockerfile 작성 패턴](./technical_articles/docker/dockerfile_pattern.md)
-- Ubuntu: [Ubuntu에서 root 계정 자동 로그인](./technical_articles/linux/ubuntu_root_auto_login.md)
-- vscode: [Dev Container로 JavaScript 개발환경 구성 #2 Electron GUI 앱 개발](./technical_articles/vscode/node-dev-container-2.md)
-- vscode: [Dev Container로 JavaScript 개발환경 구성 #1 기초편](./technical_articles/vscode/node-dev-container-1.md)
-- Ansible: [앤서블 간단 가이드](./technical_articles/ansible/ansible_simple_guide.md)
-- Ubuntu: [Ubuntu 에서 VirtualBox VM 자동으로 시작](./technical_articles/linux/virtualbox_vm_auto_start_on_ubuntu.md)
-- Git: [Docker-Compose로 Ubuntu에 GitLab 설치](./technical_articles/git/installation_of_gitlab_with_docker_compose.md)
-- Ubuntu: [Ubuntu에서 Let's Encrypt 인증서 자동으로 받기](./technical_articles/linux/letsencrypt_on_ubuntu.md)
-- Ubuntu: [Ubuntu 18.04 LTS에 samba 설치](./technical_articles/linux/installation_of_samba_on_ubuntu_1804.md)
-- Ubuntu: [Ubuntu 18.04에 Docker-Compose로 ownCloud 설치](./technical_articles/linux/installation_of_owncloud_on_ubuntu1804.md)
-- Ubuntu: [Ubuntu에 bind9 네임서버 구성](./technical_articles/linux/bind9_ubuntu.md)
-- Pytorch: [libtorch 와 예제](technical_articles/pytorch/libtorch_and example.md)
-- Pytorch: [Ubuntu에 Pytorch 설치](technical_articles/pytorch/installation_of_pytorch_on_ubuntu.md)
-- Python: [Ubuntu에 Pyenv 설치](technical_articles/python/pyenv.md)
-- Linux: [Ubuntu에 CUDA 툴킷 설치](technical_articles/linux/installation_on_cuda_toolkit_on_ubuntu.md)
-- Linux: [Ubuntu에 nvidia 드라이버 설치](technical_articles/linux/installation_of_nvidia_on_ubuntu.md)
-- Ubuntu: [우분투 16.04 LTS에서 마우스 휠 스크롤 간격 설정](technical_articles/linux/ubuntu_imwheel.md)
-- 번역: Git: [A successful Git branching model](technical_articles/git/a_successful_git_branching_model.md)
-- ROS: [kenetic에서 OpenManipulator 튜토리얼](technical_articles/robotics/ros/ros_kinetic_open_manipulator.md)
-- ROS: [kenetic에서 Turtlebot3와 네비게이션](technical_articles/robotics/ros/ros_kinetic_turtlebot3_navigation.md)
-- ROS: [kenetic에서 Turtlebot3와 SLAM](technical_articles/robotics/ros/ros_kinetic_turtlebot3_slam.md)
-- ROS: [kinetic에서 Turtlebot3](technical_articles/robotics/ros/ros_kinetic_turtlebot3.md)
-- ROS: [kinetic에서 UVC 카메라 캘리브레이션](technical_articles/robotics/ros/ros_kinetic_uvc_camera_calibration.md)
-- ROS: [kinetic에서 UVC 카메라 보기](technical_articles/robotics/ros/ros_kinetic_uvc_camera.md)
-- ROS: [RealSense 설치](technical_articles/robotics/ros/ros_kinetic_realsense.md)
-- ROS: [Ubuntu에 ROS 설치](technical_articles/robotics/ros/installation_of_ros_on_ubuntu.md)
-- OpenCV: [우분투에서 Opencv 자동 빌드 및 설치](technical_articles/computer_vision/build_opencv_on_ubuntu_cli_with_script_ko.md)
-- Python: [자주 사용되는 보일러플레이트: Python에서 numpy array를 gzip에 저장](./technical_articles/python/python_gzip_bytes.md)
-- Python: [자주 사용되는 보일러플레이트: MNIST처럼 IDX1이나 IDX3파일 만들기](./technical_articles/python/python_idx.md)
-- 윈도우 10: [필드 엔지니어를 위한: 주기적으로 재부팅하기](./technical_articles/windows/periodical_reboots_on_windows.md)
-- Flutter 번역: [Flutter 1.9의 새로운 점](./technical_articles/flutter/what_is_new_in_flutter_1_9.md)
-- Flutter: [Flutter: Using BoxIcons in Flutter](./technical_articles/flutter/using_boxicons_in_flutter.md)
-- .NET: [.NET SQLite dll failure](./technical_articles/dotnet/donet_sqlite_dll_failure.md)
-- PowerShell: [필드 엔지니어를 위한: 파워셸 스크립트를 윈도우에서 백그라운드로 구동하기](./technical_articles/windows/poweshell_script_signing_tutorials.md)
-- TMAXOS: [티맥스 OS 데스크탑을 설치해 봤습니다](technical_articles/linux/tmaxos/installation_of_tmaxos_desktop.md)
-- Network: [필드 엔지니어를 위한: 네트워크 교육 자료](technical_articles/networks/communication_basics.md)
-- Flutter: [Ubuntu에서 재빠르게 VSCode와 Flutter 개발 환경 구성하기](technical_articles/flutter/ubuntu_flutter_vscode_quick.md)
-- Flutter: [플러터에서 유닛 테스트](technical_articles/flutter/unit_test/flutter_unit_test.md)
-- Flutter: [통합 테스트](technical_articles/flutter/unit_test/integrated_test.md)
-- 번역: [Aqueduct](technical_articles/dart/aqueduct/index.md)
-- Dart: [커스텀 패키지](./technical_articles/dart/custom_package.md)
-- 번역: [LinkedIn 확장의 간략한 역사](./technical_articles/software_architecture/a_brief_history_of_scaling_linkedin.md)
-- Flutter for Web: [번역: 허밍버드: Flutter for the Web를 개발하기 까지](technical_articles/flutter/hummingboard_building_flutter_for_the_web.md)
-- Dart: 번역: [pubspec 파일 사용법](technical_articles/dart/pubspec_yaml.md)
-- Dart: [번역: Dart2에서 조건부 임포트 변경점](technical_articles/dart/dart2_conditional_import_update.md)
-- Dart: [번역: API Reference](technical_articles/dart/api_reference/index.md)
-- Dart: [번역: A tour of the core libraries](technical_articles/dart/core_libraries_tour/index.md)
-- Flutter: [번역: Flutter Bloc](technical_articles/flutter/bloc/index.md)
-- Flutter: [번역: Flutter Pub: BLOC 패턴을 사용한 Flutter 프로젝트 아키텍쳐 설계](technical_articles/flutter/state_management/architecture_your_flutter_project_using_bloc_pattern.md)
-- Flutter: [번역: 상태 관리](technical_articles/flutter/state_management/index.md)
-- Flutter for Web: [번역: 웹을 위한 플러터: 웹사이트를 밑바닥부터 만들고 배포하기](technical_articles/flutter/flutter_for_web_create_and_deploy_a_website_from_scratch.md)
-- Flutter: [번역: 우분투에 플러터 설치하기](technical_articles/flutter/installation_of_flutter_on_ubuntu.md)
-- Dart: [번역: A tour to the Dart language](./technical_articles/dart/index.md)
-- Image processing: [Convert photos to Sketches](./technical_articles/image_processing/convert_photos_to_sketches.md)
-- Machine Learning: [머신러닝 인퍼런스를 위한 RabbitMQ 데모](technical_articles/machine_learning/rabbitmq_demo_for_machine_learning_inference.md)
-- Linux: [Ubuntu 18.04 LTS에서 GUI와 CLI를 전환](technical_articles/linux/switch_gui_and_cli.md)
-- C/C++: [GUI Libraries](./technical_articles/c_language/cpp_gui_libraries.md)
-- Datasets: [Dump CIFAR10 in Pytorch](technical_articles/datasets/cifar10.md)
-- Deep Learning: [Conditional Deep Convolution GAN is morphable without morph training](technical_articles/deep_learning/cdcgan_is_mophable_without_training.md)
-- Life: [Youtube Best](./life/youtube_best.md)
-- Autopilot: [Public Testing with Autonomous Taxi Service](technical_articles/autopilot/public_testing_with_autonomous_taxi_service.md)
-- Computer Vision: [Face Datasets](technical_articles/computer_vision/face_datasets.md)
-- Pytorch: [Onehot Encoding](technical_articles/pytorch/onehot_encoding.md)
-- Pytorch: [Conv2dClassifier](technical_articles/pytorch/conv2d_classifier.md)
-- Pytorch: [Parameter List in Module](technical_articles/pytorch/parameter_list_in_module.md)
-- CUDA: [aptitude로 Ubuntu 18.04 LTS에 CUDA 설치](./technical_articles/cuda/aptitude_cuda.md)
-- Coding: [디버깅 가능한 코드 (Debuggable code)](./technical_articles/coding/debuggable_code.md)
-- Python: [numpy.place()](technical_articles/python/python_krorea_numpy_place.md)
-- C/C++: [VSCode로 CMake 빌드 하고 디버깅 하기](technical_articles/c_language/build_cmake_in_vscode_on_linux.md)
-- OpenCV: [CMake로 OpenCV 빌드 및 설치](technical_articles/computer_vision/build_opencv_with_cmake.md)
-- OpenCV: [Contours hierarchy 구조](technical_articles/computer_vision/contours_hierarchy.md)
-- C/C++: [CMake 간단한 소개서](technical_articles/c_language/simple_cmake_introduction.md)
-- C/C++: [Ubuntu 18.04에서 VSCode로 CMake로 빌드 하고 디버깅 하기](technical_articles/c_language/build_cmake_in_vscode_on_linux.md)
-- 3D Vision: [Build librealsense on Ubuntun 18.04 LTS](technical_articles/computer_vision/build_librealsense_on_ubuntu_1604.md)
-- eCommerce: [온라인 쇼핑몰 키워드 검색과 옵션 비교](technical_articles/product_managements/ecommerce_search.md)
-- Coding: [첫 프로그래밍 언어?](./technical_articles/learning_programming_languages/which_programming_language_do_you_want_to_learn.md)
-- Linux: [Installation of FTP, FTPS, SFPT on Ubuntu 16.04](./technical_articles/linux/ubuntu_ftp.md)
-- Linux: [Installation of 한국어 입력기 fcitx on Ubuntu 16.04](./technical_articles/linux/ubuntu_korean_fcitx_installation.md)
+이러한 탐구 결과물을 출판하는 대신 온라인으로 공개하는 것을 선호한다. 출판을 목표로 시작한 것이 아니라, 지식을 탐구하고 정리하는 과정 그 자체가 큰 의미가 있기 때문이다. 탐구와 정리 과정에서 얻는 만족감과 성취감은 단순히 지식을 기록하는 것을 넘어선다. 이 과정을 통해 새로운 통찰을 얻기도 하고, 이해가 부족했던 부분을 보다 깊이 파고들어 확실히 이해하게 되며, 생각과 관점도 점차 발전하게 된다. 또한 탐구하는 내용은 해당 분야를 전공하는 학부생 수준에 해당하는 경우가 많으며, 이러한 수준이면 충분하다고 생각하기에 출판을 위한 추가적인 다듬음이 반드시 필요하다고 느끼지 않는다.
 
-#### 페이지
+새로운 지식을 배우고자 할 때 종종 기존 자료들이 중요한 배경 지식을 충분히 다루지 않아 온전한 이해에 도달하기 어렵다는 것을 경험한다. 예를 들어, 특정 주제 A를 배우는 데 집중하다 보면, 그 기반이 되는 개념 B가 명확히 설명되지 않아 A를 완전히 이해하기 어려운 경우가 많다. 이러한 경험은 내가 자료를 정리할 때, A뿐만 아니라 B까지 충분히 다루도록 하는 동기를 제공한다. 이러한 방식으로 독자들이 더 쉽게 이해할 수 있도록 돕고자 한다.
 
-- [Technical notes](./technical_articles/index.md)
-- [articles](articles/index.md)
-- [vi shortcuts](./technical_articles/editors/vi.md)
-- [Movies](movies/index.md)
-- [Study notes](study_notes/index.md)
-- [Book reviews](book_reviews/index.md)
-- [Open source projects](./opensource_projects/index.md)
-- [Unity C# Script Book](technical_articles/unity_csharp_script_book/index.md)
-- [Dev Portal](dev_portal/index.md)
-- [Machine Learning Notes](./machine_learning_notes/index.md)
-- [콩트](conte/index.md)
+시간이 지남에 따라 나는 지식을 탐구하고 기록하는 과정에서 점점 더 효율성을 높이고 있다. 과거에는 새로운 언어나 기술을 배우고 완전히 익히는 데 수 년이 걸렸지만, 최근에는 거대 언어 모델의 도움을 받아 학습 속도가 크게 향상되었다. 덕분에 새로운 주제를 짧은 시간에 익히고, 더 많은 주제를 빠르게 탐구하고 정리할 수 있게 되었다. 이러한 과정에서 많은 실험을 수행하며, 이는 내가 새로운 지식을 흡수하는 방식에 혁신적인 변화를 가져왔다.
+
+물론 거대 언어 모델을 활용하는 과정에서 출처와 인용 문제로 인해 출판에 어려움이 있을 수 있다. 하지만 나는 이러한 과정을 일종의 '실험'으로 여기며, 이를 통해 더 나은 방식으로 지식을 습득하고 공유할 수 있는 기회를 모색하고 있다. 이러한 실험들은 저의 지식을 넓히고, 보다 창의적이고 혁신적인 방식으로 학습과 연구를 진행할 수 있는 발판이 된다.
+
+엔지니어는 다양한 지식을 결합하여 사람들이 필요로 하는 물건이나 서비스를 개발하는 사람이다. 그러나 이 과정은 단순히 기술을 습득하는 것에 그치지 않는다. 엔지니어는 지식을 통해 문제를 해결하고, 더 나은 세상을 만들어가는 데 기여하는 사람이다. 내가 글로 정리하는 이유도 마찬가지이다. 나의 탐구 과정을 정리하고 공유함으로써, 그 지식이 세상을 더 나은 방향으로 이끄는 데 작은 도움이 되기를 바라는 마음에서이다.
+
+지식을 탐구하는 과정은 즐거움과 동기를 제공한다. 그리고 그 지식을 정리하고 공유함으로써 더 많은 사람들이 함께 성장할 수 있는 기회를 만들고자 한다. 이 과정이 쉽지만은 않더라도, 항상 긍정적인 시각을 가지고 더 나은 결과를 향해 나아가고 있다. 결국 내가 쓴 글들이 독자들에게 배움의 즐거움을 전달하고, 그들의 성장에 기여할 수 있다는 것은 가장 큰 보람이자 기쁨이다.
+
+# 목차
+
+- [기사 (Articles)](articles/index.md)
+## 인공지능
+
+- [인공지능 (Artificial Intelligence, AI)](ai/index.md)
+- [AI 프로프트](ai prompt/index.md)
+## 개발 방법론
+
+- [컴퓨터 아키텍처](architectures/index.md)
+- [개발 방법](development methods/index.md)
+- [git](git/index.md)
+- [소프트웨어 공학](software engeering/index.md)
+## 알고리즘
+
+- [Computer Graphics](computer graphics/index.md)
+- [정보이론 (Information Theory)](information theory/index.md)
+- [최적화](optimizations/index.md)
+## 컴퓨터
+
+- [컴퓨터](computers/index.md)
+- [컴퓨팅 파워](computing/index.md)
+## 서비스
+
+- [서비스](services/index.md)
+## 시스템
+
+- [시스템](systems/index.md)
+- [GIS](gis/index.md)
+## 프로그래밍
+
+- [언어](languages/index.md)
+## 데이터베이스
+
+- [데이터베이스](databases/index.md)
+## 통신
+
+- [통신](communications/index.md)
+- [컴퓨터 보안](security/index.md)
+## 드론 & 로보틱스 & 자율주행
+
+- [로봇공학](robotics/index.md)
+- [계획법](planning/index.md)
+- [위치 추정 (Localization)](positioning/index.md)
+- [ROS2](ros2/index.md)
+- [SLAM (Simultaneous Localization and Mapping)](slam/index.md)
+- [시뮬레이션](simulations/index.md)
+### 센서
+
+- [센서](sensors/index.md)
+## 항공
+
+- [드론](drones/index.md)
+- [항공법](aviation acts/index.md)
+- [항공전자](avionics/index.md)
+## 수학
+
+- [수학](mathmatics/index.md)
+## 기계공학
+
+- [기계공학](mecanics/index.md)
+- [제어공학](control engineering/index.md)
+- [물리학](physics/index.md)
+## 전파학
+
+- [전파 공학/과학](radio science/index.md)
+booiljung@me.com
 

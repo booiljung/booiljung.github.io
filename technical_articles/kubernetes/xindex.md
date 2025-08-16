@@ -1,3 +1,0 @@
-# Kebernetes
-
-- [Minikube](./minikube.md)

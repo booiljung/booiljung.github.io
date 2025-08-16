@@ -1,3 +1,0 @@
-# OpenSCAD
-
-- [Libraries](libraries.md)
