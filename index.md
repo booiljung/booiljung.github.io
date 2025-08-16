@@ -20,7 +20,7 @@
 ## 인공지능
 
 - [인공지능 (Artificial Intelligence, AI)](ai/index.md)
-- [AI 프로프트](ai prompt/index.md)
+- [AI 프롬프트](ai prompt/index.md)
 ## 개발 방법론
 
 - [컴퓨터 아키텍처](architectures/index.md)
