@@ -1,4 +1,6 @@
-# 센서
+# 센서 (Sensors)
+
+
 
 - [Camera](camera/index.md)
 - [특징점 기술](feature descriptor/index.md)

@@ -332,7 +332,7 @@ Q-러닝과 그 직계 후손인 DQN의 원리는 단순히 역사적 개념에 
 #### **참고 자료**
 
 1. Q-Learning Explained: Learn Reinforcement Learning Basics - Simplilearn.com, accessed July 11, 2025, https://www.simplilearn.com/tutorials/machine-learning-tutorial/what-is-q-learning
-2. Inside Reinforcement Learning. Part 1: A PhD Student's Perspective on… | by Krystie Dickson | Jul, 2025 | Medium, accessed July 11, 2025, https://medium.com/@krystiedickson/inside-reinforcement-learning-112ab51ae4e1
+2. Inside Reinforcement Learning. Part 1: A PhD Student's Perspective on... | by Krystie Dickson | Jul, 2025 | Medium, accessed July 11, 2025, https://medium.com/@krystiedickson/inside-reinforcement-learning-112ab51ae4e1
 3. Reinforcement Q-Learning from Scratch in Python with OpenAI Gym - LearnDataSci, accessed July 11, 2025, https://www.learndatasci.com/tutorials/reinforcement-q-learning-scratch-python-openai-gym/
 4. Q 러닝 - 위키백과, 우리 모두의 백과사전, accessed July 11, 2025, [https://ko.wikipedia.org/wiki/Q_%EB%9F%AC%EB%8B%9D](https://ko.wikipedia.org/wiki/Q_러닝)
 5. [강화학습] Q 러닝 이해하기 - Atom's Space, accessed July 11, 2025, https://spacebike.tistory.com/53
@@ -343,12 +343,12 @@ Q-러닝과 그 직계 후손인 DQN의 원리는 단순히 역사적 개념에 
 10. Q-Learning in Reinforcement Learning - GeeksforGeeks, accessed July 11, 2025, https://www.geeksforgeeks.org/machine-learning/q-learning-in-python/
 11. What is Q-Learning? - Wandb, accessed July 11, 2025, https://wandb.ai/cosmo3769/Q-Learning/reports/What-is-Q-Learning---Vmlldzo1NTI1NzE0
 12. Mastering Q-Learning in AI - Number Analytics, accessed July 11, 2025, https://www.numberanalytics.com/blog/mastering-q-learning-in-ai
-13. deep-rl-class/units/en/unit2/q-learning.mdx at main · huggingface ..., accessed July 11, 2025, https://github.com/huggingface/deep-rl-class/blob/main/units/en/unit2/q-learning.mdx
+13. deep-rl-class/units/en/unit2/q-learning.mdx at main / huggingface ..., accessed July 11, 2025, https://github.com/huggingface/deep-rl-class/blob/main/units/en/unit2/q-learning.mdx
 14. Origins of Reinforcement Learning in AI | by alvin rogers - Medium, accessed July 11, 2025, https://medium.com/@rogers.alvin/origins-of-reinforcement-learning-in-ai-74fe2945fda1
 15. velog.io, accessed July 11, 2025, [https://velog.io/@euisuk-chung/%EC%84%A4%EB%AA%85%EC%B6%94%EA%B0%80-Q-Learning-%EA%B0%95%ED%99%94%ED%95%99%EC%8A%B5%EC%9D%98-%ED%95%B5%EC%8B%AC-%EA%B0%9C%EB%85%90%EA%B3%BC-%EC%9D%B4%ED%95%B4#:~:text=6.-,Q%2DTable%EC%9D%B4%EB%9E%80%3F,%EC%9D%98%20%ED%96%89%EB%8F%99%EC%9D%84%20%ED%95%99%EC%8A%B5%ED%95%A9%EB%8B%88%EB%8B%A4.](https://velog.io/@euisuk-chung/설명추가-Q-Learning-강화학습의-핵심-개념과-이해#:~:text=6.-,Q-Table이란%3F,의 행동을 학습합니다.)
 16. Reinforcement Learning Explained Visually (Part 4): Q Learning, step-by-step, accessed July 11, 2025, https://towardsdatascience.com/reinforcement-learning-explained-visually-part-4-q-learning-step-by-step-b65efb731d3e/
 17. Difference Between Q Learning and Deep Q Learning - BytePlus, accessed July 11, 2025, https://www.byteplus.com/en/topic/514150
-18. [모두RL-②] Dummy Q-Learning (table) - 딥러닝 소터디 - 티스토리, accessed July 11, 2025, https://sotudy.tistory.com/34
+18. [모두RL-(2)] Dummy Q-Learning (table) - 딥러닝 소터디 - 티스토리, accessed July 11, 2025, https://sotudy.tistory.com/34
 19. Understanding the Bellman Equation in Reinforcement Learning ..., accessed July 11, 2025, https://www.datacamp.com/tutorial/bellman-equation-reinforcement-learning
 20. Reinforcement Learning: Deep Q-Learning | by Simon Palma - Medium, accessed July 11, 2025, https://medium.com/@simon.palma/reinforcement-learning-deep-q-learning-8dc006dad2bb
 21. Bellman Equation - GeeksforGeeks, accessed July 11, 2025, https://www.geeksforgeeks.org/machine-learning/bellman-equation/
@@ -368,7 +368,7 @@ Q-러닝과 그 직계 후손인 DQN의 원리는 단순히 역사적 개념에 
 35. 차원의 저주 개념, 발생 원인과 해결 방법, accessed July 11, 2025, https://for-my-wealthy-life.tistory.com/40
 36. [딥러닝] 차원의 저주 (Curse of dimensionality) 해설, 정리, 요약 - START_101 - 티스토리, accessed July 11, 2025, https://hyunhp.tistory.com/745
 37. Convergence time of Q-learning Vs Deep Q-learning - Stack Overflow, accessed July 11, 2025, https://stackoverflow.com/questions/67261599/convergence-time-of-q-learning-vs-deep-q-learning
-38. Q-function approximation — Mastering Reinforcement Learning, accessed July 11, 2025, https://gibberblot.github.io/rl-notes/single-agent/function-approximation.html
+38. Q-function approximation - Mastering Reinforcement Learning, accessed July 11, 2025, https://gibberblot.github.io/rl-notes/single-agent/function-approximation.html
 39. Deep Q-Learning (DQN) - Medium, accessed July 11, 2025, https://medium.com/@samina.amin/deep-q-learning-dqn-71c109586bae
 40. Provably Efficient Q-learning with Function Approximation via Distribution Shift Error Checking Oracle - NIPS, accessed July 11, 2025, http://papers.neurips.cc/paper/9018-provably-efficient-q-learning-with-function-approximation-via-distribution-shift-error-checking-oracle.pdf
 41. DQN - 나무위키, accessed July 11, 2025, https://namu.wiki/w/DQN
@@ -385,7 +385,7 @@ Q-러닝과 그 직계 후손인 DQN의 원리는 단순히 역사적 개념에 
 52. What are target networks in DQN? - Milvus, accessed July 11, 2025, https://milvus.io/ai-quick-reference/what-are-target-networks-in-dqn
 53. How does Deep Q-Networks (DQN) work? - BytePlus, accessed July 11, 2025, https://www.byteplus.com/en/topic/400784
 54. Dueling Double Deep Q Learning using Tensorflow 2.x - Towards Data Science, accessed July 11, 2025, https://towardsdatascience.com/dueling-double-deep-q-learning-using-tensorflow-2-x-7bbbcec06a2a/
-55. Double Deep Q Networks. Tackling maximization bias in Deep… | by Chris Yoon | TDS Archive | Medium, accessed July 11, 2025, https://medium.com/data-science/double-deep-q-networks-905dd8325412
+55. Double Deep Q Networks. Tackling maximization bias in Deep... | by Chris Yoon | TDS Archive | Medium, accessed July 11, 2025, https://medium.com/data-science/double-deep-q-networks-905dd8325412
 56. Double Q-learning - NIPS, accessed July 11, 2025, https://proceedings.neurips.cc/paper/3964-double-q-learning.pdf
 57. How does Double DQN improve Q-learning? - Milvus, accessed July 11, 2025, https://milvus.io/ai-quick-reference/how-does-double-dqn-improve-qlearning
 58. DDQN: Tackling Overestimation Bias in Deep Reinforcement Learning | by Dong-Keon Kim, accessed July 11, 2025, https://medium.com/@kdk199604/ddqn-tackling-overestimation-bias-in-deep-reinforcement-learning-b1b0d6fa72a4
@@ -397,10 +397,10 @@ Q-러닝과 그 직계 후손인 DQN의 원리는 단순히 역사적 개념에 
 64. Understanding Prioritized Experience Replay - GeeksforGeeks, accessed July 11, 2025, https://www.geeksforgeeks.org/machine-learning/understanding-prioritized-experience-replay/
 65. Actor-critic algorithm - Wikipedia, accessed July 11, 2025, https://en.wikipedia.org/wiki/Actor-critic_algorithm
 66. 6.6 Actor-Critic Methods, accessed July 11, 2025, http://incompleteideas.net/book/ebook/node66.html
-67. Actor-critic methods — Mastering Reinforcement Learning, accessed July 11, 2025, https://gibberblot.github.io/rl-notes/single-agent/actor-critic.html
+67. Actor-critic methods - Mastering Reinforcement Learning, accessed July 11, 2025, https://gibberblot.github.io/rl-notes/single-agent/actor-critic.html
 68. Actor-critic methods – Mastering Reinforcement Learning, accessed July 11, 2025, https://uq.pressbooks.pub/mastering-reinforcement-learning/chapter/actor-critic-methods/
 69. Advantage Actor Critic Tutorial: minA2C | Towards Data Science, accessed July 11, 2025, https://towardsdatascience.com/advantage-actor-critic-tutorial-mina2c-7a3249962fc8/
-70. Deep Deterministic Policy Gradient — Spinning Up documentation - OpenAI, accessed July 11, 2025, https://spinningup.openai.com/en/latest/algorithms/ddpg.html
+70. Deep Deterministic Policy Gradient - Spinning Up documentation - OpenAI, accessed July 11, 2025, https://spinningup.openai.com/en/latest/algorithms/ddpg.html
 71. What is a deep deterministic policy gradient (DDPG)? - Milvus, accessed July 11, 2025, https://milvus.io/ai-quick-reference/what-is-a-deep-deterministic-policy-gradient-ddpg
 72. How DDPG (Deep Deterministic Policy Gradient) Algorithms works in reinforcement learning ? | by Amaresh Marekar | Medium, accessed July 11, 2025, https://medium.com/@amaresh.dm/how-ddpg-deep-deterministic-policy-gradient-algorithms-works-in-reinforcement-learning-117e6a932e68
 73. Deep reinforcement learning and robust SLAM based robotic control algorithm for self-driving path optimization - Frontiers, accessed July 11, 2025, https://www.frontiersin.org/journals/neurorobotics/articles/10.3389/fnbot.2024.1428358/full

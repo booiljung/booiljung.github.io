@@ -1,4 +1,4 @@
-# 컴퓨팅 파워
+# 컴퓨팅 파워 (Computing Power)
 
 
 

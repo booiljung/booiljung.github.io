@@ -1,7 +1,11 @@
-# 통신
+# 컴퓨터 통신 (Computer Communications)
+
+
 
 - [개방형 시스템 상호접속(OSI) 7계층 참조 모델에 대한 고찰](OSI 7계층 참조 모델.md)
 - [전이중 상호작용](전이중 상호작용.md)
+
+
 - [항공을 위한 통신](avionics/index.md)
 - [데이터 링크 (Datalink)](datalink/index.md)
 - [드론 통신](drones/index.md)

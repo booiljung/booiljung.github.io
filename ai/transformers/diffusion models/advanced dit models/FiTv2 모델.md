@@ -168,9 +168,9 @@ FiTv2가 개척한 원칙들, 즉 시공간 데이터의 유연한 토큰화와 
 19. W.A.L.T.pdf - Photorealistic Video Generation with Diffusion Models, accessed July 19, 2025, https://walt-video-diffusion.github.io/assets/W.A.L.T.pdf
 20. Adaptive LoRA (AdaLORA) paper explanation | by Astarag Mohapatra - Medium, accessed July 19, 2025, https://athekunal.medium.com/adaptive-lora-adalora-paper-explanation-7cb5ac04d0cb
 21. What is LoRA (Low-Rank Adaption)? - IBM, accessed July 19, 2025, https://www.ibm.com/think/topics/lora
-22. An Overview of the LoRA Family. LoRA, DoRA, AdaLoRA, Delta-LoRA, and… | by Dorian Drost | TDS Archive | Medium, accessed July 19, 2025, https://medium.com/data-science/an-overview-of-the-lora-family-515d81134725
+22. An Overview of the LoRA Family. LoRA, DoRA, AdaLoRA, Delta-LoRA, and... | by Dorian Drost | TDS Archive | Medium, accessed July 19, 2025, https://medium.com/data-science/an-overview-of-the-lora-family-515d81134725
 23. Generate Realistic Videos with NVIDIA COSMOS 1.0 Diffusion - Analytics Vidhya, accessed July 19, 2025, https://www.analyticsvidhya.com/blog/2025/02/nvidia-cosmos-1-0-diffusion/
-24. Stable Diffusion 3 — Explained. How Rectified Flow and Transformers… | by Pietro Bolcato, accessed July 19, 2025, https://medium.com/@pietrobolcato/stable-diffusion-3-explained-84fd085934cb
+24. Stable Diffusion 3 - Explained. How Rectified Flow and Transformers... | by Pietro Bolcato, accessed July 19, 2025, https://medium.com/@pietrobolcato/stable-diffusion-3-explained-84fd085934cb
 25. Rectified Flow - UT Computer Science, accessed July 19, 2025, https://www.cs.utexas.edu/~lqiang/rectflow/html/intro.html
 26. Rectified Diffusion: Straightness Is Not Your Need in Rectified Flow | OpenReview, accessed July 19, 2025, https://openreview.net/forum?id=nEDToD1R8M
 27. Understanding InstaFlow/Rectified Flow - Hugging Face, accessed July 19, 2025, https://huggingface.co/blog/Isamu136/insta-rectified-flow
@@ -179,7 +179,7 @@ FiTv2가 개척한 원칙들, 즉 시공간 데이터의 유연한 토큰화와 
 30. Daily Papers - Hugging Face, accessed July 19, 2025, [https://huggingface.co/papers?q=logit%20flow](https://huggingface.co/papers?q=logit+flow)
 31. Efficient Diffusion Transformer with Step-Wise Dynamic Attention Mediators | Request PDF, accessed July 19, 2025, https://www.researchgate.net/publication/386048122_Efficient_Diffusion_Transformer_with_Step-Wise_Dynamic_Attention_Mediators
 32. Logit-normal distribution - Wikipedia, accessed July 19, 2025, https://en.wikipedia.org/wiki/Logit-normal_distribution
-33. pymc.LogitNormal — PyMC 5.23.0 documentation, accessed July 19, 2025, https://www.pymc.io/projects/docs/en/stable/api/distributions/generated/pymc.LogitNormal.html
+33. pymc.LogitNormal - PyMC 5.23.0 documentation, accessed July 19, 2025, https://www.pymc.io/projects/docs/en/stable/api/distributions/generated/pymc.LogitNormal.html
 34. Sample Size Determination for Logistic Regression on a Logit-Normal Distribution - PMC, accessed July 19, 2025, https://pmc.ncbi.nlm.nih.gov/articles/PMC4560689/
 35. DIFFUSION MODELS NEED VISUAL PRIORS FOR IMAGE GENERATION - OpenReview, accessed July 19, 2025, https://openreview.net/pdf/7415fc810d502243f9eae150b2aa40ebbb6faa5e.pdf
 36. ImageNet 256x256 Benchmark (Image Generation) | Papers With Code, accessed July 19, 2025, https://paperswithcode.com/sota/image-generation-on-imagenet-256x256

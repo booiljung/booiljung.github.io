@@ -78,7 +78,7 @@ GPT-5는 OpenAI 역사상 가장 강력한 코딩 모델로 평가받는다. 이
 
 - **성능:** GPT-5의 코딩 능력은 실제 세계의 문제 해결 능력을 측정하는 가장 권위 있는 벤치마크 중 하나인 SWE-bench Verified에서 74.9%의 성공률을 기록하며 SOTA를 달성했다.5 이 벤치마크는 실제 GitHub 저장소에 보고된 버그 리포트를 주고, 모델이 스스로 코드를 분석하고 수정하여 모든 테스트 케이스를 통과하는 패치를 생성해야 하는 매우 어려운 과제다. 74.9%라는 수치는 GPT-5가 복잡한 버그 수정, 대규모 코드 리팩토링, 레거시 코드베이스 분석과 같은 고도의 작업을 인간의 개입 없이 상당 부분 자동화할 수 있음을 의미한다.5
 - **프론트엔드 및 심미성:** GPT-5는 특히 프론트엔드 개발 분야에서 두드러진 발전을 보였다. 이전 모델들이 기능적 코드 생성에 집중했다면, GPT-5는 UI/UX의 미학적 측면을 이해하는 능력을 갖추었다. 사용자가 원하는 "분위기"나 "느낌"을 설명하면, 그에 맞춰 UI 요소들의 간격, 타이포그래피, 여백, 색상 조합 등을 고려하여 "아름답고 반응성이 뛰어난" 웹사이트나 앱, 심지어 간단한 게임까지 단일 프롬프트로 생성할 수 있다.5 이는 엄격한 코딩 문법 대신 자연어로 소프트웨어를 개발하는 '바이브 코딩(vibe coding)'의 개념을 실현 가능하게 만드는 중요한 진전이다.2
-- **에이전트 역량:** GPT-5의 진정한 잠재력은 에이전트로서의 능력에서 드러난다. 이 모델은 수십 개의 서로 다른 도구(API 호출, 파일 시스템 접근, 코드 실행기 등)를 순차적으로 또는 병렬적으로 안정적으로 연결하여 복잡한 목표를 달성하는 에이전트 작업에서 SOTA 성능을 기록했다 (τ2-bench telecom 96.7%).17 이는 GPT-5가 단순히 지시에 따라 코드를 생성하는 수동적인 도구가 아니라, 사용자의 상위 목표를 이해하고, 스스로 세부 계획을 수립하며(planning), 필요한 도구를 호출하고(tool use), 코드를 작성 및 실행하고(execution), 발생하는 오류를 디버깅하는(debugging) 자율적인 소프트웨어 엔지니어로서 작동할 수 있음을 시사한다.20
+- **에이전트 역량:** GPT-5의 진정한 잠재력은 에이전트로서의 능력에서 드러난다. 이 모델은 수십 개의 서로 다른 도구(API 호출, 파일 시스템 접근, 코드 실행기 등)를 순차적으로 또는 병렬적으로 안정적으로 연결하여 복잡한 목표를 달성하는 에이전트 작업에서 SOTA 성능을 기록했다 (\tau2-bench telecom 96.7%).17 이는 GPT-5가 단순히 지시에 따라 코드를 생성하는 수동적인 도구가 아니라, 사용자의 상위 목표를 이해하고, 스스로 세부 계획을 수립하며(planning), 필요한 도구를 호출하고(tool use), 코드를 작성 및 실행하고(execution), 발생하는 오류를 디버깅하는(debugging) 자율적인 소프트웨어 엔지니어로서 작동할 수 있음을 시사한다.20
 
 ### 2.2 B. 건강 및 과학: 신뢰성을 높인 '사고 파트너'
 
@@ -243,7 +243,7 @@ GPT-5는 AI 기술이 나아갈 방향을 명확하게 제시했다. 미래의 A
 
 1. OpenAI unveils GPT‑5. Here's what to know about the latest version of the AI-powered chatbot. - CBS News, 8월 15, 2025에 액세스, https://www.cbsnews.com/news/openai-launches-chatgpt5-sam-altman-smartest-ai-chatbot/
 2. OpenAI's GPT-5 replaces all previous versions: What students need to know about the smartest AI yet, 8월 15, 2025에 액세스, https://timesofindia.indiatimes.com/education/news/openais-gpt-5-replaces-all-previous-versions-what-students-need-to-know-about-the-smartest-ai-yet/articleshow/123215368.cms
-3. OpenAI Says GPT-5 Is a Step Toward AGI — But It's a Small One - Built In, 8월 15, 2025에 액세스, https://builtin.com/artificial-intelligence/openai-gpt-5-release
+3. OpenAI Says GPT-5 Is a Step Toward AGI - But It's a Small One - Built In, 8월 15, 2025에 액세스, https://builtin.com/artificial-intelligence/openai-gpt-5-release
 4. ChatGPT 5 Release Date, Details: Everything You Need to Know - Newsweek, 8월 15, 2025에 액세스, https://www.newsweek.com/chatgpt-5-reveal-what-know-2110110
 5. Introducing GPT-5 - OpenAI, 8월 15, 2025에 액세스, https://openai.com/index/introducing-gpt-5/
 6. GPT-5 and the new era of work - OpenAI, 8월 15, 2025에 액세스, https://openai.com/index/gpt-5-new-era-of-work/
@@ -254,7 +254,7 @@ GPT-5는 AI 기술이 나아갈 방향을 명확하게 제시했다. 미래의 A
 11. 'GPT-5 feels dumber': Users on OpenAI’s newest model, 8월 15, 2025에 액세스, https://economictimes.indiatimes.com/tech/artificial-intelligence/gpt-5-feels-dumber-users-on-openais-newest-model/articleshow/123237529.cms
 12. How ChatGPT-maker OpenAI’s ranking tumbled in Betting Markets after GPT-5 launch event, and Google’s jumped, 8월 15, 2025에 액세스, https://timesofindia.indiatimes.com/technology/tech-news/how-chatgpt-maker-openais-ranking-tumbled-in-betting-markets-after-gpt-5-launch-event-and-googles-jumped/articleshow/123190187.cms
 13. Gpt-5 is even more imbalanced compare with 4 - ChatGPT - OpenAI Developer Community, 8월 15, 2025에 액세스, https://community.openai.com/t/gpt-5-is-even-more-imbalanced-compare-with-4/1339639
-14. GPT-5 is here… here's everything you need to know (so far…). - The Neuron, 8월 15, 2025에 액세스, https://www.theneuron.ai/explainer-articles/gpt-5-is-here-heres-everything-you-need-to-know-so-far
+14. GPT-5 is here... here's everything you need to know (so far...). - The Neuron, 8월 15, 2025에 액세스, https://www.theneuron.ai/explainer-articles/gpt-5-is-here-heres-everything-you-need-to-know-so-far
 15. GPT-5 System Card | OpenAI, 8월 15, 2025에 액세스, https://openai.com/index/gpt-5-system-card/
 16. GPT-5 System Card - OpenAI, 8월 15, 2025에 액세스, https://cdn.openai.com/pdf/8124a3ce-ab78-4f06-96eb-49ea29ffb52f/gpt5-system-card-aug7.pdf
 17. Introducing GPT‑5 for developers - OpenAI, 8월 15, 2025에 액세스, https://openai.com/index/introducing-gpt-5-for-developers/
@@ -285,7 +285,7 @@ GPT-5는 AI 기술이 나아갈 방향을 명확하게 제시했다. 미래의 A
 42. ChatGPT vs Claude vs Gemini: Full Report and Comparison of Features, Performance, Integrations, Pricing, and Use Cases - Data Studios, 8월 15, 2025에 액세스, https://www.datastudios.org/post/chatgpt-vs-claude-vs-gemini-full-report-and-comparison-of-features-performance-integrations-pric
 43. MMLU Pro Benchmark - Vals AI, 8월 15, 2025에 액세스, https://www.vals.ai/benchmarks/mmlu_pro-04-15-2025
 44. ChatGPT 5 is slow and no better than 4 - Hacker News, 8월 15, 2025에 액세스, https://news.ycombinator.com/item?id=44848431
-45. OpenAI CEO Sam Altman responds to 'Chart-Crime moment' during GPT-5 launch: ‘Wow a mega…’, 8월 15, 2025에 액세스, https://timesofindia.indiatimes.com/technology/tech-news/openai-ceo-sam-altman-responds-to-chart-crime-moment-during-gpt-5-launch-wow-a-mega/articleshow/123215873.cms
+45. OpenAI CEO Sam Altman responds to 'Chart-Crime moment' during GPT-5 launch: ‘Wow a mega...’, 8월 15, 2025에 액세스, https://timesofindia.indiatimes.com/technology/tech-news/openai-ceo-sam-altman-responds-to-chart-crime-moment-during-gpt-5-launch-wow-a-mega/articleshow/123215873.cms
 46. Sam Altman promises more upgrades for ChatGPT users after GPT-5 backlash, 8월 15, 2025에 액세스, https://timesofindia.indiatimes.com/technology/tech-news/sam-altman-promises-more-upgrades-for-chatgpt-users-after-gpt-5-backlash/articleshow/123259950.cms
 47. Red Teams Jailbreak GPT-5 With Ease, Warn It's 'Nearly Unusable' for Enterprise, 8월 15, 2025에 액세스, https://www.securityweek.com/red-teams-breach-gpt-5-with-ease-warn-its-nearly-unusable-for-enterprise/
 48. Reading the Mind of the Machine: Why GPT-5's Chain-of-Thought Monitoring Matters for AI Safety | American Enterprise Institute, 8월 15, 2025에 액세스, https://www.aei.org/technology-and-innovation/reading-the-mind-of-the-machine-why-gpt-5s-chain-of-thought-monitoring-matters-for-ai-safety/
@@ -303,7 +303,7 @@ GPT-5는 AI 기술이 나아갈 방향을 명확하게 제시했다. 미래의 A
 60. www.tomshardware.com, 8월 15, 2025에 액세스, [https://www.tomshardware.com/tech-industry/artificial-intelligence/chatgpt-5-power-consumption-could-be-as-much-as-eight-times-higher-than-gpt-4-research-institute-estimates-medium-sized-gpt-5-response-can-consume-up-to-40-watt-hours-of-electricity#:~:text=OpenAI's%20GPT%2D5%20AI%20model,AI%20lab%2C%20reports%20The%20Guardian.](https://www.tomshardware.com/tech-industry/artificial-intelligence/chatgpt-5-power-consumption-could-be-as-much-as-eight-times-higher-than-gpt-4-research-institute-estimates-medium-sized-gpt-5-response-can-consume-up-to-40-watt-hours-of-electricity#:~:text=OpenAI's GPT-5 AI model,AI lab%2C reports The Guardian.)
 61. Here's why Sam Altman says OpenAI's GPT-5 falls short of AGI - Yahoo News Canada, 8월 15, 2025에 액세스, https://ca.news.yahoo.com/heres-why-sam-altman-says-180139600.html
 62. Open AI's new GPT-5 model heralds intelligence leap, 8월 15, 2025에 액세스, https://en.antaranews.com/news/372549/open-ais-new-gpt-5-model-heralds-intelligence-leap
-63. "What have we done?" — Sam Altman says "I feel useless," compares ChatGPT-5's power to the Manhattan Project, 8월 15, 2025에 액세스, https://timesofindia.indiatimes.com/technology/tech-news/what-have-we-done-sam-altman-says-i-feel-useless-compares-chatgpt-5s-power-to-the-manhattan-project/articleshow/123112813.cms
+63. "What have we done?" - Sam Altman says "I feel useless," compares ChatGPT-5's power to the Manhattan Project, 8월 15, 2025에 액세스, https://timesofindia.indiatimes.com/technology/tech-news/what-have-we-done-sam-altman-says-i-feel-useless-compares-chatgpt-5s-power-to-the-manhattan-project/articleshow/123112813.cms
 64. Guide to OpenAI's Agentic Framework for AI Development - Codewave, 8월 15, 2025에 액세스, https://codewave.com/insights/openai-agentic-framework-guide/
 65. Seizing the agentic AI advantage - McKinsey, 8월 15, 2025에 액세스, https://www.mckinsey.com/capabilities/quantumblack/our-insights/seizing-the-agentic-ai-advantage
-66. Agent Factory: The new era of agentic AI—common use cases and design patterns, 8월 15, 2025에 액세스, https://azure.microsoft.com/en-us/blog/agent-factory-the-new-era-of-agentic-ai-common-use-cases-and-design-patterns/
+66. Agent Factory: The new era of agentic AI-common use cases and design patterns, 8월 15, 2025에 액세스, https://azure.microsoft.com/en-us/blog/agent-factory-the-new-era-of-agentic-ai-common-use-cases-and-design-patterns/

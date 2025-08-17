@@ -188,8 +188,8 @@ Gemini의 멀티모달 추론 능력은 공식 데모와 실제 사용자 테스
 5. 멀티모달(Multi Modal)AI와 기존 인공지능의 차이점 - 클루닉스, accessed July 16, 2025, https://www.clunix.com/insight/it_trends.php?boardid=ittrend&mode=view&idx=824
 6. What is Multimodal AI? | IBM, accessed July 16, 2025, https://www.ibm.com/think/topics/multimodal-ai
 7. 멀티모달 AI, accessed July 16, 2025, https://cloud.google.com/use-cases/multimodal-ai?hl=ko
-8. 네이버, 스마트렌즈에 멀티모달 AI 적용…"이미지로 신발 검색" - 지디넷코리아, accessed July 16, 2025, https://zdnet.co.kr/view/?no=20220428095442
-9. 네이버, 멀티모달 AI 적용으로 이미지와 텍스트 동시 검색… 사용자 편의 극대화 (2022.04.28) - 자료실 < 아카이브 | 판교테크노밸리, accessed July 16, 2025, https://www.pangyotechnovalley.org/base/board/read?boardManagementNo=16&boardNo=655&menuLevel=2&menuNo=15
+8. 네이버, 스마트렌즈에 멀티모달 AI 적용..."이미지로 신발 검색" - 지디넷코리아, accessed July 16, 2025, https://zdnet.co.kr/view/?no=20220428095442
+9. 네이버, 멀티모달 AI 적용으로 이미지와 텍스트 동시 검색... 사용자 편의 극대화 (2022.04.28) - 자료실 < 아카이브 | 판교테크노밸리, accessed July 16, 2025, https://www.pangyotechnovalley.org/base/board/read?boardManagementNo=16&boardNo=655&menuLevel=2&menuNo=15
 10. OmniModels: The Unified Architecture for Intelligence | by Tyler Frink ..., accessed July 16, 2025, https://medium.com/@frinktyler1445/omnimodels-the-unified-architecture-for-intelligence-89856a63e975
 11. Multimodal AI: Transforming Evaluation & Monitoring - Galileo AI, accessed July 16, 2025, https://galileo.ai/blog/multimodal-ai-guide
 12. Multimodal Data Fusion: Key Techniques, Challenges & Solutions - Sapien, accessed July 16, 2025, https://www.sapien.io/blog/mastering-multimodal-data-fusion
@@ -203,7 +203,7 @@ Gemini의 멀티모달 추론 능력은 공식 데모와 실제 사용자 테스
 20. Gemini 1.5: Google's Generative AI Model with Mixture of Experts Architecture - Encord, accessed July 16, 2025, https://encord.com/blog/google-gemini-1-5-generative-ai-model-with-mixture-of-experts/
 21. Gemini 1.5 Pro | Prompt Engineering Guide, accessed July 16, 2025, https://www.promptingguide.ai/models/gemini-pro
 22. Mixture-of-Transformers (MoT): A New Era in Multi-Modal AI Efficiency - Medium, accessed July 16, 2025, https://medium.com/@sahin.samia/mixture-of-transformers-mot-a-new-era-in-multi-modal-ai-efficiency-e3ac2699eeb0
-23. Audio Tokenization: An Overview — The GenAI Guidebook - Ravin Kumar, accessed July 16, 2025, https://ravinkumar.com/GenAiGuidebook/audio/audio_tokenization.html
+23. Audio Tokenization: An Overview - The GenAI Guidebook - Ravin Kumar, accessed July 16, 2025, https://ravinkumar.com/GenAiGuidebook/audio/audio_tokenization.html
 24. An Intuitive Introduction to the Vision Transformer - Thalles' blog, accessed July 16, 2025, https://sthalles.github.io/an-intuitive-introduction-to-the-vision-transformer/
 25. Understanding Patch Embeddings for Vision Transformers (ViT) | by Frederik vom Lehn, accessed July 16, 2025, https://medium.com/@frederik.vl/understanding-vision-transformers-vit-70ca8d817ff3
 26. SoundStream Neural Codec: Understanding AI on Audio - Medium, accessed July 16, 2025, https://medium.com/@maercaestro/soundstream-neural-codec-understanding-ai-on-audio-8f1a123b097c

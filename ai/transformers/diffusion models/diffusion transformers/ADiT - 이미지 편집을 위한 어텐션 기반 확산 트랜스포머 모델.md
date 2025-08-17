@@ -334,7 +334,7 @@ DiT 분야의 주요 연구 흐름은 아키텍처의 핵심 속성에서 비롯
 46. Ctrl-Adapter: An Efficient and Versatile Framework for Adapting Diverse Controls to Any Diffusion Model | Jaemin Cho, accessed July 19, 2025, https://j-min.io/publication/ctrl-adapter_iclr2025/
 47. Ctrl-Adapter: An Efficient and Versatile Framework for Adapting Diverse Controls to Any Diffusion Model | Papers With Code, accessed July 19, 2025, https://paperswithcode.com/paper/ctrl-adapter-an-efficient-and-versatile
 48. Ctrl-Adapter: An Efficient and Versatile Framework for Adapting Diverse Controls to Any Diffusion Model | OpenReview, accessed July 19, 2025, https://openreview.net/forum?id=ny8T8OuNHe
-49. dit · GitHub Topics, accessed July 19, 2025, https://github.com/topics/dit
+49. dit / GitHub Topics, accessed July 19, 2025, https://github.com/topics/dit
 50. stepfun-ai/Step1X-Edit: A SOTA open-source image editing model, which aims to provide comparable performance against the closed-source models like GPT-4o and Gemini 2 Flash. - GitHub, accessed July 19, 2025, https://github.com/stepfun-ai/Step1X-Edit
 51. What evaluation metrics are commonly used for diffusion models? - Milvus, accessed July 19, 2025, https://milvus.io/ai-quick-reference/what-evaluation-metrics-are-commonly-used-for-diffusion-models
 52. CLIP score vs FID pareto curves | dalle-mini – Weights & Biases - Wandb, accessed July 19, 2025, https://wandb.ai/dalle-mini/dalle-mini/reports/CLIP-score-vs-FID-pareto-curves--VmlldzoyMDYyNTAy

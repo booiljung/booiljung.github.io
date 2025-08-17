@@ -360,7 +360,7 @@ CNN이 지역적 특징(local feature)을 포착하는 데 탁월한 반면, 트
 22. adityajn105/Face-Recognition-Siamese-Network: A Face Recognition Siamese Network implemented using Keras. Siamese Network is used for one shot learning which do not require extensive training samples for image recognition. - GitHub, accessed July 19, 2025, https://github.com/adityajn105/Face-Recognition-Siamese-Network
 23. How To Train Your Siamese Neural Network | Towards Data Science, accessed July 19, 2025, https://towardsdatascience.com/how-to-train-your-siamese-neural-network-4c6da3259463/
 24. CovidExpert: A Triplet Siamese Neural Network framework for the detection of COVID-19, accessed July 19, 2025, https://pmc.ncbi.nlm.nih.gov/articles/PMC9837208/
-25. Triplet Loss — Deep Learning - FR, accessed July 19, 2025, https://perso.esiee.fr/~chierchg/deep-learning/tutorials/metric/metric-2.html
+25. Triplet Loss - Deep Learning - FR, accessed July 19, 2025, https://perso.esiee.fr/~chierchg/deep-learning/tutorials/metric/metric-2.html
 26. Siamese and triplet networks with online pair/triplet mining in PyTorch - GitHub, accessed July 19, 2025, https://github.com/adambielski/siamese-triplet
 27. Smart Mining for Deep Metric Learning - CVF Open Access, accessed July 19, 2025, https://openaccess.thecvf.com/content_ICCV_2017/papers/Harwood_Smart_Mining_for_ICCV_2017_paper.pdf
 28. Triplet Loss and Online Triplet Mining in TensorFlow | Olivier Moindrot blog, accessed July 19, 2025, https://omoindrot.github.io/triplet-loss
@@ -400,7 +400,7 @@ CNN이 지역적 특징(local feature)을 포착하는 데 탁월한 반면, 트
 62. SimSiam: Streamlining SSL with Stop-Gradient Mechanism, accessed July 19, 2025, https://learnopencv.com/simsiam/
 63. Understanding Collapse in Non-Contrastive Siamese ..., accessed July 19, 2025, https://www.cs.cmu.edu/~dpathak/papers/eccv22.pdf
 64. [Representation Learning] SimSiam: BYOL without the momentum encoder - Youngdo Lee, accessed July 19, 2025, https://leeyngdo.github.io/blog/representation-learning/2023-01-18-simple-siamese-representation-learning/
-65. Review — SimSiam: Exploring Simple Siamese Representation Learning | by Sik-Ho Tsang, accessed July 19, 2025, https://sh-tsang.medium.com/review-simsiam-exploring-simple-siamese-representation-learning-3c84ceb61702
+65. Review - SimSiam: Exploring Simple Siamese Representation Learning | by Sik-Ho Tsang, accessed July 19, 2025, https://sh-tsang.medium.com/review-simsiam-exploring-simple-siamese-representation-learning-3c84ceb61702
 66. ViTCN: Vision Transformer Contrastive Network For Reasoning - arXiv, accessed July 19, 2025, [https://arxiv.org/pdf/2403.09962?](https://arxiv.org/pdf/2403.09962)
 67. arXiv:2403.13677v1 [cs.CV] 20 Mar 2024, accessed July 19, 2025, https://arxiv.org/pdf/2403.13677
 68. [2105.03817] TrTr: Visual Tracking with Transformer - arXiv, accessed July 19, 2025, https://arxiv.org/abs/2105.03817

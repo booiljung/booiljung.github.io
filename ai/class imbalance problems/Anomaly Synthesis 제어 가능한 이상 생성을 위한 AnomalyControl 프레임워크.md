@@ -200,12 +200,12 @@ AnomalyControl 프레임워크들의 등장은 이상 생성 분야의 중요한
 19. Prof. Luigi Di Stefano | Author | University of Bologna - SciProfiles, accessed July 19, 2025, https://sciprofiles.com/profile/1616655
 20. M-3LAB/awesome-industrial-anomaly-detection: Paper list ... - GitHub, accessed July 19, 2025, https://github.com/M-3LAB/awesome-industrial-anomaly-detection
 21. anomalib/docs/source/index.md at main - GitHub, accessed July 19, 2025, https://github.com/openvinotoolkit/anomalib/blob/main/docs/source/index.md
-22. Anomalib — Intel® Edge Insights System Documentation v1.5 documentation, accessed July 19, 2025, https://eiidocs.intel.com/IEdgeInsights/EdgeVideoAnalyticsMicroservice/eii/docs/anomalib_doc.html
-23. Anomalib Documentation — Anomalib documentation, accessed July 19, 2025, https://anomalib.readthedocs.io/
+22. Anomalib - Intel® Edge Insights System Documentation v1.5 documentation, accessed July 19, 2025, https://eiidocs.intel.com/IEdgeInsights/EdgeVideoAnalyticsMicroservice/eii/docs/anomalib_doc.html
+23. Anomalib Documentation - Anomalib documentation, accessed July 19, 2025, https://anomalib.readthedocs.io/
 24. open-edge-platform/anomalib: An anomaly detection library comprising state-of-the-art algorithms and features such as experiment management, hyper-parameter optimization, and edge inference. - GitHub, accessed July 19, 2025, https://github.com/open-edge-platform/anomalib
 25. Anomalib - Comet Docs, accessed July 19, 2025, https://www.comet.com/docs/v2/integrations/third-party-tools/anomalib/
-26. pyod/docs/index.rst at master · yzhao062/pyod - GitHub, accessed July 19, 2025, https://github.com/yzhao062/pyod/blob/master/docs/index.rst
-27. pyod · PyPI, accessed July 19, 2025, https://pypi.org/project/pyod/
+26. pyod/docs/index.rst at master / yzhao062/pyod - GitHub, accessed July 19, 2025, https://github.com/yzhao062/pyod/blob/master/docs/index.rst
+27. pyod / PyPI, accessed July 19, 2025, https://pypi.org/project/pyod/
 28. Python Outlier Detection (PyOD) - PyPI, accessed July 19, 2025, https://pypi.org/project/pyod/0.3.1/
 29. yzhao062/pyod: A Python Library for Outlier and Anomaly Detection, Integrating Classical and Deep Learning Techniques - GitHub, accessed July 19, 2025, https://github.com/yzhao062/pyod
 30. pyod 2.0.5 documentation, accessed July 19, 2025, https://pyod.readthedocs.io/

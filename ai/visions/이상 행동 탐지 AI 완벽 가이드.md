@@ -249,7 +249,7 @@
 9. What is Anomaly Detection| Machine learning used cases - Datrics AI, accessed July 3, 2025, https://www.datrics.ai/articles/anomaly-detection-definition-best-practices-and-use-cases
 10. 이상 징후 탐지 솔루션, Zenius AI의 주요기능과 특장점 - 브레인즈컴퍼니, accessed July 3, 2025, https://www.brainz.co.kr/Various-Topics/view/id/383
 11. 이상 탐지: AI를 통한 사용자 행동 이상 탐지 시스템으로 보안을 강화하고 사기 방지를 효과적으로 실현하는 전략, accessed July 3, 2025, [https://epart.com/%EC%9D%B4%EC%83%81-%ED%83%90%EC%A7%80-ai%EB%A5%BC-%ED%86%B5%ED%95%9C-%EC%82%AC%EC%9A%A9%EC%9E%90-%ED%96%89%EB%8F%99-%EC%9D%B4%EC%83%81-%ED%83%90%EC%A7%80-%EC%8B%9C%EC%8A%A4%ED%85%9C%EC%9C%BC%EB%A1%9C/](https://epart.com/이상-탐지-ai를-통한-사용자-행동-이상-탐지-시스템으로/)
-12. '꼼짝마!'…AI 접목 금융 이상거래 탐지 '한 끗' 차별화 - 지디넷코리아, accessed July 3, 2025, https://zdnet.co.kr/view/?no=20240415092812
+12. '꼼짝마!'...AI 접목 금융 이상거래 탐지 '한 끗' 차별화 - 지디넷코리아, accessed July 3, 2025, https://zdnet.co.kr/view/?no=20240415092812
 13. AI-Powered Anomaly Detection 2024 Ultimate Guide | Boost Efficiency - Rapid Innovation, accessed July 3, 2025, https://www.rapidinnovation.io/post/ai-in-anomaly-detection-for-businesses
 14. [All Around AI 2편] AI 알고리즘의 기본 개념과 작동 원리 - SK하이닉스 뉴스룸, accessed July 3, 2025, https://news.skhynix.co.kr/all-around-ai-2/
 15. Anomaly Detection in Data: Core Principles - Eyer.ai, accessed July 3, 2025, https://www.eyer.ai/blog/anomaly-detection-in-data-core-principles/
@@ -286,7 +286,7 @@
 46. 6강) AI를 활용한 사기 검출 밑 탐지- auto-encoder 예시 - Kaggle, accessed July 3, 2025, https://www.kaggle.com/code/linakeepgoing/6-ai-auto-encoder
 47. Auto Encoder Decoder-Based Anomaly Detection with the Lakehouse Paradigm - YouTube, accessed July 3, 2025, https://www.youtube.com/watch?v=v8dzXskvF6c
 48. Complete Guide to Anomaly Detection with AutoEncoders using Tensorflow, accessed July 3, 2025, https://www.analyticsvidhya.com/blog/2022/01/complete-guide-to-anomaly-detection-with-autoencoders-using-tensorflow/
-49. 3. Autoencoders and anomaly detection — Reproducible Machine Learning for Credit Card Fraud detection - Practical handbook, accessed July 3, 2025, https://fraud-detection-handbook.github.io/fraud-detection-handbook/Chapter_7_DeepLearning/Autoencoders.html
+49. 3. Autoencoders and anomaly detection - Reproducible Machine Learning for Credit Card Fraud detection - Practical handbook, accessed July 3, 2025, https://fraud-detection-handbook.github.io/fraud-detection-handbook/Chapter_7_DeepLearning/Autoencoders.html
 50. Demystifying Neural Networks: Anomaly Detection with AutoEncoder | by Dagang Wei, accessed July 3, 2025, https://medium.com/@weidagang/demystifying-anomaly-detection-with-autoencoder-neural-networks-1e235840d879
 51. [D] Struggling with Autoencoder-Based Anomaly Detection for Fraud Detection – Need Guidance : r/MachineLearning - Reddit, accessed July 3, 2025, https://www.reddit.com/r/MachineLearning/comments/1gl92zm/d_struggling_with_autoencoderbased_anomaly/
 52. 시계열 이상탐지 (1) 배경 지식 - 복습 블로그, accessed July 3, 2025, https://boksup.tistory.com/70
@@ -305,8 +305,8 @@
 65. 킁킁!킁! 어디서 사기 냄새 안나요? : FDS 시스템에 AI 적용하기 - 카카오뱅크 기술블로그, accessed July 3, 2025, https://tech.kakaobank.com/posts/2310-applying-ai-into-fds-system/
 66. AI가 금융 사기를 혁신적으로 막아내다: JP Morgan Chase의 성공 사례 - AI넷, accessed July 3, 2025, [https://m.ainet.link/a.html?uid=17641&sc=](https://m.ainet.link/a.html?uid=17641&sc)
 67. KB국민카드, 인공지능(AI) 기반 이상금융거래 탐지 시스템 고도화 - Korea IT Times, accessed July 3, 2025, https://www.koreaittimes.com/news/articleView.html?idxno=132057
-68. 시중은행, AI로 금융사기 잡는다… FDS 고도화 속도 - IT조선, accessed July 3, 2025, https://it.chosun.com/news/articleView.html?idxno=2023092141612
-69. “멈추기 전에 예측한다”…제조업 게임체인저 'AI 예지보전' - 헬로티, accessed July 3, 2025, https://www.hellot.net/news/article.html?no=101874
+68. 시중은행, AI로 금융사기 잡는다... FDS 고도화 속도 - IT조선, accessed July 3, 2025, https://it.chosun.com/news/articleView.html?idxno=2023092141612
+69. "멈추기 전에 예측한다"...제조업 게임체인저 'AI 예지보전' - 헬로티, accessed July 3, 2025, https://www.hellot.net/news/article.html?no=101874
 70. Predictive Maintenance | Real-World AI - 마키나락스, accessed July 3, 2025, https://www.makinarocks.ai/real-world-ai/predictive-maintenance/
 71. 스마트팩토리 예측 유지보수(예지보전)란 무엇이고, 어떤 이점이 있나요? - AHHA Labs, accessed July 3, 2025, https://ahha.ai/2024/01/08/predictive_maintenance/
 72. AI 기반 산업용 모터 고장 예측 솔루션, accessed July 3, 2025, https://imgnew.megazone.com/2021/09/210915-epapyrus.pdf
@@ -329,7 +329,7 @@
 89. a survey on XAI-based anomaly detection for IoT - TÜBİTAK Academic Journals, accessed July 3, 2025, https://journals.tubitak.gov.tr/cgi/viewcontent.cgi?article=4075&context=elektrik
 90. A Survey on Explainable Anomaly Detection - arXiv, accessed July 3, 2025, https://arxiv.org/pdf/2210.06959
 91. [보고서]설명가능한 인공지능(explainable AI, XAI)의 필요성과 연구 동향, accessed July 3, 2025, https://scienceon.kisti.re.kr/srch/selectPORSrchReport.do?cn=KOSEN000000000001223
-92. [시장동향] 지능화·고도화되는 사이버 위협에 AI 기술로 대응한다 - 컴퓨터월드, accessed July 3, 2025, https://www.comworld.co.kr/news/articleView.html?idxno=50333
+92. [시장동향] 지능화/고도화되는 사이버 위협에 AI 기술로 대응한다 - 컴퓨터월드, accessed July 3, 2025, https://www.comworld.co.kr/news/articleView.html?idxno=50333
 93. (PDF) XAI-IoT: An Explainable AI Framework for Enhancing Anomaly Detection in IoT Systems - ResearchGate, accessed July 3, 2025, https://www.researchgate.net/publication/380672461_XAI-IoT_An_Explainable_AI_Framework_for_Enhancing_Anomaly_Detection_in_IoT_Systems
 94. 신뢰할 수 있는 인공지능? Causal AI 동향 - 브런치스토리, accessed July 3, 2025, https://brunch.co.kr/@95923c1769ee43d/2
 95. What are the privacy concerns in anomaly detection? - Milvus, accessed July 3, 2025, https://milvus.io/ai-quick-reference/what-are-the-privacy-concerns-in-anomaly-detection

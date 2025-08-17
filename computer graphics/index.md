@@ -1,4 +1,6 @@
-# Computer Graphics
+# 컴퓨터 그래픽 (Computer Graphics)
+
+
 
 - [컴퓨터 그래픽 기술의 역사와 분석](컴퓨터 그래픽 기술의 역사와 분석.md)
 - [래스터라이제이션 (Rasterization)](rasterization/index.md)

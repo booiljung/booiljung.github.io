@@ -46,7 +46,7 @@
 
 #### 1.1.2  핵심 개념: 이질성, 연결성, 상호작용
 
-멀티모달 데이터의 복잡성을 이해하기 위해, 카네기멜론 대학의 2022년 연구에서 제시된 세 가지 핵심 개념—이질성, 연결성, 상호작용—을 살펴보는 것은 매우 유용하다.10 이 개념들은 멀티모달 AI가 해결해야 할 근본적인 과제와 기회를 동시에 설명한다.
+멀티모달 데이터의 복잡성을 이해하기 위해, 카네기멜론 대학의 2022년 연구에서 제시된 세 가지 핵심 개념-이질성, 연결성, 상호작용-을 살펴보는 것은 매우 유용하다.10 이 개념들은 멀티모달 AI가 해결해야 할 근본적인 과제와 기회를 동시에 설명한다.
 
 **이질성 (Heterogeneity):** 이질성은 각 모달리티가 고유한 품질, 구조, 그리고 표현 방식을 가진다는 특성을 의미한다.10 예를 들어, 어떤 사건에 대한 텍스트 설명은 동일한 사건을 촬영한 사진과 데이터의 구조, 품질, 정보 밀도 측면에서 근본적으로 다르다.7 텍스트는 순차적이고 상징적인 구조를 가지는 반면, 이미지는 공간적이고 픽셀 기반의 구조를 가진다. 오디오 데이터는 시간적 파형으로 표현되며, 센서 데이터는 수치적 시계열 형태를 띤다. 이러한 이질성은 서로 다른 유형의 데이터를 어떻게 공통된 공간에서 효과적으로 표현하고 통합할 것인가라는 근본적인 기술적 과제를 제기한다.
 
@@ -551,7 +551,7 @@ AI 기술의 국경 없는 특성으로 인해, AI 안전과 거버넌스에 대
 #### **참고 자료**
 
 1. <인사이트> 생성형 AI의 진화, 멀티모달 AI가 비즈니스를 바꾸는 법, accessed July 12, 2025, https://blog.kakaocloud.com/205
-2. “이쯤되니 겁나네”…음식 보여주면 조리법 '뚝딱' 알려준다는데- 매경LUXMEN - 럭스맨, accessed July 11, 2025, https://luxmen.mk.co.kr/news/all/10833458
+2. "이쯤되니 겁나네"...음식 보여주면 조리법 '뚝딱' 알려준다는데- 매경LUXMEN - 럭스맨, accessed July 11, 2025, https://luxmen.mk.co.kr/news/all/10833458
 3. 멀티모달(Multi Modal)AI와 기존 인공지능의 차이점 - 클루닉스, accessed July 11, 2025, https://www.clunix.com/insight/it_trends.php?boardid=ittrend&mode=view&idx=824
 4. [3분 IT 인사이트] 멀티 모달 AI란 과연 무엇인가? 챗GPT와 생성형 AI의 핵심개념 멀티모달과 LLM 소개 생성형 인공지능 원리 강의 - YouTube, accessed July 11, 2025, https://www.youtube.com/watch?v=bTSLDTI-Oh0
 5. 멀티모달 AI란 무엇인가 + 멀티모달 AI의 사용 사례 - Skim AI, accessed July 11, 2025, [https://skimai.com/ko/%EB%A9%80%ED%8B%B0%EB%AA%A8%EB%8B%AC-ai%EC%9D%98-%EC%82%AC%EC%9A%A9-%EC%82%AC%EB%A1%80%EB%9E%80-%EB%AC%B4%EC%97%87%EC%9D%B8%EA%B0%80%EC%9A%94/](https://skimai.com/ko/멀티모달-ai의-사용-사례란-무엇인가요/)
@@ -574,7 +574,7 @@ AI 기술의 국경 없는 특성으로 인해, AI 안전과 거버넌스에 대
 22. What is the role of multimodal AI in self-driving cars? - Zilliz Vector Database, accessed July 12, 2025, https://zilliz.com/ai-faq/what-is-the-role-of-multimodal-ai-in-selfdriving-cars
 23. Top 10 Multimodal Models | Encord, accessed July 12, 2025, https://encord.com/blog/top-multimodal-models/
 24. Making Sense of DALL-E 3 | by Alessandro Amenta | Medium, accessed July 12, 2025, https://medium.com/@alessandroamenta1/making-sense-of-dall-e-3s-magic-08ce61845041
-25. clem/gemini · Model Architecture for Gemini - Hugging Face, accessed July 11, 2025, https://huggingface.co/clem/gemini/discussions/12
+25. clem/gemini / Model Architecture for Gemini - Hugging Face, accessed July 11, 2025, https://huggingface.co/clem/gemini/discussions/12
 26. How to Use DALL-E 3 API for Image Generation? - Analytics Vidhya, accessed July 11, 2025, https://www.analyticsvidhya.com/blog/2024/07/dall-e3/
 27. [D] GPT-4o "natively" multi-modal, what does this actually mean? - Reddit, accessed July 12, 2025, https://www.reddit.com/r/MachineLearning/comments/1crzdhd/d_gpt4o_natively_multimodal_what_does_this/
 28. ChatGPT vs Claude vs Gemini: Showdown of LLMs | by Aayush Man ..., accessed July 12, 2025, https://medium.com/@regmiaayush7/chatgpt-vs-claude-vs-gemini-showdown-of-llms-1fcaf362c8ca

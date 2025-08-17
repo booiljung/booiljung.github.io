@@ -169,7 +169,7 @@ OpenAI는 GPT-4o 시스템 카드(System Card)에 명시된 바와 같이 광범
 - **내장된 안전장치:** 모델은 사전 훈련 데이터 필터링 및 사후 훈련을 통한 모델 행동 개선과 같은 기술을 통해 "설계 단계부터" 안전 기능이 내장되어 있다.3 예를 들어, GPT-4o 미니 모델은 탈옥(jailbreak) 및 프롬프트 주입(prompt injection)에 더 잘 저항하기 위해 '지시 계층(instruction hierarchy)' 방법을 적용한 최초의 모델이다.15
 - **모달리티별 위험:** 이 보고서는 무단 음성 생성 및 화자 식별과 같이 오디오 모달리티가 야기하는 새로운 위험과 이에 대한 완화 조치를 다룬다. 평가 결과, 음성 모달리티는 설득과 같은 '준비성(Preparedness)' 위험을 유의미하게 증가시키지 않는 것으로 결론 내려졌다.5
 
-GPT-4o의 아키텍처는 톤이나 감정과 같은 인간적인 뉘앙스를 포착함으로써 새롭고 더 어려운 정렬 문제를 야기한다. 이는 '정렬의 역설'이라 할 수 있다. 사실적 정확성(텍스트 기반 작업)에 대해 모델을 정렬하는 것은 비교적 간단하다. 하지만 '적절한 감정적 반응'에 대해 정렬하는 것은 주관적이고 문화에 따라 다르며 훨씬 더 복잡하다. 모델을 더 자연스럽게 느끼게 만드는 바로 그 아키텍처적 특징이, 보편적인 인간 가치 체계와 정렬하는 것을 더 어렵게 만드는 것이다. GPT-4o의 종단간 아키텍처는 감정적, 음성적 단서를 인식하고 생성할 수 있게 하여 상호작용을 더 '인간적'으로 만든다.3 RLHF는 인간 주석가의 선호도 피드백에 의존하는데 12, 텍스트의 '좋음'은 사실성이나 유용성과 같은 객관적 척도로 정의될 수 있다. 그러나 멀티모달 출력에서 '좋음'은 훨씬 주관적이 된다. 풍자적인 톤이 '좋은' 것인가 '나쁜' 것인가? 이는 전적으로 맥락, 사용자 성격, 문화적 규범에 달려 있다. 공감적인 반응이 도움이 되는가, 아니면 조종적인가? RLHF에서 인간 피드백의 문제점들—주관성, 편향, 비일관성 36—은 텍스트에서 미묘한 멀티모달 행동으로 이동하면서 기하급수적으로 증폭된다. 따라서 더 '인간적인' 모델을 만드는 아키텍처적 성공은 직접적으로 '인간 수준의' 정렬 문제를 야기한다. 공학적 해결책(통합 모델)이 새로운, 더 어려운 사회과학적 문제(멀티모달 선호도를 정의하고 확장하는 것)를 만들어낸 것이다. 이는 미래의 발전이 컴퓨터 과학만큼이나 사회과학과 윤리학의 진보에 달려있음을 시사한다.
+GPT-4o의 아키텍처는 톤이나 감정과 같은 인간적인 뉘앙스를 포착함으로써 새롭고 더 어려운 정렬 문제를 야기한다. 이는 '정렬의 역설'이라 할 수 있다. 사실적 정확성(텍스트 기반 작업)에 대해 모델을 정렬하는 것은 비교적 간단하다. 하지만 '적절한 감정적 반응'에 대해 정렬하는 것은 주관적이고 문화에 따라 다르며 훨씬 더 복잡하다. 모델을 더 자연스럽게 느끼게 만드는 바로 그 아키텍처적 특징이, 보편적인 인간 가치 체계와 정렬하는 것을 더 어렵게 만드는 것이다. GPT-4o의 종단간 아키텍처는 감정적, 음성적 단서를 인식하고 생성할 수 있게 하여 상호작용을 더 '인간적'으로 만든다.3 RLHF는 인간 주석가의 선호도 피드백에 의존하는데 12, 텍스트의 '좋음'은 사실성이나 유용성과 같은 객관적 척도로 정의될 수 있다. 그러나 멀티모달 출력에서 '좋음'은 훨씬 주관적이 된다. 풍자적인 톤이 '좋은' 것인가 '나쁜' 것인가? 이는 전적으로 맥락, 사용자 성격, 문화적 규범에 달려 있다. 공감적인 반응이 도움이 되는가, 아니면 조종적인가? RLHF에서 인간 피드백의 문제점들-주관성, 편향, 비일관성 36-은 텍스트에서 미묘한 멀티모달 행동으로 이동하면서 기하급수적으로 증폭된다. 따라서 더 '인간적인' 모델을 만드는 아키텍처적 성공은 직접적으로 '인간 수준의' 정렬 문제를 야기한다. 공학적 해결책(통합 모델)이 새로운, 더 어려운 사회과학적 문제(멀티모달 선호도를 정의하고 확장하는 것)를 만들어낸 것이다. 이는 미래의 발전이 컴퓨터 과학만큼이나 사회과학과 윤리학의 진보에 달려있음을 시사한다.
 
 ## 6.  GPT-4o 제품군: 아키텍처, 압축 및 전략적 다각화
 
@@ -274,7 +274,7 @@ GPT-4o의 아키텍처는 미래 AI 발전의 길을 열어준다. 낮은 지연
 21. Everything We Know About GPT-4 - Klu.ai, accessed July 24, 2025, https://klu.ai/blog/gpt-4-llm
 22. Did we grossly overestimate the GPT4 parameters? : r/mlscaling - Reddit, accessed July 24, 2025, https://www.reddit.com/r/mlscaling/comments/1ebt2ut/did_we_grossly_overestimate_the_gpt4_parameters/
 23. Mixture of Experts LLMs: Key Concepts Explained - neptune.ai, accessed July 24, 2025, https://neptune.ai/blog/mixture-of-experts-llms
-24. Demystify GPT-4. GPT-4 shows significantly improved… | by Yan Xu | Medium, accessed July 24, 2025, https://medium.com/@YanAIx/demystify-gpt-4-58b332a4c731
+24. Demystify GPT-4. GPT-4 shows significantly improved... | by Yan Xu | Medium, accessed July 24, 2025, https://medium.com/@YanAIx/demystify-gpt-4-58b332a4c731
 25. Avoidable and Unavoidable Randomness in GPT-4o | Towards Data Science, accessed July 24, 2025, https://towardsdatascience.com/avoidable-and-unavoidable-randomness-in-gpt-4o/
 26. Non-determinism in GPT-4 is caused by Sparse MoE - 152334H, accessed July 24, 2025, https://152334h.github.io/blog/non-determinism-in-gpt-4/
 27. This isn't true, GPT4 is not a mixture of experts model. I'm on a quixotic missi... | Hacker News, accessed July 24, 2025, https://news.ycombinator.com/item?id=36892374

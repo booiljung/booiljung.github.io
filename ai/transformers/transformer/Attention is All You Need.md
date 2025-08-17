@@ -210,8 +210,8 @@ $$
 23. What are Transformers? - Transformers in Artificial Intelligence Explained - AWS, 8월 16, 2025에 액세스, https://aws.amazon.com/what-is/transformers-in-artificial-intelligence/
 24. Transformer Architecture: The Positional Encoding - Amirhossein Kazemnejad's Blog, 8월 16, 2025에 액세스, https://kazemnejad.com/blog/transformer_architecture_positional_encoding/
 25. What is the positional encoding in the transformer model? - Data Science Stack Exchange, 8월 16, 2025에 액세스, https://datascience.stackexchange.com/questions/51065/what-is-the-positional-encoding-in-the-transformer-model
-26. “Attention Is All You Need” Explained | by Zaynab Awofeso | CodeX - Medium, 8월 16, 2025에 액세스, https://medium.com/codex/attention-is-all-you-need-explained-ebdb02c7f4d4
-27. Transformer Clear Explanation: Attention Is All You Need! — 2017 | by Jinpeng Zhang, 8월 16, 2025에 액세스, https://dataturbo.medium.com/transformer-attention-is-all-you-need-fe6205c5be33
+26. "Attention Is All You Need" Explained | by Zaynab Awofeso | CodeX - Medium, 8월 16, 2025에 액세스, https://medium.com/codex/attention-is-all-you-need-explained-ebdb02c7f4d4
+27. Transformer Clear Explanation: Attention Is All You Need! - 2017 | by Jinpeng Zhang, 8월 16, 2025에 액세스, https://dataturbo.medium.com/transformer-attention-is-all-you-need-fe6205c5be33
 28. The Transformer Architecture, 8월 16, 2025에 액세스, https://www.auroria.io/the-transformer-architecture/
 29. Jay Alammar – Visualizing machine learning one concept at a time., 8월 16, 2025에 액세스, https://jalammar.github.io/
 30. Foundation Models, Transformers, BERT and GPT | Niklas Heidloff, 8월 16, 2025에 액세스, https://heidloff.net/article/foundation-models-transformers-bert-and-gpt/

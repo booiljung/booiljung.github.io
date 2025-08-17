@@ -201,7 +201,7 @@ Perceiver IO에서 HiP로 이어지는 연구의 흐름은 AI 아키텍처 발�
 #### **참고 자료**
 
 1. Transformer (deep learning architecture) - Wikipedia, 8월 16, 2025에 액세스, https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)
-2. Transformer Clear Explanation: Attention Is All You Need! — 2017 | by Jinpeng Zhang, 8월 16, 2025에 액세스, https://dataturbo.medium.com/transformer-attention-is-all-you-need-fe6205c5be33
+2. Transformer Clear Explanation: Attention Is All You Need! - 2017 | by Jinpeng Zhang, 8월 16, 2025에 액세스, https://dataturbo.medium.com/transformer-attention-is-all-you-need-fe6205c5be33
 3. Attention Mechanism Complexity Analysis | by Mridul Rao | Medium, 8월 16, 2025에 액세스, https://medium.com/@mridulrao674385/attention-mechanism-complexity-analysis-7314063459b1
 4. Understanding and Coding the Self-Attention Mechanism of Large Language Models From Scratch - Sebastian Raschka, 8월 16, 2025에 액세스, https://sebastianraschka.com/blog/2023/self-attention-from-scratch.html
 5. On The Computational Complexity of Self-Attention - Proceedings of Machine Learning Research, 8월 16, 2025에 액세스, https://proceedings.mlr.press/v201/duman-keles23a/duman-keles23a.pdf
@@ -209,7 +209,7 @@ Perceiver IO에서 HiP로 이어지는 연구의 흐름은 AI 아키텍처 발�
 7. Perceiver - Hugging Face, 8월 16, 2025에 액세스, https://huggingface.co/docs/transformers/model_doc/perceiver
 8. [D] Paper Explained - Perceiver: General Perception with Iterative Attention (Full Video Analysis) : r/MachineLearning - Reddit, 8월 16, 2025에 액세스, https://www.reddit.com/r/MachineLearning/comments/matg19/d_paper_explained_perceiver_general_perception/
 9. Perceiver: General Perception with Iterative Attention (Google DeepMind Research Paper Explained) - YouTube, 8월 16, 2025에 액세스, https://www.youtube.com/watch?v=P_xeshTnPZg&pp=0gcJCfwAo7VqN5tD
-10. The Annotated Perceiver. A detailed PyTorch tutorial for the… | by Curt Tigges - Medium, 8월 16, 2025에 액세스, https://medium.com/@curttigges/the-annotated-perceiver-74752113eefb
+10. The Annotated Perceiver. A detailed PyTorch tutorial for the... | by Curt Tigges - Medium, 8월 16, 2025에 액세스, https://medium.com/@curttigges/the-annotated-perceiver-74752113eefb
 11. Perceiver IO: a scalable, fully-attentional model that works on any modality - Hugging Face, 8월 16, 2025에 액세스, https://huggingface.co/blog/perceiver
 12. Perceiver: General Perception with Iterative Attention, 8월 16, 2025에 액세스, http://proceedings.mlr.press/v139/jaegle21a/jaegle21a.pdf
 13. General Perception with Iterative Attention - Perceiver - arXiv, 8월 16, 2025에 액세스, https://arxiv.org/pdf/2103.03206
@@ -223,7 +223,7 @@ Perceiver IO에서 HiP로 이어지는 연구의 흐름은 AI 아키텍처 발�
 21. [2107.14795] Perceiver IO: A General Architecture for Structured Inputs & Outputs - ar5iv, 8월 16, 2025에 액세스, https://ar5iv.labs.arxiv.org/html/2107.14795
 22. PERCEIVER IO: A GENERAL ARCHITECTURE FOR STRUCTURED INPUTS & OUTPUTS - OpenReview, 8월 16, 2025에 액세스, https://openreview.net/pdf?id=fILj7WpI-g
 23. DeepMind Perceiver and Perceiver IO | Paper Explained - YouTube, 8월 16, 2025에 액세스, https://www.youtube.com/watch?v=WJWBq4NZfvY
-24. Perceiver IO — Paper Summary, 8월 16, 2025에 액세스, https://medium.com/ml-summaries/perceiver-io-paper-summary-e8f28e451d21
+24. Perceiver IO - Paper Summary, 8월 16, 2025에 액세스, https://medium.com/ml-summaries/perceiver-io-paper-summary-e8f28e451d21
 25. Perceiver IO: A General Architecture for Structured Inputs & Outputs | OpenReview, 8월 16, 2025에 액세스, https://openreview.net/forum?id=fILj7WpI-g
 26. Perceiver - Wikipedia, 8월 16, 2025에 액세스, https://en.wikipedia.org/wiki/Perceiver
 27. Perceiver IO: A General Architecture for Structured Inputs & Outputs by Deepmind. Explained! | by Gaurav Chauhan | Analytics Vidhya | Medium, 8월 16, 2025에 액세스, https://medium.com/analytics-vidhya/perceiver-io-a-general-architecture-for-structured-inputs-outputs-4ad669315e7f

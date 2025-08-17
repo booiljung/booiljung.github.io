@@ -4,7 +4,7 @@
 
 ## 1.  생성형 AI의 세 가지 기둥의 융합
 
-생성형 인공지능(AI) 분야는 지난 몇 년간 눈부신 발전을 거듭해왔으며, 그 중심에는 서로 다른 기술적 패러다임의 창의적 융합이 자리 잡고 있습니다. 특히, 확산 트랜스포머 전문가 혼합(Diffusion Transformer with Mixture-of-Experts, DiT-MoE) 모델의 등장은 이러한 융합의 정점을 보여주는 사례입니다. 이 모델은 단순히 기존 기술들을 조합한 것을 넘어, 각 기술의 본질적인 장점을 극대화하고 단점을 보완하며 생성 모델링의 새로운 지평을 열었습니다. DiT-MoE를 심층적으로 이해하기 위해서는 그 근간을 이루는 세 가지 핵심 기술—확산 모델, 트랜스포머 아키텍처, 그리고 전문가 혼합—이 각각 어떻게 발전해왔고, 왜 이들의 만남이 필연적이었는지를 먼저 고찰해야 합니다.
+생성형 인공지능(AI) 분야는 지난 몇 년간 눈부신 발전을 거듭해왔으며, 그 중심에는 서로 다른 기술적 패러다임의 창의적 융합이 자리 잡고 있습니다. 특히, 확산 트랜스포머 전문가 혼합(Diffusion Transformer with Mixture-of-Experts, DiT-MoE) 모델의 등장은 이러한 융합의 정점을 보여주는 사례입니다. 이 모델은 단순히 기존 기술들을 조합한 것을 넘어, 각 기술의 본질적인 장점을 극대화하고 단점을 보완하며 생성 모델링의 새로운 지평을 열었습니다. DiT-MoE를 심층적으로 이해하기 위해서는 그 근간을 이루는 세 가지 핵심 기술-확산 모델, 트랜스포머 아키텍처, 그리고 전문가 혼합-이 각각 어떻게 발전해왔고, 왜 이들의 만남이 필연적이었는지를 먼저 고찰해야 합니다.
 
 ### 1.1  노이즈 제거 확산 프로세스: 확률 모델에서 잠재 공간 생성까지
 
@@ -229,7 +229,7 @@ DiT-MoE는 확장 가능한 트랜스포머 아키텍처와 조건부 연산의 
 27. Routers in Vision Mixture of Experts: An Empirical Study - arXiv, accessed July 19, 2025, https://arxiv.org/pdf/2401.15969
 28. Mixture of Experts vs Mixture of Tokens: Making LLMs more efficient | SuperAnnotate, accessed July 19, 2025, https://www.superannotate.com/blog/mixture-of-experts-vs-mixture-of-tokens
 29. EC-DiT: Scaling Diffusion Transformers with Adaptive Expert-Choice Routing - arXiv, accessed July 19, 2025, https://arxiv.org/html/2410.02098v5
-30. At the Frontier of AI: Reviewing Top Papers on Mixture of Experts in Machine Learning — Part 5 - Isaac Kargar, accessed July 19, 2025, https://kargarisaac.medium.com/at-the-frontier-of-ai-reviewing-top-papers-on-mixture-of-experts-in-machine-learning-part-5-ee939dc91409
+30. At the Frontier of AI: Reviewing Top Papers on Mixture of Experts in Machine Learning - Part 5 - Isaac Kargar, accessed July 19, 2025, https://kargarisaac.medium.com/at-the-frontier-of-ai-reviewing-top-papers-on-mixture-of-experts-in-machine-learning-part-5-ee939dc91409
 31. EC-DIT: Scaling Diffusion Transformers with Adaptive Expert-Choice Routing, accessed July 19, 2025, https://machinelearning.apple.com/research/ec-dit
 32. Diff-MoE: Diffusion Transformer with Time-Aware and Space-Adaptive Experts, accessed July 19, 2025, [https://openreview.net/forum?id=JCUsWrwkKw¬eId=ePj1dx5LWg](https://openreview.net/forum?id=JCUsWrwkKw&noteId=ePj1dx5LWg)
 33. Diff-MoE: Diffusion Transformer with Time-Aware and Space-Adaptive Experts - ICML 2025, accessed July 19, 2025, https://icml.cc/virtual/2025/poster/45706
