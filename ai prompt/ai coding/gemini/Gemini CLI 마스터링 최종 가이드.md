@@ -1,4 +1,4 @@
-# Gemini CLI 마스터링 최종 가이드:
+# Gemini CLI 마스터링 최종 가이드
 
 ### 0.1  Gemini 커맨드 라인 인터페이스의 기초
 
