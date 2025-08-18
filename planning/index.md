@@ -2,6 +2,9 @@
 
 
 
+- [동적계획법 (Dynamic Programming, DP)](동적계획법.md)
+
+
 - [임무 계획 (Mission Planning)](mission planning/index.md)
 - [경로 계획 (Path Planning)](path planning/index.md)
 - [모션 계획 (Motion Planning)](motion planning/index.md)

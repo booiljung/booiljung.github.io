@@ -37,6 +37,7 @@
 - [인공지능 훈련 데이터의 클래스 불균형 문제](class imbalance problems/index.md)
 - [비전 AI](visions/index.md)
 - [장면인식 인공지능 (Scene Recognition AI)](장면인식/index.md)
+- [얼굴인식 문제](face recognitions/index.md)
 
 
 # 평가
