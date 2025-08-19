@@ -2,5 +2,4 @@
 
 
 
-- [NVidia Jetson](jetson/index.md)
-- [GC NVIDIA GPU Cloud.md](NVidia/index.md)
+- [NVIDIA 제품](NVidia/index.md)

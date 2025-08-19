@@ -9,6 +9,7 @@
 
 
 
+- [딥러닝 모듈 (Modules)](modules/index.md)
 - [토큰화 (Tokenizations)](tokenizations/index.md)
 - [확산 모델 (Diffusion Model)](diffusion models/index.md)
 - [적대적 생성 신경망](gan/index.md)

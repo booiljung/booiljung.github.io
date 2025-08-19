@@ -6,6 +6,9 @@
 
 
 
+- [Visual Place Recognition을 위한 딥 메트릭 러닝](Visual Place Recognition을 위한 딥 메트릭 러닝.md)
+
+
 - [CVTNet (LiDAR 기반 위치 인식을 위한 크로스뷰 트랜스포머 네트워크)](CVTNet.md)
 - [NetVLAD와 시각 항법 기술에 대한 인간을 위한 안내서](NetVLAD와 시각 항법 기술에 대한 인간을 위한 안내서.md)
 - [Patch-NetVLAD](Patch-NetVLAD.md)

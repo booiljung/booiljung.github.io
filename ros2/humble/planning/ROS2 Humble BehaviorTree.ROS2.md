@@ -136,19 +136,11 @@ XML
 
 이러한 '구현과 정의의 분리'는 C++ 개발자가 견고하고 재사용 가능한 행동 기본 단위(action primitives)를 만드는 데 집중하게 하고, 시스템 통합 담당자나 비프로그래머가 코드를 재컴파일하지 않고도 XML 파일 수정만으로 로봇의 행동을 재구성할 수 있게 해준다. 이는 개발 및 실험 속도를 극적으로 향상시키는 강력한 아키텍처 패턴이다.4
 
-
-
 ## 2.  BehaviorTree.ROS2: ROS2 생태계와의 완벽한 통합
-
-
 
 `BehaviorTree.CPP`가 강력한 범용 BT 라이브러리라면, `BehaviorTree.ROS2`는 이를 ROS2 생태계와 매끄럽게 연결하는 핵심적인 다리 역할을 하는 패키지다.17 이 패키지는 ROS2의 통신 메커니즘(Action, Service, Topic)을 BT 노드로 쉽게 래핑(wrapping)할 수 있는 표준화된 방법을 제공한다.
 
-
-
 ### 2.1 A. 패키지 아키텍처 및 설계 목표
-
-
 
 `BehaviorTree.ROS2`의 설계 목표는 명확하다. 첫째, ROS2와의 상호작용에 필요한 상용구 코드(boilerplate code)를 최소화하는 것이다. 둘째, 그리고 가장 중요한 것은, ROS2의 비동기 통신을 BT의 틱 기반 실행 모델에 맞춰 비차단(non-blocking) 방식으로 처리하는 것이다.17
 
@@ -158,11 +150,7 @@ XML
 
 권장되는 시스템 아키텍처는 BT를 실행하는 중앙 집중식 '코디네이터(Coordinator)' 또는 '작업 플래너(Task Planner)' ROS 노드를 두고, 로봇의 다른 기능들(예: 경로 계획, 물체 인식)은 독립적인 Action 또는 Service 서버로 구현하는 것이다.18 BT는 이 서버들을 호출하여 전체 작업을 조율하는 역할을 맡는다.
 
-
-
 ### 2.2 B. ROS2 Action 래퍼 심층 분석 (`RosActionNode`)
-
-
 
 `RosActionNode` 래퍼는 `BehaviorTree.ROS2`에서 가장 중요하고 정교한 구성 요소다. 이는 BT의 동기적, 폴링(polling) 기반의 `tick()`과 ROS2 Action의 비동기적, 이벤트 기반 통신 모델 사이의 근본적인 충돌을 우아하게 해결한다.
 

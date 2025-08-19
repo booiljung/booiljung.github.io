@@ -1,4 +1,4 @@
-# ROS2 Humble Planning
+# ROS2 Humble 행동(임무) 계획 및 관리
 
 
 
@@ -22,7 +22,6 @@
 
 
 
+- [ROS2 Humble의 PlanSys2](ROS2 Humble PlanSys2.md)
 - [ROS2 Humble에서의 BehaviorTree.ROS2](ROS2 Humble BehaviorTree.ROS2.md)
 - [ROS2 Humble 환경에서의 SMACC2](ROS2 Humble SMACC2.md)
-
-

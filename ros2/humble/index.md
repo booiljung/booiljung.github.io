@@ -22,7 +22,7 @@
 - [ROS2 Humble 완벽 공략 URDF 마스터하기](ROS2 Humble 완벽 공략 URDF 마스터하기.md)
 
 
-- [ROS2 Humble Planning](planning/index.md)
+- [ROS2 Humble 행동(임무) 계획 및 관리](planning/index.md)
 
 
 - [ROS2 Humble 애플리케이션의 Balena 플랫폼 배포](ROS2 Humble 애플리케이션의 Balena 플랫폼 배포.md)
