@@ -12,6 +12,9 @@
 - [NVIDIA OVX 플랫폼](NVIDIA OVX 플랫폼.md)
 
 
+- [NVIDIA Brev Blackwell 시대의 AI 개발 패러다임](NVIDIA Brev.md)
+
+
 ## 캐리어 보드
 
 

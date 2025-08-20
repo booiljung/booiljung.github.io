@@ -10,8 +10,10 @@
 - [트랜스포머 아키텍처 2](트랜스포머 아키텍처 2.md)
 - [어텐션 메커니즘에 대한 심층 분석](어텐션 메커니즘.md)
 - [셀프 어텐션 메커니즘에 대한 심층 고찰](셀프 어텐션 메커니즘.md)
+- [Scaled Dot-Product Attention](Scaled Dot-Product Attention.md)
 - [Attention is All You Need](Attention is All You Need.md)
 - [크로스 어텐션 메커니즘](크로스 어텐션 메커니즘.md)
+- [셀프 어텐션과 교차 어텐션에 대한 비교](셀프 어텐션과 교차 어텐션에 대한 비교.md)
 
 
 ## 효율 추구
