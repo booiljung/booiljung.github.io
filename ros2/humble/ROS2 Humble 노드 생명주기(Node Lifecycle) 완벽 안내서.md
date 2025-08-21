@@ -49,6 +49,64 @@ ROS2의 생명주기 구현은 두 가지 종류의 상태를 구분한다: `Pri
 
 생명주기 FSM은 4개의 주요 상태, 6개의 전환 상태, 그리고 1개의 오류 처리 상태로 구성된다. 각 상태의 목적, 허용된 작업, 그리고 유효한 전환 경로는 ROS2 설계 문서에 명확히 정의되어 있다.4
 
+```mermaid
+graph LR
+   subgraph "주요 상태"
+       Unconfigured
+       Inactive
+       Active
+       Finalized
+   end
+
+   subgraph "전환"
+       Configuring
+       CleaningUp
+       Activating
+       Deactivating
+       ShuttingDown
+       ShuttingDownError
+   end
+
+   Start --> Unconfigured
+   Unconfigured -- configure() / on_configure() Succeeded --> Inactive
+   Unconfigured -- configure() / on_configure() Failed --> Unconfigured
+   Unconfigured -- configure() / on_error() --> Unconfigured
+
+   Inactive -- activate() / on_activate() Succeeded --> Active
+   Inactive -- activate() / on_activate() Failed --> Inactive
+   Inactive -- activate() / on_error() --> Unconfigured
+
+   Active -- deactivate() / on_deactivate() Succeeded --> Inactive
+   Active -- deactivate() / on_deactivate() Failed --> Active
+   Active -- deactivate() / on_error() --> Unconfigured
+
+   Inactive -- cleanup() / on_cleanup() Succeeded --> Unconfigured
+   Inactive -- cleanup() / on_cleanup() Failed --> Inactive
+   Inactive -- cleanup() / on_error() --> Unconfigured
+
+   subgraph "종료"
+       AnyState -- shutdown() --> ShuttingDown
+       ShuttingDown -- on_shutdown() --> Finalized
+       Finalized --> End
+   end
+
+   subgraph "오류 처리"
+       AnyState -- Error 발생 --> ShuttingDownError
+       ShuttingDownError -- on_error() 처리 후 --> Finalized
+   end
+
+   style Start fill:#fff,stroke:#333,stroke-width:2px
+   style End fill:#fff,stroke:#333,stroke-width:2px
+
+   classDef primary fill:#f9f,stroke:#333,stroke-width:2px
+   classDef transition fill:#ccf,stroke:#333,stroke-width:2px
+
+   class Unconfigured,Inactive,Active,Finalized primary
+   class Configuring,CleaningUp,Activating,Deactivating,ShuttingDown,ShuttingDownError transition
+   class Start,End endpoint
+   class AnyState primary,transition
+```
+
 #### 2.2.1 주요 상태 (Primary States)
 
 - **`Unconfigured`**: 노드가 인스턴스화된 직후의 초기 상태다. 오류 발생 후 복구를 위해 돌아오는 상태이기도 하다. 이 상태에서는 어떠한 리소스도 할당되거나 설정되지 않은 상태여야 한다.
@@ -71,12 +129,10 @@ ROS2의 생명주기 구현은 두 가지 종류의 상태를 구분한다: `Pri
 
 #### 2.2.3 오류 처리 상태 (Error-Handling State)
 
-- **`ErrorProcessing`**: 전환 콜백이 `FAILURE`나 `ERROR`를 반환하거나, 처리되지 않은 예외를 던질 때 진입하는 중요한 상태다.4 이 상태에서는 
-
-  `onError()` 콜백이 호출된다.
+- **`ErrorProcessing`**: 전환 콜백이 `FAILURE`나 `ERROR`를 반환하거나, 처리되지 않은 예외를 던질 때 진입하는 중요한 상태다.4 이 상태에서는 `onError()` 콜백이 호출된다.
 
   - **복구**: `onError()` 콜백이 `SUCCESS`를 반환하면, 노드는 모든 상태를 정리하고 `Unconfigured` 상태로 전환되어 복구를 시도할 수 있다.
-  - **실패**: `onError()` 콜백이 `FAILURE`를 반환하거나(기본 동작), 또 다른 오류가 발생하면 노드는 복구 불가능으로 판단되어 `Finalized` 상태로 전환된다.
+- **실패**: `onError()` 콜백이 `FAILURE`를 반환하거나(기본 동작), 또 다른 오류가 발생하면 노드는 복구 불가능으로 판단되어 `Finalized` 상태로 전환된다.
 
 이러한 FSM의 구조는 로봇 시스템이 예기치 않은 오류에 직면했을 때 무질서하게 붕괴하는 대신, 예측 가능하고 제어된 방식으로 대응할 수 있는 견고한 기반을 제공한다.
 
