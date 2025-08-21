@@ -17,8 +17,8 @@
 
 
 
-- [컴퓨터 아키텍처](architectures/index.md)
-- [개발 방법](development methods/index.md)
+- [컴퓨터 아키텍처 (Computer Architectures)](architectures/index.md)
+- [개발 방법론 (Development Methods)](development methods/index.md)
 - [git](git/index.md)
 - [소프트웨어 공학 (Software Engineering)](software engeering/index.md)
 
@@ -66,7 +66,7 @@
 
 
 
-- [데이터베이스](databases/index.md)
+- [데이터베이스 관리 시스템 (Database Management System)](databases/index.md)
 
 
 ## 통신

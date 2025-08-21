@@ -1,4 +1,4 @@
-# 개발 방법
+# 개발 방법론 (Development Methods)
 
 
 

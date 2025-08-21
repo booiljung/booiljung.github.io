@@ -1,4 +1,4 @@
-# 컴퓨터 아키텍처
+# 컴퓨터 아키텍처 (Computer Architectures)
 
 
 
