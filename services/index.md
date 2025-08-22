@@ -1,6 +1,8 @@
-# 서비스 (Services)
-
-
+---
+layout: page
+title: 서비스 (Services)
+permalink: /services/index.md
+---
 
 - [API Gateway](api gateway/index.md)
 - [인증](authorizations/index.md)

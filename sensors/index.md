@@ -1,6 +1,8 @@
-# 센서 (Sensors)
-
-
+---
+layout: page
+title: 센서 (Sensors)
+permalink: /sensors/index.md
+---
 
 - [Camera](camera/index.md)
 - [특징점 기술](feature descriptor/index.md)
@@ -13,5 +15,4 @@
 - [포인트 클라우드](point cloud/index.md)
 - [레이더](radar/index.md)
 - [스테레오 카메라 (Stereo Camera)](stereo camera/index.md)
-
 

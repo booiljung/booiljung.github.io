@@ -1,9 +1,9 @@
-# 오디오 (Audio) 트랜스포머
-
-
+---
+layout: page
+title: 오디오 (Audio) 트랜스포머
+permalink: /ai/transformers/transformer applications/audio/index.md
+---
 
 오디오 데이터를 처리하기 위한 신경망 코덱과 토큰화 기술을 탐구한다. 트랜스포머 기반 모델이 오디오 신호를 어떻게 처리하는지 이해할 수 있다.
-
-
 
 - [신경망 오디오 코덱과 토큰화](신경망 오디오 코덱과 토큰화.md)

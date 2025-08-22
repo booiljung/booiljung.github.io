@@ -1,6 +1,8 @@
-# 정보이론 (Information Theory)
-
-
+---
+layout: page
+title: 정보이론 (Information Theory)
+permalink: /information theory/index.md
+---
 
 - [정보 이론](정보 이론.md)
 - [Shannon-Hartley Theorem](섀넌-하틀리 정리.md)

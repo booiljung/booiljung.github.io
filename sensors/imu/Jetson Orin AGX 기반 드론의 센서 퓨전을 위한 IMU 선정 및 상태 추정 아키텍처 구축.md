@@ -1,14 +1,15 @@
-# Jetson Orin AGX 기반 드론의 센서 퓨전을 위한 IMU 선정 및 상태 추정 아키텍처 구축
+---
+layout: page
+title: Jetson Orin AGX 기반 드론의 센서 퓨전을 위한 IMU 선정 및 상태 추정 아키텍처 구축
+permalink: /sensors/imu/Jetson Orin AGX 기반 드론의 센서 퓨전을 위한 IMU 선정 및 상태 추정 아키텍처 구축
+---
 
-## 1. 문제 정의 및 해결 전략
 
-### 1.1  과제 개요
 
 이 보고서는 NVIDIA Jetson Orin AGX를 메인 컴퓨터로 사용하는 드론의 상태(위치, 속도, 자세, 각속도)를 정밀하게 추정하는 과제를 다룬다. 본 과제의 핵심적인 기술적 난제는 GPS 데이터의 수신 방식에 있다. GPS 수신기로부터 직접 데이터를 받는 것이 아니라, Flight Controller(FC)를 경유하여 수신하기 때문에 상당한 시간 지연(latency)이 발생하며, 이로 인해 데이터의 신뢰성에 문제가 발생한다. 이러한 지연된 데이터는 표준적인 센서 퓨전 알고리즘, 특히 칼만 필터 계열의 알고리즘에 적용될 경우 필터의 성능을 저하시키거나 심각한 경우 발산(divergence)시켜 시스템 전체를 불안정하게 만들 수 있다.
 
 따라서 본 보고서는 이러한 제약 조건 하에서 드론의 상태를 강건하고(robust) 정확하게 추정하기 위한 포괄적인 해결책을 제시하는 것을 목표로 한다. 구체적으로, Xsens MTi 센서를 ROS2(Robot Operating System 2) 환경에서 활용하여 지연된 GPS 데이터를 효과적으로 융합하는 전체 아키텍처와 구현 방법을 상세히 기술한다. 요구사항은 명확하다: 최소 200Hz 이상의 데이터 출력률을 지원하고, 검증된 ROS2 드라이버를 제공하는 완제품 IMU를 특정하여 도입 비용과 함께 제시해야 한다.
 
-### 1.2  접근 전략: 이중 EKF 아키텍처와 지연 보상
 
 이 문제에 대한 해결책으로, ROS 생태계에서 표준으로 자리 잡은 `robot_localization` 패키지를 활용한 '이중 확장 칼만 필터(Dual Extended Kalman Filter)' 아키텍처를 제안한다. 이 접근법은 로보틱스 분야에서 널리 사용되는 모범 사례(best practice)로, 두 종류의 데이터를 분리하여 처리하는 것이 핵심이다. 첫 번째 필터는 IMU와 같이 빠르고 연속적인 데이터를 처리하여 부드러운 단기적 움직임을 추정하고, 두 번째 필터는 첫 번째 필터의 결과와 GPS처럼 느리고 지연이 있지만 절대적인 기준을 제공하는 데이터를 융합하여 전역적인 오차를 보정한다.
 
@@ -16,9 +17,7 @@
 
 따라서 본 보고서는 Xsens MTi 센서를 활용한 이중 EKF 아키텍처 설계, 그리고 최종적으로 Jetson Orin AGX 기반의 ROS2 시스템에 통합하고 검증하는 전 과정을 포괄하는 엔지니어링 가이드를 제공할 것이다.
 
-## 2.  IMU 센서 선정: Xsens MTi
 
-### 2.1  핵심 요구사항 심층 분석
 
 드론의 성공적인 상태 추정을 위해 IMU 센서는 다음 세 가지 핵심 요구사항을 반드시 만족해야 한다.
 
@@ -28,7 +27,6 @@
 
 **완제품(COTS) 및 PCB 불필요**: 이 요구사항은 연구 및 개발의 초점을 소프트웨어와 알고리즘에 맞추기 위함이다. 별도의 전원 회로나 인터페이스 회로를 설계하고 제작하는 과정 없이, USB나 RS-232와 같은 표준 인터페이스를 통해 Jetson Orin AGX에 바로 연결하여 사용할 수 있는 완제품 형태여야 한다.
 
-### 2.2  추천 센서: Movella (Xsens) MTi 시리즈
 
 **개요**: Movella사의 Xsens MTi 시리즈는 소형 폼팩터와 우수한 성능으로 로보틱스 분야에서 널리 사용된다. 요구사항에 부합하는 모델로는 MTi-1 (IMU), MTi-2 (VRU), MTi-3 (AHRS) 등이 있으며, 이 중 MTi-3는 내장 필터를 통해 안정적인 자세 정보를 제공하는 AHRS(Attitude and Heading Reference System)이다.
 
@@ -36,15 +34,12 @@
 
 **ROS2 지원**: Xsens는 공식 MT Software Suite 내에 ROS 드라이버를 포함하여 배포한다. 또한, GitHub에는 커뮤니티에서 개발하고 유지보수하는 여러 버전의 ROS2 드라이버가 존재한다. 공식 드라이버와 3rd-party 드라이버 중 프로젝트의 ROS 배포판 및 요구사항에 더 적합한 것을 선택해야 하며, 호환성 확인이 필요하다.
 
-### 2.3  Xsens MTi 채택의 타당성
 
 센서를 선택할 때, 단순히 개별 사양만 보는 것이 아니라 당면한 문제, 즉 '지연된 GPS'와의 상호작용을 고려하는 것이 매우 중요하다. 두 GPS 보정 신호가 들어오는 사이의 긴 시간 동안, 드론의 상태 추정은 전적으로 IMU 데이터에 기반한 추측 항법(dead-reckoning)에 의존하게 된다. 이 구간에서 IMU의 성능, 특히 자이로스코프의 영점 편향 안정성(Gyro Bias Instability)은 자세 오차가 누적되는 속도를 결정하는 핵심 요소다.
 
 Xsens MTi와 같이 드리프트가 적은 고품질 IMU를 사용하면 추측 항법 구간 동안 오차 누적이 훨씬 적다. 따라서 지연된 GPS 보정치가 들어왔을 때 수정해야 할 오차의 양 자체가 작아지므로, 필터의 상태가 급격한 점프 없이 부드럽고 안정적으로 교정될 수 있다. 결론적으로, '지연된 GPS'라는 문제는 역설적으로 시스템의 안정성과 강건함(robustness)을 확보하기 위해 Xsens MTi와 같은 고품질 IMU에 투자해야 할 필요성을 더욱 부각시킨다.
 
-## 3.  시스템 아키텍처 및 구현
 
-### 3.1  아키텍처 개요: 이중 EKF와 좌표계
 
 본 시스템은 `robot_localization` 패키지를 이용한 '이중 EKF' 구조를 채택한다.
 
@@ -56,7 +51,6 @@ $$
 x =^T
 $$
 
-### 3.2  지연된 GPS 데이터 처리
 
 FC를 경유하여 발생하는 GPS 지연 문제는 `robot_localization` 패키지의 내장 기능으로 해결한다.
 
@@ -65,7 +59,6 @@ FC를 경유하여 발생하는 GPS 지연 문제는 `robot_localization` 패키
 3. **계산 부하 고려**: 이 기능은 CPU 자원을 소모하므로, `ekf_global`의 `history_length` 파라미터를 시스템에서 발생하는 최대 지연 시간보다 약간 길게 설정해야 한다. 너무 길면 실시간성을 해치고, 너무 짧으면 지연된 데이터가 무시될 수 있다.
 4. **`navsat_transform_node` 활용**: 이 노드는 `sensor_msgs/NavSatFix` (위도/경도) 메시지를 `nav_msgs/Odometry` (map 좌표계) 메시지로 변환하는 역할을 한다.
 
-### 3.3  하드웨어 연결 및 드라이버 설정
 
 **Xsens MTi 연결**: Xsens MTi 센서를 Jetson Orin AGX의 USB 포트에 연결한다.
 
@@ -95,7 +88,6 @@ colcon build --symlink-install
 
 **PX4-ROS 2 브릿지 설정**: PX4와 ROS2의 통신을 위해 RTPS 브릿지를 설정한다. 이는 PX4 펌웨어에서 직접 지원하며, Jetson Orin AGX에서 `micrortps_agent`를 실행할 필요가 없다. PX4의 파라미터 `UXRCE_DDS_CFG`를 Jetson Orin AGX가 연결된 시리얼 포트로 설정한다.
 
-### 3.4  PX4-ROS 2 브릿지 노드 구현
 
 PX4 RTPS 브릿지가 발행하는 `px4_msgs/msg/SensorGps`를 `robot_localization`이 요구하는 `sensor_msgs/msg/NavSatFix`로 변환하는 C++ 노드를 작성한다.
 
@@ -192,11 +184,9 @@ install(TARGETS
 )
 ```
 
-### 3.5  YAML 설정 파일 작성 및 튜닝
 
 이중 EKF를 위해 `ekf_local.yaml`, `ekf_global.yaml`과 GPS 변환을 위한 `navsat.yaml`을 작성한다.
 
-#### 3.5.1 `ekf_local.yaml` (연속 오도메트리용)
 
 ```YAML
 # ekf_local.yaml
@@ -249,7 +239,6 @@ ekf_local_node:
                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.015]
 ```
 
-#### 3.5.2 `ekf_global.yaml` (전역 위치 보정용)
 
 ```YAML
 # ekf_global.yaml
@@ -285,7 +274,6 @@ ekf_global_node:
     imu0_relative: false
 ```
 
-#### 3.5.3 `navsat.yaml` (GPS 변환용)
 
 ```YAML
 # navsat.yaml
@@ -302,7 +290,6 @@ navsat_transform_node:
     datum: [35.0280, 126.7529, 0.0]
 ```
 
-### 3.6  ROS2 Launch 파일 통합
 
 모든 노드를 하나의 launch 파일로 실행한다.
 
@@ -375,7 +362,6 @@ def generate_launch_description():
     ])
 ```
 
-### 3.7  검증 및 디버깅
 
 **RViz2 시각화**:
 
@@ -391,7 +377,6 @@ def generate_launch_description():
 - `ros2 run tf2_ros tf2_echo map odom`: `map` -> `odom` 변환이 안정적으로 발행되는지 확인한다.
 - `ros2 run tf2_tools view_frames`: 전체 TF 트리를 PDF 파일로 생성하여 연결 관계를 최종 검증한다.
 
-## 참고 자료
 
 - delayed fusion in robot_localization stack - Robotics Stack Exchange, accessed July 30, 2025, https://robotics.stackexchange.com/questions/114170/delayed-fusion-in-robot-localization-stack
 - robot_localization wiki - ROS documentation, accessed July 30, 2025, http://docs.ros.org/en/melodic/api/robot_localization/html/index.html

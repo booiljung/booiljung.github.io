@@ -1,5 +1,8 @@
-# Octree
-
+---
+layout: page
+title: Octree
+permalink: /sensors/point cloud/octree/index.md
+---
 - [OctoMap 라이브러리](OctoMap 라이브러리.md)
 - [i-Octree](i-Octree.md)
 - [동적 균형 Octree](동적 균형 Octree.md)

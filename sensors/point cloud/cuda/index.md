@@ -1,3 +1,6 @@
-# CUDA 기반 포인트 클라우드 처리 기술 
-
+---
+layout: page
+title: CUDA 기반 포인트 클라우드 처리 기술
+permalink: /sensors/point cloud/cuda/index.md
+---
 - [CUDA 기반 포인트 클라우드 처리 및 드론 자율 주행 지도 생성 기술](CUDA 기반 포인트 클라우드 처리 및 드론 자율 주행 지도 생성 기술.md)

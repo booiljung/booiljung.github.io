@@ -1,0 +1,8 @@
+---
+layout: page
+title: 스마트 기기 (Smart Devices)
+permalink: /systems/smart devices/index.md
+---
+
+- [차세대 스마트 기기, 앰비언트 컴퓨팅 시대의 서막](차세대 스마트 기기 앰비언트 컴퓨팅 시대의 서막.md)
+

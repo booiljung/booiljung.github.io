@@ -1,5 +1,8 @@
-# 시스템 (Systems)
-
+---
+layout: page
+title: 시스템 (Systems)
+permalink: /systems/index.md
+---
 - [컴퓨터 운영체제 (Operating System)](컴퓨터 운영체제.md)
 - [산업 분야 및 응용별 운영체제](산업 분야 및 응용별 운영체제.md)
 - [안드로이드](android/index.md)
@@ -13,5 +16,6 @@
 - [QNX](qnx/index.md)
 - [실시간 처리](realtime/index.md)
 - [라스베리파이](rpi/index.md)
+- [스마트 기기 (Smart Devices)](smart devices/index.md)
 - [우분투 리눅스 (Ubuntu Linux)](ubuntu/index.md)
 - [Yocto Project](yocto project/index.md)

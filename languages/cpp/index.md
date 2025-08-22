@@ -1,16 +1,13 @@
-# C++ 프로그래밍
-
-
+---
+layout: page
+title: C++ 프로그래밍
+permalink: /languages/cpp/index.md
+---
 
 - [C++ 프로그래밍 언어 종합 자습서](C++ 프로그래밍 언어 종합 자습서.md)
 - [로컬 시스템을 위한 중앙 집중형 비동기 C++ 로깅 아키텍처](로컬 시스템을 위한 중앙 집중형 비동기 C++ 로깅 아키텍처.md)
 
-
 cmake
-
 비동기 프로그래밍
-
 Boost 라이브러리
-
 protocols
-

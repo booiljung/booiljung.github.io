@@ -1,12 +1,14 @@
-# ROS2 Humble과 Gazebo Harmonic을 이용한 액추에이터 연속 회전
+---
+layout: page
+title: ROS2 Humble과 Gazebo Harmonic을 이용한 액추에이터 연속 회전
+permalink: /ros2/humble/examples/ROS2 Humble과 Gazebo Harmonic을 이용한 액추에이터 연속 회전
+---
 
 이 보고서는 ROS2 Humble과 최신 Gazebo 시뮬레이터인 Gazebo Harmonic을 사용하여 단일 액추에이터(회전 관절)를 지속적으로 회전시키는 완전한 예제를 제공한다. 전체 시스템 아키텍처, 환경 설정, 필수 코드 파일(URDF, YAML, Launch, Python), 실행 및 검증 절차, 그리고 시스템 동작의 이론적 배경까지 심도 있게 다룬다.
 
-## 1. 시스템 아키텍처 및 환경 설정
 
 성공적인 시뮬레이션을 위해서는 먼저 구성 요소들이 어떻게 상호작용하는지 이해하고, 호환되는 환경을 올바르게 구축해야 한다.
 
-### 1.1 제어 파이프라인 개요
 
 본 예제에서 구현할 제어 시스템의 데이터 흐름은 다음과 같다.
 
@@ -18,7 +20,6 @@
 6. **Gazebo Harmonic**: 물리 엔진을 통해 로봇 모델의 관절에 명령을 적용하고, 그 결과를 시뮬레이션한다.
 7. **상태 피드백**: `gz_ros2_control` 플러그인은 시뮬레이션으로부터 관절의 현재 상태(위치, 속도 등)를 읽어와 `ros2_control`의 상태 인터페이스(state interface)를 통해 컨트롤러 매니저와 다른 ROS 노드에 제공한다. 이 정보는 `/joint_states`와 같은 토픽으로 발행된다.6
 
-### 1.2 핵심 사항: ROS2 Humble & Gazebo Harmonic 호환성 매트릭스 탐색
 
 가장 먼저 해결해야 할 중요한 문제는 ROS2 Humble과 Gazebo Harmonic의 호환성이다. 공식적으로 ROS2 Humble은 Gazebo Fortress를 지원한다.7 따라서 표준적인 `sudo apt install ros-humble-ros-gz` 명령은 Gazebo Fortress를 설치하게 된다.
 
@@ -52,7 +53,6 @@
    sudo apt-get install ros-humble-ros-gzharmonic
    ```
 
-### 1.3 `ros2_control` 및 필수 패키지 설치
 
 다음으로 `ros2_control` 프레임워크와 컨트롤러, 그리고 Gazebo 연동을 위한 플러그인을 설치해야 한다. `ros2_control`은 로봇 하드웨어를 추상화하고 제어기들을 관리하는 프레임워크다.8
 
@@ -69,11 +69,9 @@ sudo apt install ros-humble-ros2-control ros-humble-ros2-controllers ros-humble-
 - `ros-humble-gz-ros2-control`: 최신 Gazebo와 `ros2_control`을 연동하는 플러그인.
 - `ros-humble-gz-ros2-control-demos`: `gz_ros2_control`의 사용법을 보여주는 예제 패키지.
 
-## 2. 물리적 구현: 로봇 URDF 정의
 
 URDF(Unified Robot Description Format)는 로봇의 물리적 구조(링크, 관절)와 `ros2_control` 및 Gazebo와의 연동 설정을 정의하는 XML 파일이다.
 
-### 2.1 패키지 및 파일 구조 생성
 
 먼저 이 예제를 위한 ROS2 패키지를 생성한다.
 
@@ -101,7 +99,6 @@ simple_velocity_robot/
 └── setup.py
 ```
 
-### 2.2 로봇의 청사진: `robot.urdf.xacro`
 
 `urdf/robot.urdf.xacro` 파일에 로봇의 구조를 정의한다. 이 로봇은 고정된 `base_link`와 회전하는 `rotating_link`, 그리고 두 링크를 연결하는 `revolute_joint`로 구성된 매우 간단한 모델이다.
 
@@ -169,7 +166,6 @@ simple_velocity_robot/
 
 편의를 위해 `ros2_control`과 Gazebo 관련 태그는 별도의 파일(`robot.ros2_control.xacro`)로 분리하여 포함시킨다.
 
-### 2.3 `ros2_control` 인터페이스 태그
 
 `urdf/robot.ros2_control.xacro` 파일을 생성하고 `ros2_control`과의 연동을 위한 핵심 설정을 추가한다.
 
@@ -205,7 +201,6 @@ simple_velocity_robot/
 - `<param name="min/max">`: 명령 인터페이스에 대한 최소/최대값을 설정한다.
 - `<state_interface name="position/velocity">`: 하드웨어 인터페이스(Gazebo 플러그인)가 시뮬레이터로부터 관절의 위치와 속도 상태를 읽어와 ROS2 시스템에 제공하도록 지시한다. 이 값들은 `joint_state_broadcaster`에 의해 토픽으로 발행된다.6
 
-### 2.4 Gazebo 시뮬레이션 플러그인 태그
 
 마지막으로, Gazebo가 시뮬레이션을 시작할 때 `ros2_control` 시스템을 로드하도록 지시하는 플러그인을 `robot.urdf.xacro`의 `<xacro:macro>` 내부에 추가한다.
 
@@ -220,11 +215,9 @@ simple_velocity_robot/
 - `<plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">`: Gazebo 시뮬레이션 내에서 실행될 플러그인을 지정한다. 이 플러그인은 URDF 내의 `<ros2_control>` 태그를 파싱하고, 컨트롤러 매니저를 포함한 `ros2_control` 프레임워크를 시뮬레이션 환경 내에 인스턴스화하는 역할을 한다.4
 - `<parameters>...</parameters>`: 컨트롤러 매니저가 로드될 때 필요한 컨트롤러 설정 파일의 경로를 전달한다. 이를 통해 런치 파일에서 별도로 파라미터를 로드할 필요 없이 URDF만으로 컨트롤러 설정까지 한 번에 처리할 수 있어 편리하다.4
 
-## 3. 제어 로직: 컨트롤러 설정
 
 컨트롤러의 종류, 파라미터, 그리고 컨트롤러 매니저의 동작 방식을 YAML 파일을 통해 설정한다.
 
-### 3.1 `controllers.yaml` 파일
 
 `config/controllers.yaml` 파일을 생성하고 다음 내용을 작성한다.
 
@@ -254,15 +247,12 @@ velocity_controller:
     # interface_name: velocity
 ```
 
-### 3.2 컨트롤러 매니저 설정
 
 - `controller_manager: ros__parameters: update_rate: 100`: 컨트롤러 매니저의 주된 `read-update-write` 제어 루프의 실행 주기를 100 Hz로 설정한다. 이 값이 높을수록 로봇의 반응성이 향상되지만, 계산 부하도 증가한다.14
 
-### 3.3 브로드캐스터 설정
 
 - `joint_state_broadcaster: type: joint_state_broadcaster/JointStateBroadcaster`: `joint_state_broadcaster`는 `ros2_control`의 필수적인 유틸리티 컨트롤러다. URDF의 `<state_interface>`에 등록된 모든 관절의 상태(위치, 속도 등)를 읽어와 표준 ROS 메시지 형태로 `/joint_states` 및 `/dynamic_joint_states` 토픽에 발행하는 역할을 한다. RViz나 MoveIt과 같은 다른 ROS 도구들이 로봇의 현재 자세를 인지하기 위해 이 토픽을 구독한다.16
 
-### 3.4 속도 컨트롤러 설정
 
 - `velocity_controller: type: velocity_controllers/JointGroupVelocityController`: 목표를 달성하기 위해 사용할 컨트롤러다. `ros2_controllers` 패키지는 `forward_command_controller`라는 범용 컨트롤러를 제공하지만 18, 
 
@@ -272,7 +262,6 @@ velocity_controller:
 
 - `interface_name: velocity`: 이 컨트롤러 타입은 내부적으로 `velocity` 인터페이스를 사용하도록 기본 설정되어 있어 명시적으로 작성할 필요는 없다. 이 설정은 컨트롤러가 URDF에 정의된 `revolute_joint`의 `command_interface` 중 `name="velocity"`인 것을 찾아 점유하도록 지시한다.
 
-### 핵심 설정 파라미터 요약
 
 다음 표는 로봇을 제어하기 위해 URDF와 YAML 파일에서 설정한 핵심 파라미터들을 요약한 것이다.
 
@@ -286,11 +275,9 @@ velocity_controller:
 | `type`              | `controllers.yaml` | `velocity_controller`      | 사용할 컨트롤러 알고리즘(`velocity_controllers/JointGroupVelocityController`)을 정의한다. |
 | `joints`            | `controllers.yaml` | `velocity_controller`      | 해당 컨트롤러가 관리할 관절 목록을 지정한다.                 |
 
-## 4. 오케스트레이터: 시스템 런치 파일
 
 런치 파일은 Gazebo 시뮬레이터, 로봇 모델, `ros2_control` 노드 등 여러 구성요소를 순서에 맞게 실행시키는 역할을 한다.
 
-### 4.1 `robot_launch.py` 파일
 
 `launch/robot_launch.py` 파일을 생성하고 다음 코드를 작성한다.
 
@@ -377,17 +364,14 @@ def generate_launch_description():
     ])
 ```
 
-### 4.2 로봇 디스크립션 로딩
 
 - XACRO 파일을 처리하여 완전한 URDF XML 문자열을 생성하고, 이를 `robot_description` 파라미터로 만든다. 이는 ROS2에서 로봇 모델을 전달하는 표준 방식이다.20
 - `robot_state_publisher` 노드는 `/joint_states` 토픽을 구독하고 `robot_description`을 사용하여 로봇의 각 링크 간의 좌표 변환 정보(TF)를 `/tf` 토픽으로 발행한다. 이 정보는 RViz와 같은 시각화 도구에서 로봇 모델을 올바르게 표시하는 데 필수적이다.21
 
-### 4.3 Gazebo 실행 및 로봇 스폰
 
 - `IncludeLaunchDescription`을 사용하여 `ros_gz_sim` 패키지에서 제공하는 런치 파일을 포함시켜 Gazebo 시뮬레이터를 실행한다.22
 - `ros_gz_sim`의 `create` 실행 파일을 사용하는 `spawn_entity` 노드는 `robot_description` 토픽을 구독하여 해당 모델을 실행 중인 Gazebo 월드에 스폰(생성)한다.21
 
-### 4.4 `ros2_control` 시스템 시작
 
 - `controller_manager`의 `spawner` 실행 파일은 컨트롤러 매니저의 서비스(`/controller_manager/load_and_start_controller`)를 호출하여 YAML 파일에 정의된 컨트롤러를 로드하고 활성화하는 유틸리티다.6
 
@@ -395,11 +379,9 @@ def generate_launch_description():
 
   `RegisterEventHandler`와 `OnProcessExit`를 사용하는 것이 훨씬 안정적이다. 이 예제에서는 로봇 스폰(`spawn_entity`)이 완료된 후에 `joint_state_broadcaster`를 스폰하고, 그것이 완료된 후에 `velocity_controller`를 스폰하도록 하여, 각 구성요소가 순서대로 안전하게 시작되도록 보장한다.
 
-## 5. 원동력: 속도 명령 퍼블리셔
 
 이제 로봇을 실제로 움직이게 할 속도 명령을 보내는 간단한 Python 노드를 작성한다.
 
-### 5.1 `velocity_publisher.py` 스크립트
 
 `src/simple_velocity_robot/velocity_publisher.py` 파일을 생성하고 다음 코드를 작성한다.
 
@@ -437,7 +419,6 @@ if __name__ == '__main__':
     main()
 ```
 
-### 5.2 코드 분석
 
 - **임포트**: `rclpy`와 `Node`, 그리고 컨트롤러가 수신할 메시지 타입인 `Float64MultiArray`를 `std_msgs.msg`로부터 임포트한다.25
 - **퍼블리셔 생성**: `create_publisher`를 사용하여 퍼블리셔를 초기화한다. 토픽 이름은 `<controller_name>/commands` 규칙에 따라 `/velocity_controller/commands`로 지정해야 한다. 메시지 타입은 `Float64MultiArray`이며, 이는 여러 관절을 동시에 제어할 수 있도록 설계되었기 때문이다.16
@@ -445,11 +426,9 @@ if __name__ == '__main__':
 - **메시지 발행**: 콜백 함수 내에서 `Float64MultiArray` 메시지 객체를 생성하고, `data` 필드에 원하는 속도값을 리스트 형태로 할당한다. 관절이 하나뿐이라도 반드시 리스트(`[1.5]`)로 전달해야 한다. `publish` 함수를 호출하여 메시지를 발행한다.29
 - **main 함수**: ROS2 Python 노드의 표준적인 초기화, 실행(spin), 종료 코드로 구성된다.27
 
-## 6. 조립 및 실행
 
 모든 구성 파일이 준비되었으므로, 패키지를 빌드하고 시뮬레이션을 실행한다.
 
-### 6.1 ROS2 패키지 최종 설정
 
 1. package.xml 설정:
 
@@ -519,7 +498,6 @@ if __name__ == '__main__':
    )
    ```
 
-### 6.2 시뮬레이션 빌드 및 실행
 
 1. 워크스페이스 빌드:
 
@@ -559,7 +537,6 @@ if __name__ == '__main__':
 
    이제 Gazebo 시뮬레이션에서 로봇의 `rotating_link`가 일정한 속도로 회전하기 시작한다.
 
-### 6.3 검증 및 내부 상태 확인
 
 시스템이 올바르게 동작하는지 확인하기 위해 `ros2 control` 및 `ros2 topic` CLI 도구를 사용한다.
 
@@ -587,11 +564,9 @@ if __name__ == '__main__':
 
   `position` 값이 지속적으로 증가(또는 감소)하는 것을 통해 관절이 실제로 회전하고 있음을 확인할 수 있다.
 
-## 7. 이론적 토대 및 심층 분석
 
 이 간단한 예제는 `ros2_control`과 Gazebo의 상호작용에 대한 중요한 이론적 개념을 내포하고 있다.
 
-### 7.1 `ros2_control` 실시간 루프
 
 컨트롤러 매니저는 `update_rate`에 맞춰 주기적으로 실시간 제어 루프를 실행한다. 이 루프는 세 단계로 구성된다.2
 
@@ -599,7 +574,6 @@ if __name__ == '__main__':
 2. **`update()`**: 활성화된 모든 컨트롤러의 `update()` 함수가 호출된다. 이 예제에서 `velocity_controller`는 `/velocity_controller/commands` 토픽에서 수신한 최신 명령값을 자신의 출력으로 설정한다.
 3. **`write()`**: `gz_ros2_control` 플러그인이 컨트롤러의 출력(명령 인터페이스의 값)을 읽어와 Gazebo의 관절에 적용한다.
 
-### 7.2 숨겨진 제어 법칙: 시뮬레이션 내부의 PID
 
 여기서 한 가지 중요한 질문이 생긴다. 우리는 `velocity` (rad/s)를 명령했지만, 물리 시뮬레이터인 Gazebo는 실제로 관절에 `force`나 `torque`를 가해야 움직임을 만들어낼 수 있다. 그렇다면 속도 명령은 어떻게 토크로 변환되는가?
 
@@ -621,7 +595,6 @@ if __name__ == '__main__':
 
 여기서 `$K_p$`, `$K_i$`, `$K_d$`는 각각 비례, 적분, 미분 이득(gain)으로, 플러그인 내부에 기본값이 설정되어 있다. 이처럼 `ros2_control`과 Gazebo 시뮬레이션의 조합은 사용자가 고수준의 제어(속도 제어)에 집중할 수 있도록 저수준의 동역학 제어(토크 제어)를 추상화하여 제공한다. 이는 시뮬레이션 환경을 실제 하드웨어와 유사하게 만들어주며, 제어기 개발 및 테스트를 매우 효율적으로 만들어주는 핵심적인 기능이다.
 
-#### **참고 자료**
 
 1. velocity_controllers - ROS2_Control: Rolling Jul 2025 documentation, accessed July 27, 2025, https://control.ros.org/rolling/doc/ros2_controllers/velocity_controllers/doc/userdoc.html
 2. Getting Started - ROS2_Control: Humble Jul 2025 documentation, accessed July 27, 2025, https://control.ros.org/humble/doc/getting_started/getting_started.html

@@ -1,6 +1,8 @@
-# 드론 (Drones)
-
-
+---
+layout: page
+title: 드론 (Drones)
+permalink: /drones/index.md
+---
 
 - [드론 제어](control/index.md)
 - [드론 FCC](fcc/index.md)
@@ -9,10 +11,7 @@
 - [무인항공기 품질](qa/index.md)
 - [드론 센서](sensors/index.md)
 
-
 ## enterprises
-
-
 
 - [드론 Dock](dji/index.md)
 - [SIYI Technology](siyi/index.md)

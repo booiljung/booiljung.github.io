@@ -1,6 +1,8 @@
-# git
-
-
+---
+layout: page
+title: git
+permalink: /git/index.md
+---
 
 - [Git 컬쳐](Git 컬쳐.md)
 - [GitLab](GitLab.md)

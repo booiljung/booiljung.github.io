@@ -1,6 +1,8 @@
-# PX4 ROS2 Simulation
-
-
+---
+layout: page
+title: PX4 ROS2 Simulation
+permalink: /simulations/px4 ros2 simulations/index.md
+---
 
 - [PX4 v1.15와 Gazebo 고급 드론 시뮬레이션](PX4 v1.15와 Gazebo.md)
 - [PX4 v1.15와 Gazebo Fortress 시뮬레이션을 위한 최종 필드 가이드](PX4 v1.15와 Gazebo Fortress 시뮬레이션을 위한 최종 필드 가이드.md)

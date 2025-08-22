@@ -1,9 +1,10 @@
-# 최적화 (Optimizations)
-
-
+---
+layout: page
+title: 최적화 (Optimizations)
+permalink: /optimizations/index.md
+---
 
 - [손실함수](loss functions/index.md)
-
 
 - [레벤버그-마르쿼트 알고리즘](레벤버그-마르쿼트 알고리즘.md)
 - [비선형 최소제곱 문제](비선형 최소제곱 문제.md)

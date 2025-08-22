@@ -1,5 +1,8 @@
-# 특징점 기술
-
+---
+layout: page
+title: 특징점 기술
+permalink: /sensors/feature descriptor/index.md
+---
 - [3D 포인트 클라우드 특징점 알고리즘](3D 포인트 클라우드 특징점 알고리즘.md)
 - [Fast Point Feature Histogram (FPFH)](Fast Point Feature Histogram (FPFH).md)
 - [FPFH와 VFH의 비교](FPFH와 VFH의 비교.md)

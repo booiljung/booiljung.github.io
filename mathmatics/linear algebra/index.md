@@ -1,6 +1,8 @@
-# 선형대수
-
-
+---
+layout: page
+title: 선형대수
+permalink: /mathmatics/linear algebra/index.md
+---
 
 - [선형대수학 마스터를 위한 종합 로드맵](선형대수학 마스터를 위한 종합 로드맵.md)
 - [행렬식 완전 정복](행렬식 완전 정복.md)

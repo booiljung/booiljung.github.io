@@ -1,10 +1,11 @@
-# 컴퓨터 통신 (Computer Communications)
-
-
+---
+layout: page
+title: 컴퓨터 통신 (Computer Communications)
+permalink: /communications/index.md
+---
 
 - [개방형 시스템 상호접속(OSI) 7계층 참조 모델에 대한 고찰](OSI 7계층 참조 모델.md)
 - [전이중 상호작용](전이중 상호작용.md)
-
 
 - [항공을 위한 통신](avionics/index.md)
 - [데이터 링크 (Datalink)](datalink/index.md)
@@ -21,5 +22,4 @@
 - [통신 보안](sequrity/index.md)
 - [USB](usb/index.md)
 - [무선 통신](wireless/index.md)
-
 
