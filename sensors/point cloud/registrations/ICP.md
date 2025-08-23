@@ -1,8 +1,4 @@
----
-layout: page
-title: Iterative Closest Point (ICP) 포인트 클라우드 정합
-permalink: /sensors/point cloud/registrations/ICP
----
+# Iterative Closest Point (ICP) 포인트 클라우드 정합
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: 아두이노
-permalink: /systems/arduino/index.md
----
+# 아두이노
 
 - [아두이노 고찰](아두이노 고찰.md)
 - [아두이노를 활용한 서보모터 제어 마스터 가이드](아두이노를 활용한 서보모터 제어 마스터 가이드.md)

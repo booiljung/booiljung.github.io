@@ -1,8 +1,4 @@
----
-layout: page
-title: 최신 SLAM 기술 동향 분석 보고서
-permalink: /slam/동향/최신 SLAM 기술 동향 분석 보고서
----
+# 최신 SLAM 기술 동향 분석 보고서
 
 
 SLAM(Simultaneous Localization and Mapping)은 로봇 공학 및 컴퓨터 비전 분야의 근본적인 문제로, 자율 시스템이 사전 정보가 없는 미지의 환경에서 자신의 위치를 실시간으로 추정(Localization)함과 동시에 주변 환경의 지도를 작성(Mapping)하는 기술을 의미한다.1 이 문제는 본질적으로 '닭과 달걀'의 관계로, 정확한 지도가 있어야 정확한 위치를 알 수 있고, 정확한 위치를 알아야 일관성 있는 지도를 만들 수 있다. 초기 SLAM은 확률적 접근법(probabilistic tools)에 기반하여 센서 측정값의 노이즈와 불확실성을 다루는 방식으로 발전해왔다.3

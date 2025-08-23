@@ -1,8 +1,4 @@
----
-layout: page
-title: NovAtel TerraStar-X
-permalink: /sensors/gnss/NovAtel TerraStar-X
----
+# NovAtel TerraStar-X
 
 
 NovAtel의 TerraStar-X는 기존의 지역 기지국이나 셀룰러 통신망 연결 없이도 실시간 이동 측위(Real-Time Kinematic, RTK) 수준의 성능을 제공하는 프리미엄 위성 기반 GNSS 보정 서비스이다.1 이 서비스의 핵심 가치는 "하늘에서 직접 수신하는 RTK(RTK From the Sky™)"라는 개념으로 요약될 수 있으며, 이는 전통적인 고정밀 측위 방식의 제약을 극복하려는 기술적 지향점을 명확히 보여준다.2

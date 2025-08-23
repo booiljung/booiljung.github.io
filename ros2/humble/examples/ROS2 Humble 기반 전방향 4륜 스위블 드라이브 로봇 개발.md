@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble 기반 전방향 4륜 스위블 드라이브 로봇 개발에 대한 고찰
-permalink: /ros2/humble/examples/ROS2 Humble 기반 전방향 4륜 스위블 드라이브 로봇 개발
----
+# ROS2 Humble 기반 전방향 4륜 스위블 드라이브 로봇 개발에 대한 고찰
 
 
 

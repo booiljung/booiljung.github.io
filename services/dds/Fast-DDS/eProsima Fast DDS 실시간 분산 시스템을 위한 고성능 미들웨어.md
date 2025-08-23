@@ -1,8 +1,4 @@
----
-layout: page
-title: eProsima Fast DDS 실시간 분산 시스템을 위한 고성능 미들웨어
-permalink: /services/dds/Fast-DDS/eProsima Fast DDS 실시간 분산 시스템을 위한 고성능 미들웨어
----
+# eProsima Fast DDS 실시간 분산 시스템을 위한 고성능 미들웨어
 
 
 실시간 분산 시스템의 통신을 이해하기 위해서는 먼저 그 기반이 되는 표준 기술을 명확히 파악해야 합니다. eProsima Fast DDS는 Object Management Group (OMG)에서 제정한 두 가지 핵심 표준, 즉 데이터 분배 서비스(Data Distribution Service, DDS)와 실시간 발행-구독(Real-Time Publish-Subscribe, RTPS) 프로토콜 위에 구축되었습니다. 이 두 표준은 Fast DDS의 설계 철학, 기능, 그리고 한계를 이해하는 데 필수적인 전제 조건입니다.

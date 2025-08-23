@@ -1,8 +1,4 @@
----
-layout: page
-title: 미적분
-permalink: /mathmatics/caculus/index.md
----
+# 미적분
 
 - [라플라스 변환](라플라스 변환.md)
 - [라플라스 변환 마스터하기](라플라스 변환 마스터하기.md)

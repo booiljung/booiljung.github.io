@@ -1,8 +1,4 @@
----
-layout: page
-title: VOX-LIO
-permalink: /slam/VOX-LIO/VOX-LIO
----
+# VOX-LIO
 
 
 

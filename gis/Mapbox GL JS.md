@@ -1,8 +1,4 @@
----
-layout: page
-title: Mapbox GL JS
-permalink: /gis/Mapbox GL JS
----
+# Mapbox GL JS
 
 
 이 파트는 Mapbox GL JS를 정의하고, 웹 매핑 분야에서 이 라이브러리가 대표하는 기술적 패러다임의 전환을 설명하며 무대를 마련합니다.

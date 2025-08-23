@@ -1,8 +1,4 @@
----
-layout: page
-title: Dynamic-LIO
-permalink: /slam/LIO-SAM/Dynamic-LIO
----
+# Dynamic-LIO
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: eProsima Fast DDS Statistics Backend
-permalink: /services/dds/Fast-DDS/eProsima Fast DDS Statistics Backend
----
+# eProsima Fast DDS Statistics Backend
 
 
 분산 시스템의 복잡성이 증가함에 따라, 시스템의 상태, 성능, 동작을 투명하게 관찰하는 능력은 단순한 편의 기능을 넘어 필수적인 요구사항이 되었습니다. eProsima Fast DDS 환경에서 이러한 관찰 가능성(Observability)을 제공하는 핵심 도구가 바로 Fast DDS Statistics Backend입니다. 그러나 이 백엔드를 효과적으로 활용하기 위해서는 그것이 독립적인 개체가 아니라, Fast DDS 내부에 계층적으로 설계된 더 큰 관찰 아키텍처의 사용자 지향적 구성요소라는 점을 이해하는 것이 중요합니다. 본 파트에서는 이 아키텍처의 근간을 이루는 핵심 개념들을 탐구합니다.

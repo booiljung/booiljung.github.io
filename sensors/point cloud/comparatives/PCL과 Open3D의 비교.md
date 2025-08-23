@@ -1,8 +1,4 @@
----
-layout: page
-title: PCL과 Open3D의 비교
-permalink: /sensors/point cloud/comparatives/PCL과 Open3D의 비교
----
+# PCL과 Open3D의 비교
 
 
 

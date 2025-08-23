@@ -1,8 +1,4 @@
----
-layout: page
-title: Livox Hub에 대한 심층 기술 분석
-permalink: /sensors/lidar/livox/Livox Hub
----
+# Livox Hub에 대한 심층 기술 분석
 
 
 

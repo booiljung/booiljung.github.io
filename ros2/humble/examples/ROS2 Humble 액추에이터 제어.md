@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble 액추에이터 제어
-permalink: /ros2/humble/examples/ROS2 Humble 액추에이터 제어
----
+# ROS2 Humble 액추에이터 제어
 
 
 

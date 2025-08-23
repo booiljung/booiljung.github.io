@@ -1,8 +1,4 @@
----
-layout: page
-title: 초광대역(UWB) 무선 통신 기술
-permalink: /communications/wireless/UWB 무선 통신 기술
----
+# 초광대역(UWB) 무선 통신 기술
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: DJI FlightHub 2
-permalink: /drones/gcs utm/DJI FlightHub 2
----
+# DJI FlightHub 2
 
 
 DJI는 더 이상 단순한 드론 하드웨어 제조사가 아니다. 최근 몇 년간 DJI는 하드웨어(드론, DJI Dock), 소프트웨어(FlightHub 2, Pilot 2), 그리고 개발자 생태계(SDK)를 유기적으로 결합한 통합 솔루션 제공 기업으로 빠르게 진화하고 있다.1 이러한 생태계의 중심에서 두뇌와 같은 핵심 역할을 수행하는 것이 바로 클라우드 기반 드론 운영 관리 플랫폼, DJI FlightHub 2이다.3 이 플랫폼은 드론 운영을 단순한 비행과 촬영에서 벗어나, 실시간 데이터 공유, 원격 자동화, 그리고 데이터 기반의 정밀 분석이 가능한 고도화된 임무 관리의 영역으로 끌어올렸다.

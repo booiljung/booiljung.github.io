@@ -1,8 +1,4 @@
----
-layout: page
-title: 소프트웨어 조직
-permalink: /software engeering/organizations/index.md
----
+# 소프트웨어 조직
 
 - [성공적인 소프트웨어 개발 조직](성공적인 소프트웨어 개발 조직.md)
 

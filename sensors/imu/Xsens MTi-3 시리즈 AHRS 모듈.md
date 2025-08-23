@@ -1,8 +1,4 @@
----
-layout: page
-title: Xsens MTi-3 시리즈 AHRS 모듈
-permalink: /sensors/imu/Xsens MTi-3 시리즈 AHRS 모듈
----
+# Xsens MTi-3 시리즈 AHRS 모듈
 
 - MTI-3-DK
 - MTi-3-5A-DK

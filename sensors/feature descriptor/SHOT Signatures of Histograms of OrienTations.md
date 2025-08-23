@@ -1,8 +1,4 @@
----
-layout: page
-title: SHOT (Signatures of Histograms of OrienTations)
-permalink: /sensors/feature descriptor/SHOT Signatures of Histograms of OrienTations
----
+# SHOT (Signatures of Histograms of OrienTations)
 
 
 

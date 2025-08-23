@@ -1,8 +1,4 @@
----
-layout: page
-title: Camera
-permalink: /sensors/camera/index.md
----
+# Camera
 ## Camera Calibrations
 - [원형 그리드 패턴을 이용한 Zhang의 캘리브레이션](원형 그리드 패턴을 이용한 Zhang의 캘리브레이션.md)
 ## Caeera Interfaces

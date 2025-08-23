@@ -1,8 +1,4 @@
----
-layout: page
-title: 전파과학(Radio Science)
-permalink: /radio science/전파과학(Radio Science)
----
+# 전파과학(Radio Science)
 
 
 

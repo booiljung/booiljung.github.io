@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA Jetson AGX Orin
-permalink: /computers/NVIDIA/Jetson AGX Orin/index.md
----
+# NVIDIA Jetson AGX Orin
 
 - [NVIDIA Jetson 플랫폼](NVIDIA Jetson 플랫폼.md)
 

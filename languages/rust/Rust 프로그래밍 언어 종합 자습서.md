@@ -1,8 +1,4 @@
----
-layout: page
-title: Rust 프로그래밍 언어 종합 자습서
-permalink: /languages/rust/Rust 프로그래밍 언어 종합 자습서
----
+# Rust 프로그래밍 언어 종합 자습서
 
 
 

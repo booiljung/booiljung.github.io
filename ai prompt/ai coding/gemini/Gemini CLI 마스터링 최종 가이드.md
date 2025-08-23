@@ -1,8 +1,4 @@
----
-layout: page
-title: Gemini CLI 마스터링 최종 가이드
-permalink: /ai prompt/ai coding/gemini/Gemini CLI 마스터링 최종 가이드
----
+# Gemini CLI 마스터링 최종 가이드
 
 
 이 파트는 사용자가 올바른 도구로 시작하고 그 핵심 가치를 이해하여 탄탄한 기초를 다질 수 있도록 구성되었습니다.

@@ -1,8 +1,4 @@
----
-layout: page
-title: 임베디드 통신
-permalink: /communications/embed/index.md
----
+# 임베디드 통신
 - [I2C 통신](I2C 통신.md)
 - [RS-232 통신](RS-232 통신.md)
 - [RS-422 통신](RS-422 통신.md)

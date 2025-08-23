@@ -1,8 +1,4 @@
----
-layout: page
-title: CesiumJS
-permalink: /gis/CesiumJS
----
+# CesiumJS
 
 
 

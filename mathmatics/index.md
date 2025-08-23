@@ -1,8 +1,6 @@
----
-layout: page
-title: 수학 (Mathmatics)
-permalink: /mathmatics/index.md
----
+# 수학 (Mathmatics)
+
+- [기초부터 고급까지, 수학 학습을 위한 체계적 로드맵](수학 학습을 위한 체계적 로드맵.md)
 
 ## 기초
 

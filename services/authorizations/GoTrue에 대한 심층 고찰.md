@@ -1,8 +1,4 @@
----
-layout: page
-title: GoTrue에 대한 심층 고찰
-permalink: /services/authorizations/GoTrue에 대한 심층 고찰
----
+# GoTrue에 대한 심층 고찰
 
 
 GoTrue는 Golang으로 작성된 오픈소스 사용자 인증 및 관리 API 서버로 정의된다.1 이는 Jamstack 프로젝트를 위한 독립형(self-standing) 서비스로 기능하며, 현대 웹 인증의 표준인 JWT(JSON Web Token)와 OAuth2 프레임워크에 기반을 둔다.1 GoTrue의 핵심 철학은 인증(Authentication) 로직을 애플리케이션의 주 비즈니스 로직에서 분리하여 마이크로서비스 아키텍처를 지향하는 것이다.5 이러한 분리를 통해 개발자는 사용자 가입, 로그인, 비밀번호 복구 등 복잡하고 보안에 민감한 인증 구현의 부담을 덜고, 애플리케이션의 핵심 기능 개발에 온전히 집중할 수 있게 된다.

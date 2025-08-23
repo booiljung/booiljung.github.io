@@ -1,8 +1,4 @@
----
-layout: page
-title: 최적화 (Optimizations)
-permalink: /optimizations/index.md
----
+# 최적화 (Optimizations)
 
 - [손실함수](loss functions/index.md)
 

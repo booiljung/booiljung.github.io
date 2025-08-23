@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble MoveIt2에 대한 심층 고찰
-permalink: /ros2/humble/planning/ROS2 Humble MoveIt2
----
+# ROS2 Humble MoveIt2에 대한 심층 고찰
 
 
 

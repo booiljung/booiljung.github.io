@@ -1,6 +1,2 @@
----
-layout: page
-title: SUPABASE
-permalink: /services/supabase/index.md
----
+# SUPABASE
 - [Supabase](Supabase.md)

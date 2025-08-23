@@ -1,8 +1,4 @@
----
-layout: page
-title: Minikube
-permalink: /systems/kubenetis/Minikube
----
+# Minikube
 
 
 프로덕션 등급의 쿠버네티스 클러스터가 본질적으로 지닌 복잡성과 높은 리소스 요구사항은 개발자 및 신규 사용자에게 상당한 진입 장벽으로 작용합니다.1 이러한 배경에서 학습, 실험, 그리고 프로덕션 이전 단계의 테스트를 위한 로컬 개발 환경의 중요성은 아무리 강조해도 지나치지 않습니다.4 Minikube는 바로 이러한 요구를 충족시키기 위해 등장한 선구적인 프로젝트입니다. 쿠버네티스 SIGs(Special Interest Groups) 산하에서 커뮤니티 주도로 개발된 Minikube는 macOS, Linux, Windows 환경에서 로컬 쿠버네티스 클러스터를 신속하게 설정하는 것을 목표로 합니다.2

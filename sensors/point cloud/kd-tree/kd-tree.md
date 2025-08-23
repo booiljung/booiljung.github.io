@@ -1,8 +1,4 @@
----
-layout: page
-title: kd-tree
-permalink: /sensors/point cloud/kd-tree/kd-tree
----
+# kd-tree
 
 
 

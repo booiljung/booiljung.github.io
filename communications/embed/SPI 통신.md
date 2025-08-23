@@ -1,8 +1,4 @@
----
-layout: page
-title: SPI 통신
-permalink: /communications/embed/SPI 통신
----
+# SPI 통신
 
 
 

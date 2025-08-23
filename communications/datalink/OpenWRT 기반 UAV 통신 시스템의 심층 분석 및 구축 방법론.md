@@ -1,8 +1,4 @@
----
-layout: page
-title: OpenWRT 기반 UAV 통신 시스템의 심층 분석 및 구축 방법론
-permalink: /communications/datalink/OpenWRT 기반 UAV 통신 시스템의 심층 분석 및 구축 방법론
----
+# OpenWRT 기반 UAV 통신 시스템의 심층 분석 및 구축 방법론
 
 
 

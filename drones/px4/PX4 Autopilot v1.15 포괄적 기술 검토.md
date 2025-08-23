@@ -1,8 +1,4 @@
----
-layout: page
-title: PX4 Autopilot v1.15 포괄적 기술 검토
-permalink: /drones/px4/PX4 Autopilot v1.15 포괄적 기술 검토
----
+# PX4 Autopilot v1.15 포괄적 기술 검토
 
 
 

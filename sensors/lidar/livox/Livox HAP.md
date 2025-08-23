@@ -1,8 +1,4 @@
----
-layout: page
-title: Livox HAP에 대한 기술적 고찰
-permalink: /sensors/lidar/livox/Livox HAP
----
+# Livox HAP에 대한 기술적 고찰
 
 
 Livox HAP (Horizon Automotive Platform)는 DJI의 기술 인큐베이팅 프로그램을 통해 탄생한 Livox의 첫 번째 차량용 등급(Automotive-Grade) 라이다(LiDAR) 센서다.1 이 센서는 단순히 고성능을 지향하는 연구용 장비를 넘어, 첨단운전자보조시스템(Advanced Driver-Assistance Systems, ADAS) 및 레벨 3/4 자율주행 시장의 대중화를 목표로 설계된 전략적 제품이다. HAP의 핵심 철학은 높은 신뢰성, 대량 생산성, 그리고 합리적인 가격을 통해 기존 고가 라이다 기술의 높은 진입 장벽을 극복하는 데 있다.4 HAP의 출시는 기술적 진보뿐만 아니라, DJI가 보유한 거대한 제조 및 공급망 역량을 라이다 시장에 본격적으로 투입하는 신호탄으로 해석될 수 있다. Livox가 DJI의 'Open Innovation Program'을 통해 설립되었고, DJI의 제조 전문성을 활용하여 가격 경쟁력을 확보했다는 점은 HAP가 단순한 스타트업의 제품이 아님을 명확히 보여준다.6 라이다 산업의 주요 병목 현상으로 지적되어 온 높은 가격, 낮은 생산 확장성, 그리고 부족한 신뢰성 문제를 해결하기 위해, DJI는 드론 시장에서 대량 생산을 통해 가격을 혁신하고 시장을 장악했던 경험과 인프라를 Livox에 이식했다. 이로 인해 HAP는 기술적 성능뿐만 아니라 '생산 가능하고 저렴한' 라이다라는 강력한 시장 포지션을 확보하게 되었으며, 이는 기술적 우위만을 주장하는 다른 경쟁사들과 Livox를 차별화하는 결정적인 요소로 작용한다.

@@ -1,8 +1,4 @@
----
-layout: page
-title: Nova Carter AMR 개발 플랫폼
-permalink: /robotics/nvidia/Nova Carter AMR 개발 플랫폼
----
+# Nova Carter AMR 개발 플랫폼
 
 
 

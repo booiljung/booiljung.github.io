@@ -1,8 +1,4 @@
----
-layout: page
-title: nvBlox와 coVoxSLAM의 비교 고찰
-permalink: /slam/NvBlox/NvBlox와 coVoxSLAM의 비교
----
+# nvBlox와 coVoxSLAM의 비교 고찰
 
 
 자율 이동 로봇(AMR), 무인 항공기(드론), 로봇 팔 등 현대 로보틱스 시스템의 자율성은 주변 환경을 3차원으로 정밀하게 인식하고 자신의 위치를 추정하는 능력에 깊이 의존한다.1 특히, 장애물의 위치뿐만 아니라 비어있는 공간까지 표현하는 고밀도의 체적 맵(volumetric map)은 로봇이 안전하게 경로를 계획하고, 환경과 효과적으로 상호작용하기 위한 필수적인 정보를 제공한다.1

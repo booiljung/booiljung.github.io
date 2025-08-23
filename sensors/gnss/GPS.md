@@ -1,8 +1,4 @@
----
-layout: page
-title: GPS
-permalink: /sensors/gnss/GPS
----
+# GPS
 
 
 전 지구 위치 결정 시스템(Global Positioning System, GPS)은 단순히 길을 찾는 도구를 넘어, 현대 문명의 시공간적 기준을 제공하는 핵심적인 글로벌 유틸리티로 자리 잡았다. GPS가 제공하는 위치(Positioning), 항법(Navigation), 그리고 시각(Timing) 정보, 즉 PNT 데이터는 전기 그리드나 인터넷과 같이 보이지 않지만 필수적인 사회 기반 시설의 한 축을 담당하고 있다 `[1, 2]`.

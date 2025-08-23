@@ -1,8 +1,4 @@
----
-layout: page
-title: u-blox PointPerfect Flex
-permalink: /sensors/gnss/u-blox PointPerfect Flex
----
+# u-blox PointPerfect Flex
 
 
 u-blox의 PointPerfect Flex는 단순한 GNSS(Global Navigation Satellite System) 보정 서비스를 넘어, 고정밀 위치 결정 기술의 전통적인 비용 및 복잡성 장벽을 허물기 위해 전략적으로 설계된 하나의 완결된 생태계이다. 이 서비스는 유연한 사용량 기반 요금 모델을 개방형 데이터 포맷 지원(RTCM) 및 고효율 독점 기술(SPARTN)과 결합함으로써, IoT, 로보틱스, 정밀 농업 분야에서 센티미터 수준 정확도의 대중화를 공격적으로 목표로 하고 있다.

@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 환경에서 IMU, RTK-GPS, 바로미터를 이용한 다중 센서 퓨전 및 상태 추정
-permalink: /ros2/ROS2 환경에서 IMU RTK-GPS 바로미터를 이용한 다중 센서 퓨전 및 상태 추정
----
+# ROS2 환경에서 IMU, RTK-GPS, 바로미터를 이용한 다중 센서 퓨전 및 상태 추정
 
 
 

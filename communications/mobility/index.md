@@ -1,8 +1,4 @@
----
-layout: page
-title: 모빌리티를 위한 통신
-permalink: /communications/mobility/index.md
----
+# 모빌리티를 위한 통신
 - [최신 자동차 내부 통신 아키텍처에 대한 심층 분석 보고서](최신 자동차 내부 통신 아키텍처.md)
 - [단일 페어 이더넷(Single Pair Ethernet, SPE) 기술](SPE 기술.md)
 - [시간 민감형 네트워킹(TSN) 종합](TSN 종합.md)

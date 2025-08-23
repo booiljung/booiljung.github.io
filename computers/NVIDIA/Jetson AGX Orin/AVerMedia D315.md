@@ -1,8 +1,4 @@
----
-layout: page
-title: AVerMedia D315 (NVIDIA Jetson AGX Orin)
-permalink: /computers/NVIDIA/Jetson AGX Orin/AVerMedia D315
----
+# AVerMedia D315 (NVIDIA Jetson AGX Orin)
 
 
 

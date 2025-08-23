@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA Jetson Orin NX
-permalink: /computers/NVIDIA/Jetson AGX Orin/NVIDIA Jetson Orin NX
----
+# NVIDIA Jetson Orin NX
 
 
 지난 10년간 인공지능(AI) 기술은 클라우드 기반의 대규모 연산 인프라를 중심으로 발전해왔다. 그러나 자율주행차, 로봇 공학, 스마트 팩토리, 지능형 영상 분석(Intelligent Video Analytics, IVA) 등 실시간 반응성과 데이터 보안이 핵심적인 분야가 부상하면서, 데이터가 생성되는 현장에서 직접 AI를 처리하는 '엣지 AI 컴퓨팅(Edge AI Computing)'의 중요성이 폭발적으로 증가하였다.1 클라우드에 의존하지 않는 온디바이스(On-device) AI는 네트워크 지연 시간을 제거하고, 데이터 전송 비용을 절감하며, 민감한 정보의 외부 유출을 원천적으로 차단하는 등 명확한 이점을 제공한다. 이러한 시대적 요구에 부응하여, NVIDIA는 Jetson 플랫폼을 통해 임베디드 AI 시장을 선도해왔다.

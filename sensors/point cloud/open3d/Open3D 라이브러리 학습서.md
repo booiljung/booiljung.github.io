@@ -1,8 +1,4 @@
----
-layout: page
-title: Open3D 라이브러리 학습서
-permalink: /sensors/point cloud/open3d/Open3D 라이브러리 학습서
----
+# Open3D 라이브러리 학습서
 
 
 

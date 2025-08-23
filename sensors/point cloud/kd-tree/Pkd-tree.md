@@ -1,8 +1,4 @@
----
-layout: page
-title: Pkd-tree에 대한 고찰
-permalink: /sensors/point cloud/kd-tree/Pkd-tree
----
+# Pkd-tree에 대한 고찰
 
 
 

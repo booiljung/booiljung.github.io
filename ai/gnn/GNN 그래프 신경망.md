@@ -1,8 +1,4 @@
----
-layout: page
-title: 그래프 신경망(GNN)
-permalink: /ai/gnn/GNN 그래프 신경망
----
+# 그래프 신경망(GNN)
 
 
 

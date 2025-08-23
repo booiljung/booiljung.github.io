@@ -1,8 +1,4 @@
----
-layout: page
-title: 필터 & 스무딩
-permalink: /sensors/filters smoothing/index.md
----
+# 필터 & 스무딩
 
 - [칼만 필터](칼만 필터.md)
 - [확장 칼만 필터(EKF)](확장 칼만 필터.md)

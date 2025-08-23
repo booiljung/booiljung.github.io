@@ -1,8 +1,4 @@
----
-layout: page
-title: GitLab CI/CD 플랫폼
-permalink: /git/GitLab CICD 플랫폼
----
+# GitLab CI/CD 플랫폼
 
 
 

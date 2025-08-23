@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS 2 Jazzy Jalisco
-permalink: /ros2/jazzy/ROS 2 Jazzy Jalisco
----
+# ROS 2 Jazzy Jalisco
 
 
 

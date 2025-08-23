@@ -1,8 +1,4 @@
----
-layout: page
-title: Xsens MTi-3 개발 키트(DK)
-permalink: /sensors/imu/Xsens MTi-3 개발 키트
----
+# Xsens MTi-3 개발 키트(DK)
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: Fast Point Feature Histogram (FPFH)
-permalink: /sensors/feature descriptor/Fast Point Feature Histogram (FPFH)
----
+# Fast Point Feature Histogram (FPFH)
 
 
 

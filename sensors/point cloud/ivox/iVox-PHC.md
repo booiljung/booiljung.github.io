@@ -1,8 +1,4 @@
----
-layout: page
-title: LiDAR SLAM을 위한 iVox-PHC 데이터 구조에 대한 심층 고찰
-permalink: /sensors/point cloud/ivox/iVox-PHC
----
+# LiDAR SLAM을 위한 iVox-PHC 데이터 구조에 대한 심층 고찰
 
 
 

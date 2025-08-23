@@ -1,8 +1,4 @@
----
-layout: page
-title: Intel RealSense D435 심층 고찰
-permalink: /sensors/stereo camera/Intel RealSense D435 심층 고찰
----
+# Intel RealSense D435 심층 고찰
 
 
 Intel RealSense D400 시리즈는 3D 비전 기술의 대중화를 이끈 중요한 제품군이다. 과거 고가의 복잡한 시스템에서만 가능했던 깊이 감지 기술을 개발자, 제작자, 혁신가들이 쉽게 접근할 수 있는 소형의 USB 기반 패키지로 제공함으로써 컴퓨터 비전 분야의 진입 장벽을 극적으로 낮추었다.1 이 시리즈 내에서 Intel RealSense D435는 특히 넓은 시야각(Field of View, FOV)과 빠른 움직임 포착 능력에 특화된 모델로, 로보틱스와 증강 현실(AR) 등 동적인 환경을 다루는 애플리케이션에서 핵심적인 역할을 수행해왔다.1

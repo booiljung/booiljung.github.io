@@ -1,8 +1,4 @@
----
-layout: page
-title: NDT-ICP 하이브리드 포인트 클라우드 정합
-permalink: /sensors/point cloud/registrations/NDT-ICP 하이브리드
----
+# NDT-ICP 하이브리드 포인트 클라우드 정합
 
 
 

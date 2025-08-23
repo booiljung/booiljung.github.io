@@ -1,8 +1,4 @@
----
-layout: page
-title: 드론 (Drones)
-permalink: /drones/index.md
----
+# 드론 (Drones)
 
 - [드론 제어](control/index.md)
 - [드론 FCC](fcc/index.md)

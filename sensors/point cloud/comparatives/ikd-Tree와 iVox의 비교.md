@@ -1,8 +1,4 @@
----
-layout: page
-title: ikd-Tree와 iVox의 비교
-permalink: /sensors/point cloud/comparatives/ikd-Tree와 iVox의 비교
----
+# ikd-Tree와 iVox의 비교
 
 
 

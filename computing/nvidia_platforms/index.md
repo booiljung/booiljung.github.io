@@ -1,8 +1,4 @@
----
-layout: page
-title: NVidia 컴퓨팅 플랫폼
-permalink: /computing/nvidia_platforms/index.md
----
+# NVidia 컴퓨팅 플랫폼
 
 - [NVidia CUDA](cuda/index.md)
 

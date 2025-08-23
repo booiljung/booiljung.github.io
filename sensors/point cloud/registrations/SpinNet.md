@@ -1,8 +1,4 @@
----
-layout: page
-title: SpinNet 3차원 포인트 클라우드 정합
-permalink: /sensors/point cloud/registrations/SpinNet
----
+# SpinNet 3차원 포인트 클라우드 정합
 
 
 

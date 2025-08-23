@@ -1,8 +1,4 @@
----
-layout: page
-title: RTI Web Integration Service
-permalink: /services/dds/RTI Connext DDS/RTI Web Integration Service
----
+# RTI Web Integration Service
 
 
 본 보고서는 Real-Time Innovations(RTI)의 Web Integration Service(WIS)에 대한 심층적인 기술 분석을 제공합니다. RTI WIS는 고성능 실시간 RTI Connext DDS(Data Distribution Service) 데이터버스(Databus)와 웹 중심의 HTTP 및 WebSocket 프로토콜 세계를 연결하는 표준 기반 게이트웨이 솔루션입니다. 이 서비스의 핵심 목표는 기존 DDS 시스템을 수정하지 않고도 웹 기반 애플리케이션(예: 브라우저 기반 대시보드, 엔터프라이즈 백엔드 시스템)이 DDS 글로벌 데이터 공간(Global Data Space)에 '일급 시민(first-class citizens)'으로 참여할 수 있도록 하는 것입니다.

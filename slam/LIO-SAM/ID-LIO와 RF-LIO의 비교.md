@@ -1,8 +1,4 @@
----
-layout: page
-title: ID-LIO와 RF-LIO의 비교
-permalink: /slam/LIO-SAM/ID-LIO와 RF-LIO의 비교
----
+# ID-LIO와 RF-LIO의 비교
 
 
 

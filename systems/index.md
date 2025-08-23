@@ -1,8 +1,4 @@
----
-layout: page
-title: 시스템 (Systems)
-permalink: /systems/index.md
----
+# 시스템 (Systems)
 - [컴퓨터 운영체제 (Operating System)](컴퓨터 운영체제.md)
 - [산업 분야 및 응용별 운영체제](산업 분야 및 응용별 운영체제.md)
 - [안드로이드](android/index.md)

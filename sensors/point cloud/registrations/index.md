@@ -1,8 +1,4 @@
----
-layout: page
-title: 포인트 클라우드 정합
-permalink: /sensors/point cloud/registrations/index.md
----
+# 포인트 클라우드 정합
 
 - [포인트클라우드 정합](포인트 클라우드 정합 기술.md)
 
@@ -26,6 +22,7 @@ permalink: /sensors/point cloud/registrations/index.md
 
 ## 딥러닝 기반
 
+- [GeoTransformer](GeoTransformer.md)
 - [SpinNet 3차원 포인트 클라우드 정합](SpinNet.md)
 
 ## 평가

@@ -1,8 +1,4 @@
----
-layout: page
-title: Jetson Orin AGX 기반 드론의 센서 퓨전을 위한 IMU 선정 및 상태 추정 아키텍처 구축
-permalink: /sensors/imu/Jetson Orin AGX 기반 드론의 센서 퓨전을 위한 IMU 선정 및 상태 추정 아키텍처 구축
----
+# Jetson Orin AGX 기반 드론의 센서 퓨전을 위한 IMU 선정 및 상태 추정 아키텍처 구축
 
 
 

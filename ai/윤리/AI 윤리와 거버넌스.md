@@ -1,8 +1,4 @@
----
-layout: page
-title: AI 윤리와 거버넌스 (AI ethics and governance)
-permalink: /ai/윤리/AI 윤리와 거버넌스
----
+# AI 윤리와 거버넌스 (AI ethics and governance)
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble Hawksbill 설치 보고서
-permalink: /ros2/humble/ROS2 Humble 설치
----
+# ROS2 Humble Hawksbill 설치 보고서
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: 항공전자 (Avionics)
-permalink: /avionics/index.md
----
+# 항공전자 (Avionics)
 - [IMA 통합 모듈형 항공전자 아키텍처](IMA 통합 모듈형 항공전자 아키텍처.md)
 - [현대 드론 비행 데이터 로깅 프레임워크](현대 드론 비행 데이터 로깅 프레임워크.md)
 - [MOSA 모듈형 개방형 시스템 접근 방식 목표 아키텍처](MOSA 모듈형 개방형 시스템 접근 방식 목표 아키텍처.md)

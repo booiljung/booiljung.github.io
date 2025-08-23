@@ -1,8 +1,4 @@
----
-layout: page
-title: OverlayFS 파일 시스템
-permalink: /systems/file systems/OverlayFS 파일 시스템
----
+# OverlayFS 파일 시스템
 
 
 OverlayFS는 리눅스를 위한 현대적 유니온 마운트(union mount) 파일 시스템으로, 여러 파일 시스템이나 디렉터리 트리를 계층적으로 중첩하여 사용자에게 단일 통합 뷰(unified view)를 제공하는 강력한 기술이다.1 이 파일 시스템의 핵심 철학은 하나 이상의 읽기 전용(read-only) 하위 레이어(lower layer) 위에 읽기-쓰기(read-write)가 가능한 상위 레이어(upper layer)를 겹쳐 놓는 것이다.3 이 구조를 통해 발생하는 모든 변경 사항은 상위 레이어에만 기록되며, 하위 레이어는 원본 상태를 그대로 유지하게 된다.1 이러한 특성 덕분에 OverlayFS는 시스템의 불변성(immutability)을 보장하면서도 유연한 변경을 허용하는 독특한 능력을 갖추게 된다.

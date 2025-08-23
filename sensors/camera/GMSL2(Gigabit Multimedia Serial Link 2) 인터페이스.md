@@ -1,8 +1,4 @@
----
-layout: page
-title: GMSL2(Gigabit Multimedia Serial Link 2) 인터페이스
-permalink: /sensors/camera/GMSL2(Gigabit Multimedia Serial Link 2) 인터페이스
----
+# GMSL2(Gigabit Multimedia Serial Link 2) 인터페이스
 
 
 현대 자동차, 로보틱스, 산업 자동화 시스템은 전례 없는 수준의 데이터를 생성하고 처리하고 있습니다. 특히 첨단 운전자 보조 시스템(ADAS), 자율주행, 고정밀 머신 비전과 같은 분야에서는 고해상도, 다중 채널 비디오 데이터의 실시간 전송이 시스템의 성능과 안전을 좌우하는 핵심 요소로 부상했습니다.1 과거에 사용되던 아날로그 방식이나 저속 디지털 인터페이스는 이러한 폭발적인 데이터 요구량을 감당하기에 명백한 한계에 부딪혔습니다.3 이처럼 실시간성과 신뢰성이 극도로 중요한 애플리케이션의 등장은 기존 기술의 한계를 뛰어넘는 새로운 고속 인터페이스의 필요성을 촉발시켰습니다.5

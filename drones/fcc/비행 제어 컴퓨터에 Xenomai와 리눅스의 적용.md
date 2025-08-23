@@ -1,8 +1,4 @@
----
-layout: page
-title: 비행 제어 컴퓨터에 Xenomai와 리눅스의 적용에 대한 심층 고찰
-permalink: /drones/fcc/비행 제어 컴퓨터에 Xenomai와 리눅스의 적용
----
+# 비행 제어 컴퓨터에 Xenomai와 리눅스의 적용에 대한 심층 고찰
 
 
 

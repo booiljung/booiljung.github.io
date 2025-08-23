@@ -1,8 +1,4 @@
----
-layout: page
-title: QGroundControl을 위한 Plan 파일 생성 방법
-permalink: /drones/gcs utm/QGroundControl을 위한 Plan 파일 생성 방법
----
+# QGroundControl을 위한 Plan 파일 생성 방법
 
 
 본 섹션에서는 QGroundControl(QGC)이 지상관제국(GCS)으로서 가지는 근본적인 역할과 미션 계획 기능의 기본 원칙을 다룹니다.

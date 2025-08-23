@@ -1,8 +1,4 @@
----
-layout: page
-title: 하이퍼바이저 (Hypervisor)
-permalink: /systems/hyper-visor/index.md
----
+# 하이퍼바이저 (Hypervisor)
 
 ## 이론
 

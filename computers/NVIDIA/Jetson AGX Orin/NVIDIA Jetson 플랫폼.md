@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA Jetson 플랫폼
-permalink: /computers/NVIDIA/Jetson AGX Orin/NVIDIA Jetson 플랫폼
----
+# NVIDIA Jetson 플랫폼
 
 
 NVIDIA Jetson 플랫폼은 단순한 임베디드 보드 시리즈를 넘어, 확장 가능한 종합 엣지 AI(Edge AI) 생태계로 발전했습니다. Jetson 플랫폼의 시장 지배력은 단순히 하드웨어의 원초적인 성능에만 기인하는 것이 아닙니다. 이는 통합 소프트웨어 스택(JetPack), 세분화된 전력 관리 기능, 그리고 입문용 개발부터 산업 등급의 자율 시스템에 이르기까지 다양한 시장 요구에 부응하는 계층화된 제품 라인업의 전략적 조합을 통해 유지되고 있습니다.

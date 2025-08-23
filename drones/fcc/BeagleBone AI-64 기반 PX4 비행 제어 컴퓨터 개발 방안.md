@@ -1,8 +1,4 @@
----
-layout: page
-title: BeagleBone AI-64 기반 PX4 비행 제어 컴퓨터 개발 방안에 대한 심층 고찰
-permalink: /drones/fcc/BeagleBone AI-64 기반 PX4 비행 제어 컴퓨터 개발 방안
----
+# BeagleBone AI-64 기반 PX4 비행 제어 컴퓨터 개발 방안에 대한 심층 고찰
 
 
 

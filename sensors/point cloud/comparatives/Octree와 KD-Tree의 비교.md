@@ -1,8 +1,4 @@
----
-layout: page
-title: Octree와 KD-Tree의 비교
-permalink: /sensors/point cloud/comparatives/Octree와 KD-Tree의 비교
----
+# Octree와 KD-Tree의 비교
 
 
 현대 컴퓨팅 기술이 발전함에 따라 3차원 컴퓨터 그래픽스, 머신러닝, 로보틱스, 지리정보시스템(GIS) 등 다양한 핵심 분야에서 대규모 다차원 데이터를 효율적으로 관리하고 질의하는 능력은 기술적 우위를 결정하는 중요한 요소가 되었다.1 이러한 대용량 데이터 집합 내에서 특정 조건을 만족하는 데이터를 신속하게 찾아내기 위해 공간 분할(Spatial Partitioning) 자료구조가 필수적으로 사용된다.

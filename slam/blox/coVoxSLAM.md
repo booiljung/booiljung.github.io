@@ -1,8 +1,4 @@
----
-layout: page
-title: coVoxSLAM
-permalink: /slam/blox/coVoxSLAM
----
+# coVoxSLAM
 
 
 

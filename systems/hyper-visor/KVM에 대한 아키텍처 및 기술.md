@@ -1,8 +1,4 @@
----
-layout: page
-title: KVM(Kernel-based Virtual Machine)에 대한 아키텍처 및 기술
-permalink: /systems/hyper-visor/KVM에 대한 아키텍처 및 기술
----
+# KVM(Kernel-based Virtual Machine)에 대한 아키텍처 및 기술
 
 
 

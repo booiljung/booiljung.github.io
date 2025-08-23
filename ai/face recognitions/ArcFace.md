@@ -1,8 +1,4 @@
----
-layout: page
-title: ArcFace (InsightFace)에 대한 심층 고찰
-permalink: /ai/face recognitions/ArcFace
----
+# ArcFace (InsightFace)에 대한 심층 고찰
 
 
 

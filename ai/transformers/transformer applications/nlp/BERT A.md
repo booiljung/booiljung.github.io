@@ -1,8 +1,4 @@
----
-layout: page
-title: Bidirectional Encoder Representations from Transformers (BERT)
-permalink: /ai/transformers/transformer applications/nlp/BERT A
----
+# Bidirectional Encoder Representations from Transformers (BERT)
 
 
 2018년 구글이 BERT(Bidirectional Encoder Representations from Transformers)를 발표하기 전까지, 자연어 처리(NLP) 분야는 문맥을 이해하는 언어 표현(language representation) 모델을 개발하는 데 있어 중요한 기로에 서 있었다. 단어 임베딩 기술의 발전은 단어를 벡터 공간에 표현함으로써 의미적 관계를 포착하는 데 성공했지만, 이러한 초기 모델들은 '문맥'이라는 언어의 본질적인 속성을 깊이 있게 다루는 데 한계를 보였다. 단어의 의미는 고정된 것이 아니라 문장 내 다른 단어들과의 관계 속에서 결정되지만, 기존의 방법론들은 이러한 동적인 의미 변화를 온전히 담아내지 못했다.

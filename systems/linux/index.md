@@ -1,8 +1,4 @@
----
-layout: page
-title: 리눅스
-permalink: /systems/linux/index.md
----
+# 리눅스
 
 - [리눅스 자습서](리눅스 자습서.md)
 - [리눅스 커널](리눅스 커널.md)

@@ -1,8 +1,4 @@
----
-layout: page
-title: OpenLayers
-permalink: /gis/OpenLayers
----
+# OpenLayers
 
 
 이 파트는 "고찰"이라는 질의의 측면을 다루며, OpenLayers가 무엇인지, 그 설계 철학은 어떠하며, 웹 매핑 세계에서 어떤 위치를 차지하는지에 대한 깊고 분석적인 이해를 제공합니다.

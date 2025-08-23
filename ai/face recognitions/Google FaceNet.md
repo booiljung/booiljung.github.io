@@ -1,8 +1,4 @@
----
-layout: page
-title: Google FaceNet
-permalink: /ai/face recognitions/Google FaceNet
----
+# Google FaceNet
 
 
 

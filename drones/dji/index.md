@@ -1,8 +1,4 @@
----
-layout: page
-title: 드론 Dock
-permalink: /drones/dji/index.md
----
+# 드론 Dock
 
 ## DJI
 

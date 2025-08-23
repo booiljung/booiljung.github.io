@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 리소스를 활용한 GUI 애플리케이션 개발
-permalink: /ros2/ROS2 리소스를 활용한 GUI 애플리케이션 개발
----
+# ROS2 리소스를 활용한 GUI 애플리케이션 개발
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: U자형 Diffusion Transformer(U-DiT)
-permalink: /ai/transformers/diffusion models/diffusion transformers/U-DiT
----
+# U자형 Diffusion Transformer(U-DiT)
 
 
 생성형 인공지능 분야에서 확산 모델(Diffusion Models)은 시각적 콘텐츠 생성의 사실상 표준(de-facto standard)으로 자리 잡았다.1 이 모델들은 초기에 컨볼루션 신경망(CNN) 기반의 U-Net 아키텍처를 핵심적인 노이즈 제거 백본(denoising backbone)으로 채택하여 성공을 거두었다.2 U-Net의 계층적 인코더-디코더 구조와 스킵 연결(skip connection)은 노이즈가 낀 이미지로부터 원본을 복원하는 작업에 매우 효과적인 귀납적 편향(inductive bias)을 제공했다.2 그러나 딥러닝의 패러다임이 트랜스포머(Transformer)로 전환되면서, 생성 모델 아키텍처에도 근본적인 변화가 시작되었다.

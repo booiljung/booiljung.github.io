@@ -1,8 +1,4 @@
----
-layout: page
-title: Ubuntu 24.04 기반 Docker, ROS 2, NVIDIA를 활용한 GPU 가속 로보틱스 개발 환경 구축
-permalink: /ros2/humble/Ubuntu 24.04 기반 Docker ROS2 NVIDIA를 활용한 GPU 가속 로보틱스 개발 환경 구축
----
+# Ubuntu 24.04 기반 Docker, ROS 2, NVIDIA를 활용한 GPU 가속 로보틱스 개발 환경 구축
 
 
 이 파트에서는 컨테이너의 하드웨어 가속 및 GUI 기능을 활성화하는 데 필수적인 호스트 Ubuntu 24.04 머신의 사전 준비 단계를 상세히 설명합니다. 올바르게 구성된 호스트 시스템은 성공적인 컨테이너 환경 구축의 전제 조건입니다.

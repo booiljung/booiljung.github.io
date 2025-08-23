@@ -1,8 +1,4 @@
----
-layout: page
-title: 언어 (Languages)
-permalink: /languages/index.md
----
+# 언어 (Languages)
 
 ## 프로그래밍 언어
 

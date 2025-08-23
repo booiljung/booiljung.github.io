@@ -1,8 +1,4 @@
----
-layout: page
-title: Micro-XRCE-DDS 심층 분석 및 활용 가이드
-permalink: /services/dds/Micro-XRCE-DDS 심층 분석 및 활용 가이드
----
+# Micro-XRCE-DDS 심층 분석 및 활용 가이드
 
 
 

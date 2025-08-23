@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS 2 Humble 개발을 위한 Visual Studio Code 최종 가이드
-permalink: /ros2/humble/ROS2 Humble 개발을 위한 Visual Studio Code 최종 가이드
----
+# ROS 2 Humble 개발을 위한 Visual Studio Code 최종 가이드
 
 
 안정적이고 기능적인 개발 환경을 구축하는 것은 성공적인 ROS 2 프로젝트의 초석입니다. 이 섹션에서는 환경 소싱이라는 가장 기본적인 요구사항부터 필수 확장 프로그램으로 완벽하게 구성된 작업 공간에 이르기까지, 중요한 전제 조건들을 체계적으로 다룹니다.

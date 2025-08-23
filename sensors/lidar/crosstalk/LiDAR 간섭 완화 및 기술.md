@@ -1,8 +1,4 @@
----
-layout: page
-title: LiDAR 간섭 완화 및 기술 동향
-permalink: /sensors/lidar/crosstalk/LiDAR 간섭 완화 및 기술
----
+# LiDAR 간섭 완화 및 기술 동향
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: SMOTE(Synthetic Minority Over-sampling Technique)
-permalink: /ai/class imbalance problems/SMOTE Synthetic Minority Over-sampling Technique
----
+# SMOTE(Synthetic Minority Over-sampling Technique)
 
 기초 원리부터 최신 대안까지
 

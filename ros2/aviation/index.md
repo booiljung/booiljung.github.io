@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 항공전자
-permalink: /ros2/aviation/index.md
----
+# ROS2 항공전자
 
 - [항공전자 FACE 아키텍처 내 로봇 운영체제 2(ROS 2) 통합](항공전자 FACE 아키텍처 내 로봇 운영체제 2(ROS 2) 통합.md)
 - [ROS2 기반 드론 임무 수행을 위한 HTN, BT, iFSM 기술](ROS2 기반 드론 임무 수행을 위한 HTN BT iFSM 기술.md)

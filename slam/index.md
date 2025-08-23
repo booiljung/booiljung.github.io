@@ -1,8 +1,4 @@
----
-layout: page
-title: SLAM (Simultaneous Localization and Mapping)
-permalink: /slam/index.md
----
+# SLAM (Simultaneous Localization and Mapping)
 
 - [Truncated Signed Distance Field (TSDF)에 대한 심층적 고찰](TSDF Truncated Signed Distance Field.md)
 - [ESDF (Euclidean Signed Distance Field)에 대한 심층 고찰](ESDF Euclidean Signed Distance Field.md)

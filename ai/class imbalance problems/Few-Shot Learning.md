@@ -1,8 +1,4 @@
----
-layout: page
-title: 퓨샷 러닝(Few-Shot Learning)
-permalink: /ai/class imbalance problems/Few-Shot Learning
----
+# 퓨샷 러닝(Few-Shot Learning)
 
 
 

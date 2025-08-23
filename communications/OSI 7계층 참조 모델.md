@@ -1,8 +1,4 @@
----
-layout: page
-title: 개방형 시스템 상호접속(OSI) 7계층 참조 모델에 대한 고찰
-permalink: /communications/OSI 7계층 참조 모델
----
+# 개방형 시스템 상호접속(OSI) 7계층 참조 모델에 대한 고찰
 
 
 

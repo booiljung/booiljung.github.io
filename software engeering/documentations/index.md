@@ -1,8 +1,4 @@
----
-layout: page
-title: 소프트웨어 문서화
-permalink: /software engeering/documentations/index.md
----
+# 소프트웨어 문서화
 
 - [실무자를 위한 시스템 요구사항 명세서(SRS) 완벽 가이드](SRS 실무자를 위한 시스템 요구사항 명세서 완벽 가이드.md)
 - [인터페이스 제어 문서(ICD) 작성 가이드](ICD 인터페이스 제어 문서 작성 가이드.md)

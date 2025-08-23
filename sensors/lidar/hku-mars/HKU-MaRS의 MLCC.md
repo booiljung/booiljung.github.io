@@ -1,8 +1,4 @@
----
-layout: page
-title: HKU-MaRS의 MLCC(Multiple LiDARs and Cameras extrinsic Calibration)에 대한 심층 고찰
-permalink: /sensors/lidar/hku-mars/HKU-MaRS의 MLCC
----
+# HKU-MaRS의 MLCC(Multiple LiDARs and Cameras extrinsic Calibration)에 대한 심층 고찰
 
 
 

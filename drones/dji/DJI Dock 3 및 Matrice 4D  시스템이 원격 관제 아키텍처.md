@@ -1,8 +1,4 @@
----
-layout: page
-title: DJI Dock 3 및 Matrice 4D 시스템의 원격 관제 아키텍처
-permalink: /drones/dji/DJI Dock 3 및 Matrice 4D  시스템이 원격 관제 아키텍처
----
+# DJI Dock 3 및 Matrice 4D 시스템의 원격 관제 아키텍처
 
 
 DJI Dock 3 및 Matrice 4D(M4D) 시스템은 단순한 'Drone-in-a-Box' 솔루션을 넘어선다. 이 시스템은 산업 표준 사물 인터넷(IoT) 프로토콜을 기반으로 구축된 개방형 자율 운영 플랫폼으로서, 전례 없는 수준의 자동화, 유연성, 그리고 확장성을 제공한다.1 기존의 폐쇄적인 드론 시스템과 달리, DJI는 MQTT(Message Queuing Telemetry Transport)라는 경량 메시징 프로토콜을 통신 아키텍처의 핵심으로 채택함으로써 서드파티 개발자와의 통합을 위한 문을 활짝 열었다.

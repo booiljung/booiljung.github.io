@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA AGX 플랫폼
-permalink: /computing/nvidia_platforms/NVIDIA AGX 플랫폼
----
+# NVIDIA AGX 플랫폼
 
 
 NVIDIA AGX 플랫폼은 자율 머신과 복잡한 엣지 인공지능(AI) 워크로드라는 신흥 분야를 위해 특별히 설계된 Jetson 제품군의 고성능 계층으로 정의된다.1 이 보고서는 AGX 시리즈를 단순한 하드웨어가 아닌, 하드웨어, 소프트웨어, 그리고 개발자 생태계가 융합되어 로보틱스, 자율주행차, 지능형 기기 분야에서 기존에는 해결할 수 없었던 문제들을 해결하는 통합 플랫폼으로 조명하고자 한다.

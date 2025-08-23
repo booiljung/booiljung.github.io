@@ -1,8 +1,4 @@
----
-layout: page
-title: 상태 공간 모델(Mamba)
-permalink: /ai/mamba/Mamba 상태 공간 모델
----
+# 상태 공간 모델(Mamba)
 
 
 

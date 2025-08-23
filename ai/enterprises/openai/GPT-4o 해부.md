@@ -1,8 +1,4 @@
----
-layout: page
-title: GPT-4o 해부
-permalink: /ai/enterprises/openai/GPT-4o 해부
----
+# GPT-4o 해부
 
 
 

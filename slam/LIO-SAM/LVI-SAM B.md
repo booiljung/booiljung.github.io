@@ -1,8 +1,4 @@
----
-layout: page
-title: LVI-SAM
-permalink: /slam/LIO-SAM/LVI-SAM B
----
+# LVI-SAM
 
 
 

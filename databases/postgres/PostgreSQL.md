@@ -1,8 +1,4 @@
----
-layout: page
-title: PostgreSQL
-permalink: /databases/postgres/PostgreSQL
----
+# PostgreSQL
 
 
 

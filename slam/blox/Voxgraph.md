@@ -1,8 +1,4 @@
----
-layout: page
-title: Voxgraph에 대한 심층 고찰
-permalink: /slam/blox/Voxgraph
----
+# Voxgraph에 대한 심층 고찰
 
 
 

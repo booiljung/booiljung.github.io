@@ -1,8 +1,4 @@
----
-layout: page
-title: LiDAR SLAM을 위한 후처리 기반 동적 객체 제거 기법, Removert에 대한 심층 고찰
-permalink: /slam/동적 객체 제거/LiDAR SLAM을 위한 후처리 기반 동적 객체 제거 기법 Removert에 대한 심층 고찰
----
+# LiDAR SLAM을 위한 후처리 기반 동적 객체 제거 기법, Removert에 대한 심층 고찰
 
 
 

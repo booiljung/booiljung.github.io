@@ -1,8 +1,4 @@
----
-layout: page
-title: Voxfield
-permalink: /slam/blox/Voxfield
----
+# Voxfield
 
 
 

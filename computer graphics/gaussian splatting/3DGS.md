@@ -1,8 +1,4 @@
----
-layout: page
-title: 3D 가우시안 스플래팅(3D Gaussian Splatting, 3DGS)
-permalink: /computer graphics/gaussian splatting/3DGS
----
+# 3D 가우시안 스플래팅(3D Gaussian Splatting, 3DGS)
 
 
 

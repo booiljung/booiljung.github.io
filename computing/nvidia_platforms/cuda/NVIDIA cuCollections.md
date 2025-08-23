@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA cuCollections(cuco)
-permalink: /computing/nvidia_platforms/cuda/NVIDIA cuCollections
----
+# NVIDIA cuCollections(cuco)
 
 
 1999년 NVIDIA의 GPU(Graphics Processing Unit) 발명과 2006년 CUDA(Compute Unified Device Architecture) 아키텍처의 공개는 컴퓨팅 패러다임의 지각 변동을 예고했다.1 본래 실시간 그래픽 렌더링을 위해 설계된 GPU는 CUDA의 등장으로 과학 및 공학 연구 분야 전반에서 범용 병렬 컴퓨팅(GPGPU, General-Purpose computing on Graphics Processing Units)의 핵심 동력으로 자리 잡았다.3 수천 개의 코어를 집적한 GPU는 CPU의 순차 처리 방식이 직면한 성능 한계를 돌파할 대안으로 부상하며, 데이터 과학, 인공지능, 고성능 컴퓨팅(HPC) 분야의 폭발적인 성장을 견인했다.5

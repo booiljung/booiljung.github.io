@@ -1,8 +1,4 @@
----
-layout: page
-title: Few-Shot Learning을 위한 프로토타입 네트워크
-permalink: /ai/class imbalance problems/Few-Shot Learning을 위한 프로토타입 네트워크
----
+# Few-Shot Learning을 위한 프로토타입 네트워크
 
 
 

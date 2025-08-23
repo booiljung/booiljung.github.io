@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS 2 (Robot Operating System 2)
-permalink: /ros2/ROS2
----
+# ROS 2 (Robot Operating System 2)
 
 
 

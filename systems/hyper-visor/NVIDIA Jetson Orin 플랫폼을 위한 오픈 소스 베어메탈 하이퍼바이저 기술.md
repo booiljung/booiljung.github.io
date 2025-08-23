@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA Jetson Orin 플랫폼을 위한 오픈 소스 베어메탈 하이퍼바이저 기술 분석
-permalink: /systems/hyper-visor/NVIDIA Jetson Orin 플랫폼을 위한 오픈 소스 베어메탈 하이퍼바이저 기술
----
+# NVIDIA Jetson Orin 플랫폼을 위한 오픈 소스 베어메탈 하이퍼바이저 기술 분석
 
 
 

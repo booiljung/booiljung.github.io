@@ -1,12 +1,9 @@
----
-layout: page
-title: NvBLox
-permalink: /slam/NvBlox/index.md
----
+# NvBLox
 
 - [Nvblox A](NvBlox A.md)
 - [Nvblox B](NvBlox B.md)
 - [nvBlox와 coVoxSLAM의 비교 고찰](NvBlox와 coVoxSLAM의 비교.md)
+- [NvBlox 환경에서 CPU 경로 계획을 위한 GPU-CPU ESDF 데이터 전송 최적화 전략](NvBlox 환경에서 CPU 경로 계획을 위한 GPU-CPU ESDF 데이터 전송 최적화 전략.md)
 
 ## ROS2
 - [nvblox_ros에 대한 고찰](nvblox_ros.md)

@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA GPU Cloud (NGC)
-permalink: /computers/NVIDIA/NGC NVIDIA GPU Cloud
----
+# NVIDIA GPU Cloud (NGC)
 
 
 

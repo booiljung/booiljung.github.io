@@ -1,8 +1,4 @@
----
-layout: page
-title: DDS 언어 지원
-permalink: /services/dds/language supports/index.md
----
+# DDS 언어 지원
 
 ## Rust
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: KISS-ICP 포인트 클라우드 정합
-permalink: /sensors/point cloud/registrations/KISS-ICP
----
+# KISS-ICP 포인트 클라우드 정합
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: Raytracing
-permalink: /computer graphics/raytracing/index.md
----
+# Raytracing
 - [레이트레이싱 기술](레이트레이싱 기술.md)
 - [실시간 레이트레이싱](실시간 레이트레이싱.md)
 - [실시간 레이트레이싱 렌더링](실시간 레이트레이싱 렌더링.md)

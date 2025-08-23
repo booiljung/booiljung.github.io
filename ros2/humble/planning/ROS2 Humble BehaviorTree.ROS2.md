@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble에서의 BehaviorTree.ROS2
-permalink: /ros2/humble/planning/ROS2 Humble BehaviorTree.ROS2
----
+# ROS2 Humble에서의 BehaviorTree.ROS2
 
 
 로보틱스 분야의 핵심 과제는 복잡성의 관리다. 로봇이 수행해야 할 작업이 정교해지고, 예측 불가능한 동적 환경과 상호작용해야 함에 따라, 로봇의 행동을 결정하는 제어 아키텍처는 점점 더 중요해지고 있다. 전통적으로 이러한 제어 로직을 구현하는 데에는 유한 상태 머신(Finite State Machine, FSM)이 널리 사용되어 왔다. FSM은 시스템을 명확한 '상태(state)'와 그 상태들 사이의 '전이(transition)'로 모델링하는 직관적인 방식으로, 많은 엔지니어에게 익숙한 접근법이다.1

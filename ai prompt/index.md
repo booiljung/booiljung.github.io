@@ -1,7 +1,3 @@
----
-layout: page
-title: AI 프롬프트 (AI Prompt)
-permalink: /ai prompt/index.md
----
+# AI 프롬프트 (AI Prompt)
 
 - [AI Coding](ai coding/index.md)

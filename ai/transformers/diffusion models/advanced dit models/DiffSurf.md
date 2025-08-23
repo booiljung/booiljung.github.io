@@ -1,8 +1,4 @@
----
-layout: page
-title: 3D 표면 생성을 위한 트랜스포머 기반 확산 모델 DiffSurf
-permalink: /ai/transformers/diffusion models/advanced dit models/DiffSurf
----
+# 3D 표면 생성을 위한 트랜스포머 기반 확산 모델 DiffSurf
 
 
 3D 생성 모델링 분야는 최근 몇 년간 표현 방식, 모델 아키텍처, 학습 패러다임 전반에 걸쳐 근본적인 변화를 겪어왔습니다. DiffSurf와 같은 최신 모델의 혁신을 완전히 이해하기 위해서는 이러한 기술적 진화의 맥락을 파악하는 것이 필수적입니다. 이 섹션에서는 3D 표현 방식의 변화, 확산 모델의 부상, 그리고 3D 비전 분야에서 트랜스포머의 결정적 역할에 대해 고찰합니다.

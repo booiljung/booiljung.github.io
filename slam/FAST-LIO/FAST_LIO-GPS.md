@@ -1,8 +1,4 @@
----
-layout: page
-title: FAST_LIO-GPS
-permalink: /slam/FAST-LIO/FAST_LIO-GPS
----
+# FAST_LIO-GPS
 
 
 이 파트에서는 FAST-LIO-GPS의 근간이 되는 FAST-LIO, 특히 FAST-LIO2가 어떤 철학으로 설계되었는지 그 핵심 기술들을 중심으로 분석한다. FAST-LIO 계열의 성공은 단순히 빠른 연산 속도에 그치지 않는다. 이는 시스템의 각 구성 요소가 서로의 한계를 보완하고 잠재력을 극대화하도록 유기적으로 설계된 결과물이다.

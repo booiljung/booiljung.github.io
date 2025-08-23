@@ -1,8 +1,4 @@
----
-layout: page
-title: 최신 로봇 및 우주항공 시스템을 위한 DDS와 TSN 적용 가능성
-permalink: /communications/robots/최신 로봇 및 우주항공 시스템을 위한 DDS와 TSN 적용 가능성
----
+# 최신 로봇 및 우주항공 시스템을 위한 DDS와 TSN 적용 가능성
 
 
 본 보고서는 데이터 분산 서비스(Data Distribution Service, DDS)와 시간 민감형 네트워킹(Time-Sensitive Networking, TSN) 기술이 로봇 및 우주항공이라는 두 가지 고도의 기술 집약적 분야에 즉시 적용 가능한지에 대한 전략적 질문에 답하는 것을 목표로 한다. "즉시 적용 가능성"은 단순한 기술적 구현 가능성을 넘어, 기술 성숙도, 표준화, 생태계 지원, 그리고 실제 생산 시스템에 통합할 때의 예측 가능성과 투자 수익률까지 포함하는 포괄적인 개념이다.

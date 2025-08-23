@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 로깅 시스템
-permalink: /ros2/ROS2 로깅 시스템
----
+# ROS2 로깅 시스템
 
 
 

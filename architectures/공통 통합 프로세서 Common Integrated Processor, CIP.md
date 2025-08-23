@@ -1,8 +1,4 @@
----
-layout: page
-title: 공통 통합 프로세서(Common Integrated Processor, CIP)
-permalink: /architectures/공통 통합 프로세서 Common Integrated Processor, CIP
----
+# 공통 통합 프로세서(Common Integrated Processor, CIP)
 
 
 현대 항공우주 및 국방 기술의 정점에 있는 5세대 전투기 F-35 라이트닝 II의 성공은 단순히 스텔스 성능이나 기체 역학적 우수성에만 기인하지 않는다. 그 핵심에는 항공기의 '중추 신경계' 역할을 수행하는 고도로 통합된 컴퓨팅 시스템, 즉 공통 통합 프로세서(Common Integrated Processor, CIP)가 자리 잡고 있다. CIP는 F-35가 전례 없는 수준의 상황 인식, 정보 융합, 네트워크 중심 작전 능력을 발휘할 수 있게 하는 기술적 기반이다. 이 보고서는 F-35의 CIP를 다각적으로 심층 분석하여, 그 탄생 배경이 된 항공전자 아키텍처의 패러다임 변화부터 기술적 구성, 핵심 기능, 현대화 과정에서 직면한 도전과제, 그리고 미래 항공전 및 방위 산업에 미치는 전략적 함의까지 포괄적으로 고찰하는 것을 목표로 한다.

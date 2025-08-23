@@ -1,8 +1,4 @@
----
-layout: page
-title: TCP 계층의 Head-of-Line 블로킹에 대한 심층 고찰
-permalink: /communications/protocols/TCP 계층의 Head-of-Line 블로킹
----
+# TCP 계층의 Head-of-Line 블로킹에 대한 심층 고찰
 
 
 

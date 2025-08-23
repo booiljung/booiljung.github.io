@@ -1,8 +1,4 @@
----
-layout: page
-title: 실시간 분산 시스템을 위한 RTI Connext DDS
-permalink: /services/dds/RTI Connext DDS/실시간 분산 시스템을 위한 RTI Connext DDS
----
+# 실시간 분산 시스템을 위한 RTI Connext DDS
 
 
 분산 시스템의 세계는 끊임없이 진화해 왔습니다. 그 진화의 최전선에는 단순히 메시지를 주고받는 것을 넘어, 멀리 떨어진 애플리케이션들이 마치 하나의 거대한 공유 데이터베이스에 접속하듯 상호작용하는 '데이터 중심(Data-Centric)'이라는 철학이 있습니다. 이 보고서의 첫 번째 파트에서는 RTI Connext DDS의 구체적인 기술을 파고들기 전에, 우리를 이 새로운 시대로 이끄는 DDS(Data Distribution Service) 표준의 근본적인 패러다임 전환을 깊이 있게 들여다볼 것입니다. 통신을 '메시지 배달'이라는 낡은 관점에서 벗어나, 시스템 전체의 '상태를 실시간으로 공유'하는 새로운 개념으로 이해하는 것. 이것이야말로 DDS의 진정한 힘을 깨닫는 가장 중요한 첫걸음입니다.

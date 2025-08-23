@@ -1,8 +1,4 @@
----
-layout: page
-title: 원격 드론 제어를 위한 WebRTC와 WebTransport 비교
-permalink: /drones/control/원격 드론 제어를 위한 WebRTC와 WebTransport 비교
----
+# 원격 드론 제어를 위한 WebRTC와 WebTransport 비교
 
 
 

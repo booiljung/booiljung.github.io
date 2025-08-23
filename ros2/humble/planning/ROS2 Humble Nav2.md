@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble Nav2
-permalink: /ros2/humble/planning/ROS2 Humble Nav2
----
+# ROS2 Humble Nav2
 
 
 로봇 운영 체제(Robot Operating System, ROS)는 로봇 응용 프로그램 개발을 위한 표준 플랫폼으로 자리매김했다. 특히, 자율 이동 로봇의 핵심 기능인 내비게이션은 ROS1의 Navigation Stack을 통해 널리 구현되었으며, 이는 수많은 로봇 프로젝트의 성공에 기여했다. 그러나 ROS1의 시대가 저물고 ROS2로의 전환이 가속화되면서, 내비게이션 스택 또한 근본적인 재설계를 거쳐 Nav2로 재탄생했다. 본 고찰은 ROS2의 Long-Term Support (LTS) 릴리즈인 Humble Hawksbill 버전에 탑재된 Nav2를 중심으로, 그 설계 철학, 핵심 아키텍처, 주요 알고리즘, 성능 최적화 전략 및 고급 주제들을 심층적으로 분석하고 기술하는 것을 목표로 한다.

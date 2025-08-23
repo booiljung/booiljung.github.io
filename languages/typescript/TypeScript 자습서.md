@@ -1,8 +1,4 @@
----
-layout: page
-title: TypeScript 자습서
-permalink: /languages/typescript/TypeScript 자습서
----
+# TypeScript 자습서
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: 라이다 기반 최신 SLAM 기술 고찰
-permalink: /slam/동향/라이다 기반 최신 SLAM 기술 고찰
----
+# 라이다 기반 최신 SLAM 기술 고찰
 
 
 

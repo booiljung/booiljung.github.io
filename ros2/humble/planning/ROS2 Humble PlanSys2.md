@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble의 PlanSys2
-permalink: /ros2/humble/planning/ROS2 Humble PlanSys2
----
+# ROS2 Humble의 PlanSys2
 
 
 

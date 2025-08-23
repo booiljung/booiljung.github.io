@@ -1,8 +1,4 @@
----
-layout: page
-title: eProsima Integration Service 시스템 아키텍처 및 통합
-permalink: /services/dds/Fast-DDS/eProsima Integration Service 시스템 아키텍처 및 통합
----
+# eProsima Integration Service 시스템 아키텍처 및 통합
 
 
 현대의 분산 시스템은 로보틱스, 사물 인터넷(IoT), 자동차, 항공우주 등 다양한 분야에서 점점 더 복잡해지고 있습니다. 이러한 시스템들은 종종 서로 다른 통신 프로토콜, 데이터 모델, 프로그래밍 언어를 사용하는 이기종 하위 시스템들로 구성됩니다. 이러한 이질성은 시스템 통합을 매우 어려운 과제로 만들며, 확장성, 유지보수성, 개발 비용 측면에서 심각한 문제를 야기합니다. eProsima Integration Service는 이러한 근본적인 문제에 대한 전략적 해결책으로 등장했습니다.

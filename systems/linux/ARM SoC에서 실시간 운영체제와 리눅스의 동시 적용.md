@@ -1,8 +1,4 @@
----
-layout: page
-title: ARM SoC에서 실시간 운영체제와 리눅스의 동시 적용에 대한 고찰
-permalink: /systems/linux/ARM SoC에서 실시간 운영체제와 리눅스의 동시 적용
----
+# ARM SoC에서 실시간 운영체제와 리눅스의 동시 적용에 대한 고찰
 
 
 

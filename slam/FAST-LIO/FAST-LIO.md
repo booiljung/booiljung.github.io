@@ -1,8 +1,4 @@
----
-layout: page
-title: FAST-LIO
-permalink: /slam/FAST-LIO/FAST-LIO
----
+# FAST-LIO
 
 
 본 섹션에서는 FAST-LIO가 등장하게 된 배경을 설정하고, 이 기술이 해결하고자 했던 특정 기술적 및 알고리즘적 공백을 조명한다. FAST-LIO를 단독적인 발명이 아닌, 해당 분야의 도전 과제에 대한 중요한 응답으로 구성하여 그 맥락을 확립한다.

@@ -1,8 +1,4 @@
----
-layout: page
-title: ADiT 모델
-permalink: /ai/transformers/diffusion models/diffusion transformers/ADiT 모델
----
+# ADiT 모델
 
 확산 모델, 트랜스포머, 그리고 CLIP의 융합
 

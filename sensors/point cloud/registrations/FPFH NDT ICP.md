@@ -1,8 +1,4 @@
----
-layout: page
-title: FPFH, NDT, ICP를 활용한 포인트 클라우드 정합
-permalink: /sensors/point cloud/registrations/FPFH NDT ICP
----
+# FPFH, NDT, ICP를 활용한 포인트 클라우드 정합
 
 
 

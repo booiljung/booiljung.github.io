@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA Jetson Orin 플랫폼에서의 PREEMPT_RT 및 샌드박싱 가이드
-permalink: /computers/NVIDIA/Jetson AGX Orin/NVIDIA Jetson Orin 플랫폼에서의 PREEMPT_RT 및 샌드박싱 가이드
----
+# NVIDIA Jetson Orin 플랫폼에서의 PREEMPT_RT 및 샌드박싱 가이드
 
 
 NVIDIA Jetson Orin 플랫폼은 엣지 컴퓨팅 환경에서 전례 없는 수준의 AI 추론 성능을 제공하며 로보틱스, 산업 자동화, 자율 주행 시스템과 같은 분야의 혁신을 주도하고 있습니다. 이러한 애플리케이션들은 단순히 높은 연산 처리량뿐만 아니라, 예측 가능하고 시간 결정적인(time-deterministic) 응답성을 요구하는 경우가 많습니다. 즉, 시스템은 정해진 시간 제약(deadline) 내에 특정 작업을 반드시 완료해야 하며, 이를 충족하지 못할 경우 시스템 전체의 안정성과 안전에 심각한 영향을 미칠 수 있습니다.

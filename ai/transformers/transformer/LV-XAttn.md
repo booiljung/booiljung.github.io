@@ -1,8 +1,4 @@
----
-layout: page
-title: LV-XAttn (Long Visual 분산 교차-어텐션)
-permalink: /ai/transformers/transformer/LV-XAttn
----
+# LV-XAttn (Long Visual 분산 교차-어텐션)
 
 
 

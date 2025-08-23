@@ -1,8 +1,4 @@
----
-layout: page
-title: 제어 가능한 이상 생성(Anomaly Synthesis)을 위한 AnomalyControl 프레임워크
-permalink: /ai/class imbalance problems/Anomaly Synthesis 제어 가능한 이상 생성을 위한 AnomalyControl 프레임워크
----
+# 제어 가능한 이상 생성(Anomaly Synthesis)을 위한 AnomalyControl 프레임워크
 
 
 

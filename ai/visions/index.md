@@ -1,8 +1,4 @@
----
-layout: page
-title: 비전 AI
-permalink: /ai/visions/index.md
----
+# 비전 AI
 
 - [컴퓨터 비전 학습 로드맵](컴퓨터 비전 학습 로드맵.md)
 

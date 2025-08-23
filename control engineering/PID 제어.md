@@ -1,8 +1,4 @@
----
-layout: page
-title: PID 제어
-permalink: /control engineering/PID 제어
----
+# PID 제어
 
 
 

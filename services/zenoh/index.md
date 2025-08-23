@@ -1,8 +1,4 @@
----
-layout: page
-title: Zenoh
-permalink: /services/zenoh/index.md
----
+# Zenoh
 
 - [Zenoh 프로토콜](Zenoh 프로토콜.md)
 

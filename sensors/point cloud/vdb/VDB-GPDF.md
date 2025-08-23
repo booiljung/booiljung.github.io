@@ -1,8 +1,4 @@
----
-layout: page
-title: VDB-GPDF
-permalink: /sensors/point cloud/vdb/VDB-GPDF
----
+# VDB-GPDF
 
 
 

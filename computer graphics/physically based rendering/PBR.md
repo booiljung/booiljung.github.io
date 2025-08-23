@@ -1,8 +1,4 @@
----
-layout: page
-title: 물리 기반 렌더링(Physically Based Rendering, PBR)
-permalink: /computer graphics/physically based rendering/PBR
----
+# 물리 기반 렌더링(Physically Based Rendering, PBR)
 
 
 

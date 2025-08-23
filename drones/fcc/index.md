@@ -1,8 +1,4 @@
----
-layout: page
-title: 드론 FCC
-permalink: /drones/fcc/index.md
----
+# 드론 FCC
 ## FCC
 - [현대 비행제어컴퓨터를 위한 펌웨어 개발 기술](현대 비행제어컴퓨터를 위한 펌웨어 개발 기술.md)
 ## 제어

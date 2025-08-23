@@ -1,8 +1,4 @@
----
-layout: page
-title: 컴퓨터 비전 (Computer Vision) 트랜스포머
-permalink: /ai/transformers/transformer applications/computer vision/index.md
----
+# 컴퓨터 비전 (Computer Vision) 트랜스포머
 
 이미지 인식 및 처리를 위해 트랜스포머를 활용하는 비전 트랜스포머(ViT)와 관련 기술을 다룬다. 시각적 데이터를 토큰화하는 방법과 모델 구조를 학습한다.
 

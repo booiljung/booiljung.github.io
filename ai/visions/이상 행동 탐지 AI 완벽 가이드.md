@@ -1,8 +1,4 @@
----
-layout: page
-title: 이상 행동 탐지 AI 완벽 가이드
-permalink: /ai/visions/이상 행동 탐지 AI 완벽 가이드
----
+# 이상 행동 탐지 AI 완벽 가이드
 
 
 

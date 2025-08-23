@@ -1,8 +1,4 @@
----
-layout: page
-title: Perceiver IO
-permalink: /ai/transformers/transformer/Perceiver IO
----
+# Perceiver IO
 
 
 

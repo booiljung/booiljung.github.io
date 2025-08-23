@@ -1,8 +1,4 @@
----
-layout: page
-title: Jetson Orin 기반 고성능 드론의 상태 추정을 위한 고주파 IMU 선정 및 ROS2 Humble 통합
-permalink: /ros2/aviation/Jetson Orin 기반 드론의 상태 추정을 위한 고주파 IMU 선정 및 ROS2 Humble 통합 가이드
----
+# Jetson Orin 기반 고성능 드론의 상태 추정을 위한 고주파 IMU 선정 및 ROS2 Humble 통합
 
 
 

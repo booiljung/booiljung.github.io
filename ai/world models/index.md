@@ -1,11 +1,14 @@
----
-layout: page
-title: 월드 모델
-permalink: /ai/world models/index.md
----
+# 월드 모델
+
 ## 월드 파운데이션 모델
+
 - [월드 파운데이션 모델](월드 파운데이션 모델.md)
+
 ## 생성형 월드 모델
+
 - [생성형 월드 모델](생성형 월드 모델.md)
+
 ## 거대 물리 모델
+
 - [거대 물리 인공지능 모델](거대 물리 인공지능 모델.md)
+- [NVIDIA Cosmos Reason (물리 AI 시대를 위한 추론 엔진)](NVIDIA Cosmos Reason.md)

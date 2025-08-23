@@ -1,8 +1,4 @@
----
-layout: page
-title: 직접 시퀀스 대역 확산(DSSS) 기술
-permalink: /communications/wireless/DSSS 기술
----
+# 직접 시퀀스 대역 확산(DSSS) 기술
 
 
 

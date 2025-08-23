@@ -1,8 +1,4 @@
----
-layout: page
-title: R*-트리
-permalink: /sensors/point cloud/r-tree/Rstar-tree
----
+# R*-트리
 
 
 

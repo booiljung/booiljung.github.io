@@ -1,8 +1,4 @@
----
-layout: page
-title: Livox Technology
-permalink: /sensors/lidar/livox/index.md
----
+# Livox Technology
 - [Livox AVIA에 대한 기술적 고찰](Livox AVIA.md)
 - [Livox HAP에 대한 기술적 고찰](Livox HAP.md)
 - [Livox Hub에 대한 심층 기술 분석](Livox Hub.md)

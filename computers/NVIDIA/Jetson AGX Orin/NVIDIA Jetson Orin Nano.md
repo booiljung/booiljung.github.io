@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA Jetson Orin Nano
-permalink: /computers/NVIDIA/Jetson AGX Orin/NVIDIA Jetson Orin Nano
----
+# NVIDIA Jetson Orin Nano
 
 
 

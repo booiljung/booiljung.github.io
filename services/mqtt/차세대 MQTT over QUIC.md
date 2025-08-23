@@ -1,8 +1,4 @@
----
-layout: page
-title: 차세대 IoT 통신을 위한 MQTT over QUIC
-permalink: /services/mqtt/차세대 MQTT over QUIC
----
+# 차세대 IoT 통신을 위한 MQTT over QUIC
 
 
 사물 인터넷(IoT)의 폭발적인 성장은 전 세계적으로 수십억 개의 디바이스를 상호 연결하며, 산업, 생활, 교통 등 사회 전반에 걸쳐 혁신을 주도하고 있다. 이러한 거대한 네트워크를 지탱하기 위해서는 디바이스 간의 데이터를 효율적이고 신뢰성 있게 교환할 수 있는 통신 프로토콜의 역할이 절대적으로 중요하다. 특히, 제한된 전력과 낮은 연산 능력, 협소한 네트워크 대역폭을 가진 IoT 디바이스 환경에서는 경량화된 프로토콜이 필수적이다. 이러한 배경 속에서 MQTT(Message Queuing Telemetry Transport)는 발행/구독(Publish/Subscribe) 모델을 기반으로 한 단순하고 가벼운 구조 덕분에 IoT 통신의 사실상 표준(de facto standard)으로 확고히 자리매김했다.1

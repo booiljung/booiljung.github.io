@@ -1,8 +1,4 @@
----
-layout: page
-title: # 서론
-permalink: /services/dds/RTI Connext DDS/RTI Connext DDS
----
+# # 서론
 RTI Connext DDS
 
 

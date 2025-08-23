@@ -1,8 +1,4 @@
----
-layout: page
-title: Skydroid
-permalink: /drones/skydroid/Skydroid
----
+# Skydroid
 
 
 본 보고서는 무인 항공기(UAV) 시장에서 중요한 역할을 수행하고 있는 기술 기업 'Skydroid'에 대한 심층적인 분석을 제공한다. 분석의 정확성을 기하기 위해, 먼저 시장에 혼재된 여러 'Skydroid' 명칭을 명확히 구분하고 본 보고서의 분석 대상을 특정하는 것에서부터 시작한다.

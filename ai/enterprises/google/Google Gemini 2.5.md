@@ -1,8 +1,4 @@
----
-layout: page
-title: Google Gemini 2.5
-permalink: /ai/enterprises/google/Google Gemini 2.5
----
+# Google Gemini 2.5
 
 
 

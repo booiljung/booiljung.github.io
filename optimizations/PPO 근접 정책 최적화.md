@@ -1,8 +1,4 @@
----
-layout: page
-title: 근접 정책 최적화(PPO)
-permalink: /optimizations/PPO 근접 정책 최적화
----
+# 근접 정책 최적화(PPO)
 
 
 

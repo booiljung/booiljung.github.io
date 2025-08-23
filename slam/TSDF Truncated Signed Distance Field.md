@@ -1,8 +1,4 @@
----
-layout: page
-title: Truncated Signed Distance Field (TSDF)에 대한 심층적 고찰
-permalink: /slam/TSDF Truncated Signed Distance Field
----
+# Truncated Signed Distance Field (TSDF)에 대한 심층적 고찰
 
 
 

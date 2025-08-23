@@ -1,8 +1,4 @@
----
-layout: page
-title: VDB
-permalink: /sensors/point cloud/vdb/index.md
----
+# VDB
 
 - [VDB (Volumetric Dynamic B+tree)](VDB Volumetric Dynamic B+tree.md)
 

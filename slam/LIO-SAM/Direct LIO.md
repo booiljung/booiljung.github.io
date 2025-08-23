@@ -1,8 +1,4 @@
----
-layout: page
-title: Direct LiDAR Odometry (Direct LIO)
-permalink: /slam/LIO-SAM/Direct LIO
----
+# Direct LiDAR Odometry (Direct LIO)
 
 
 

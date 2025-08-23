@@ -1,8 +1,4 @@
----
-layout: page
-title: PX4의 동적 제어 할당(Dynamic Control Allocation)
-permalink: /drones/px4/PX4-Autopilot의 Dynamic Control Allocation
----
+# PX4의 동적 제어 할당(Dynamic Control Allocation)
 
 
 

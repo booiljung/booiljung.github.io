@@ -1,8 +1,4 @@
----
-layout: page
-title: Open3D
-permalink: /sensors/point cloud/open3d/Open3D
----
+# Open3D
 
 
 

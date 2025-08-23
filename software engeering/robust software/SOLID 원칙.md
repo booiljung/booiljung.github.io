@@ -1,8 +1,4 @@
----
-layout: page
-title: SOLID 원칙
-permalink: /software engeering/robust software/SOLID 원칙
----
+# SOLID 원칙
 
 
 객체 지향 설계(Object-Oriented Design, OOD)의 품질을 평가하고 향상시키기 위한 수많은 방법론이 존재하지만, 그중에서도 SOLID 원칙은 현대 소프트웨어 공학의 가장 근본적인 초석으로 자리 잡고 있다. SOLID는 다섯 가지 핵심 설계 원칙인 단일 책임 원칙(Single Responsibility Principle), 개방-폐쇄 원칙(Open-Closed Principle), 리스코프 치환 원칙(Liskov Substitution Principle), 인터페이스 분리 원칙(Interface Segregation Principle), 그리고 의존성 역전 원칙(Dependency Inversion Principle)의 머리글자를 따서 만든 두문자어(mnemonic acronym)이다.1 이 원칙들은 단순히 개별적인 코딩 지침의 집합을 넘어, 시간이 지나도 이해하기 쉽고(understandable), 변화에 유연하며(flexible), 유지보수가 용이한(maintainable) 소프트웨어 시스템을 구축하기 위한 핵심 철학을 담고 있다.3

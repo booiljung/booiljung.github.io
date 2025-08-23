@@ -1,8 +1,4 @@
----
-layout: page
-title: Faster-LIO (iVox 기반)
-permalink: /slam/FAST-LIO/Faster-LIO
----
+# Faster-LIO (iVox 기반)
 
 
 

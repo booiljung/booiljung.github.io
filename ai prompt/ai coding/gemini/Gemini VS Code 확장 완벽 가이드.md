@@ -1,8 +1,4 @@
----
-layout: page
-title: Gemini VS Code 확장 완벽 가이드
-permalink: /ai prompt/ai coding/gemini/Gemini VS Code 확장 완벽 가이드
----
+# Gemini VS Code 확장 완벽 가이드
 
 
 Gemini Code Assist는 단순한 코드 자동 완성 도구가 아니다. 이 도구는 당신의 개발 워크플로우 전체를 이해하고, 복잡한 작업을 분석하며, 개발 속도를 극적으로 높여주는 진정한 의미의 AI 페어 프로그래머다.1 코드를 작성하고, API를 호출하며, 데이터를 쿼리하는 모든 과정에서 Gemini는 너의 옆에서 코드 완성을 돕거나, 주석 한 줄만으로 전체 코드 블록을 생성해 줄 수 있다.2 이 가이드는 Gemini를 Visual Studio Code(VS Code)에 설치하는 첫 단계부터 고급 활용법, 그리고 피할 수 없는 문제들을 해결하는 방법까지, Gemini의 모든 것을 깊이 있게 파헤쳐 당신을 단순한 사용자에서 전문가로 만들어 줄 것이다.

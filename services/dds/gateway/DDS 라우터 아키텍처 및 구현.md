@@ -1,8 +1,4 @@
----
-layout: page
-title: DDS 라우터 아키텍처 및 구현
-permalink: /services/dds/gateway/DDS 라우터 아키텍처 및 구현
----
+# DDS 라우터 아키텍처 및 구현
 
 
 

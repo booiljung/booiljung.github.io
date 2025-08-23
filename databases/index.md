@@ -1,8 +1,4 @@
----
-layout: page
-title: 데이터베이스 관리 시스템 (Database Management System)
-permalink: /databases/index.md
----
+# 데이터베이스 관리 시스템 (Database Management System)
 
 ## 관계형 데이터베이스
 

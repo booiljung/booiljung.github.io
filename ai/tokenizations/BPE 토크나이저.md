@@ -1,8 +1,4 @@
----
-layout: page
-title: 바이트 페어 인코딩(BPE) 토크나이저
-permalink: /ai/tokenizations/BPE 토크나이저
----
+# 바이트 페어 인코딩(BPE) 토크나이저
 
 
 바이트 페어 인코딩(Byte Pair Encoding, BPE)은 현대 자연어 처리(Natural Language Processing, NLP), 특히 대규모 언어 모델(Large Language Models, LLMs)의 근간을 이루는 핵심 기술 중 하나다. 그러나 그 기원은 언어 처리와는 무관한 데이터 압축의 영역에 있다. BPE의 발전사는 단순한 데이터 압축 기법이 어떻게 시대적 요구에 따라 그 목적과 철학을 달리하며 인공지능 분야의 혁신을 이끄는 중추적 기술로 변모했는지를 명확히 보여준다. 이 장에서는 BPE의 탄생 배경과 NLP 분야로의 도입 과정을 추적하며, 이 기술이 지닌 역사적 의의와 현대적 위상을 조명한다.

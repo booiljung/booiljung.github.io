@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble 환경에서의 SMACC2
-permalink: /ros2/humble/planning/ROS2 Humble SMACC2
----
+# ROS2 Humble 환경에서의 SMACC2
 
 
 

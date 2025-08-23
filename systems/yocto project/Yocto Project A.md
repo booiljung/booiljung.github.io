@@ -1,8 +1,4 @@
----
-layout: page
-title: 욕토 프로젝트(Yocto Project)
-permalink: /systems/yocto project/Yocto Project A
----
+# 욕토 프로젝트(Yocto Project)
 
 
 이 섹션에서는 욕토 프로젝트가 리눅스 배포판이라는 가장 흔한 오해를 바로잡으며 그 근본적인 이해를 정립합니다. 협업 프로젝트이자 강력한 도구 모음으로서의 진정한 본질을 명확히 할 것입니다.

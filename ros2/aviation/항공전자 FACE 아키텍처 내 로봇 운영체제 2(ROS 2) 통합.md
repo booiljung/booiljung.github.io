@@ -1,8 +1,4 @@
----
-layout: page
-title: 항공전자 FACE 아키텍처 내 로봇 운영체제 2(ROS 2) 통합
-permalink: /ros2/aviation/항공전자 FACE 아키텍처 내 로봇 운영체제 2(ROS 2) 통합
----
+# 항공전자 FACE 아키텍처 내 로봇 운영체제 2(ROS 2) 통합
 
 
 이 섹션에서는 두 개의 개별 소프트웨어 생태계인 로봇 운영체제 2(ROS 2)와 미래 공수 능력 환경(Future Airborne Capability Environment, FACE)에 대한 공통된 이해를 구축합니다. 각 시스템의 목표, 설계 철학 및 핵심 아키텍처 구성 요소를 상세히 설명하여 후속 통합 분석의 기반을 마련합니다.

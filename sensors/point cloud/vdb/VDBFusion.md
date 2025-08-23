@@ -1,8 +1,4 @@
----
-layout: page
-title: VDBFusion
-permalink: /sensors/point cloud/vdb/VDBFusion
----
+# VDBFusion
 
 
 3차원 볼류메트릭 재구성(3D Volumetric Reconstruction)은 로보틱스, 자율주행, 가상 및 증강 현실(VR/AR) 등 현대 기술의 여러 핵심 분야에서 필수불가결한 기술로 자리 잡았다. 로봇은 주변 환경에 대한 정확한 지도를 통해 자신의 위치를 파악하고, 안전한 경로를 계획하며, 주어진 임무를 수행할 수 있다.1 특히 동시적 위치추정 및 지도작성(Simultaneous Localization and Mapping, SLAM) 기술은 자율 이동 로봇 시스템의 근간을 이루는 핵심 기술이다.2

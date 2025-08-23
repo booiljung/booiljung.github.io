@@ -1,8 +1,4 @@
----
-layout: page
-title: 로봇공학 (Robotics)
-permalink: /robotics/index.md
----
+# 로봇공학 (Robotics)
 
 - [자율 이동 로봇](amr/index.md)
 - [NVIDIA 로봇 플랫폼](nvidia/index.md)

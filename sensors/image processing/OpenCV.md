@@ -1,8 +1,4 @@
----
-layout: page
-title: OpenCV
-permalink: /sensors/image processing/OpenCV
----
+# OpenCV
 
 
 OpenCV(Open Source Computer Vision Library)는 실시간 컴퓨터 비전 및 머신러닝을 위한 프로그래밍 함수와 알고리즘을 모아놓은 오픈소스 라이브러리다.1 그러나 OpenCV를 단순히 코드의 집합으로 정의하는 것은 그 본질을 축소하는 것이다. OpenCV는 학술 연구의 촉진과 상업용 제품 개발 가속화라는 이중적 사명을 가진 하나의 생태계이자, 전 세계 수많은 개발자와 연구자가 공유하는 공통의 인프라다.3

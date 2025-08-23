@@ -1,8 +1,4 @@
----
-layout: page
-title: U-Net 모델
-permalink: /ai/encoder/U-Net 모델
----
+# U-Net 모델
 
 아키텍처, 진화, 그리고 미래 전망
 

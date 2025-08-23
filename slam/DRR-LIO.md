@@ -1,8 +1,4 @@
----
-layout: page
-title: DRR-LIO (Dynamic-Region-Removal-Based LiDAR Inertial Odometry) 기술 심층 분석 보고서
-permalink: /slam/DRR-LIO
----
+# DRR-LIO (Dynamic-Region-Removal-Based LiDAR Inertial Odometry) 기술 심층 분석 보고서
 
 
 

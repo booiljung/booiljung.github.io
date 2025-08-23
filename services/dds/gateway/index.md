@@ -1,8 +1,4 @@
----
-layout: page
-title: DDS 게이트웨이 & 라우터
-permalink: /services/dds/gateway/index.md
----
+# DDS 게이트웨이 & 라우터
 
 - [DDS와 CAN 버스 게이트웨이의 아키텍처](DDS와 CAN 버스 게이트웨이의 아키텍처.md)
 - [DDS와 웹소켓 통합을 위한 포괄적인 아키텍처 가이드](DDS와 웹소켓 통합을 위한 포괄적인 아키텍처 가이드.md)

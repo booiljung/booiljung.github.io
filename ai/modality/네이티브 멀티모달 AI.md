@@ -1,8 +1,4 @@
----
-layout: page
-title: 네이티브 멀티모달 AI
-permalink: /ai/modality/네이티브 멀티모달 AI
----
+# 네이티브 멀티모달 AI
 
 
 

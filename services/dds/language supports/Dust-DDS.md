@@ -1,8 +1,4 @@
----
-layout: page
-title: Dust-DDS
-permalink: /services/dds/language supports/Dust-DDS
----
+# Dust-DDS
 
 
 

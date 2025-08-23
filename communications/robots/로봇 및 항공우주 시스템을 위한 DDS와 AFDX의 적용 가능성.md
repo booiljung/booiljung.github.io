@@ -1,8 +1,4 @@
----
-layout: page
-title: 로봇 및 항공우주 시스템을 위한 데이터 분산 서비스(DDS)와 AFDX의 적용 가능성
-permalink: /communications/robots/로봇 및 항공우주 시스템을 위한 DDS와 AFDX의 적용 가능성
----
+# 로봇 및 항공우주 시스템을 위한 데이터 분산 서비스(DDS)와 AFDX의 적용 가능성
 
 
 

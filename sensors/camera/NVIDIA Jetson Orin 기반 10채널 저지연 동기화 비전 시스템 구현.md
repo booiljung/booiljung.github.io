@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA Jetson Orin 기반 10채널 저지연 동기화 비전 시스템 구현
-permalink: /sensors/camera/NVIDIA Jetson Orin 기반 10채널 저지연 동기화 비전 시스템 구현
----
+# NVIDIA Jetson Orin 기반 10채널 저지연 동기화 비전 시스템 구현
 
 
 

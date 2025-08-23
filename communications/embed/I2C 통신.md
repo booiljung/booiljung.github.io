@@ -1,8 +1,4 @@
----
-layout: page
-title: I2C 통신
-permalink: /communications/embed/I2C 통신
----
+# I2C 통신
 
 
 

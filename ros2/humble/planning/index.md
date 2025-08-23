@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble 행동(임무) 계획 및 관리
-permalink: /ros2/humble/planning/index.md
----
+# ROS2 Humble 행동(임무) 계획 및 관리
 
 ## 내비게이션
 
@@ -19,3 +15,8 @@ permalink: /ros2/humble/planning/index.md
 - [ROS2 Humble의 PlanSys2](ROS2 Humble PlanSys2.md)
 - [ROS2 Humble에서의 BehaviorTree.ROS2](ROS2 Humble BehaviorTree.ROS2.md)
 - [ROS2 Humble 환경에서의 SMACC2](ROS2 Humble SMACC2.md)
+
+## 계층 비교
+
+- [ROS2 Humble 기반 BehaviorTree.ROS2 및 SMACC2 군집 드론 임무 관리](ROS2 Humble BehaviorTree.ROS2 및 SMACC2 기반 군집 드론 임무 관리.md)
+- [ROS2 Humble 환경에서의 PlanSys2와 BehaviorTree.ROS2 심층 비교 분석](ROS2 Humble 환경에서의 PlanSys2와 BehaviorTree.ROS2 비교.md)

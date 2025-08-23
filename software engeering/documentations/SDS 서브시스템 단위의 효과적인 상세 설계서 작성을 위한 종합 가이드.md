@@ -1,8 +1,4 @@
----
-layout: page
-title: 서브시스템 단위의 효과적인 상세 설계서(SDS) 작성을 위한 종합 가이드
-permalink: /software engeering/documentations/SDS 서브시스템 단위의 효과적인 상세 설계서 작성을 위한 종합 가이드
----
+# 서브시스템 단위의 효과적인 상세 설계서(SDS) 작성을 위한 종합 가이드
 
 
 

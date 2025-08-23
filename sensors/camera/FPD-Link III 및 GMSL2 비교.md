@@ -1,8 +1,4 @@
----
-layout: page
-title: FPD-Link III 및 GMSL2 비교
-permalink: /sensors/camera/FPD-Link III 및 GMSL2 비교
----
+# FPD-Link III 및 GMSL2 비교
 
 
 

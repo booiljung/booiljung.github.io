@@ -1,8 +1,4 @@
----
-layout: page
-title: micro-ROS
-permalink: /ros2/micro-ROS
----
+# micro-ROS
 
 
 

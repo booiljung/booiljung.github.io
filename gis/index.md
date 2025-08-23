@@ -1,8 +1,4 @@
----
-layout: page
-title: GIS (지리정보시스템)
-permalink: /gis/index.md
----
+# GIS (지리정보시스템)
 
 ## 지도
 

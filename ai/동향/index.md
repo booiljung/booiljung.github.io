@@ -1,8 +1,4 @@
----
-layout: page
-title: 인공지능 동향 (Trends)
-permalink: /ai/동향/index.md
----
+# 인공지능 동향 (Trends)
 
 ## 2025년
 

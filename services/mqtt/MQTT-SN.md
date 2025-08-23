@@ -1,8 +1,4 @@
----
-layout: page
-title: MQTT-SN(MQTT for Sensor Networks)
-permalink: /services/mqtt/MQTT-SN
----
+# MQTT-SN(MQTT for Sensor Networks)
 
 
 사물 인터넷(Internet of Things, IoT) 시대의 도래와 함께, 수십억 개의 디바이스가 생성하는 데이터를 효율적으로 전송하고 처리하는 기술의 중요성은 그 어느 때보다 부각되고 있다. 이러한 배경 속에서 MQTT(Message Queuing Telemetry Transport) 프로토콜은 경량 메시징 프로토콜의 표준으로 확고히 자리 잡았다. MQTT-SN(MQTT for Sensor Networks)을 깊이 이해하기 위해서는 먼저 그 모태가 된 MQTT의 역사적 배경과 핵심 설계 철학을 이해하는 것이 필수적이다.

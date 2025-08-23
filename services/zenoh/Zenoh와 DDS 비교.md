@@ -1,8 +1,4 @@
----
-layout: page
-title: Zenoh와 DDS 비교
-permalink: /services/zenoh/Zenoh와 DDS 비교
----
+# Zenoh와 DDS 비교
 
 
 사물 인터넷(IoT), 로보틱스, 자율주행차와 같은 최신 분산 시스템의 복잡성이 증가함에 따라, 통신 미들웨어의 선택은 시스템 전체의 성공을 좌우하는 핵심 요소가 되었습니다. 이러한 시스템은 "클라우드에서 사물까지의 연속체(cloud-to-thing continuum)" 전반에 걸쳐 작동하며, 전례 없는 수준의 확장성, 성능, 유연성을 요구합니다.1 본 보고서는 기술 리더들이 정보에 입각한 미들웨어 선택을 할 수 있도록, 업계 표준인 데이터 분배 서비스(Data Distribution Service, DDS)와 차세대 프로토콜인 Zenoh를 심층적으로 비교 분석하는 것을 목표로 합니다.

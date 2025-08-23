@@ -1,8 +1,4 @@
----
-layout: page
-title: Tgate (Temporally Gating the Attention)에 대한 심층 고찰
-permalink: /ai/transformers/transformer/Tgate
----
+# Tgate (Temporally Gating the Attention)에 대한 심층 고찰
 
 
 

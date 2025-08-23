@@ -1,8 +1,4 @@
----
-layout: page
-title: Nvblox B
-permalink: /slam/NvBlox/NvBlox B
----
+# Nvblox B
 
 
 

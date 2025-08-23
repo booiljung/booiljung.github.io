@@ -1,8 +1,4 @@
----
-layout: page
-title: SAE AS6802 Time-Triggered Ethernet 기술
-permalink: /communications/avionics/SAE AS6802 Time-Triggered Ethernet 기술
----
+# SAE AS6802 Time-Triggered Ethernet 기술
 
 
 

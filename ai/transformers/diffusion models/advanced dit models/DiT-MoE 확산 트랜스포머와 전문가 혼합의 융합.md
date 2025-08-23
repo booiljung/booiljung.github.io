@@ -1,8 +1,4 @@
----
-layout: page
-title: 확산 트랜스포머와 전문가 혼합의 융합(DiT-MoE)
-permalink: /ai/transformers/diffusion models/advanced dit models/DiT-MoE 확산 트랜스포머와 전문가 혼합의 융합
----
+# 확산 트랜스포머와 전문가 혼합의 융합(DiT-MoE)
 
 확장성, 전문화, 그리고 생성 모델링의 미래
 

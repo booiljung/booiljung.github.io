@@ -1,8 +1,4 @@
----
-layout: page
-title: RC-Vox 구조에 대한 심층 고찰
-permalink: /sensors/point cloud/rc-vox/RC-Vox
----
+# RC-Vox 구조에 대한 심층 고찰
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: DiMSUM 모델
-permalink: /ai/transformers/diffusion models/advanced dit models/DiMSUM 모델
----
+# DiMSUM 모델
 
 
 본 보고서는 인공지능 및 컴퓨터 비전 분야에서 등장한 여러 'DiMSUM'이라는 이름의 모델 및 프레임워크를 명확히 구분하고, 그중 가장 주목받는 **DiMSUM (Diffusion Mamba) 이미지 생성 모델**에 대해 심층적으로 분석한다. 2024년 NeurIPS 학회에서 발표된 이 모델은 기존 생성 모델의 패러다임을 바꾸는 혁신적인 하이브리드 아키텍처를 제시한다.1

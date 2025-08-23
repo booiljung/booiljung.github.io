@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble YAML 런처 완벽 가이드
-permalink: /ros2/humble/launchers/ROS2 Humble YAML 런처 완벽 가이드
----
+# ROS2 Humble YAML 런처 완벽 가이드
 
 
 로보틱스 시스템은 수십 개의 노드가 여러 장비에 걸쳐 동시에 실행되는 복잡한 분산 시스템인 경우가 많다. 이러한 시스템을 관리하고 실행하는 것은 단순한 작업이 아니다. ROS 2 런치 시스템은 바로 이 복잡성을 해결하기 위해 설계된 강력한 도구다.

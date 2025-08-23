@@ -1,8 +1,4 @@
----
-layout: page
-title: 인공지능 평가지표 (AI evaluation metrics)
-permalink: /ai/평가지표/index.md
----
+# 인공지능 평가지표 (AI evaluation metrics)
 
 - [인공지능 평가 지표의 패러다임 전환](인공지능 평가 지표의 패러다임 전환.md)
 

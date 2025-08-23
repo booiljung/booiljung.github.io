@@ -1,8 +1,4 @@
----
-layout: page
-title: GTSAM(Georgia Tech Smoothing and Mapping)
-permalink: /sensors/filters smoothing/GTSAM Georgia Tech Smoothing and Mapping
----
+# GTSAM(Georgia Tech Smoothing and Mapping)
 
 
 

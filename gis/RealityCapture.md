@@ -1,8 +1,4 @@
----
-layout: page
-title: RealityCapture(RealityScan)
-permalink: /gis/RealityCapture
----
+# RealityCapture(RealityScan)
 
 
 현실 세계를 정밀한 디지털 데이터로 변환하는 리얼리티 캡처(Reality Capture) 기술은 현대 산업의 패러다임을 바꾸고 있다.1 건축, 엔지니어링, 건설(AEC), 게임 개발, 영화 시각 효과(VFX), 문화유산 보존 등 다양한 분야에서 리얼리티 캡처는 기존의 수동적이고 시간 소모적인 데이터 수집 방식을 대체하며, 프로젝트의 효율성을 극대화하고 비용을 절감하며, 이해관계자 간의 원활한 협업을 가능하게 하는 핵심 동력으로 자리 잡았다.3 이 기술은 레이저 스캐닝(LiDAR), 사진측량(Photogrammetry), 구조광 스캐닝 등 다양한 방법을 통해 물리적 환경을 고도로 정확한 3D 모델, 포인트 클라우드, 또는 디지털 트윈(Digital Twin)으로 재현한다.1

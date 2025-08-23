@@ -1,8 +1,4 @@
----
-layout: page
-title: ROS2 Humble 완벽 공략 URDF 마스터하기
-permalink: /ros2/humble/ROS2 Humble 완벽 공략 URDF 마스터하기
----
+# ROS2 Humble 완벽 공략 URDF 마스터하기
 
 
 

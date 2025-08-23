@@ -1,8 +1,4 @@
----
-layout: page
-title: PRIDE-PPPAR
-permalink: /sensors/gnss/PRIDE-PPPAR
----
+# PRIDE-PPPAR
 
 
 

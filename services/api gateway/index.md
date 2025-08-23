@@ -1,7 +1,3 @@
----
-layout: page
-title: API Gateway
-permalink: /services/api gateway/index.md
----
+# API Gateway
 
 - [Kong API Gateway](kong/index.md)

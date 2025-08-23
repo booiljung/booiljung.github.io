@@ -1,8 +1,4 @@
----
-layout: page
-title: PX4-Autopilot v1.15의 ubuntu.sh 개발 환경 설정 스크립트
-permalink: /drones/px4/PX4-Autopilot v1.15 ubuntu.sh 개발 환경 설정 스크립트
----
+# PX4-Autopilot v1.15의 ubuntu.sh 개발 환경 설정 스크립트
 
 
 

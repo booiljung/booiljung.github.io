@@ -1,8 +1,4 @@
----
-layout: page
-title: c-blox
-permalink: /slam/blox/c-blox
----
+# c-blox
 
 
 

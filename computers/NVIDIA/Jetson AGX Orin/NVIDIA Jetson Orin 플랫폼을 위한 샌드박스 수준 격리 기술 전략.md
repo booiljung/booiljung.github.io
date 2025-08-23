@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA Jetson Orin 플랫폼을 위한 샌드박스 수준 격리 기술 전략
-permalink: /computers/NVIDIA/Jetson AGX Orin/NVIDIA Jetson Orin 플랫폼을 위한 샌드박스 수준 격리 기술 전략
----
+# NVIDIA Jetson Orin 플랫폼을 위한 샌드박스 수준 격리 기술 전략
 
 
 NVIDIA Jetson Orin 플랫폼은 엣지 컴퓨팅 환경에서 전례 없는 수준의 AI 성능을 제공하며, 복잡하고 다양한 워크로드를 단일 시스템에 통합할 수 있는 가능성을 열었다. 이러한 통합 환경에서는 각 애플리케이션의 안정성, 보안, 리소스 관리를 보장하기 위한 강력한 격리 기술이 필수적이다. 본 섹션에서는 Jetson Orin의 핵심 하드웨어 아키텍처를 분석하고, 플랫폼에 내장된 보안 기능의 역할과 한계를 명확히 정의한다. 이를 통해 시스템 무결성 보호와 애플리케이션 런타임 샌드박싱 사이의 "격리 격차(Isolation Gap)"를 규명하고, 본 보고서에서 다룰 격리 기술의 필요성을 제시한다.

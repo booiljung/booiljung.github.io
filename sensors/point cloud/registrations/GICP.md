@@ -1,8 +1,4 @@
----
-layout: page
-title: GICP 포인트 클라우드 정합
-permalink: /sensors/point cloud/registrations/GICP
----
+# GICP 포인트 클라우드 정합
 
 
 3차원(3D) 포인트 클라우드 정합(Point Cloud Registration)은 로보틱스, 자율 주행, 3D 모델 재구성, 의료 영상 분석 등 현대 공학 및 컴퓨터 과학의 여러 핵심 분야에서 필수불가결한 기술이다.1 이는 서로 다른 시점이나 시간에 취득된 복수의 3D 포인트 클라우드 데이터셋을 하나의 일관된 좌표계로 정렬하는 과정을 의미한다. 특히, LiDAR(Light Detection and Ranging) 센서의 보급이 확대되면서, 자율주행 차량이나 로봇이 자신의 위치를 추정하고 주변 환경의 지도를 동시에 작성하는 SLAM(Simultaneous Localization and Mapping) 기술과 주행 거리 및 경로를 추정하는 Odometry 기술에서 정합 알고리즘의 역할은 그 어느 때보다 중요해졌다.3

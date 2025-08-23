@@ -1,8 +1,4 @@
----
-layout: page
-title: 특이값 분해(SVD)
-permalink: /mathmatics/linear algebra/특이값 분해(SVD)
----
+# 특이값 분해(SVD)
 
 
 특이값 분해(Singular Value Decomposition, SVD)는 임의의 행렬에 적용 가능한 가장 보편적이고 강력한 행렬 분해 기법으로, 선형대수학의 '꽃(Highlight)'이라 불린다.1 SVD의 이러한 위상은 고유값 분해(Eigendecomposition, EVD)가 정방행렬(square matrix)이라는 제약 조건을 갖는 것과 달리 3, 모든 $m \times n$ 크기의 직사각 행렬(rectangular matrix)에 적용 가능하기 때문이다.2 이러한 범용성은 SVD가 현대 데이터 과학의 수많은 응용 분야에서 핵심적인 역할을 수행하게 하는 근간이 된다.

@@ -1,8 +1,4 @@
----
-layout: page
-title: MQTT 프로토콜
-permalink: /services/mqtt/index.md
----
+# MQTT 프로토콜
 
 - [MQTT 프로토콜](MQTT 프로토콜.md)
 - [MQTT-SN(MQTT for Sensor Networks)](MQTT-SN.md)

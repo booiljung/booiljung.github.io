@@ -1,8 +1,4 @@
----
-layout: page
-title: eProsima Fast DDS Monitor
-permalink: /services/dds/Fast-DDS/eProsima Fast DDS Monitor
----
+# eProsima Fast DDS Monitor
 
 
 

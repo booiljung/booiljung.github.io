@@ -1,8 +1,4 @@
----
-layout: page
-title: Prototypical Cross-Attention Network (PCAN)
-permalink: /ai/transformers/transformer/PCAN
----
+# Prototypical Cross-Attention Network (PCAN)
 
 
 

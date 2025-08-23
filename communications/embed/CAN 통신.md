@@ -1,8 +1,4 @@
----
-layout: page
-title: Controller Area Network(CAN) 통신
-permalink: /communications/embed/CAN 통신
----
+# Controller Area Network(CAN) 통신
 
 
 

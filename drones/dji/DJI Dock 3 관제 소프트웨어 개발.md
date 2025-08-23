@@ -1,8 +1,4 @@
----
-layout: page
-title: DJI Dock 3 관제 소프트웨어 개발
-permalink: /drones/dji/DJI Dock 3 관제 소프트웨어 개발
----
+# DJI Dock 3 관제 소프트웨어 개발
 
 
 

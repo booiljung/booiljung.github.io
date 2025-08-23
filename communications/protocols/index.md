@@ -1,8 +1,4 @@
----
-layout: page
-title: 통신 프로토콜
-permalink: /communications/protocols/index.md
----
+# 통신 프로토콜
 - [통신 프로토콜](통신 프로토콜.md)
 - [전송 제어 프로토콜(TCP)](TCP.md)
 - [TCP 계층의 Head-of-Line 블로킹에 대한 심층 고찰](TCP 계층의 Head-of-Line 블로킹.md)

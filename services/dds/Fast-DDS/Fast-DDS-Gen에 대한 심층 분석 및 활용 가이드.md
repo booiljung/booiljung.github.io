@@ -1,8 +1,4 @@
----
-layout: page
-title: Fast-DDS-Gen에 대한 심층 분석 및 활용 가이드
-permalink: /services/dds/Fast-DDS/Fast-DDS-Gen에 대한 심층 분석 및 활용 가이드
----
+# Fast-DDS-Gen에 대한 심층 분석 및 활용 가이드
 
 
 데이터 분산 서비스(Data Distribution Service, DDS)는 실시간 분산 시스템을 위한 OMG(Object Management Group) 표준으로, 데이터 중심(data-centric) 통신 패러다임을 통해 복잡한 네트워크 환경에서 안정적이고 효율적인 데이터 교환을 가능하게 합니다. eProsima Fast DDS는 이러한 DDS 표준의 C++ 구현체 중 가장 널리 사용되는 오픈 소스 미들웨어로, 특히 로봇 운영 체제(ROS 2)의 기본 미들웨어로 채택되면서 그 중요성이 더욱 부각되고 있습니다.1

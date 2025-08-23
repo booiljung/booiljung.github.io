@@ -1,8 +1,4 @@
----
-layout: page
-title: LIO-SAM
-permalink: /slam/LIO-SAM/index.md
----
+# LIO-SAM
 
 ## LIO-SAM (2020)
 - [LIO-SAM](LIO-SAM A.md)

@@ -1,8 +1,4 @@
----
-layout: page
-title: Cube Orange+ 비행 컨트롤러를 활용한 고성능 드론 시스템 구축 및 운용
-permalink: /drones/fcc/Cube Orange+ 비행 컨트롤러를 활용한 고성능 드론 시스템 구축 및 운용
----
+# Cube Orange+ 비행 컨트롤러를 활용한 고성능 드론 시스템 구축 및 운용
 
 
 

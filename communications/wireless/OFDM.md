@@ -1,8 +1,4 @@
----
-layout: page
-title: 직교 주파수 분할 다중 (OFDM)
-permalink: /communications/wireless/OFDM
----
+# 직교 주파수 분할 다중 (OFDM)
 
 
 

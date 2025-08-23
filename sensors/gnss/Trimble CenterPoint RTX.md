@@ -1,8 +1,4 @@
----
-layout: page
-title: Trimble CenterPoint RTX
-permalink: /sensors/gnss/Trimble CenterPoint RTX
----
+# Trimble CenterPoint RTX
 
 
 

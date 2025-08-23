@@ -1,8 +1,4 @@
----
-layout: page
-title: Gemini Coding
-permalink: /ai prompt/ai coding/gemini/index.md
----
+# Gemini Coding
 
 - [Gemini CLI 마스터링 최종 가이드](Gemini CLI 마스터링 최종 가이드.md)
 - [Gemini CLI 완벽 사용 가이드](Gemini CLI 완벽 사용 가이드.md)

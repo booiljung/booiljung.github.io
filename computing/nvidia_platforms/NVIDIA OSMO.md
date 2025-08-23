@@ -1,8 +1,4 @@
----
-layout: page
-title: NVIDIA OSMO
-permalink: /computing/nvidia_platforms/NVIDIA OSMO
----
+# NVIDIA OSMO
 
 
 NVIDIA OSMO는 단순한 소프트웨어 도구를 넘어, 물리적 인공지능(Physical AI) 시대의 도래를 가속화하기 위한 NVIDIA의 거대한 전략적 비전의 핵심에 위치한 오케스트레이션 엔진이다. 본 보고서는 NVIDIA OSMO의 기술적 아키텍처, 핵심 기능, 그리고 NVIDIA의 광범위한 로보틱스 생태계 내에서의 중추적 역할을 심층적으로 분석한다. OSMO는 복잡하고 다단계에 걸친 로보틱스 개발 워크플로를 관리하고 확장하기 위해 설계된 클라우드 네이티브 관리형 서비스이다. 이는 개발팀이 Kubernetes와 같은 복잡한 클라우드 인프라 관리의 부담에서 벗어나, 로봇의 인식, 제어, 학습과 같은 핵심 R&D에 집중할 수 있도록 DevOps의 복잡성을 추상화한다.

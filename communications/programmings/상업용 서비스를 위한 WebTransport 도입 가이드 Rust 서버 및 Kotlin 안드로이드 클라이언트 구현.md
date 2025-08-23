@@ -1,8 +1,4 @@
----
-layout: page
-title: 상업용 서비스를 위한 WebTransport 도입 가이드 Rust 서버 및 Kotlin 안드로이드 클라이언트 구현
-permalink: /communications/programmings/상업용 서비스를 위한 WebTransport 도입 가이드 Rust 서버 및 Kotlin 안드로이드 클라이언트 구현
----
+# 상업용 서비스를 위한 WebTransport 도입 가이드 Rust 서버 및 Kotlin 안드로이드 클라이언트 구현
 
 
 WebTransport는 단순히 웹소켓(WebSocket)의 대안이 아니라, 실시간 웹 통신 패러다임의 근본적인 전환을 의미한다. 이 기술은 최신 상업용 애플리케이션이 요구하는 성능, 확장성, 유연성을 제공하기 위해 설계된 구조적 우위를 가지고 있다. WebTransport의 도입은 단순한 기술 교체를 넘어, 애플리케이션 아키텍처의 가능성을 확장하는 전략적 선택이다.

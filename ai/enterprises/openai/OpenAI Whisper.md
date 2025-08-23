@@ -1,8 +1,4 @@
----
-layout: page
-title: OpenAI Whisper 심층 고찰
-permalink: /ai/enterprises/openai/OpenAI Whisper
----
+# OpenAI Whisper 심층 고찰
 
 
 

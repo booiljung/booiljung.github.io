@@ -1,8 +1,4 @@
----
-layout: page
-title: VDB-Mapping
-permalink: /sensors/point cloud/vdb/VDB-Mapping
----
+# VDB-Mapping
 
 
 

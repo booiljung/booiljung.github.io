@@ -1,8 +1,4 @@
----
-layout: page
-title: RustDDS
-permalink: /services/dds/language supports/RustDDS
----
+# RustDDS
 
 
 RustDDS를 온전히 이해하기 위해서는 그 근간을 이루는 두 가지 핵심 기술, 즉 데이터 분산 서비스(DDS) 표준과 러스트(Rust) 프로그래밍 언어에 대한 선행적 고찰이 필수적이다. 이 두 기술의 융합은 RustDDS의 설계 철학, 기술적 장단점, 그리고 전략적 가치를 결정하는 핵심 요소로 작용한다.

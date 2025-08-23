@@ -1,8 +1,4 @@
----
-layout: page
-title: SLAM(동시적 위치추정 및 지도작성)의 계보학적 탐구
-permalink: /slam/동향/SLAM의 계보학적 탐구
----
+# SLAM(동시적 위치추정 및 지도작성)의 계보학적 탐구
 
 확률론적 기반에서 공간 AI까지
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: 무선 통신
-permalink: /communications/wireless/index.md
----
+# 무선 통신
 - [무선통신 기술의 원리, 진화, 그리고 미래에 대한 고찰](무선통신.md)
 - [2.4GHz ISM 대역 장거리 통신 기술](2.4GHz ISM 대역 장거리 통신 기술.md)
 - [듀얼 밴드 자동 전환 기술(Band Steering)](듀얼 밴드 자동 전환 기술.md)

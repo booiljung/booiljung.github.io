@@ -1,8 +1,4 @@
----
-layout: page
-title: SIYI Technology
-permalink: /drones/siyi/SIYI Technology
----
+# SIYI Technology
 
 
 

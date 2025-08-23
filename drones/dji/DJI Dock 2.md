@@ -1,8 +1,4 @@
----
-layout: page
-title: DJI Dock 2
-permalink: /drones/dji/DJI Dock 2
----
+# DJI Dock 2
 
 
 

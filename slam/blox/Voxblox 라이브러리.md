@@ -1,8 +1,4 @@
----
-layout: page
-title: Voxblox 라이브러리
-permalink: /slam/blox/Voxblox 라이브러리
----
+# Voxblox 라이브러리
 
 
 

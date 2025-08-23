@@ -1,8 +1,4 @@
----
-layout: page
-title: FAST-LIO
-permalink: /slam/FAST-LIO/index.md
----
+# FAST-LIO
 - [FAST-LIO](FAST-LIO.md)
 - [Faster-LIO (iVox 기반)](Faster-LIO.md)
 - [FR-LIO](FR-LIO.md)

@@ -1,8 +1,4 @@
----
-layout: page
-title: mav_voxblox_planning에 대한 고찰
-permalink: /slam/NvBlox/mav_voxblox_planning
----
+# mav_voxblox_planning에 대한 고찰
 
 
 

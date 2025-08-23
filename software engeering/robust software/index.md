@@ -1,8 +1,4 @@
----
-layout: page
-title: 견고한 소프트웨어
-permalink: /software engeering/robust software/index.md
----
+# 견고한 소프트웨어
 
 - [견고한 소프트웨어 구축을 위한 개발자 안내서](견고한 소프트웨어 구축을 위한 개발자 안내서.md)
 

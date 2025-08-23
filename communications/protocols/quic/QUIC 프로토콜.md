@@ -1,8 +1,4 @@
----
-layout: page
-title: QUIC 프로토콜
-permalink: /communications/protocols/quic/QUIC 프로토콜
----
+# QUIC 프로토콜
 
 
 현대 인터넷 통신은 수십 년간 TCP(Transmission Control Protocol)라는 견고한 기반 위에 구축되어 왔다. 그러나 웹의 패러다임이 정적인 문서 교환에서 동적이고 상호작용이 풍부한 애플리케이션 중심으로 변화함에 따라, TCP가 내재한 근본적인 한계들이 점차 웹 성능의 발목을 잡는 족쇄가 되었다. QUIC(Quick UDP Internet Connections)는 이러한 한계를 극복하기 위해 등장한 단순한 프로토콜 개선이 아닌, 인터넷 전송 계층의 패러다임을 전환하는 혁신적인 시도이다. 본 보고서의 제 1부에서는 TCP 스택의 한계를 분석하여 QUIC의 등장이 필연적이었던 이유를 규명하고, 구글의 실험에서 시작하여 국제인터넷표준화기구(IETF)의 표준으로 자리 잡기까지의 발전 과정을 추적하며, UDP를 기반으로 한 QUIC의 근본적인 아키텍처 설계 철학을 심도 있게 탐구한다.

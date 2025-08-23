@@ -1,8 +1,4 @@
----
-layout: page
-title: eProsima Fast DDS
-permalink: /services/dds/Fast-DDS/index.md
----
+# eProsima Fast DDS
 
 - [eProsima Fast DDS 실시간 분산 시스템을 위한 고성능 미들웨어](eProsima Fast DDS 실시간 분산 시스템을 위한 고성능 미들웨어.md)
 - [eProsima Integration Service 시스템 아키텍처 및 통합](eProsima Integration Service 시스템 아키텍처 및 통합.md)

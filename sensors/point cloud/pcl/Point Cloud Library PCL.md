@@ -1,8 +1,4 @@
----
-layout: page
-title: Point Cloud Library (PCL)에 대한 고찰
-permalink: /sensors/point cloud/pcl/Point Cloud Library PCL
----
+# Point Cloud Library (PCL)에 대한 고찰
 
 
 

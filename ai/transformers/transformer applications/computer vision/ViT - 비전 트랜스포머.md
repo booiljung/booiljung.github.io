@@ -1,8 +1,4 @@
----
-layout: page
-title: 비전 트랜스포머(ViT)
-permalink: /ai/transformers/transformer applications/computer vision/ViT - 비전 트랜스포머
----
+# 비전 트랜스포머(ViT)
 
 
 2010년대 컴퓨터 비전 분야는 합성곱 신경망(Convolutional Neural Networks, CNN)의 시대였다고 해도 과언이 아니다.1 AlexNet의 등장을 기점으로 시작된 딥러닝 혁명은 이미지 인식, 객체 탐지, 의미론적 분할 등 다양한 시각 과제에서 인간의 능력을 뛰어넘는 성과를 이끌어냈으며, 그 중심에는 항상 CNN이 있었다. 그러나 10년 가까이 이어진 CNN의 지배적인 패러다임은 2020년, 자연어 처리(Natural Language Processing, NLP) 분야에서 유래한 새로운 아키텍처의 등장으로 근본적인 도전에 직면하게 된다. 구글 리서치 팀이 발표한 "An Image is Worth 16x16 Words"라는 도발적인 제목의 논문은 비전 트랜스포머(Vision Transformer, ViT)의 탄생을 알리며 컴퓨터 비전 분야에 새로운 패러다임 전환을 예고했다.1

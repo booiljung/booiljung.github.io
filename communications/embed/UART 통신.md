@@ -1,8 +1,4 @@
----
-layout: page
-title: UART 통신
-permalink: /communications/embed/UART 통신
----
+# UART 통신
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: Scaled Dot-Product Attention
-permalink: /ai/transformers/transformer/Scaled Dot-Product Attention
----
+# Scaled Dot-Product Attention
 
 
 자연어 처리(Natural Language Processing, NLP)의 역사는 순차적 데이터(sequential data)를 효과적으로 모델링하려는 노력의 연속이었다. 특히, 순환 신경망(Recurrent Neural Network, RNN)과 이를 개선한 Long Short-Term Memory(LSTM) 및 Gated Recurrent Unit(GRU)은 기계 번역, 텍스트 요약 등과 같은 Sequence-to-Sequence(Seq2Seq) 과제에서 지배적인 패러다임을 형성했다.1 그러나 이러한 RNN 기반 모델들은 구조적인 한계를 내포하고 있었다.

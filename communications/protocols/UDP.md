@@ -1,8 +1,4 @@
----
-layout: page
-title: 사용자 데이터그램 프로토콜(UDP)에 대한 종합적인 이론 및 실제 분석
-permalink: /communications/protocols/UDP
----
+# 사용자 데이터그램 프로토콜(UDP)에 대한 종합적인 이론 및 실제 분석
 
 
 

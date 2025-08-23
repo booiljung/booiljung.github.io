@@ -1,8 +1,4 @@
----
-layout: page
-title: eProsima Integration Service를 활용한 Fast DDS와 WebSocket 브리지
-permalink: /services/dds/Fast-DDS/eProsima Integration Service를 활용한 Fast DDS와 WebSocket 브리지
----
+# eProsima Integration Service를 활용한 Fast DDS와 WebSocket 브리지
 
 
 현대의 분산 시스템은 종종 서로 다른 통신 프로토콜을 사용하는 이기종 하위 시스템들로 구성됩니다. 이러한 시스템들을 통합하는 과정은 복잡하며, 각 프로토콜 쌍에 대한 전용 브리지를 개발하는 전통적인 방식은 확장성과 유지보수성 측면에서 한계를 가집니다. eProsima Integration Service는 이러한 문제를 해결하기 위해 설계된 강력하고 유연한 통합 솔루션으로, 프로토콜에 구애받지 않는 중앙 허브 역할을 수행하여 시스템 간의 원활한 데이터 교환을 가능하게 합니다.1

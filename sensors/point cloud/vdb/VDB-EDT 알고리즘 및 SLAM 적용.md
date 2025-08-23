@@ -1,8 +1,4 @@
----
-layout: page
-title: VDB-EDT 알고리즘 및 SLAM 적용
-permalink: /sensors/point cloud/vdb/VDB-EDT 알고리즘 및 SLAM 적용
----
+# VDB-EDT 알고리즘 및 SLAM 적용
 
 
 자율 로봇 기술의 발전은 로봇이 스스로 주변 환경을 인식하고 상호작용하는 능력을 기반으로 한다. 이러한 능력의 핵심에는 동시적 위치 추정 및 지도 작성(Simultaneous Localization and Mapping, SLAM) 기술이 자리 잡고 있다.1 SLAM은 로봇이 GPS와 같은 외부 인프라 없이 미지의 환경을 탐색하며, 자신의 위치를 실시간으로 추정함과 동시에 주변 환경의 지도를 생성하는 복합적인 기술이다.3 이 과정은 본질적으로 측위(Localization)와 지도 작성(Mapping)이라는 두 가지 상호 의존적인 과제를 동시에 해결해야 하는 '닭과 달걀' 문제와 같다.2 정확한 지도가 있어야 자신의 위치를 알 수 있고, 정확한 위치를 알아야 일관성 있는 지도를 만들 수 있기 때문이다.

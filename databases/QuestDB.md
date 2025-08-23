@@ -1,8 +1,4 @@
----
-layout: page
-title: QuestDB (고성능 시계열 데이터베이스)
-permalink: /databases/QuestDB
----
+# QuestDB (고성능 시계열 데이터베이스)
 
 
 

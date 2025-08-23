@@ -1,8 +1,4 @@
----
-layout: page
-title: 이미지 편집을 위한 어텐션 기반 확산 트랜스포머(ADiT)
-permalink: /ai/transformers/diffusion models/diffusion transformers/ADiT - 이미지 편집을 위한 어텐션 기반 확산 트랜스포머 모델
----
+# 이미지 편집을 위한 어텐션 기반 확산 트랜스포머(ADiT)
 
 
 

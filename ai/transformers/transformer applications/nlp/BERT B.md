@@ -1,8 +1,4 @@
----
-layout: page
-title: Bidirectional Encoder Representations from Transformers (BERT)
-permalink: /ai/transformers/transformer applications/nlp/BERT B
----
+# Bidirectional Encoder Representations from Transformers (BERT)
 
 
 

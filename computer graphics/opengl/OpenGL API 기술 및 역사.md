@@ -1,8 +1,4 @@
----
-layout: page
-title: OpenGL 기술 및 역사
-permalink: /computer graphics/opengl/OpenGL API 기술 및 역사
----
+# OpenGL 기술 및 역사
 
 
 이 파트는 OpenGL의 근본적인 정체성과 역사적 기원을 확립하며, 그 설계 철학이 1990년대 초반의 독특한 기술 및 비즈니스 환경의 직접적인 산물임을 논증한다.

@@ -1,8 +1,4 @@
----
-layout: page
-title: Modality
-permalink: /ai/modality/index.md
----
+# Modality
 - [멀티모달 AI](멀티모달 AI.md)
 - [네이티브 멀티모달 AI](네이티브 멀티모달 AI.md)
 - [멀티모달에서 옴니모달까지 전략적 분석](멀티모달을 넘어 옴니모달로.md)

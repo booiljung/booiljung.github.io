@@ -1,8 +1,4 @@
----
-layout: page
-title: PX4-Autopilot
-permalink: /drones/px4/index.md
----
+# PX4-Autopilot
 - [PX4-Autopilot 오픈소스 오토파일럿의 결정적 구조](PX4-Autopilot 오픈소스 오토파일럿의 결정적 구조.md)
 - [PX4-Autopilot EKF2 상태 추정기](PX4-Autopilot EKF2 상태 추정기.md)
 - [PX4의 동적 제어 할당(Dynamic Control Allocation)](PX4-Autopilot의 Dynamic Control Allocation.md)

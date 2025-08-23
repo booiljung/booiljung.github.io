@@ -1,8 +1,4 @@
----
-layout: page
-title: Universal Scene Description (USD)
-permalink: /computer graphics/formats/Universal Scene Description
----
+# Universal Scene Description (USD)
 
 
 현대의 디지털 콘텐츠 제작, 특히 3D 그래픽 분야는 기하급수적으로 증가하는 복잡성과의 끊임없는 싸움입니다. 이 복잡성은 단순히 폴리곤 수의 증가를 넘어, 수많은 아티스트와 부서가 각기 다른 전문 소프트웨어를 사용하여 하나의 결과물을 향해 협업하는 과정에서 발생하는 데이터의 파편화, 워크플로우의 비효율성, 그리고 창의적 반복 작업의 제약이라는 근본적인 문제에서 비롯됩니다. 픽사 애니메이션 스튜디오(Pixar Animation Studios)의 Universal Scene Description(USD)은 이러한 문제에 대한 표면적인 해결책이 아닌, 3D 파이프라인의 근본적인 패러다임을 재정의하려는 전략적 시도에서 탄생했습니다. 이 파트에서는 USD가 단순한 파일 형식을 넘어, 제작 파이프라인의 시스템적 붕괴 위기 속에서 탄생할 수밖에 없었던 배경과 그 핵심 철학을 심도 있게 분석합니다.

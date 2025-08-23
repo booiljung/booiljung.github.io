@@ -1,8 +1,4 @@
----
-layout: page
-title: MVTec-AD 벤치마크
-permalink: /ai/평가지표/MVTec-AD 벤치마크
----
+# MVTec-AD 벤치마크
 
 
 

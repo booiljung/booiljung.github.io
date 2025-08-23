@@ -1,8 +1,4 @@
----
-layout: page
-title: Skydio
-permalink: /drones/skydio/Skydio
----
+# Skydio
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: VINS-Mono
-permalink: /slam/VINS-Mono/VINS-Mono
----
+# VINS-Mono
 
 
 

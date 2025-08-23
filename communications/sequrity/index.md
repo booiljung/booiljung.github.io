@@ -1,6 +1,2 @@
----
-layout: page
-title: 통신 보안
-permalink: /communications/sequrity/index.md
----
+# 통신 보안
 - [DTLS 응용 계층](DTLS 응용 계층.md)

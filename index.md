@@ -1,8 +1,4 @@
----
-layout: page
-title: BIJUNG
-permalink: /index.md
----
+# BIJUNG
 
 - [기사 (Articles)](articles/index.md)
 
@@ -17,6 +13,7 @@ permalink: /index.md
 - [개발 방법론 (Development Methods)](development methods/index.md)
 - [git](git/index.md)
 - [소프트웨어 공학 (Software Engineering)](software engeering/index.md)
+- [게임 엔진, 시뮬레이션 및 디지털트윈 (Gane Engines, Simulations and Digital Twins)](digitaltwin/index.md)
 
 ## 알고리즘
 
@@ -54,11 +51,10 @@ permalink: /index.md
 ## 로봇
 
 - [로봇공학 (Robotics)](robotics/index.md)
-- [계획법 (Planning)](planning/index.md)
-- [위치 추정 (Localization)](positioning/index.md)
+- [계획법 (Planning)](plannings/index.md)
+- [위치 추정 (Localization)](localizations/index.md)
 - [ROS2 (Robot Operating System 2)](ros2/index.md)
 - [SLAM (Simultaneous Localization and Mapping)](slam/index.md)
-- [시뮬레이션 (Simulations)](simulations/index.md)
 
 ### 센서
 

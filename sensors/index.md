@@ -1,8 +1,4 @@
----
-layout: page
-title: 센서 (Sensors)
-permalink: /sensors/index.md
----
+# 센서 (Sensors)
 
 - [Camera](camera/index.md)
 - [특징점 기술](feature descriptor/index.md)

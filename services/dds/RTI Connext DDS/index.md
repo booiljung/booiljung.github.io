@@ -1,8 +1,4 @@
----
-layout: page
-title: RTI Connext DDS
-permalink: /services/dds/RTI Connext DDS/index.md
----
+# RTI Connext DDS
 
 - [# 서론](RTI Connext DDS.md)
 - [실시간 분산 시스템을 위한 RTI Connext DDS](실시간 분산 시스템을 위한 RTI Connext DDS.md)

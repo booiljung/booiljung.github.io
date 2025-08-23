@@ -1,8 +1,4 @@
----
-layout: page
-title: Predator 모델 저중첩(Low-Overlap) 환경에서의 3D 포인트클라우드 정합
-permalink: /sensors/point cloud/registrations/Predator
----
+# Predator 모델 저중첩(Low-Overlap) 환경에서의 3D 포인트클라우드 정합
 
 
 

@@ -1,8 +1,4 @@
----
-layout: page
-title: Postgres
-permalink: /databases/postgres/index.md
----
+# Postgres
 ## PostgreSQL
 - [PostgreSQL](PostgreSQL.md)
 ## Plugins

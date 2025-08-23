@@ -1,8 +1,4 @@
----
-layout: page
-title: WebRTC에 대한 심층 고찰
-permalink: /communications/protocols/WebRTC
----
+# WebRTC에 대한 심층 고찰
 
 
 

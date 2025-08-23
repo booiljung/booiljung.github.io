@@ -1,8 +1,4 @@
----
-layout: page
-title: Normal Distributions Transform(NDT) 포인트 클라우드 정합
-permalink: /sensors/point cloud/registrations/NDT
----
+# Normal Distributions Transform(NDT) 포인트 클라우드 정합
 
 
 포인트 클라우드 정합은 로보틱스 및 컴퓨터 비전 분야의 핵심 기술로, 서로 다른 시점이나 시간에 획득된 두 개 이상의 포인트 클라우드 데이터셋을 동일한 좌표계로 정렬하는 과정을 의미한다. 이 기술은 자율주행 차량의 라이다(LiDAR) 주행 기록계(Odometry), 동시적 위치추정 및 지도작성(SLAM), 3차원 객체 재구성 등 다양한 응용 분야의 기반을 형성한다.1 정합 문제는 크게 초기 추정값이 필요한 지역 정합(local registration)과 사전 정보 없이 정렬을 수행하는 전역 정합(global registration)으로 나뉘며, 정규분포변환(Normal Distributions Transform, NDT)은 주로 지역 정합에 사용되지만 전역 정합 프레임워크의 핵심 구성 요소로도 활용된다.1

@@ -1,8 +1,4 @@
----
-layout: page
-title: EtherCAT
-permalink: /communications/industry/EtherCAT
----
+# EtherCAT
 
 
 EtherCAT(Ethernet for Control Automation Technology)은 현대 산업 자동화 환경에서 가장 중요한 통신 기술 중 하나로 자리매김했다. 2003년 Beckhoff Automation에 의해 처음 소개된 이래, EtherCAT은 고성능, 유연성, 비용 효율성의 독보적인 조합을 통해 기존 필드버스는 물론 다른 산업용 이더넷 프로토콜과도 차별화되는 강력한 솔루션으로 부상했다.1 본 보고서는 EtherCAT의 기술적 원리, 프로토콜 아키텍처, 성능 특성, 생태계, 주요 적용 분야, 그리고 미래 발전 방향에 대한 포괄적이고 심층적인 분석을 제공한다.
