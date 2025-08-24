@@ -1,6 +1,6 @@
 # NVidia 컴퓨팅 플랫폼
 
-- [NVidia CUDA](cuda/index.md)
+- [**NVidia CUDA**](cuda/index.md)
 
 - [NVIDIA AGX 플랫폼](NVIDIA AGX 플랫폼.md)
 - [NVIDIA DGX 플랫폼](NVIDIA DGX 플랫폼.md)

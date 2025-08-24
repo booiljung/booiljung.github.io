@@ -4,7 +4,7 @@
 
 - [관계형 데이터베이스](관계형 데이터베이스.md)
 - [관계형 데이터베이스 정규화](관계형 데이터베이스 정규화.md)
-- [Postgres](postgres/index.md)
+- [**Postgres**](postgres/index.md)
 
 ## 시계열 데이터베이스
 

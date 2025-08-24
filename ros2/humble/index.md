@@ -7,7 +7,7 @@
 - [ROS 2 Humble 노드 완전 정복 안내서](ROS2 Humble 노드 완전 정복 안내서.md)
 - [ROS2 Humble 노드 생명주기(Node Lifecycle) 완벽 안내서](ROS2 Humble 노드 생명주기(Node Lifecycle) 완벽 안내서.md)
 
-- [ROS2 Humble 런치 시스템](launchers/index.md)
+- [**ROS2 Humble 런치 시스템**](launchers/index.md)
 
 - [ROS 2 Humble 메시징 시스템 완벽 가이드](ROS2 Humble 메시징 시스템 완벽 가이드.md)
 - [ROS2 Humble 로깅 시스템에 대한 심층 분석 및 활용 전략](ROS2 Humble 로깅 시스템에 대한 심층 분석 및 활용 전략.md)
@@ -17,7 +17,7 @@
 
 - [ROS2 Humble 완벽 공략 URDF 마스터하기](ROS2 Humble 완벽 공략 URDF 마스터하기.md)
 
-- [ROS2 Humble 행동(임무) 계획 및 관리](planning/index.md)
+- [**ROS2 Humble 행동(임무) 계획 및 관리**](planning/index.md)
 
 - [ROS2 Humble 애플리케이션의 Balena 플랫폼 배포](ROS2 Humble 애플리케이션의 Balena 플랫폼 배포.md)
 
@@ -28,5 +28,5 @@
 
 ## 기타
 
-- [ROS2 Humble 예제](examples/index.md)
+- [**ROS2 Humble 예제**](examples/index.md)
 

@@ -1,2 +1,2 @@
 # AI Coding
-- [Gemini Coding](gemini/index.md)
+- [**Gemini Coding**](gemini/index.md)

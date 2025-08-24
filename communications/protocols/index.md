@@ -7,5 +7,5 @@
 - [WebRTC에 대한 심층 고찰](WebRTC.md)
 - [WebTransport 고찰](WebTransport.md)
 - [RTPS 프로토콜](RTPS 프로토콜.md)
-- [QUIC 프로토콜](quic/index.md)
+- [**QUIC 프로토콜**](quic/index.md)
 

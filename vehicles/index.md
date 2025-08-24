@@ -1,3 +1,3 @@
 # 탈것 (Vehicles)
 
-- [전투기 (Fighters)](fighters/index.md)
+- [**전투기 (Fighters)**](fighters/index.md)
