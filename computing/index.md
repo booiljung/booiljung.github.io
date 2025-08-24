@@ -1,5 +1,5 @@
-[BIJUNG](../index.md)
 # 컴퓨팅 파워 (Computing Power)
+[BIJUNG](../index.md)
 
 - [**컴퓨팅 환경 및 플랫폼**](computing_environment_and_platforms/index.md)
 - [**FPGA 에 의한 컴퓨팅**](fpga/index.md)

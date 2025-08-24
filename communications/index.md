@@ -1,5 +1,5 @@
-[BIJUNG](../index.md)
 # 컴퓨터 통신 (Computer Communications)
+[BIJUNG](../index.md)
 
 - [개방형 시스템 상호접속(OSI) 7계층 참조 모델에 대한 고찰](OSI 7계층 참조 모델.md)
 - [전이중 상호작용](전이중 상호작용.md)

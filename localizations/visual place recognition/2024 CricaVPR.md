@@ -1,5 +1,5 @@
-[시각적 장소 인식 (Visual Place Recognition)](./index.md)
 # CricaVPR (2024)
+[시각적 장소 인식 (Visual Place Recognition)](./index.md)
 
 
 

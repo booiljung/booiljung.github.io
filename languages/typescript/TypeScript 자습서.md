@@ -1,5 +1,5 @@
-[TypeScript](./index.md)
 # TypeScript 자습서
+[TypeScript](./index.md)
 
 
 

@@ -1,5 +1,5 @@
-[LIO-SAM](./index.md)
 # ID-LIO SLAM
+[LIO-SAM](./index.md)
 
 
 현대 로보틱스, 특히 자율 주행 및 모바일 로봇 분야에서 Simultaneous Localization and Mapping (SLAM) 기술은 필수적인 역량으로 자리 잡았다. 그중에서도 LiDAR와 관성 측정 장치(IMU)를 결합한 LiDAR-Inertial Odometry (LIO)는 높은 정확도와 강인성으로 인해 주류 기술로 부상했다. ID-LIO를 심도 있게 이해하기 위해서는 그 기술적 뿌리가 되는 Tightly-Coupled LIO 패러다임과, ID-LIO가 직접적으로 계승 및 발전시킨 LIO-SAM 아키텍처에 대한 선행적 이해가 반드시 필요하다.

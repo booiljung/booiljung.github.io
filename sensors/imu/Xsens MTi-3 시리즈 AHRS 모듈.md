@@ -1,5 +1,5 @@
-[IMU](./index.md)
 # Xsens MTi-3 시리즈 AHRS 모듈
+[IMU](./index.md)
 
 - MTI-3-DK
 - MTi-3-5A-DK

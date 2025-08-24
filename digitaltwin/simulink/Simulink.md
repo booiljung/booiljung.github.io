@@ -1,5 +1,5 @@
-[Simulink](./index.md)
 # Simulink
+[Simulink](./index.md)
 
 ------
 

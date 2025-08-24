@@ -1,5 +1,5 @@
-[NVidia Omniverse](./index.md)
 # NVIDIA Isaac Perceptor
+[NVidia Omniverse](./index.md)
 
 
 본 보고서는 자율 이동 로봇(AMR)을 위한 고급 3D 인식 기능을 제공하도록 설계된 GPU 가속 라이브러리 및 AI 모델의 집합체인 NVIDIA Isaac Perceptor에 대한 포괄적인 분석을 제공한다. 이 보고서는 Isaac Perceptor의 핵심 소프트웨어 아키텍처를 해부하고, 하드웨어 생태계를 평가하며, 전통적인 LiDAR 기반 시스템과 비교하여 그 성능을 벤치마킹한다. ArcBest, RGo Robotics, Kudan과 같은 파트너와의 산업 현장 적용 사례에 대한 상세한 연구를 통해 실제 환경에서의 효용성과 전략적 가치를 입증한다. 본 분석은 Isaac Perceptor를 단순한 제품이 아닌, 로보틱스를 위한 소프트웨어 정의 패러다임을 창출하며 '물리적 AI(Physical AI)'라는 신흥 분야를 장악하려는 NVIDIA의 광범위한 야망의 초석으로 자리매김시킨다. 주요 분석 결과에 따르면, Isaac Perceptor는 강력한 '가상-현실(sim-to-real)' 개발 파이프라인을 활용하여 견고한 AMR 인식 시스템 배포의 비용과 복잡성을 낮춤으로써 전략적인 시장 파괴를 대표한다. 보고서는 환경적 종속성 및 AI 안전 인증의 어려움과 관련된 한계를 포함하여 그 강점과 약점에 대한 비판적 평가로 마무리되며, 기술 리더들이 도입을 고려할 때 참고할 수 있는 전략적 권장 사항을 제시한다.

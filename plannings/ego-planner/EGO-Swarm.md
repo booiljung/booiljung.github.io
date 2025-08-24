@@ -1,5 +1,5 @@
-[EGO-Planner](./index.md)
 # EGO-Swarm
+[EGO-Planner](./index.md)
 
 
 

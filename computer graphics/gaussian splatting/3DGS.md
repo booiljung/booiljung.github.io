@@ -1,5 +1,5 @@
-[Gaussian Splatting](./index.md)
 # 3D 가우시안 스플래팅(3D Gaussian Splatting, 3DGS)
+[Gaussian Splatting](./index.md)
 
 
 

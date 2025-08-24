@@ -1,5 +1,5 @@
-[특징점 기술](./index.md)
 # VFH (Viewpoint Feature Histogram)
+[특징점 기술](./index.md)
 
 
 3차원 객체 인식 및 자세 추정은 로보틱스, 자율 주행, 증강 현실 등 다양한 분야의 핵심 기술이다. 이러한 기술의 성공은 3차원 포인트 클라우드 데이터를 효과적으로 표현하고 기술(describe)하는 능력에 크게 좌우된다. 수많은 3D 기술자(descriptor) 중에서, Rusu 등에 의해 2010년에 제안된 VFH(Viewpoint Feature Histogram)는 전체 객체 클러스터에 대한 형상과 시점 정보를 단일 서명(signature)으로 압축하여 빠른 인식과 6자유도(6DOF) 자세 추정을 가능하게 하는 독창적인 접근법으로 주목받았다.

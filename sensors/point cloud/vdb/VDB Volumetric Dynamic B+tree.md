@@ -1,5 +1,5 @@
-[VDB](./index.md)
 # VDB (Volumetric Dynamic B+tree)
+[VDB](./index.md)
 
 
 VDB(Volumetric Dynamic B+tree)는 3차원 그리드에 이산화된 희소(sparse), 동적(dynamic), 시변(time-varying) 볼류메트릭 데이터를 효율적으로 저장하고 조작하기 위해 설계된 컴팩트한 계층적 자료 구조이다.1 이 구조는 DreamWorks Animation의 Ken Museth에 의해 처음 개발되었으며, 시각 효과(VFX) 산업에서 연기, 구름, 물과 같은 복잡한 현상을 표현하기 위한 목적으로 시작되었다.1 이후 그 성능과 유연성을 인정받아 로보틱스, 과학 시뮬레이션, 의료 영상, 3D 재구성 등 다양한 분야로 그 적용 범위를 성공적으로 확장해왔다.4

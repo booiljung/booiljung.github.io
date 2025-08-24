@@ -1,5 +1,5 @@
-[R-tree](./index.md)
 # R*-트리
+[R-tree](./index.md)
 
 
 

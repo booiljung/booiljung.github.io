@@ -1,5 +1,5 @@
-[eProsima Fast DDS](./index.md)
 # 실시간 드론 통신을 위한 Fast DDS와 DJI Mobile SDK의 안드로이드 통합
+[eProsima Fast DDS](./index.md)
 
 
 본 섹션에서는 제안된 시스템의 고수준 설계를 확립하고, 구성 요소와 데이터 흐름을 상세히 설명합니다. 이는 각 기술의 강점과 제약에 기반하여 아키텍처 선택을 정당화하며, 구현에 앞서 견고한 개념적 토대를 제공합니다.

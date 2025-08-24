@@ -1,5 +1,5 @@
-[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 # FiTv2 모델
+[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 
 
 기존 생성 모델, 특히 강력한 성능을 자랑하는 확산 트랜스포머(Diffusion Transformers, DiT)는 '고정 해상도 그리드의 폭정(tyranny of the fixed-resolution grid)'이라는 근본적인 한계에 직면해 있었다. 이들 모델은 256x256 또는 512x512와 같은 특정 해상도에 맞춰 학습되고 최적화된다. 이로 인해 학습 분포를 벗어나는 해상도나 화면 비율의 이미지를 생성할 때 품질이 급격히 저하되는, 이른바 '해상도 외삽(resolution extrapolation)' 문제가 발생한다.5

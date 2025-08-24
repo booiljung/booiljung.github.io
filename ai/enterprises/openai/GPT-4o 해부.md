@@ -1,5 +1,5 @@
-[OpenAI의 인공지능 사업](./index.md)
 # GPT-4o 해부
+[OpenAI의 인공지능 사업](./index.md)
 
 
 

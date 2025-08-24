@@ -1,5 +1,5 @@
-[Gazebo](./index.md)
 # Gazebo Fortress와 Gazebo Harmonic 비교
+[Gazebo](./index.md)
 
 
 Gazebo 시뮬레이터는 로보틱스 연구 및 개발에 있어 필수적인 도구로 자리 잡았다. 그중에서도 장기 지원(Long-Term Support, LTS) 릴리즈는 안정성과 신뢰성이 중요한 프로젝트의 기반이 된다. Gazebo Fortress와 Gazebo Harmonic은 이러한 LTS 릴리즈 중에서도 중요한 분기점을 대표하는 두 버전이다. 이 보고서는 두 버전의 릴리즈 배경, 핵심 변화, 그리고 기술적 차이점을 심층적으로 분석하여 사용자가 자신의 프로젝트에 가장 적합한 버전을 선택할 수 있도록 돕는 것을 목표로 한다.

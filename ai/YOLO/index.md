@@ -1,5 +1,5 @@
-[인공지능 (Artificial Intelligence, AI)](../index.md)
 # YOLO 객체 탐지 모델
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 
 - [YOLO의 역설 왜 비전문가들은 '상업적 성능' 이상의 가치를 보는가](YOLO의 역설 왜 비전문가들은 상업적 성능 이상의 가치를 보는가.md)
 - [YOLO 버전별 비교](YOLO 버전별 비교.md)

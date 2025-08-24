@@ -1,5 +1,5 @@
-[계획법 (Planning)](../index.md)
 # 임무 계획 (Mission Planning)
+[계획법 (Planning)](../index.md)
 
 - [계획 영역 정의 언어(Planning Domain Definition Language, PDDL)](PDDL 계획 영역 정의 언어.md)
 - [로봇 임무 수행을 위한 PDDL 기술](로봇 임무 수행을 위한 PDDL 기술.md)

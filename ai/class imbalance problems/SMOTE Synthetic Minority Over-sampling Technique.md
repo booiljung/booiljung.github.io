@@ -1,5 +1,5 @@
-[인공지능 훈련 데이터의 클래스 불균형 문제](./index.md)
 # SMOTE(Synthetic Minority Over-sampling Technique)
+[인공지능 훈련 데이터의 클래스 불균형 문제](./index.md)
 
 기초 원리부터 최신 대안까지
 

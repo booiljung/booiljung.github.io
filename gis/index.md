@@ -1,5 +1,5 @@
-[BIJUNG](../index.md)
 # GIS (지리정보시스템)
+[BIJUNG](../index.md)
 
 ## 지도
 

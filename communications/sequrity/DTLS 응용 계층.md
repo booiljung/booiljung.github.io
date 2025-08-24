@@ -1,5 +1,5 @@
-[통신 보안](./index.md)
 # DTLS 응용 계층
+[통신 보안](./index.md)
 
 
 Datagram Transport Layer Security (DTLS)의 본질을 이해하기 위해서는 먼저 그 존재 이유를 파악해야 한다. DTLS는 단순히 Transport Layer Security (TLS)를 User Datagram Protocol (UDP) 위에 얹은 것이 아니다. 이는 신뢰성 있는 스트림 전송을 전제로 설계된 TLS의 근본적인 한계와, 지연 시간에 극도로 민감한 현대 애플리케이션의 요구 사이에서 탄생한 필연적인 결과물이다. 본 파트에서는 TCP 기반 TLS의 제약에서 출발하여, UDP와 같은 데이터그램 프로토콜에 보안을 적용하려는 시도가 어떻게 DTLS라는 독자적인 프로토콜로 귀결되었는지 그 배경과 설계 철학, 그리고 버전별 진화 과정을 심층적으로 추적한다.

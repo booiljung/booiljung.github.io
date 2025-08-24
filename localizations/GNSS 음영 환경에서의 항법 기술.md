@@ -1,5 +1,5 @@
-[위치 추정 (Localization)](./index.md)
 # GNSS 음영 환경에서의 항법 기술
+[위치 추정 (Localization)](./index.md)
 
 
 현대 문명은 위성항법시스템(Global Navigation Satellite System, GNSS)이 제공하는 위치(Positioning), 항법(Navigation), 시각(Timing) 정보, 즉 PNT에 깊이 의존하고 있다. 자율주행차, 드론, 정밀 농업부터 금융 거래, 통신망 동기화에 이르기까지, GNSS는 4차 산업혁명의 기반 기술로서 사회 전반에 걸쳐 핵심적인 역할을 수행한다.1 GNSS는 지구 궤도를 도는 다수의 위성에서 송신하는 신호를 수신하여, 신호의 도달 시간(Time of Arrival) 차이를 기반으로 삼변측량(Trilateration) 원리를 이용해 수신기의 위치를 계산한다.

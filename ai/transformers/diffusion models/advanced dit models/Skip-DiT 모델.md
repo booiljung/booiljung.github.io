@@ -1,5 +1,5 @@
-[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 # Skip-DiT 모델
+[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 
 
 본 보고서는 Diffusion Transformer(DiT)가 직면한 추론 비효율성과 특징(feature) 불안정성이라는 중대한 과제를 해결하기 위해 제안된 아키텍처 수정안인 Skip-DiT 모델에 대한 포괄적인 기술적 분석을 제공한다. 먼저 U-Net 기반 확산 모델에서부터 DiT로 이어지는 기술적 배경을 설명하고, Skip-DiT가 해결하고자 하는 핵심 문제, 즉 기존 캐싱(caching) 기법을 비효율적으로 만드는 트랜스포머 블록 간의 높은 특징 표현 분산(‘feature smoothness’ 문제)을 심도 있게 다룬다. 이어서 저자들이 제안한 이중 해결책을 해부한다. 첫째는 특징 동역학을 안정화시키기 위해 Long-Skip-Connection(LSC)을 도입한 **Skip-DiT 아키텍처**이며, 둘째는 이 연결을 활용하여 생성 속도를 가속하는 추론 시간 전략인 **Skip-Cache 메커니즘**이다. 본 보고서는 Skip-DiT의 성능을 속도 향상과 생성 품질 측면에서 엄밀하게 분석하고, 이를 기본 DiT 및 Δ-DiT, DeepCache와 같은 경쟁 가속 기법들과 벤치마킹한다. 마지막으로, 모델의 실제 구현, 알려진 한계점, 그리고 더 효율적이고 확장 가능한 생성 모델을 구축하려는 지속적인 노력 속에서 Skip-DiT가 갖는 광범위한 중요성에 대해 논한다.

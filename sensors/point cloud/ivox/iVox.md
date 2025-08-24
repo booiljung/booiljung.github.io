@@ -1,5 +1,5 @@
-[iVox](./index.md)
 # 해시 기반 증분 복셀 데이터 구조 iVox에 대한 고찰
+[iVox](./index.md)
 
 
 동시적 위치 추정 및 지도 작성(Simultaneous Localization and Mapping, SLAM) 기술은 자율주행 자동차, 로봇, 증강현실 등 다양한 분야의 핵심 기반 기술로 자리 잡았다.1 이 중 LiDAR-관성 주행 거리 측정(Lidar-Inertial Odometry, LIO)은 LiDAR 센서의 정밀한 거리 측정 능력과 관성 측정 장치(IMU)의 높은 시간 해상도를 결합하여, 조명 변화나 특징이 부족한 환경에서도 강건하고 정확한 위치 추정을 가능하게 한다.3 성공적인 LIO 시스템은 정확성(accuracy), 강건성(robustness), 그리고 효율성(efficiency)이라는 세 가지 요소를 모두 만족해야 한다.3 특히, 초당 수십만에서 수백만 개의 점을 생성하는 고속 회전형(spinning) 및 고체 상태(solid-state) LiDAR가 보편화되면서, 입력되는 방대한 양의 데이터를 실시간으로 처리하는 효율성은 시스템의 성패를 가르는 결정적인 요소다.5

@@ -1,5 +1,5 @@
-[딥러닝 모듈 (Modules)](./index.md)
 # 일반화 평균 풀링(Generalized Mean Pooling)
+[딥러닝 모듈 (Modules)](./index.md)
 
 
 

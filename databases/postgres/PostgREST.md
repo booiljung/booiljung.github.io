@@ -1,5 +1,5 @@
-[Postgres](./index.md)
 # PostgREST
+[Postgres](./index.md)
 
 
 현대의 애플리케이션 개발에서 백엔드 API를 구축하는 것은 필수적인 과정이지만, 이 과정은 종종 반복적인 CRUD(Create, Read, Update, Delete) 로직의 구현, 데이터베이스 스키마와 애플리케이션 비즈니스 로직 간의 불일치, 그리고 객체-관계 매핑(ORM)의 추상화 누수(leaky abstraction)로 인한 성능 문제 등 다양한 도전에 직면한다.1 PostgREST는 이러한 문제들에 대한 근본적인 해결책을 제시하며, 단순히 새로운 도구를 넘어 백엔드 아키텍처에 대한 패러다임 전환을 제안하는 독립형 웹 서버이다.1 Haskell로 작성된 이 서버는 PostgreSQL 데이터베이스를 직접 RESTful API로 변환하는 기능을 수행한다.3

@@ -1,5 +1,5 @@
-[인공지능 훈련 데이터의 클래스 불균형 문제](./index.md)
 # 제어 가능한 이상 생성(Anomaly Synthesis)을 위한 AnomalyControl 프레임워크
+[인공지능 훈련 데이터의 클래스 불균형 문제](./index.md)
 
 
 

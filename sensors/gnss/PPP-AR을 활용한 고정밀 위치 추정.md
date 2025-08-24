@@ -1,5 +1,5 @@
-[GNSS](./index.md)
 # PPP-AR을 활용한 고정밀 위치 추정
+[GNSS](./index.md)
 
 
 현대 사회는 자율 주행 자동차, 정밀 농업, 지각 변동 감시, 무인 항공기(UAV)를 이용한 지도 제작 등 다양한 분야에서 센티미터, 나아가 밀리미터 수준의 고정밀 위치 정보를 요구하고 있다.1 이러한 수요에 부응하기 위해 위성 항법 시스템(Global Navigation Satellite System, GNSS) 기술은 끊임없이 발전해왔다. 초기 단독 측위(Single Point Positioning, SPP) 기술에서부터 기준국과의 상대적 위치를 계산하여 정밀도를 높이는 실시간 이동 측위(Real-Time Kinematic, RTK) 기술을 거쳐, 단일 수신기만으로 전 지구적 정밀 위치 결정이 가능한 정밀 단독 측위(Precise Point Positioning, PPP) 기술에 이르렀다.4

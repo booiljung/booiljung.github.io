@@ -1,5 +1,5 @@
-[NVIDIA Jetson AGX Orin](./index.md)
 # Axiomtek AIE900A-AO (NVIDIA Jetson AGX Orin)
+[NVIDIA Jetson AGX Orin](./index.md)
 
 
 Axiomtek AIE900A-AO는 산업용 엣지(Edge) 환경에서 고성능 인공지능(AI) 연산을 수행하기 위해 설계된 팬리스(Fanless) 임베디드 시스템이다.1 본 장비는 로보틱스, 자율이동로봇(AMR), 지능형 영상 분석(IVA), 드론 및 기타 자율 기계와 같이 고도의 실시간 처리 능력을 요구하는 차세대 애플리케이션을 핵심 목표 시장으로 설정하고 있다.3 이러한 시스템의 등장은 AI 기술이 데이터 센터를 넘어 현장의 물리적 세계와 직접 상호작용하는 엣지 컴퓨팅 패러다임의 확산을 방증한다.

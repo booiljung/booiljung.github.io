@@ -1,5 +1,5 @@
-[스테레오 카메라 (Stereo Camera)](./index.md)
 # Orbbec Femto Bolt 3D 카메라에 대한 기술적 고찰
+[스테레오 카메라 (Stereo Camera)](./index.md)
 
 
 Orbbec Femto Bolt는 완전히 새로운 개념의 제품이 아니라, 2023년 8월에 단종된 Microsoft Azure Kinect DK (이하 AKDK)의 공식적인 후속 제품으로 시장에 진입했다.1 이러한 배경은 Femto Bolt의 시장 위치와 기술적 기반을 정의하는 가장 중요한 요소이다. Orbbec은 Microsoft와의 협력을 통해 이 기술을 계승하도록 공식적으로 지정되었으며, 이는 기존 개발자 커뮤니티에 연속성을 보장하는 역할을 한다.1

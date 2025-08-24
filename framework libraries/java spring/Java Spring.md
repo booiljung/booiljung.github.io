@@ -1,5 +1,5 @@
-[Java Spring](./index.md)
 # Java Spring
+[Java Spring](./index.md)
 
 
 2000년대 초반, Java를 사용한 엔터프라이즈 애플리케이션 개발 환경은 J2EE(Java 2 Platform, Enterprise Edition) 명세와 그 핵심 구현체인 EJB(Enterprise JavaBeans) 기술이 지배하고 있었다. 당시 개발자들은 EJB가 제공하는 트랜잭션 관리, 분산 기술, ORM(Object-Relational Mapping)과 같은 강력한 기능들을 활용하여 대규모 시스템을 구축했다.1 그러나 이러한 강력함의 이면에는 극심한 복잡성과 비효율성이 존재했다. 개발자들은 이를 'Java 진영의 추운 겨울'이라 묘사하며, 끝없는 야근과 기술적 장벽에 부딪혔다.2

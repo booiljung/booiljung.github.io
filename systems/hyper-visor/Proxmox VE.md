@@ -1,5 +1,5 @@
-[하이퍼바이저 (Hypervisor)](./index.md)
 # Proxmox VE
+[하이퍼바이저 (Hypervisor)](./index.md)
 
 
 Proxmox VE(Virtual Environment)는 단순한 가상화 도구를 넘어, 엔터프라이즈 환경을 위한 완전한 오픈소스 서버 관리 플랫폼으로 정의된다.1 이 플랫폼의 핵심은 KVM(Kernel-based Virtual Machine) 하이퍼바이저와 LXC(Linux Containers)라는 두 가지 이종(heterogeneous) 가상화 기술을 단일 관리 인터페이스 아래에 긴밀하게 통합한 데 있다. 여기에 소프트웨어 정의 스토리지(SDS)와 소프트웨어 정의 네트워킹(SDN) 기능까지 내장하여, 오늘날 데이터센터가 요구하는 컴퓨팅, 스토리지, 네트워크 자원을 포괄적으로 제공한다.1 이러한 통합적 접근 방식은 Proxmox VE를 VMware vSphere, Microsoft Hyper-V와 같은 전통적인 상용 솔루션과 직접적으로 경쟁하는 강력한 대안으로 자리매김하게 하였다.2

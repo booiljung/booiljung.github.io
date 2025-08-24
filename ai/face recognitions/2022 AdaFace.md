@@ -1,5 +1,5 @@
-[얼굴인식 문제](./index.md)
 # AdaFace (저품질 얼굴 인식을 위한 품질 적응형 마진의 원리와 의의, CVPR 2022)
+[얼굴인식 문제](./index.md)
 
 <iframe width="560" height="315" src="https://www.youtube.com/embed/eKzaMquLJmc" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 

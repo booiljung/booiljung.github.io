@@ -1,5 +1,5 @@
-[Point Cloud Library, PCL](./index.md)
 # ROS 2 고성능 포인트 클라우드 처리 아키텍처
+[Point Cloud Library, PCL](./index.md)
 
 
 로봇 인식 시스템, 특히 3D 데이터를 다루는 시스템의 핵심에는 포인트 클라우드 데이터를 표현하고 처리하는 방식이 있다. ROS 2 생태계에서는 이 작업을 위해 두 가지 주요 데이터 구조가 지배적으로 사용된다: `sensor_msgs::msg::PointCloud2`와 Point Cloud Library (PCL)의 `pcl::PointCloud<PointT>`이다. 이 두 구조는 서로 다른 설계 철학을 가지고 있으며, 이들의 근본적인 차이점은 고성능 인식 파이프라인에서 발생하는 성능 문제의 근원이 된다. 이 섹션은 각 데이터 구조를 심층적으로 분석하여 그들의 설계 원칙, 장단점, 그리고 이 둘 사이의 근본적인 긴장 관계를 탐구한다.

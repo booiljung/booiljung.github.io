@@ -1,5 +1,5 @@
-[ROS2 Humble 예제](./index.md)
 # ROS2 Humble과 Gazebo Harmonic을 이용한 액추에이터 연속 회전
+[ROS2 Humble 예제](./index.md)
 
 이 보고서는 ROS2 Humble과 최신 Gazebo 시뮬레이터인 Gazebo Harmonic을 사용하여 단일 액추에이터(회전 관절)를 지속적으로 회전시키는 완전한 예제를 제공한다. 전체 시스템 아키텍처, 환경 설정, 필수 코드 파일(URDF, YAML, Launch, Python), 실행 및 검증 절차, 그리고 시스템 동작의 이론적 배경까지 심도 있게 다룬다.
 

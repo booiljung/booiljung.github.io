@@ -1,5 +1,5 @@
-[eProsima Fast DDS](./index.md)
 # Fast DDS의 Rust 지원 래퍼 개발
+[eProsima Fast DDS](./index.md)
 
 
 본 보고서의 첫 번째 장에서는 eProsima Fast DDS를 위한 고품질 Rust 래퍼 개발이 단순한 기술적 시도를 넘어, 현대의 안전 필수(Safety-Critical) 시스템 소프트웨어 개발 패러다임 변화에 대응하는 전략적 과제임을 논증한다. 이는 분산 시스템의 핵심 요소인 DDS의 위상과 시스템 프로그래밍의 미래로 부상한 Rust의 가치를 결합하여, 차세대 시스템의 안정성과 생산성을 극대화하기 위한 필연적 과정이다.

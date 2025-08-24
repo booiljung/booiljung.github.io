@@ -1,5 +1,5 @@
-[인공지능 윤리 (AI ethics)](./index.md)
 # AI 윤리와 거버넌스 (AI ethics and governance)
+[인공지능 윤리 (AI ethics)](./index.md)
 
 
 

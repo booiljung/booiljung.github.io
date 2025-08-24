@@ -1,5 +1,5 @@
-[Postgres](./index.md)
 # PostGIS
+[Postgres](./index.md)
 
 
 본 장에서는 PostGIS의 근본적인 맥락을 정립하고, 그 성공이 PostgreSQL과의 공생 관계 및 강력한 오픈소스 지리 공간 스택의 전략적 통합의 직접적인 결과임을 논증한다.

@@ -1,5 +1,5 @@
-[이미지 분류 (Image Classifications)](./index.md)
 # GoogLeNet (2014)
+[이미지 분류 (Image Classifications)](./index.md)
 
 
 2012년 AlexNet이 ImageNet Large-Scale Visual Recognition Challenge (ILSVRC)에서 압도적인 성능을 보인 이래, 심층 컨볼루션 신경망(Deep Convolutional Neural Network, CNN)은 컴퓨터 비전 분야의 주류로 자리 잡았다. 이후 연구자들은 네트워크의 깊이를 증가시키는 것이 성능 향상의 핵심이라는 직관에 따라 모델을 더욱 깊게 쌓는 방향으로 나아갔다.1 그러나 이러한 접근법은 두 가지 심각한 문제에 직면했다. 첫째, 네트워크가 깊어질수록 학습해야 할 파라미터의 수가 기하급수적으로 증가하여 막대한 계산 자원을 요구했으며, 이는 과적합(overfitting)의 위험을 높였다.2 둘째, 네트워크 깊이가 임계점을 넘어서면 역전파 과정에서 기울기가 점차 사라지는 기울기 소실(vanishing gradient) 문제가 발생하여 학습이 제대로 이루어지지 않았다.1

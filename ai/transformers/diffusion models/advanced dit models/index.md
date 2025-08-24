@@ -1,5 +1,5 @@
-[트랜스포머 기반 확산 모델 (Diffusion Models)](../index.md)
 # 트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)
+[트랜스포머 기반 확산 모델 (Diffusion Models)](../index.md)
 
 전문가 혼합(MoE), 멀티모달, 3D 생성 등 DiT를 더욱 발전시킨 고급 모델들을 다룬다. 최신 연구 동향과 복잡한 데이터 생성 기술을 심도 있게 탐구한다.
 

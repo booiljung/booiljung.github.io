@@ -1,5 +1,5 @@
-[이미지 분류 (Image Classifications)](./index.md)
 # ResNet (Deep Residual Learning, 2015)
+[이미지 분류 (Image Classifications)](./index.md)
 
 
 

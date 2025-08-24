@@ -1,5 +1,5 @@
-[GS-LIVO](./index.md)
 # GS-LIVO
+[GS-LIVO](./index.md)
 
 
 자율 로봇과 증강 현실 기술의 발전은 주변 환경을 정확하게 인식하고 이해하는 능력을 핵심 전제로 요구한다. 이러한 요구에 부응하여 동시적 위치 추정 및 지도 작성(Simultaneous Localization and Mapping, SLAM) 기술은 지난 수십 년간 눈부신 발전을 거듭해왔다. 본 보고서의 서두에서는 GS-LIVO(Gaussian Splatting LiDAR-Inertial-Visual Odometry)의 등장을 이해하기 위한 기술적 배경을 심도 있게 분석한다. GS-LIVO는 단순히 기존 기술의 점진적 개선이 아닌, 로보틱스 분야의 두 가지 거대한 흐름, 즉 다중 센서 퓨전을 통한 궁극의 강인성 추구와 컴퓨터 그래픽스 기술 발전에 힘입은 고충실도 환경 모델링 요구가 합류하는 지점에서 탄생한 필연적 산물임을 논증하고자 한다.

@@ -1,5 +1,5 @@
-[인공지능 (Artificial Intelligence, AI)](../index.md)
 # 딥러닝 모듈 (Modules)
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 
 - [배치 정규화 (Batch Normalization, 2015)](2015 Batch Normalization.md)
 - [완전 컨볼루션 네트워크(Fully Convolutional Network, FCN, 2015)](2015 FCN.md)

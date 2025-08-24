@@ -1,5 +1,5 @@
-[PX4 ROS2 Simulation](./index.md)
 # PX4 v1.15 ROS2 Humble FAST-LIO uORB 통합문제
+[PX4 ROS2 Simulation](./index.md)
 
 
 본 보고서는 ROS2 Humble, Gazebo Harmony, PX4 v1.15 환경에서 FAST_LIO2 LiDAR 관성 주행계(LIO)를 연동하여 드론을 제어할 때 발생하는 심각한 비행 불안정성 문제에 대한 심층 분석 및 해결 방안을 제시합니다. 사용자는 C++로 작성된 브리지 노드를 통해 FAST_LIO2의 `/odom` 토픽을 PX4의 uORB 시스템으로 전송하고 있으며, OFFBOARD 모드로 전환 시 드론이 제어 불능 상태에 빠져 회전하며 추락하는 현상을 겪고 있습니다.

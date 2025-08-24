@@ -1,5 +1,5 @@
-[임무 계획 (Mission Planning)](./index.md)
 # 드론 임무 관리를 위한 계층적 임무 네트워크(HTN) 기술
+[임무 계획 (Mission Planning)](./index.md)
 
 
 자동화된 계획(automated planning) 분야에서 계층적 임무 네트워크(Hierarchical Task Network, HTN)는 고전적인 계획 패러다임과는 근본적으로 다른 접근 방식을 제시한다. STRIPS와 같은 고전적 플래너가 초기 상태(initial state)에서 목표 상태(goal state)로 전환하는 일련의 행동(action) 순서를 찾는 데 집중하는 반면, HTN 플래너는 상위 수준의 추상적인 임무(task)를 점진적으로 구체화하고 분해하여 실행 가능한 기본 행동들의 순서로 만드는 과정을 통해 계획을 수립한다.1 이는 단순히 '무엇을 달성할 것인가'의 문제를 넘어 '어떻게 수행할 것인가'라는 절차적 지식(procedural knowledge)을 계획 과정의 핵심에 두는 패러다임의 전환을 의미한다.

@@ -1,5 +1,5 @@
-[BIJUNG](../index.md)
 # 데이터베이스 관리 시스템 (Database Management System)
+[BIJUNG](../index.md)
 
 ## 관계형 데이터베이스
 

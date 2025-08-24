@@ -1,5 +1,5 @@
-[자기지도학습(Self-Supervised Learning)](./index.md)
 # 자기지도학습 (Self-Supervised Learning)
+[자기지도학습(Self-Supervised Learning)](./index.md)
 
 
 

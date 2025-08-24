@@ -1,5 +1,5 @@
-[ROS2 (Robot Operating System 2)](./index.md)
 # ROS2 Humble 대 Jazzy 성숙도
+[ROS2 (Robot Operating System 2)](./index.md)
 
 
 본 보고서는 LiDAR, 카메라, IMU, GNSS, 콤파스 센서 융합을 통한 군집 드론 자율 비행 연구라는 명확한 목표를 달성하기 위한 최적의 ROS2(Robot Operating System 2) 배포판 선정을 목표로 한다. 이 선택은 단순히 최신 버전을 따르는 기술적 추종이 아닌, 프로젝트의 성공을 좌우하는 전략적 의사결정이다.

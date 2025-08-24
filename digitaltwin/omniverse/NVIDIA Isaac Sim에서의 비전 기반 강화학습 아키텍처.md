@@ -1,5 +1,5 @@
-[NVidia Omniverse](./index.md)
 # Isaac Sim에서의 비전 기반 강화학습 아키텍처
+[NVidia Omniverse](./index.md)
 
 
 본 보고서는 NVIDIA Isaac Sim 환경에서 동역학 시뮬레이션을 활용한 비전 기반 강화학습(Vision-based Reinforcement Learning)을 수행할 때, 로봇 운영체제(Robot Operating System, ROS) 2의 필요성에 대한 심층적인 기술적 분석을 제공합니다. 사용자의 질문인 "Isaac Sim에서 동역학적 시뮬레이션을 수행하여 비전 기반 강화학습을 할 때 ROS 2가 필수적인가?"에 대한 명확한 답변부터 제시하자면, **결론적으로 ROS 2는 강화학습 \*훈련(training)\* 단계에서 필수적이지 않으며, 오히려 최고 성능을 위해서는 권장되지 않습니다.**

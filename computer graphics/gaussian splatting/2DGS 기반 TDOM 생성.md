@@ -1,5 +1,5 @@
-[Gaussian Splatting](./index.md)
 # 2D Gaussian Splatting (2DGS) 기반 TDOM 생성에 대한 고찰
+[Gaussian Splatting](./index.md)
 
 
 최근 3D 재구성 및 신규 시점 합성 분야에서 Gaussian Splatting (GS)은 고품질 및 빠른 렌더링 속도를 제공하는 유망한 해결책으로 부상하였다.1 특히, 2D Gaussian Splatting (2DGS)은 다중 시점 이미지로부터 기하학적으로 정확한 복사장(radiance fields)을 모델링하고 재구성하는 새로운 접근 방식이다.2 2DGS의 핵심 아이디어는 3D 볼륨을 2D 방향성 평면 가우시안 디스크(oriented planar Gaussian disks) 집합으로 축소하여 씬을 표현하는 것이다.2

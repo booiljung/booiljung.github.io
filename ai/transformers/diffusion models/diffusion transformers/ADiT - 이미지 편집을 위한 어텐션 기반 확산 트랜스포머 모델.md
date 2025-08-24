@@ -1,5 +1,5 @@
-[DiT (Diffusion Transformer)](./index.md)
 # 이미지 편집을 위한 어텐션 기반 확산 트랜스포머(ADiT)
+[DiT (Diffusion Transformer)](./index.md)
 
 
 

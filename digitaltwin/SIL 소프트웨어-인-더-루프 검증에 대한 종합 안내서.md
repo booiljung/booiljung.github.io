@@ -1,5 +1,5 @@
-[게임 엔진, 시뮬레이션 및 디지털트윈 (Gane Engines, Simulations and Digital Twins)](./index.md)
 # 소프트웨어-인-더-루프(SIL) 검증에 대한 종합 안내서
+[게임 엔진, 시뮬레이션 및 디지털트윈 (Gane Engines, Simulations and Digital Twins)](./index.md)
 
 
 현대 소프트웨어 공학에서 소프트웨어-인-더-루프(Software-in-the-Loop, SIL)는 단순한 테스트 기법을 넘어, 복잡한 시스템의 신뢰성과 안전성을 보장하는 핵심적인 검증 철학으로 자리 잡았습니다. 이 장에서는 SIL의 개념적 토대를 구축하고, 단순한 시뮬레이션을 넘어 코드 수준의 검증으로서 SIL이 갖는 본질적인 의미와 목표를 탐구합니다.

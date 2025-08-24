@@ -1,5 +1,5 @@
-[ROS2 Humble 행동(임무) 계획 및 관리](./index.md)
 # ROS2 Humble Tesseract (Southwest Research Institute의 산업용 모션 플래닝 프레임워크)
+[ROS2 Humble 행동(임무) 계획 및 관리](./index.md)
 
 
 현대 산업 자동화는 단순 반복 작업을 넘어, 다품종 소량 생산(high-mix, low-volume) 환경에 대응할 수 있는 지능적이고 유연한 로봇 시스템을 요구한다.1 이러한 변화의 중심에는 로봇이 복잡하고 동적인 환경을 인식하고, 안전하며 효율적인 경로를 스스로 생성하는 모션 플래닝 기술이 자리 잡고 있다. 본 보고서는 Southwest Research Institute (SwRI)가 주도하여 개발한 Tesseract 모션 플래닝 프레임워크에 대한 심층적 고찰을 제공한다. Tesseract는 기존의 범용 플래닝 프레임워크가 가진 한계를 극복하고, 실제 산업 현장의 엄격한 요구사항—견고성, 성능, 정밀도—을 충족시키기 위해 설계되었다. 본 서론에서는 Tesseract의 개발 주체인 SwRI의 역할과 ROS-Industrial 생태계 내에서의 위치, 그리고 Tesseract가 탄생하게 된 기술적 배경과 그 핵심 설계 철학을 탐구한다.

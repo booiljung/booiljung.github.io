@@ -1,5 +1,5 @@
-[인공지능 (Artificial Intelligence, AI)](../index.md)
 # 인공지능 훈련 데이터의 클래스 불균형 문제
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 
 - [딥러닝에서의 비정상 데이터 희소성 문제](딥러닝에서의 비정상 데이터 희소성 문제.md)
 

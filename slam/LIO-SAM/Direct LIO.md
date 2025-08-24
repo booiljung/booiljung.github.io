@@ -1,5 +1,5 @@
-[LIO-SAM](./index.md)
 # Direct LiDAR Odometry (Direct LIO)
+[LIO-SAM](./index.md)
 
 
 

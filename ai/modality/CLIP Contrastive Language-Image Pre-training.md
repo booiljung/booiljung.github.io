@@ -1,5 +1,5 @@
-[Modality](./index.md)
 # Contrastive Language-Image Pre-training (CLIP, 다중모달 융합의 초석)
+[Modality](./index.md)
 
 
 

@@ -1,5 +1,5 @@
-[시각적 위치 추정 및 항법 (Visual Localization & Navigation)](../index.md)
 # 딥러닝 기반 장소 인식 (Deep Learning-based Place Recognition)
+[시각적 위치 추정 및 항법 (Visual Localization & Navigation)](../index.md)
 
 딥러닝 모델, 특히 특정 장소의 고유한 특징(Descriptor)을 추출하는 기술을 활용하여 현재 위치를 인식하고 추정하는 연구 분야다.
 

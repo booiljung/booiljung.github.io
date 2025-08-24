@@ -1,5 +1,5 @@
-[SLAM (Simultaneous Localization and Mapping)](../index.md)
 # NvBLox
+[SLAM (Simultaneous Localization and Mapping)](../index.md)
 
 - [Nvblox A](NvBlox A.md)
 - [Nvblox B](NvBlox B.md)

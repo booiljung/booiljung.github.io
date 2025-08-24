@@ -1,5 +1,5 @@
-[GNSS](./index.md)
 # Trimble CenterPoint RTX
+[GNSS](./index.md)
 
 
 

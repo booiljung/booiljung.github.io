@@ -1,5 +1,5 @@
-[NVIDIA Jetson AGX Orin](./index.md)
 # NVIDIA Jetson Orin 플랫폼에 Preempt-RT 적용을 위한 종합 가이드
+[NVIDIA Jetson AGX Orin](./index.md)
 
 
 이 파트는 "어떻게"에 앞서 "왜"와 "무엇을"에 대한 기반을 구축합니다. 이는 전체적인 맥락을 설정하고, 핵심 용어를 정의하며, 사용자가 초기에 어떤 구현 경로를 선택할지에 대한 중요한 결정을 내리도록 안내합니다.

@@ -1,5 +1,5 @@
-[데이터 분산 서비스 DDS](./index.md)
 # DDS 데이터 분산 서비스를 위한 체계적 토픽 설계 원칙 및 성능 최적화
+[데이터 분산 서비스 DDS](./index.md)
 
 
 Data Distribution Service (DDS)는 Object Management Group (OMG)에 의해 표준화된 통신 미들웨어로, 분산 시스템 환경에서 데이터 중심(Data-Centric)의 발행-구독(Publish-Subscribe) 통신 패러다임을 제공하는 것을 핵심 목표로 한다.1 이는 기존의 메시지 중심(Message-Centric) 또는 객체 요청 브로커(Object Request Broker) 방식과 근본적인 철학적 차이를 보인다. DDS는 중앙 집중식 서버나 브로커에 의존하지 않는 탈중앙화 아키텍처를 통해, 시스템 참여자(Participant)들이 동적으로 네트워크에 참여하고 이탈하는 환경에서 높은 수준의 실시간성, 신뢰성, 그리고 확장성을 보장하도록 설계되었다.2

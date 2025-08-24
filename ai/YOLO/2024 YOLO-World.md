@@ -1,5 +1,5 @@
-[YOLO 객체 탐지 모델](./index.md)
 # YOLO-World (2024)
+[YOLO 객체 탐지 모델](./index.md)
 
 
 

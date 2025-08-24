@@ -1,5 +1,5 @@
-[Gazebo Harmonic](./index.md)
 # Gazebo Harmonic SDF 작성 가이드
+[Gazebo Harmonic](./index.md)
 
 
 이 섹션에서는 시뮬레이션 기술의 핵심인 SDFormat(SDF)의 기초를 다룬다. SDF의 목적과 핵심 구조를 이해하는 것은 Gazebo Harmonic에서 정교한 시뮬레이션 환경과 로봇을 구축하기 위한 첫걸음이다.

@@ -1,5 +1,5 @@
-[NVIDIA Jetson AGX Orin](./index.md)
 # NVIDIA Jetson AGX Orin 플랫폼의 디스크 암호화 및 활용
+[NVIDIA Jetson AGX Orin](./index.md)
 
 
  본 보고서는 NVIDIA Jetson AGX Orin 플랫폼의 디스크 암호화 기능에 대한 포괄적이고 전문적인 분석을 제공합니다. 자율 머신이 물리적으로 안전하지 않은 환경에서 작동하는 엣지에서는, 저장 데이터(data-at-rest) 보호가 단순한 기능이 아니라 지적 재산 보호, 데이터 프라이버시, 운영 무결성을 위한 기본 요건입니다. Jetson AGX Orin은 Jetson Linux(L4T) 운영 체제를 통해 Linux 표준인 LUKS(Linux Unified Key Setup)에 기반한 강력한 하드웨어 가속 디스크 암호화 솔루션을 제공합니다. 이 구현은 하드웨어 신뢰점(Hardware Root of Trust)과 신뢰 실행 환경(Trusted Execution Environment, TEE)을 포함한 SoC의 하드웨어 보안 기능과 깊이 통합되어 자동화되고 안전하며 "사용자 개입 없는(zero-touch)" 잠금 해제 메커니즘을 제공합니다. 본 분석은 암호화가 측정 가능한 성능 오버헤드를 유발하지만, Orin의 Cortex-A78AE CPU 코어에 내장된 강력한 Armv8 암호화 확장(Cryptography Extensions)이 이 영향을 완화하여, 까다로운 실시간 AI 파이프라인에서도 안전한 배포가 가능함을 입증할 것입니다. 기술적 구현을 탐색하고, 성능 상충 관계를 정량화하며, 자율 주행 차량, 스마트 제조, 헬스케어와 같은 핵심 분야에서 이러한 보안 태세의 전략적 활용(활용) 방안을 상세히 설명합니다. 마지막으로, 진화하는 위협 환경을 조망하며 고급 공격에 대한 완화책과 포스트 퀀텀(Post-Quantum) 암호화 시대에 대한 플랫폼의 준비 상태를 고찰합니다.

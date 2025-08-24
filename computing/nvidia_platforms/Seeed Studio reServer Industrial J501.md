@@ -1,5 +1,5 @@
-[NVidia 컴퓨팅 플랫폼](./index.md)
 # Seeed Studio reServer Industrial J501
+[NVidia 컴퓨팅 플랫폼](./index.md)
 
 
 엣지(Edge) AI 시장은 클라우드 컴퓨팅의 한계를 극복하고 데이터 발생 지점에서 실시간 추론을 수행하기 위한 기술적 요구가 증대됨에 따라 폭발적인 성장을 거듭하고 있다. 특히 스마트 팩토리, 자율이동로봇(AMR), 지능형 교통 시스템(ITS) 등 산업 현장에서는 저지연(low latency)과 높은 신뢰성이 보장되는 고성능 임베디드 시스템의 중요성이 날로 부각되고 있다.1 이러한 기술적 변곡점에서 Seeed Studio의 reServer Industrial J501은 NVIDIA의 플래그십 엣지 AI 모듈인 Jetson AGX Orin의 막대한 연산 능력을 산업 환경에 적용하기 위한 핵심적인 솔루션으로 등장하였다.

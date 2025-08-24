@@ -1,5 +1,5 @@
-[지상 관제 시스템 (GCS)](./index.md)
 # Private UTM 시스템 개발 및 서비스 제공 전략
+[지상 관제 시스템 (GCS)](./index.md)
 
 
 본 보고서는 서버, 웹, 모바일 플랫폼에서 구동되고 클라우드 및 온프레미스(On-premise) 환경으로 제공되는 사설 무인항공기 교통관리 시스템(Private Unmanned Aircraft System Traffic Management, 이하 Private UTM)의 성공적인 개발과 사업화를 위한 종합적인 청사진을 제시한다. 이를 위해 시스템 아키텍처, 개발 조직, 서비스 조직에 대한 심층적인 분석과 전략적 고찰을 담는다.

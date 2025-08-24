@@ -1,5 +1,5 @@
-[OpenAI의 인공지능 사업](./index.md)
 # OpenAI Whisper 심층 고찰
+[OpenAI의 인공지능 사업](./index.md)
 
 
 

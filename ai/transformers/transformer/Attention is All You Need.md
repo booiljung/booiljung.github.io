@@ -1,5 +1,5 @@
-[트랜스포머 (Transformer)](./index.md)
 # Attention is All You Need
+[트랜스포머 (Transformer)](./index.md)
 
 
 자연어 처리(NLP)를 비롯한 순차적 데이터(Sequential Data) 모델링 분야는 오랫동안 순환 신경망(Recurrent Neural Network, RNN)과 그 변형 모델들이 지배해왔다.1 RNN은 이전 시간 단계(timestep)의 정보를 은닉 상태(hidden state)에 저장하고 이를 현재 시간 단계의 입력과 함께 처리하는 순환 구조를 통해 시퀀스의 동적인 특성을 포착하도록 설계되었다.2 이러한 구조를 발전시킨 LSTM(Long Short-Term Memory)과 GRU(Gated Recurrent Unit)는 내부에 '게이트'라는 정교한 메커니즘을 도입하여 정보의 흐름을 제어함으로써 RNN의 고질적인 문제를 일부 해결하고자 했다.1

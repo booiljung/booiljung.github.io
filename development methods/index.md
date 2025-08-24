@@ -1,5 +1,5 @@
-[BIJUNG](../index.md)
 # 개발 방법론 (Development Methods)
+[BIJUNG](../index.md)
 
 ## 지속적 통합 및 배포
 

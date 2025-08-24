@@ -1,5 +1,5 @@
-[ROS2 Humble](./index.md)
 # ROS 2 Humble package.xml 완벽 안내서
+[ROS2 Humble](./index.md)
 
 
 ROS 2 패키지를 다루다 보면 `package.xml` 파일을 마주하게 된다. 많은 개발자들이 이를 단순히 패키지 이름, 버전, 작성자 정보 등을 담는 메타데이터 파일로 취급하곤 한다. 하지만 이는 `package.xml`의 역할을 과소평가하는 것이다. 이 파일은 단순한 정보의 나열이 아니라, ROS 2 생태계 전체와 소통하는 패키지의 **공식 명세서(public API)**이자 **계약서**다.

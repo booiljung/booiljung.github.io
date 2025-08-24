@@ -1,5 +1,5 @@
-[NVidia Omniverse](./index.md)
 # NVIDIA Omniverse 산업 메타버스를 위한 운영 체제
+[NVidia Omniverse](./index.md)
 
 
 NVIDIA Omniverse는 단일 제품이나 애플리케이션이 아닌, 3D 워크플로우의 근본적인 재구성을 목표로 하는 전략적이고 확장 가능한 플랫폼입니다. 공식적으로 Omniverse는 Universal Scene Description(OpenUSD)과 NVIDIA RTX™ 기술을 기반으로 3D 애플리케이션 및 서비스를 구축하기 위한 SDK, API, 마이크로서비스로 구성된 모듈형 개발 플랫폼으로 정의됩니다.1 이 정의는 Omniverse가 최종 사용자를 위한 도구를 넘어, '구축하는 사람들을 위한 툴킷'이라는 본질을 강조합니다. 플랫폼의 핵심 목표는 산업의 디지털화를 가능하게 하고, 물리적으로 정확하며 실시간으로 상호작용하는 시뮬레이션과 협업 환경을 조성하는 것입니다.3

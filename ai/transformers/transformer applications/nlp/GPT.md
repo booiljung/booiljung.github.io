@@ -1,5 +1,5 @@
-[자연어 처리 (NLP) 트랜스포머](./index.md)
 # 생성형 사전 훈련 트랜스포머(GPT)에 대한 심층 고찰
+[자연어 처리 (NLP) 트랜스포머](./index.md)
 
 
 생성형 사전 훈련 트랜스포머(Generative Pre-trained Transformer, GPT)는 현대 인공지능 분야, 특히 자연어 처리(NLP)에서 혁명적인 변화를 이끌어낸 기술이다. GPT의 핵심은 '생성형 사전 훈련(Generative Pre-training)'이라는 학습 방법론과 '트랜스포머(Transformer)'라는 신경망 아키텍처의 결합에 있다.1 이 기술의 근간이 되는 트랜스포머 아키텍처는 2017년 Google 연구진이 발표한 "Attention Is All You Need"라는 기념비적인 논문에서 처음 제안되었다.1

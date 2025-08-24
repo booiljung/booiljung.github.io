@@ -1,5 +1,5 @@
-[시각적 장소 인식 (Visual Place Recognition)](./index.md)
 # MixVPR (2023)
+[시각적 장소 인식 (Visual Place Recognition)](./index.md)
 
 
 시각적 장소 인식(Visual Place Recognition, VPR)은 주어진 쿼리 이미지(Query Image)에 묘사된 장소를, 이전에 구축된 지리적 위치 정보가 태깅된 이미지 데이터베이스와 비교하여 인식하는 핵심 기술이다.1 이 기술은 자율주행차, 모바일 로봇의 실시간 위치 추정(Localization), 그리고 동시적 위치 추정 및 지도 작성(SLAM) 시스템에서의 루프 클로저(Loop Closure) 등 다양한 자율 항법 시스템의 근간을 이룬다.1 현대의 VPR 접근법은 대부분 이를 이미지 검색(Image Retrieval) 문제로 간주한다. 즉, 각 이미지를 고유한 저차원의 전역 디스크립터(Global Descriptor) 벡터로 변환하고, 쿼리 이미지의 디스크립터와 데이터베이스 내 모든 이미지의 디스크립터 간의 유사도를 측정하여 가장 일치하는 장소를 찾아낸다.2

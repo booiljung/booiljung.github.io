@@ -1,5 +1,5 @@
-[컴퓨터 통신 (Computer Communications)](./index.md)
 # 개방형 시스템 상호접속(OSI) 7계층 참조 모델에 대한 고찰
+[컴퓨터 통신 (Computer Communications)](./index.md)
 
 
 

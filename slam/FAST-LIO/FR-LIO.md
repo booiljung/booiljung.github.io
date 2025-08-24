@@ -1,5 +1,5 @@
-[FAST-LIO](./index.md)
 # FR-LIO
+[FAST-LIO](./index.md)
 
 
 자율 이동 로봇이 미지의 환경을 항해하기 위한 핵심 기술은 동시적 위치추정 및 지도작성(Simultaneous Localization and Mapping, SLAM)이다.1 이 중에서도 LiDAR(Light Detection and Ranging) 기반 SLAM은 빠르고 정확하며 밀도 높은 3차원 환경 복원을 제공하는 능력 덕분에 광범위하게 활용되고 있다.2 본 보고서는 SLAM의 핵심 하위 문제이자 시스템 전체 성능에 지대한 영향을 미치는 주행계(Odometry) 기술, 특히 LiDAR-관성 주행계(LIO)에 초점을 맞춘다.1

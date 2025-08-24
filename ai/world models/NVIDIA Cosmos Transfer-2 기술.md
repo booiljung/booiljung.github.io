@@ -1,5 +1,5 @@
-[월드 모델](./index.md)
 # NVIDIA Cosmos Transfer-2 기술 (물리 AI 훈련을 위한 합성 데이터 생성의 혁신)
+[월드 모델](./index.md)
 
 
 

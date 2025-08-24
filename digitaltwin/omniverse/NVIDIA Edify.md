@@ -1,5 +1,5 @@
-[NVidia Omniverse](./index.md)
 # NVIDIA Edify
+[NVidia Omniverse](./index.md)
 
 
 NVIDIA Edify는 단일 생성형 AI 모델을 지칭하는 용어가 아니다. 이는 이미지, 비디오, 3D 에셋, 360도 고명암 대비(HDRi), 물리 기반 렌더링(PBR) 재질 등 광범위한 시각적 콘텐츠 생성을 목표로 설계된 포괄적인 **멀티모달(multimodal) AI 아키텍처**로 정의해야 한다.1 이러한 정의는 NVIDIA가 특정 애플리케이션 개발을 넘어, 시각 생성 AI 기술의 근간을 이루는 핵심 기술 스택을 구축하고자 했음을 명확히 보여준다. Edify는 라플라시안 확산(Laplacian diffusion)이나 다중 시점(multi-view) 3D 생성과 같은 기술적 혁신을 선보였을 뿐만 아니라, '상업적 안전성(commercially safe)'이라는 명확한 가치 제안을 통해 기업 시장을 정밀하게 공략한 선구적 시도였다.3 생성형 AI 시장 초기에 저작권 문제가 첨예한 법적, 윤리적 쟁점으로 부상했을 때, 이는 Edify를 경쟁 모델과 차별화하는 핵심 요소로 작용했다.

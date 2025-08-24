@@ -1,5 +1,5 @@
-[장면인식 인공지능 (Scene Recognition AI)](./index.md)
 # FVV 자유시점 비디오를 위한 깊이 인식 장면 표현 방식
+[장면인식 인공지능 (Scene Recognition AI)](./index.md)
 
 MPI, NeRF, 3D 가우시안 스플래팅 그리고 "DiAD" 개념을 중심으로
 

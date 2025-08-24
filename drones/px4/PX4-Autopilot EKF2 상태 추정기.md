@@ -1,5 +1,5 @@
-[PX4-Autopilot](./index.md)
 # PX4-Autopilot EKF2 상태 추정기
+[PX4-Autopilot](./index.md)
 
 
 PX4-Autopilot의 핵심은 기체의 상태, 즉 자세(각도), 속도, 위치를 정확하게 추정하는 능력에 있다. 이 중추적인 역할을 수행하는 것이 바로 EKF2(Extended Kalman Filter 2) 모듈이다. EKF2는 단순히 센서 데이터를 필터링하는 것을 넘어, 실제 비행 환경에서 마주치는 다양한 비이상적인 조건들을 극복하도록 설계된 정교한 상태 추정 시스템이다.

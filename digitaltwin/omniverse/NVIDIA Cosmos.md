@@ -1,5 +1,5 @@
-[NVidia Omniverse](./index.md)
 # NVIDIA Cosmos
+[NVidia Omniverse](./index.md)
 
 
 이 파트에서는 NVIDIA Cosmos의 존재 이유를 규명한다. 이 플랫폼을 단일 제품이 아닌, 차세대 AI의 근본적인 병목 현상에 대한 전략적 대응이자 수십조 달러 규모의 시장 기회를 포착하기 위한 계산된 움직임으로 분석한다.

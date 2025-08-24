@@ -1,5 +1,5 @@
-[SUPABASE](./index.md)
 # Supabase
+[SUPABASE](./index.md)
 
 
 본 섹션에서는 Supabase의 근본적인 정체성을 확립하고, 단순한 'Firebase 대안'이라는 명칭을 넘어 그 핵심 철학과 기술적 신조를 정의합니다. Supabase는 PostgreSQL의 강력함과 안정성에 뿌리를 둔 특정 개발 패러다임을 위한 의도적인 선택임을 주장할 것입니다.

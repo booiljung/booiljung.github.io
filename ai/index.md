@@ -1,5 +1,5 @@
-[BIJUNG](../index.md)
 # 인공지능 (Artificial Intelligence, AI)
+[BIJUNG](../index.md)
 
 - [머신러닝 기초 원리부터 인공지능의 최전선까지 키워드 로드맵](머신러닝 기초 원리부터 인공지능의 최전선까지 키워드 로드맵.md)
 

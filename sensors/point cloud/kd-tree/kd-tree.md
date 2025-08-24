@@ -1,5 +1,5 @@
-[kd 트리](./index.md)
 # kd-tree
+[kd 트리](./index.md)
 
 
 

@@ -1,5 +1,5 @@
-[적대적 생성 신경망 (Generative Adversarial Network, GAN)](./index.md)
 # 적대적 생성 신경망(GAN)
+[적대적 생성 신경망 (Generative Adversarial Network, GAN)](./index.md)
 
 
 생성적 인공지능(Generative AI) 분야에서 적대적 생성 신경망(Generative Adversarial Network, GAN)의 등장은 패러다임의 전환을 의미한다. 2014년 Ian Goodfellow 등이 발표한 논문을 통해 처음 소개된 GAN은, 단순히 데이터를 분류하거나 회귀 문제를 해결하는 기존의 판별적 모델(discriminative models)과는 근본적으로 다른 접근법을 제시하였다.1 GAN은 새로운 데이터를 창조하는 생성 모델(generative models)의 일종으로, 주어진 데이터의 통계적 분포를 모방하여 현실과 유사한 결과물을 만들어내는 것을 목표로 삼는다.1

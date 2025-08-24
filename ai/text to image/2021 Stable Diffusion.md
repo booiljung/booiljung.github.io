@@ -1,5 +1,5 @@
-[Text-to-Image 생성 기술](./index.md)
 # Stable Diffusion (2021)
+[Text-to-Image 생성 기술](./index.md)
 
 
 

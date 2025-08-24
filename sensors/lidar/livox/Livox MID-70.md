@@ -1,5 +1,5 @@
-[Livox Technology](./index.md)
 # Livox MID-70 LiDAR 기술적 고찰
+[Livox Technology](./index.md)
 
 
 Livox MID-70은 저속 자율주행 및 모바일 로보틱스 분야를 목표로 설계된 고성능 3D LiDAR(Light Detection and Ranging) 센서다. 기존 기계식 회전형 LiDAR 센서와는 근본적으로 다른 작동 원리와 가격 정책을 통해 시장에 진입했으며, 특정 응용 분야에서 독자적인 입지를 구축하고 있다. 본 보고서는 Livox MID-70의 핵심 기술, 성능 사양, 데이터 특성, 응용 분야 및 소프트웨어 생태계를 심층적으로 분석한다. 또한, Ouster OS0, Velodyne Puck 등 주요 경쟁 제품과의 비교를 통해 시장 내 위치를 명확히 하고, 실제 시스템 통합 시 고려해야 할 기술적 한계와 과제를 종합적으로 고찰하여 잠재적 사용자에게 전략적 지침을 제공하는 것을 목표로 한다.

@@ -1,5 +1,5 @@
-[BIJUNG](../index.md)
 # 계획법 (Planning)
+[BIJUNG](../index.md)
 
 - [동적계획법 (Dynamic Programming, DP)](동적계획법.md)
 

@@ -1,5 +1,5 @@
-[PX4 with ROS2 Humble](./index.md)
 # PX4-Humble-Harmonic 개발 환경 구축을 위한 종합 가이드
+[PX4 with ROS2 Humble](./index.md)
 
 
 이 보고서는 Ubuntu 22.04 호스트 시스템에서 Visual Studio Code (VS Code)와 DevContainer를 활용하여 PX4-Autopilot, ROS 2 Humble, Gazebo Harmonic을 포함하는 복잡한 로보틱스 개발 환경을 구축하는 절차를 상세히 기술한다. 이 가이드는 단순한 명령어 나열을 넘어, 각 구성 요소의 역할과 상호 작용을 설명하고, 개발 생산성과 보안을 극대화하기 위한 모범 사례를 제시한다. 특히, 멀티스테이지 Docker 빌드를 통해 재현 가능하고 이식성 높은 개발 환경과 최소한의 보안이 강화된 프로덕션 환경을 단일 Dockerfile에서 생성하는 방법을 중점적으로 다룬다. 최종 목표는 VS Code의 통합된 GUI 환경 내에서 코드 빌드, 테스트, 그래픽 시뮬레이션 및 C++ 노드 디버깅까지 원활하게 수행할 수 있는 전문가 수준의 개발 워크플로우를 확립하는 것이다.

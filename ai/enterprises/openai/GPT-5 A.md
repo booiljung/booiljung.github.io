@@ -1,5 +1,5 @@
-[OpenAI의 인공지능 사업](./index.md)
 # GPT-5 고찰
+[OpenAI의 인공지능 사업](./index.md)
 
 
 

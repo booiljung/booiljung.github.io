@@ -1,5 +1,5 @@
-[지상 관제 시스템 (GCS)](./index.md)
 # QGroundControl을 위한 Plan 파일 생성 방법
+[지상 관제 시스템 (GCS)](./index.md)
 
 
 본 섹션에서는 QGroundControl(QGC)이 지상관제국(GCS)으로서 가지는 근본적인 역할과 미션 계획 기능의 기본 원칙을 다룹니다.

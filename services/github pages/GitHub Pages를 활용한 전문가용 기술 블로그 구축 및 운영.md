@@ -1,5 +1,5 @@
-[Github Pages](./index.md)
 # GitHub Pages를 활용한 전문가용 기술 블로그 구축 및 운영
+[Github Pages](./index.md)
 
 
 

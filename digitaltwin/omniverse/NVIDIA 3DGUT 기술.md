@@ -1,5 +1,5 @@
-[NVidia Omniverse](./index.md)
 # NVIDIA 3DGUT 기술
+[NVidia Omniverse](./index.md)
 
 
 3D 장면 재구성 및 렌더링 분야는 최근 몇 년간 괄목할 만한 기술적 진보를 이루었다. 본 장에서는 3D 가우시안 스플래팅(3D Gaussian Splatting, 3DGS)이 가져온 혁신과 그로 인해 드러난 명확한 기술적 한계를 조망함으로써, 3D 가우시안 언센티드 변환(3D Gaussian Unscented Transform, 3DGUT)의 등장 배경을 심도 있게 논한다.

@@ -1,5 +1,5 @@
-[ROS2 Humble](./index.md)
 # ROS 2 Humble의 rosbag2
+[ROS2 Humble](./index.md)
 
 
 `rosbag2`는 Robot Operating System 2 (ROS 2) 생태계에서 데이터의 기록, 재생, 분석을 담당하는 핵심 도구이다. 이는 단순한 로깅 유틸리티를 넘어, 데이터 기반의 로봇 애플리케이션 개발, 시뮬레이션 기반의 알고리즘 검증, 시스템 디버깅, 그리고 재현 가능한 테스트 환경 구축의 근간을 이룬다. `rosbag2`는 ROS 1 시절의 `rosbag`이 수행하던 역할을 계승하면서도, 그 구조와 철학에서 근본적인 발전을 이루었다.1

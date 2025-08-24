@@ -1,5 +1,5 @@
-[BIJUNG](../index.md)
 # 최적화 (Optimizations)
+[BIJUNG](../index.md)
 
 - [**손실함수**](loss functions/index.md)
 

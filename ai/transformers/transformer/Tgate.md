@@ -1,5 +1,5 @@
-[트랜스포머 (Transformer)](./index.md)
 # Tgate (Temporally Gating the Attention)에 대한 심층 고찰
+[트랜스포머 (Transformer)](./index.md)
 
 
 

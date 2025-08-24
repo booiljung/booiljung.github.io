@@ -1,5 +1,5 @@
-[FAST-Planner](./index.md)
 # Fast-Planner의 path_searching 모듈
+[FAST-Planner](./index.md)
 
 
 `Fast-Planner`는 복잡하고 미지의 환경에서 쿼드콥터의 빠른 자율 비행을 목표로 개발된 강건하고(robust) 효율적인(efficient) 궤적 계획 시스템이다.1 이 시스템은 프론트엔드 경로 탐색, 백엔드 궤적 최적화, 그리고 온라인 매핑 모듈로 구성된 계층적 구조를 채택한다. 

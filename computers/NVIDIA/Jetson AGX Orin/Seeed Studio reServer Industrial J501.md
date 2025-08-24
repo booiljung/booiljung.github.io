@@ -1,5 +1,5 @@
-[NVIDIA Jetson AGX Orin](./index.md)
 # Seeed Studio reServer Industrial J501 (NVIDIA Jetson AGX Orin)
+[NVIDIA Jetson AGX Orin](./index.md)
 
 
 현대 컴퓨팅 패러다임은 클라우드에 집중되었던 복잡한 인공지능(AI) 워크로드를 네트워크의 말단, 즉 '엣지(Edge)'로 이전하는 중대한 전환을 겪고 있다. 이러한 변화는 자율 기계, 스마트 팩토리, 지능형 비디오 분석(IVA)과 같은 애플리케이션에서 실시간 의사결정, 데이터 프라이버시 보호, 그리고 네트워크 지연 시간 감소에 대한 근본적인 요구에서 비롯된다.1 이 지능형 엣지(Intelligent Edge)로의 전환을 가속하는 핵심 기술 중 하나가 바로 NVIDIA Jetson AGX Orin 시스템 온 모듈(System-on-Module, SoM)이다. Jetson AGX Orin은 '엣지에서의 서버급 성능'을 표방하며, 과거 데이터센터에 국한되었던 고성능 AI 연산 능력을 소형, 저전력 폼팩터에 구현함으로써 AI 기술의 접근성을 혁신적으로 확장했다.4

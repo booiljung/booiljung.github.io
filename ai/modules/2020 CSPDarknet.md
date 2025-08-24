@@ -1,5 +1,5 @@
-[딥러닝 모듈 (Modules)](./index.md)
 # CSPDarknet (2020)
+[딥러닝 모듈 (Modules)](./index.md)
 
 
 객체 탐지(Object Detection)는 컴퓨터 비전 분야의 핵심 과업 중 하나로, 그 성능은 특징 추출을 담당하는 백본(Backbone) 네트워크의 아키텍처에 의해 크게 좌우된다. 초기 VGG, ResNet과 같이 깊이를 통해 성능을 확보하려는 시도부터, 연산 효율성을 극대화한 MobileNet, EfficientNet에 이르기까지 백본 네트워크는 끊임없이 진화해왔다. 이러한 기술적 흐름 속에서 YOLO(You Only Look Once) 시리즈는 단일 단계(single-stage) 방식을 통해 실시간 객체 탐지의 새로운 패러다임을 제시했으며, 특히 YOLOv4의 등장은 CSPDarknet이라는 혁신적인 백본 아키텍처의 효율성과 강력함을 세상에 알리는 결정적 계기가 되었다.1

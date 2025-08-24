@@ -1,5 +1,5 @@
-[NVIDIA Jetpack for AGX Orin](./index.md)
 # NVIDIA Jetson AGX Orin에 JetPack 6 기반 Ubuntu 22.04 설치
+[NVIDIA Jetpack for AGX Orin](./index.md)
 
 
 

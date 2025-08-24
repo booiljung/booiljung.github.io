@@ -1,5 +1,5 @@
-[IMU](./index.md)
 # Jetson Orin AGX 기반 드론의 센서 퓨전을 위한 IMU 선정 및 상태 추정 아키텍처 구축
+[IMU](./index.md)
 
 
 

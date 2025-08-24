@@ -1,5 +1,5 @@
-[Github Pages](./index.md)
 # Hugo와 GitHub Pages를 활용한 정적 웹사이트 구축 및 자동 배포 완벽 가이드
+[Github Pages](./index.md)
 
 
 

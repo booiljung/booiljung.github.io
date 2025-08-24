@@ -1,5 +1,5 @@
-[ROS2 Humble](./index.md)
 # ROS2 Humble 완전 정복
+[ROS2 Humble](./index.md)
 
 
 로봇 개발의 세계에 첫발을 내딛는 것을 환영한다. 수많은 기술과 프레임워크 속에서 길을 잃기 쉽지만, 현대 로봇 공학의 중심에는 ROS2(Robot Operating System 2)가 굳건히 자리 잡고 있다. 이 섹션에서는 ROS가 무엇인지, 그리고 왜 ROS1에서 ROS2로의 전환이 단순한 업데이트가 아닌 혁명적인 변화인지, 마지막으로 왜 우리가 'Humble Hawksbill' 배포판으로 시작해야 하는지에 대해 깊이 파고들 것이다.

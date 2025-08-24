@@ -1,5 +1,5 @@
-[NVidia Omniverse](./index.md)
 # NVIDIA Omniverse Kit
+[NVidia Omniverse](./index.md)
 
 
 NVIDIA Omniverse Kit는 단순한 3D 애플리케이션이 아니라, 산업 메타버스의 운영 체제(OS)로 설계된 모듈형 개발 플랫폼이다.1 이는 물리적으로 정확하고 AI 기반의 디지털 트윈을 생성하고 운영하기 위한 통합된 풀스택 생태계를 구축하려는 NVIDIA의 전략적 비전을 담고 있다. 이 플랫폼의 정체성은 세 가지 핵심 기술 기둥 위에 세워져 있다.

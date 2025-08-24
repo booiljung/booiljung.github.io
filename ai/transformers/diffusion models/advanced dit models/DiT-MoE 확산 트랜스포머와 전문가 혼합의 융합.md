@@ -1,5 +1,5 @@
-[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 # 확산 트랜스포머와 전문가 혼합의 융합(DiT-MoE)
+[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 
 확장성, 전문화, 그리고 생성 모델링의 미래
 

@@ -1,5 +1,5 @@
-[QUIC 프로토콜](./index.md)
 # Rust QUIC 서버와 Android 클라이언트 통신
+[QUIC 프로토콜](./index.md)
 
 
 현대 인터넷 애플리케이션의 성능 요구사항은 기존의 전송 프로토콜인 TCP(Transmission Control Protocol)의 한계를 넘어서고 있다. 1974년에 설계된 TCP는 신뢰성을 보장하는 훌륭한 프로토콜이지만, 현대의 다중화되고 지연 시간에 민감한 환경에서는 몇 가지 근본적인 문제를 드러낸다. QUIC(Quick UDP Internet Connections)은 이러한 문제들을 해결하기 위해 UDP(User Datagram Protocol) 위에 구축된 차세대 전송 프로토콜이다.

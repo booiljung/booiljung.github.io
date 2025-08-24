@@ -1,5 +1,5 @@
-[인공지능 (Artificial Intelligence, AI)](../index.md)
 # 얼굴인식 문제
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 
 ## 기반 기술
 

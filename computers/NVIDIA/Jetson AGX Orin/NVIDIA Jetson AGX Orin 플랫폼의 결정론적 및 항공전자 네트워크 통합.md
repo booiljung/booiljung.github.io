@@ -1,5 +1,5 @@
-[NVIDIA Jetson AGX Orin](./index.md)
 # NVIDIA Jetson AGX Orin 플랫폼의 결정론적 및 항공전자 네트워크 통합
+[NVIDIA Jetson AGX Orin](./index.md)
 
 
 본 보고서는 상용 기성품(COTS) AI 컴퓨터인 NVIDIA Jetson AGX Orin가 차세대 항공우주 및 국방 시스템의 핵심 미션 컴퓨터로서의 잠재력을 심층 분석한다. 분석 대상은 AFDX, TTEthernet, TSN, ARINC 429, MIL-STD-1553 등 5가지 핵심 통신 프로토콜의 적용 가능성이다. 분석 결과, Jetson AGX Orin는 강력한 컴퓨팅 성능과 최신 I/O 인터페이스를 바탕으로 해당 프로토콜들을 통합할 수 있는 높은 잠재력을 지니고 있음을 확인했다.

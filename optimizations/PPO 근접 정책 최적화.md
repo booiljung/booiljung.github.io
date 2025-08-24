@@ -1,5 +1,5 @@
-[최적화 (Optimizations)](./index.md)
 # 근접 정책 최적화(PPO)
+[최적화 (Optimizations)](./index.md)
 
 
 

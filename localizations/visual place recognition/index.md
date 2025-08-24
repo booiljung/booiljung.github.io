@@ -1,5 +1,5 @@
-[위치 추정 (Localization)](../index.md)
 # 시각적 장소 인식 (Visual Place Recognition)
+[위치 추정 (Localization)](../index.md)
 
 - [Visual Place Recognition을 위한 딥 메트릭 러닝](Visual Place Recognition을 위한 딥 메트릭 러닝.md)
 - [변화하는 환경에서의 강인한 Visual Place Recognition (VPR)](변화하는 환경에서의 강인한 Visual Place Recognition.md)

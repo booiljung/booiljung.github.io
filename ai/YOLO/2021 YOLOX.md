@@ -1,5 +1,5 @@
-[YOLO 객체 탐지 모델](./index.md)
 # YOLOX (2021)
+[YOLO 객체 탐지 모델](./index.md)
 
 
 

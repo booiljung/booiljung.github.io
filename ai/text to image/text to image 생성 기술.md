@@ -1,5 +1,5 @@
-[Text-to-Image 생성 기술](./index.md)
 # Text-to-Image 생성 기술
+[Text-to-Image 생성 기술](./index.md)
 
 
 

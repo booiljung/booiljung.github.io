@@ -1,5 +1,5 @@
-[딥러닝 모듈 (Modules)](./index.md)
 # 배치 정규화 (Batch Normalization, 2015)
+[딥러닝 모듈 (Modules)](./index.md)
 
 
 
