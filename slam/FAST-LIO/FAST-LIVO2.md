@@ -1,3 +1,4 @@
+[FAST-LIO](./index.md)
 # FAST-LIVO2
 
 

@@ -1,3 +1,4 @@
+[인공지능 훈련 데이터의 클래스 불균형 문제](./index.md)
 # 샴 네트워크(Siamese Network)
 
 

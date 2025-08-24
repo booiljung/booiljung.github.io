@@ -1,3 +1,4 @@
+[계획법 (Planning)](../index.md)
 # EGO-Planner
 - [EGO-Planner 및 드론 시스템 통합](EGO-Planner 및 드론 시스템 통합.md)
 - [EGO-Swarm](EGO-Swarm.md)

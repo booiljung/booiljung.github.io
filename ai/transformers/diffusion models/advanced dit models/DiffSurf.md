@@ -1,3 +1,4 @@
+[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 # 3D 표면 생성을 위한 트랜스포머 기반 확산 모델 DiffSurf
 
 

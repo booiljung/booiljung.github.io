@@ -1,3 +1,4 @@
+[지상 관제 시스템 (GCS)](./index.md)
 # QGroundControl 외부 임무 주입 방법
 
 

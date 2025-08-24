@@ -1,3 +1,4 @@
+[시각적 장소 인식 (Visual Place Recognition)](./index.md)
 # EigenPlaces 시점 강인성(Viewpoint Robustness)을 위한 새로운 훈련 패러다임 (2023)
 
 

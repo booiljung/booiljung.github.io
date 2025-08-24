@@ -1,3 +1,4 @@
+[컴퓨터 아키텍처 (Computer Architectures)](./index.md)
 # 공통 통합 프로세서(Common Integrated Processor, CIP)
 
 

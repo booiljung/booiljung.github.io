@@ -1,3 +1,4 @@
+[Gemini Coding](./index.md)
 # Gemini CLI의 GEMINI.md 심층 분석
 
 

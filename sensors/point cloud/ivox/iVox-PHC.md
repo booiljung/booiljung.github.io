@@ -1,3 +1,4 @@
+[iVox](./index.md)
 # LiDAR SLAM을 위한 iVox-PHC 데이터 구조에 대한 심층 고찰
 
 

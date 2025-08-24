@@ -1,3 +1,4 @@
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 # 인공지능 동향 (Trends)
 
 ## 2025년

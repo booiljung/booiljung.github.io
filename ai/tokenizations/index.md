@@ -1,3 +1,4 @@
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 # 토큰화 (Tokenizations)
 
 - [바이트 페어 인코딩(BPE) 토크나이저](BPE 토크나이저.md)

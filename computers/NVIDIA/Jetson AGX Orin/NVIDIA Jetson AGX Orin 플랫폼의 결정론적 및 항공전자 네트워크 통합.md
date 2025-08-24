@@ -1,3 +1,4 @@
+[NVIDIA Jetson AGX Orin](./index.md)
 # NVIDIA Jetson AGX Orin 플랫폼의 결정론적 및 항공전자 네트워크 통합
 
 

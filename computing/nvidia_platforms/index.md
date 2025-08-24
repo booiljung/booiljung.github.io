@@ -1,3 +1,4 @@
+[컴퓨팅 파워 (Computing Power)](../index.md)
 # NVidia 컴퓨팅 플랫폼
 
 - [**NVidia CUDA**](cuda/index.md)

@@ -1,3 +1,4 @@
+[DiT (Diffusion Transformer)](./index.md)
 # U자형 Diffusion Transformer(U-DiT)
 
 

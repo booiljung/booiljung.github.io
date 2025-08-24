@@ -1,3 +1,4 @@
+[Kong API Gateway](./index.md)
 # Kong API 게이트웨이에 대한 심층 고찰
 
 

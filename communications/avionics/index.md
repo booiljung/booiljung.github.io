@@ -1,3 +1,4 @@
+[컴퓨터 통신 (Computer Communications)](../index.md)
 # 항공을 위한 통신
 - [항공전자 전이중 스위치 이더넷(AFDX)](AFDX 항공전자 전이중 스위치 이더넷.md)
 - [항공우주 로봇공학의 DDS 및 EtherCAT 분석](항공우주 로봇공학의 DDS 및 EtherCAT 분석.md)

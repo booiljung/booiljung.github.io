@@ -1,3 +1,4 @@
+[BIJUNG](../index.md)
 # 계획법 (Planning)
 
 - [동적계획법 (Dynamic Programming, DP)](동적계획법.md)

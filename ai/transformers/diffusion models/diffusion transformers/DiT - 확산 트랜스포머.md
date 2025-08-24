@@ -1,3 +1,4 @@
+[DiT (Diffusion Transformer)](./index.md)
 # 확산 트랜스포머(DiT)
 
 

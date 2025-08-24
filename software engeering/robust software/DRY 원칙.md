@@ -1,3 +1,4 @@
+[견고한 소프트웨어](./index.md)
 # DRY(Don't Repeat Yourself) 원칙
 
 

@@ -1,3 +1,4 @@
+[Modality](./index.md)
 # 옴니모달 AI의 작동 원리
 
 

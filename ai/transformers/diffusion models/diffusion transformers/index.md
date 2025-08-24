@@ -1,3 +1,4 @@
+[트랜스포머 기반 확산 모델 (Diffusion Models)](../index.md)
 # DiT (Diffusion Transformer)
 
 DiT의 기본 개념부터 U-DiT, ADiT 등 주요 변형 모델들을 분석한다. 확산 모델과 트랜스포머의 결합이 가지는 의미와 기술적 세부 사항을 학습한다.

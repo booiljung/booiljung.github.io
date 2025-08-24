@@ -1,3 +1,4 @@
+[NVIDIA Jetson AGX Orin](./index.md)
 # Advantech MIC-733-AO (NVIDIA Jetson AGX Orin)
 
 

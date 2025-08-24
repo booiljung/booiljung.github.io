@@ -1,3 +1,4 @@
+[지상 관제 시스템 (GCS)](./index.md)
 # 파이썬을 이용한 QGroundControl.plan 파일의 프로그래밍 방식 생성
 
 

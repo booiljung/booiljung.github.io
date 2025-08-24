@@ -1,3 +1,4 @@
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 # 월드 모델
 
 ## 월드 파운데이션 모델

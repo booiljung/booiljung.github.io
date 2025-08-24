@@ -1,3 +1,4 @@
+[BIJUNG](../index.md)
 # 컴퓨터 아키텍처 (Computer Architectures)
 
 - [공통 통합 프로세서(Common Integrated Processor, CIP)](공통 통합 프로세서 Common Integrated Processor, CIP.md)

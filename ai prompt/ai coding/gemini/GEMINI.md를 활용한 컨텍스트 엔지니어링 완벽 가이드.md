@@ -1,3 +1,4 @@
+[Gemini Coding](./index.md)
 # GEMINI.md를 활용한 컨텍스트 엔지니어링 완벽 가이드
 
 

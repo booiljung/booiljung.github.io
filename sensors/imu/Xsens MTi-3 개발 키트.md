@@ -1,3 +1,4 @@
+[IMU](./index.md)
 # Xsens MTi-3 개발 키트(DK)
 
 

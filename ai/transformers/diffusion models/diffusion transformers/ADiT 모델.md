@@ -1,3 +1,4 @@
+[DiT (Diffusion Transformer)](./index.md)
 # ADiT 모델
 
 확산 모델, 트랜스포머, 그리고 CLIP의 융합

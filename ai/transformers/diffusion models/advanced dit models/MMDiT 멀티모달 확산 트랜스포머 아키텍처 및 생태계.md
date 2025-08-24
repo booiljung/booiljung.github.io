@@ -1,3 +1,4 @@
+[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 # 멀티모달 확산 트랜스포머(MMDiT) 아키텍처 및 생태계
 
 

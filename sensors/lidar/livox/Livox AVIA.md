@@ -1,3 +1,4 @@
+[Livox Technology](./index.md)
 # Livox AVIA에 대한 기술적 고찰
 
 

@@ -1,3 +1,4 @@
+[임베디드 통신](./index.md)
 # Controller Area Network(CAN) 통신
 
 

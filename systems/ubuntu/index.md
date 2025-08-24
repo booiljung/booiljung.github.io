@@ -1,3 +1,4 @@
+[시스템 (Systems)](../index.md)
 # 우분투 리눅스 (Ubuntu Linux)
 - [Ubuntu 자습서](Ubuntu 자습서.md)
 ## 배포

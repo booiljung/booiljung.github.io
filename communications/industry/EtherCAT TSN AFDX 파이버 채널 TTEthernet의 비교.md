@@ -1,3 +1,4 @@
+[산업용 통신](./index.md)
 # EtherCAT, TSN, AFDX, 파이버 채널, TTEthernet의 비교
 
 

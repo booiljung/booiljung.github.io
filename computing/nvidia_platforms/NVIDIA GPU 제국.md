@@ -1,3 +1,4 @@
+[NVidia 컴퓨팅 플랫폼](./index.md)
 # NVIDIA GPU 제국
 
 

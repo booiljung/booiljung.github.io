@@ -1,3 +1,4 @@
+[kd 트리](./index.md)
 # kd-tree
 
 

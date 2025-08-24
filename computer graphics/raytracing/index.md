@@ -1,3 +1,4 @@
+[컴퓨터 그래픽 (Computer Graphics)](../index.md)
 # Raytracing
 - [레이트레이싱 기술](레이트레이싱 기술.md)
 - [실시간 레이트레이싱](실시간 레이트레이싱.md)

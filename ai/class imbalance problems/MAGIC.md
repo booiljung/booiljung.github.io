@@ -1,3 +1,4 @@
+[인공지능 훈련 데이터의 클래스 불균형 문제](./index.md)
 # MAGIC 소수샷 이상 생성(Few-Shot Anomaly Generation)을 위한 마스크 기반 디퓨전 인페인팅
 
 

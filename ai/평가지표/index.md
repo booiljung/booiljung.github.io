@@ -1,3 +1,4 @@
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 # 인공지능 평가지표 (AI evaluation metrics)
 
 - [인공지능 평가 지표의 패러다임 전환](인공지능 평가 지표의 패러다임 전환.md)

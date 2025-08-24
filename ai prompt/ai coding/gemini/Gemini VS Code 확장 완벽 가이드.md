@@ -1,3 +1,4 @@
+[Gemini Coding](./index.md)
 # Gemini VS Code 확장 완벽 가이드
 
 

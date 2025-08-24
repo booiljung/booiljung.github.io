@@ -1,6 +1,7 @@
+[BIJUNG](../index.md)
 # SLAM (Simultaneous Localization and Mapping)
 
-- [Truncated Signed Distance Field (TSDF)](TSDF.md)
+- [TSDF (Truncated Signed Distance Field)](TSDF.md)
 - [ESDF (Euclidean Signed Distance Field)](ESDF.md)
 
 ## SLAM 기술 분석

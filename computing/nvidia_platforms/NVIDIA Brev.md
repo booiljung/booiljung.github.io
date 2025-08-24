@@ -1,3 +1,4 @@
+[NVidia 컴퓨팅 플랫폼](./index.md)
 # NVIDIA Brev Blackwell 시대의 AI 개발 패러다임
 
 

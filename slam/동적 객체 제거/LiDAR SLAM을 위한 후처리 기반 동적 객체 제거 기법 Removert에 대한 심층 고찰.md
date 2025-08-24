@@ -1,3 +1,4 @@
+[SLAM에서 동적 객체 제거 문제](./index.md)
 # LiDAR SLAM을 위한 후처리 기반 동적 객체 제거 기법, Removert에 대한 심층 고찰
 
 

@@ -1,3 +1,4 @@
+[Gemini Coding](./index.md)
 # Gemini CLI 마스터링 최종 가이드
 
 

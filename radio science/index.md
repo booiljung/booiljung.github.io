@@ -1,3 +1,4 @@
+[BIJUNG](../index.md)
 # 전파 과학 (Radio Science)
 
 - [전파과학(Radio Science)](전파과학(Radio Science).md)

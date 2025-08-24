@@ -1,3 +1,4 @@
+[적대적 생성 신경망 (Generative Adversarial Network, GAN)](./index.md)
 # 적대적 생성 신경망(GAN)
 
 

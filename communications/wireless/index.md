@@ -1,3 +1,4 @@
+[컴퓨터 통신 (Computer Communications)](../index.md)
 # 무선 통신
 - [무선통신 기술의 원리, 진화, 그리고 미래에 대한 고찰](무선통신.md)
 - [2.4GHz ISM 대역 장거리 통신 기술](2.4GHz ISM 대역 장거리 통신 기술.md)

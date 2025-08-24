@@ -1,3 +1,4 @@
+[지상 관제 시스템 (GCS)](./index.md)
 # DJI FlightHub 2
 
 

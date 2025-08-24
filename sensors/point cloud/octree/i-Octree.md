@@ -1,3 +1,4 @@
+[Octree](./index.md)
 # i-Octree
 
 

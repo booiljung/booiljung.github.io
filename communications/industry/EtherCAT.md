@@ -1,3 +1,4 @@
+[산업용 통신](./index.md)
 # EtherCAT
 
 

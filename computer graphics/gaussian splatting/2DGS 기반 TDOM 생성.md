@@ -1,3 +1,4 @@
+[Gaussian Splatting](./index.md)
 # 2D Gaussian Splatting (2DGS) 기반 TDOM 생성에 대한 고찰
 
 

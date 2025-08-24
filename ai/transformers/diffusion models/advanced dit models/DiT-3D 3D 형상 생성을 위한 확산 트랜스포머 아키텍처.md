@@ -1,3 +1,4 @@
+[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 # 3D 형상 생성을 위한 확산 트랜스포머 아키텍처
 
 DiT-3D부터 진화된 변종 및 경쟁 구도까지

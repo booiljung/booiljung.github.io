@@ -1,3 +1,4 @@
+[Simulink](./index.md)
 # Simulink
 
 ------

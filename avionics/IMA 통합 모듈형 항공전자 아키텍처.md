@@ -1,3 +1,4 @@
+[항공전자 (Avionics)](./index.md)
 # IMA 통합 모듈형 항공전자 아키텍처
 
 

@@ -1,3 +1,4 @@
+[견고한 소프트웨어](./index.md)
 # KISS (Keep It Simple, Stupid) 원칙
 
 

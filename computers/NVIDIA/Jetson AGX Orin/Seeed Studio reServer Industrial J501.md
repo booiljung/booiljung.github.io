@@ -1,3 +1,4 @@
+[NVIDIA Jetson AGX Orin](./index.md)
 # Seeed Studio reServer Industrial J501 (NVIDIA Jetson AGX Orin)
 
 

@@ -1,3 +1,4 @@
+[센서 (Sensors)](../index.md)
 # GNSS
 - [범지구 위성항법 시스템(GNSS)](GNSS 범지구 위성항법 시스템.md)
 - [GPS](GPS.md)

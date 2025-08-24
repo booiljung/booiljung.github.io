@@ -1,3 +1,4 @@
+[트랜스포머 기반 DiT 확장 모델 (Advanced DiT Models)](./index.md)
 # DiMSUM 모델
 
 

@@ -1,3 +1,4 @@
+[BIJUNG](../index.md)
 # 제어공학 (Control Engineering)
 
 - [제어공학 알고리즘의 체계적 개요](제어공학 알고리즘의 체계적 개요.md)

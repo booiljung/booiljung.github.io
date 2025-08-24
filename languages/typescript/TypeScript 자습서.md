@@ -1,3 +1,4 @@
+[TypeScript](./index.md)
 # TypeScript 자습서
 
 

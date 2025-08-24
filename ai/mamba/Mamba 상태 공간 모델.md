@@ -1,3 +1,4 @@
+[상태 공간 모델 (Mamba)](./index.md)
 # 상태 공간 모델(Mamba)
 
 

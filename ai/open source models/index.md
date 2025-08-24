@@ -1,3 +1,4 @@
+[인공지능 (Artificial Intelligence, AI)](../index.md)
 # 오픈 소스 AI 모델
 
 - [고성능 오픈 소스 비전 모델의 현주소](고성능 오픈 소스 비전 모델의 현주소.md)

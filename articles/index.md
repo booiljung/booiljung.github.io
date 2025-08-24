@@ -1,3 +1,4 @@
+[BIJUNG](../index.md)
 # 기사 (Articles)
 
 - [**2024년 기사**](2024/index.md)

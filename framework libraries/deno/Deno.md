@@ -1,3 +1,4 @@
+[Deno](./index.md)
 # Deno
 
 

@@ -1,3 +1,4 @@
+[IMU](./index.md)
 # 듀얼 안테나 GPS Yaw 레퍼런스를 사용하는 UAV 통합을 위한 Movella Xsens MTi 1-시리즈 모듈의 기술 평가 및 비교
 
 

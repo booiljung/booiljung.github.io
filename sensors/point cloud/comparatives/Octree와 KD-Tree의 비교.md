@@ -1,3 +1,4 @@
+[포인트 클라우드 자료구조 비교](./index.md)
 # Octree와 KD-Tree의 비교
 
 

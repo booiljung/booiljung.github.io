@@ -1,3 +1,4 @@
+[드론 (Drones)](../index.md)
 # 지상 관제 시스템 (GCS)
 ## GCS
 - [QGroundControl 외부 임무 주입 방법](QGroundControl 외부 임무 주입 방법.md)

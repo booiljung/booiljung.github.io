@@ -1,3 +1,4 @@
+[BIJUNG](../index.md)
 # 인공지능 (Artificial Intelligence, AI)
 
 - [머신러닝 기초 원리부터 인공지능의 최전선까지 키워드 로드맵](머신러닝 기초 원리부터 인공지능의 최전선까지 키워드 로드맵.md)
@@ -14,14 +15,15 @@
 - [**전이학습**](transfer learnings/index.md)
 - [**트랜스포머 (Transformer)**](transformers/index.md)
 - [**인코더**](encoder/index.md)
-- [**Q-Learning**](q learnings/index.md)
-
-# 모델
-
-- [**오픈 소스 AI 모델**](open source models/index.md)
+- [**강화 학습 (Reinforcement Learning)**](reinforcement learning/index.md)
+- [**자기지도학습(Self-Supervised Learning)**](self-supervised learning/index.md)
+- [**대조 학습(Contrastive Learning)**](contrastive learning/index.md)
 
 ## 문제
 
+- [**이미지 분류 (Image Classifications)**](image classifications/index.md)
+- [**Text-to-Image 생성 기술**](text to image/index.md)
+- [**Text-to-Video 생성 기술**](text to video/index.md)
 - [**대규모 언어 모델**](large language model/index.md)
 - [**월드 모델**](world models/index.md)
 - [**인공지능 훈련 데이터의 클래스 불균형 문제**](class imbalance problems/index.md)
@@ -29,17 +31,26 @@
 - [**장면인식 인공지능 (Scene Recognition AI)**](장면인식/index.md)
 - [**얼굴인식 문제**](face recognitions/index.md)
 
-# 평가
+## AI Framework
+
+- [**Pytorch**](pytorch/index.md)
+
+## 모델
+
+- [**오픈 소스 AI 모델**](open source models/index.md)
+- [**YOLO 객체 탐지 모델**](YOLO/index.md)
+
+## 평가
 
 - [**설명 가능 인공지능(Explainable AI, XAI)에 대한 고찰**](xai/index.md)
 - [**인공지능 평가지표 (AI evaluation metrics)**](평가지표/index.md)
 
-# 동향
+## 동향
 
 - [**인공지능 동향 (Trends)**](동향/index.md)
 - [**인공지능 기업 동향**](enterprises/index.md)
 
-# 윤리
+## 윤리
 
 - [**인공지능 윤리 (AI ethics)**](윤리/index.md)
 

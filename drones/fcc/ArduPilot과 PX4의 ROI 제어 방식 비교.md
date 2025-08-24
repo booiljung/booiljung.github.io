@@ -1,3 +1,4 @@
+[드론 FCC](./index.md)
 # ArduPilot과 PX4의 ROI 제어 방식 비교
 
 멀티콥터 드론의 임무 수행 중 특정 지점을 지속적으로 바라보도록 지시하는 관심 지역(Region of Interest, ROI) 기능은 항공 촬영, 감시, 정찰 등 다양한 분야에서 핵심적인 역할을 수행합니다. 지상 관제 시스템(Ground Control Station, GCS)에서 ROI를 설정했을 때, ArduPilot과 PX4라는 두 주요 오픈소스 비행 스택(Flight Stack)이 보이는 상이한 거동은 많은 개발자와 시스템 통합 전문가들에게 중요한 기술적 질문을 제기합니다. ArduPilot은 기체 전체의 Yaw를 변경하여 ROI를 향하는 반면, PX4는 기본적으로 기체의 Yaw를 변경하지 않아 짐벌 제어에만 의존하는 것처럼 보입니다.

@@ -1,3 +1,4 @@
+[EGO-Planner](./index.md)
 # EGO-Swarm의 GPU 지원
 
 

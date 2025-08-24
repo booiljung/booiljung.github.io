@@ -1,3 +1,4 @@
+[지상 관제 시스템 (GCS)](./index.md)
 # QGroundControl을 위한 Plan 파일 생성 방법
 
 

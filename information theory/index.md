@@ -1,3 +1,4 @@
+[BIJUNG](../index.md)
 # 정보이론 (Information Theory)
 
 - [정보 이론](정보 이론.md)

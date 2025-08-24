@@ -1,3 +1,4 @@
+[특징점 기술](./index.md)
 # SHOT (Signatures of Histograms of OrienTations)
 
 

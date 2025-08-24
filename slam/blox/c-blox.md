@@ -1,3 +1,4 @@
+[Blox](./index.md)
 # c-blox
 
 

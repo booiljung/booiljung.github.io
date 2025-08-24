@@ -1,3 +1,4 @@
+[Livox Technology](./index.md)
 # Livox MID-70 LiDAR 기술적 고찰
 
 
