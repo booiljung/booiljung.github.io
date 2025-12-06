@@ -1,5 +1,0 @@
-# 정보이론 (Information Theory)
-[BIJUNG](../index.md)
-
-- [정보 이론](정보 이론.md)
-- [Shannon-Hartley Theorem](섀넌-하틀리 정리.md)

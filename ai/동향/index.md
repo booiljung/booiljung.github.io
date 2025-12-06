@@ -1,7 +1,0 @@
-# 인공지능 동향 (Trends)
-[인공지능 (Artificial Intelligence, AI)](../index.md)
-
-## 2025년
-
-- [2025년 AI 변곡점](2025년 AI 변곡점.md)
-- [2025년 AI 모델 지형도](2025년 AI 모델 지형도.md)
