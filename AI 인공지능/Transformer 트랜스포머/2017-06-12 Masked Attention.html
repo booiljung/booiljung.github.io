@@ -144,158 +144,88 @@
 <p>현대 인공지능, 특히 자연어 처리(NLP) 분야는 트랜스포머(Transformer) 아키텍처의 등장과 함께 혁명적인 전환기를 맞이했다. 이전 세대의 지배적인 아키텍처였던 순환 신경망(RNN)과 장단기 메모리(LSTM)는 데이터를 순차적으로 처리해야 한다는 구조적 제약으로 인해 병렬 연산의 이점을 충분히 활용하지 못했으며, 시퀀스의 길이가 길어질수록 정보가 희석되는 장기 의존성(Long-Term Dependency) 문제를 안고 있었다.1 이러한 배경 속에서 등장한 ‘Self-Attention’ 메커니즘은 입력 시퀀스 내의 모든 요소가 서로를 직접 참조함으로써 정보 전달 경로를 획기적으로 단축시키고, 대규모 병렬 처리를 가능하게 했다.</p>
 <p>그러나 언어 모델링(Language Modeling)과 같은 생성적 작업(Generative Tasks)에서는 단순한 상호 참조 이상의 제약 조건이 요구된다. 인간이 언어를 구사할 때 이미 발화된 단어들의 문맥 위에서 다음 단어를 선택하듯이, 기계 모델 또한 텍스트를 생성하는 과정에서 아직 발생하지 않은 미래의 정보(Future Tokens)를 참조해서는 안 된다는 ’인과성(Causality)’의 원칙을 준수해야 한다.2 만약 모델이 학습 과정에서 미래의 단어를 미리 보고 예측을 수행한다면, 이는 데이터 누수(Data Leakage)에 해당하며, 실제 추론 단계에서는 미래 정보가 존재하지 않으므로 모델의 성능이 붕괴되는 결과를 초래한다.3</p>
 <p>이러한 인과적 제약을 기술적으로 구현하고, 트랜스포머의 강력한 병렬 처리 능력을 유지하면서도 순차적인 생성 능력을 부여하는 핵심 메커니즘이 바로 **Masked Attention(마스크드 어텐션)**이다. 본 보고서는 Masked Attention의 수학적 기초부터 구현의 세부 사항, 학습 및 추론 과정에서의 역할, 그리고 최신 하드웨어 최적화 기술과의 상호작용까지 망라하는 심층적인 분석을 제공한다. 특히, Masked Self-Attention이 단순한 정보 차단막이 아니라, 현대 거대언어모델(LLM)의 생성 능력을 지탱하는 논리적 기반임을 규명하고, 다양한 변형 모델들과의 비교를 통해 그 기술적 의의를 고찰한다.</p>
-<pre><code class="language-mermaid">
-timeline
-
+<pre><code class="language-mermaid">timeline
     title "시퀀스 모델링 패러다임의 진화"
-
     section "과거 (RNN 시대)"
-
         "순차 처리 제약" : "병렬 연산 불가능"
-
         "장기 의존성 문제" : "정보 희석 (Forgetting)"
-
     section "전환기 (Attention 등장)"
-
         "Self-Attention" : "전역적 참조" : "병렬 처리 가능"
-
         "데이터 누수 문제" : "미래 정보 참조 (Cheating)"
-
     section "현재 (Masked Attention)"
-
         "인과성(Causality) 도입" : "미래 정보 차단"
-
         "생성적 언어 모델" : "GPT, LLaMA 등 LLM 기반"
-
 </code></pre>
 <h2>2.  어텐션 메커니즘의 기초와 구조적 진화</h2>
 <p>Masked Attention을 깊이 이해하기 위해서는 그 모태가 되는 Self-Attention의 기본 원리와, 이것이 해결하고자 했던 기존 방법론의 한계를 명확히 짚고 넘어갈 필요가 있다.</p>
 <h3>2.1  기존 순차 모델링의 한계와 어텐션의 등장</h3>
 <p>RNN 기반의 모델들은 입력 <span class="math math-inline">x_1, x_2,..., x_t</span>를 처리하여 은닉 상태(Hidden State) <span class="math math-inline">h_t</span>를 갱신하는 방식을 취한다. 이때 <span class="math math-inline">h_t</span>는 이전 상태 <span class="math math-inline">h_{t-1}</span>과 현재 입력 <span class="math math-inline">x_t</span>의 함수인 <span class="math math-inline">f(h_{t-1}, x_t)</span>로 정의된다. 이러한 재귀적 구조는 본질적으로 <span class="math math-inline">t</span> 시점의 연산이 <span class="math math-inline">t-1</span> 시점의 연산 완료를 기다려야 함을 의미하며, 이는 GPU와 같은 대규모 병렬 연산 하드웨어의 성능을 저하시키는 병목 요인이 된다.1 또한, 정보가 단계별로 압축되어 전달되면서 시퀀스 초반부의 정보가 후반부까지 온전히 보존되지 못하는 ‘망각(Forgetting)’ 현상이 발생한다.</p>
 <p>어텐션 메커니즘은 이러한 순차적 경로를 우회하여, 출력 시점의 쿼리(Query)가 입력 시퀀스의 모든 키(Key)에 직접 접근하여 필요한 정보(Value)를 추출하는 ‘무작위 접근(Random Access)’ 방식을 도입했다. 이를 통해 정보 흐름의 길이를 시퀀스 길이 <span class="math math-inline">N</span>에 관계없이 <span class="math math-inline">O(1)</span>로 단축시켰다.</p>
-<pre><code class="language-mermaid">
-graph TD   
-
+<pre><code class="language-mermaid">graph TD   
     subgraph "RNN (순차적 경로)"
-
         R_x1["x1"] --&gt; R_h1["h1"]
-
         R_h1 --&gt; R_h2["h2"]
-
         R_x2["x2"] --&gt; R_h2
-
         R_h2 --&gt; R_h3["h3"]
-
         R_x3["x3"] --&gt; R_h3
-
         R_h3 --&gt; R_out["출력 (Long Path)"]
-
         style R_out stroke-dasharray: 5 5
-
     end
-
-
 
     subgraph "Attention (직접 접근)"
-
         A_x1["x1"] --&gt; A_out["출력 (Direct)"]
-
         A_x2["x2"] --&gt; A_out
-
         A_x3["x3"] --&gt; A_out
-
         A_out -. "경로 길이 O(1)" .- A_out
-
     end
-
 </code></pre>
 <h3>2.2  Scaled Dot-Product Attention의 원리</h3>
 <p>트랜스포머의 핵심 연산 단위인 Scaled Dot-Product Attention은 쿼리(<span class="math math-inline">Q</span>), 키(<span class="math math-inline">K</span>), 밸류(<span class="math math-inline">V</span>) 세 가지 행렬을 입력으로 받는다. 입력 토큰 시퀀스 <span class="math math-inline">X</span>가 주어졌을 때, 각각의 가중치 행렬 <span class="math math-inline">W^Q, W^K, W^V</span>를 통해 투영(Projection)된 후 다음과 같은 수식으로 계산된다.5</p>
-<p>$$</p>
-<p>\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V</p>
-<p>$$<br />
+<p><span class="math math-display">
+\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+</span><br />
 여기서 <span class="math math-inline">QK^T</span>는 쿼리와 키 사이의 유사도(Similarity)를 나타내는 내적(Dot Product) 값이며, 이를 키 벡터의 차원수 <span class="math math-inline">\sqrt{d_k}</span>로 나누어 스케일링함으로써 기울기 소실(Gradient Vanishing) 문제를 방지한다.5 Softmax 함수는 이 유사도 점수를 확률 분포로 변환하여, 각 토큰이 다른 토큰들에 얼마나 집중(Attend)해야 하는지를 결정한다. 이 메커니즘은 기본적으로 ’전역적(Global)’이며 ’양방향(Bidirectional)’이다. 즉, 문장의 첫 번째 단어가 마지막 단어를 참조할 수 있고, 그 반대도 가능하다. 이는 문장의 전체적인 맥락을 이해(Understanding)하는 데에는 유리하지만, 단어를 순서대로 생성해야 하는 작업에는 적합하지 않다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     subgraph "입력 단계"
-
         X["입력 시퀀스 X"] --&gt; Q_proj["W_Q 투영"]
-
         X --&gt; K_proj["W_K 투영"]
-
         X --&gt; V_proj["W_V 투영"]
-
     end
-
-
 
     subgraph "연산 단계"
-
         Q_proj --&gt; Q["Query (Q)"]
-
         K_proj --&gt; K["Key (K)"]
-
         V_proj --&gt; V["Value (V)"]
-
         
-
         Q --&gt; Dot["내적 (MatMul)"]
-
         K --&gt; Dot
-
         Dot --&gt; Scale["스케일링 (1 / sqrt(d_k))"]
-
         Scale --&gt; Score["유사도 점수"]
-
         Score --&gt; Soft["Softmax 함수"]
-
         Soft --&gt; Weight["어텐션 가중치"]
-
         
-
         Weight --&gt; Context["가중합 (MatMul)"]
-
         V --&gt; Context
-
     end
 
-
-
     Context --&gt; Out["최종 어텐션 값 (Output)"]
-
 </code></pre>
 <h2>3.  Masked Self-Attention: 개념과 원리</h2>
 <p>Masked Self-Attention은 기본 Self-Attention에 ’시간의 방향성’이라는 제약을 가한 형태이다. 이는 모델이 현재 시점보다 미래에 위치한 토큰의 정보에 접근하는 것을 원천적으로 차단한다.</p>
-<pre><code class="language-mermaid">
-graph TD   
-
+<pre><code class="language-mermaid">graph TD   
     Start["어텐션 스코어 계산 (Q * K_T)"] --&gt; Decision{"위치 비교 (j &gt; i?)"}
-
     
-
     Decision -- "Yes (미래 토큰)" --&gt; Block["참조 차단"]
-
     Block --&gt; ApplyInf["마스크 값 적용 (-∞)"]
-
     ApplyInf --&gt; ExpZero["Softmax 결과 ≈ 0"]
-
     
-
     Decision -- "No (과거/현재 토큰)" --&gt; Allow["참조 허용"]
-
     Allow --&gt; ApplyZero["마스크 값 적용 (0)"]
-
     ApplyZero --&gt; KeepScore["원래 스코어 유지"]
-
     
-
     ExpZero --&gt; Merge["확률 분포 생성"]
-
     KeepScore --&gt; Merge
-
     Merge --&gt; Result["인과성이 보장된 다음 토큰 예측"]
-
 </code></pre>
 <h3>3.1  정보 누수(Information Leakage)와 치팅 방지</h3>
 <p>언어 모델의 학습 목표는 이전 토큰들의 시퀀스 <span class="math math-inline">x_{&lt;t}</span>가 주어졌을 때 다음 토큰 <span class="math math-inline">x_t</span>의 확률 <span class="math math-inline">P(x_t | x_{&lt;t})</span>를 예측하는 것이다. 만약 어텐션 메커니즘이 전체 시퀀스에 대해 자유롭게 접근할 수 있다면, 모델은 문맥을 학습하여 다음 단어를 추론하는 대신, 단순히 입력에 포함된 정답(미래의 단어 <span class="math math-inline">x_t, x_{t+1},...</span>)을 복사하여 출력하는 쉬운 길을 택하게 된다.5 이를 ‘치팅(Cheating)’ 또는 ’정보 누수’라 한다. Masked Attention은 어텐션 스코어 계산 단계에서 미래의 위치에 해당하는 연결을 끊어버림으로써 이러한 치팅을 방지하고, 모델이 오직 과거의 정보만을 바탕으로 추론하도록 강제한다.3</p>
@@ -309,122 +239,73 @@ graph TD
 <tr><td><strong><span class="math math-inline">t_4</span></strong></td><td>허용</td><td>허용</td><td>허용</td><td>허용</td></tr>
 </tbody></table>
 <p>이러한 구조적 제약은 시퀀스 내의 각 토큰이 자신의 과거와 현재까지만 볼 수 있는 ’인과적 시야(Causal Horizon)’를 형성하게 한다.7</p>
-<pre><code class="language-mermaid">
-graph TD  
-
+<pre><code class="language-mermaid">graph TD  
     Start["어텐션 스코어 계산 (Q * K_T)"] --&gt; Decision{"위치 비교 (j &gt; i?)"}
-
     
-
     Decision -- "Yes (미래 토큰)" --&gt; Block["참조 차단"]
-
     Block --&gt; ApplyInf["마스크 값 적용 (-∞)"]
-
     ApplyInf --&gt; ExpZero["Softmax 결과 ≈ 0"]
-
     
-
     Decision -- "No (과거/현재 토큰)" --&gt; Allow["참조 허용"]
-
     Allow --&gt; ApplyZero["마스크 값 적용 (0)"]
-
     ApplyZero --&gt; KeepScore["원래 스코어 유지"]
-
     
-
     ExpZero --&gt; Merge["확률 분포 생성"]
-
     KeepScore --&gt; Merge
-
     Merge --&gt; Result["인과성이 보장된 다음 토큰 예측"]
-
 </code></pre>
 <h3>3.3  마스킹의 수학적 구현: 음의 무한대(<span class="math math-inline">-\infty</span>)</h3>
 <p>마스킹을 구현할 때, 단순히 해당 위치의 값을 0으로 만드는 것이 아니라 **음의 무한대(<span class="math math-inline">-\infty</span>)**에 가까운 매우 작은 값(예: <span class="math math-inline">-10^9</span> 또는 <span class="math math-inline">-inf</span>)을 더하는 방식을 사용한다.4 이는 Softmax 함수의 수학적 특성 때문이다.</p>
 <p>Softmax 함수는 입력 벡터 <span class="math math-inline">z</span>에 대해 다음과 같이 정의된다.</p>
-<p>$$</p>
-<p>\text{softmax}(z_i) = \frac{e^{z_i}}{\sum_{j} e^{z_j}}</p>
-<p>$$<br />
+<p><span class="math math-display">
+\text{softmax}(z_i) = \frac{e^{z_i}}{\sum_{j} e^{z_j}}
+</span><br />
 어텐션 스코어 <span class="math math-inline">S_{ij} = \frac{Q_i K_j^T}{\sqrt{d_k}}</span>에 마스크 <span class="math math-inline">M_{ij}</span>를 더할 때:</p>
 <ul>
 <li>참조 가능한 위치(<span class="math math-inline">j \le i</span>): <span class="math math-inline">M_{ij} = 0</span> <span class="math math-inline">\rightarrow</span> 값 변화 없음 (<span class="math math-inline">S_{ij} + 0 = S_{ij}</span>)</li>
 <li>참조 불가능한 위치(<span class="math math-inline">j &gt; i</span>): <span class="math math-inline">M_{ij} = -\infty</span> <span class="math math-inline">\rightarrow</span> <span class="math math-inline">S_{ij} - \infty = -\infty</span></li>
 </ul>
 <p>Softmax를 통과하면:</p>
-<p>$$</p>
-<p>e^{-\infty} \approx 0</p>
-<p>$$<br />
+<p><span class="math math-display">
+e^{-\infty} \approx 0
+</span><br />
 따라서 마스킹된 위치의 어텐션 가중치(Attention Weight)는 0이 된다.10</p>
 <p>만약 마스크 값으로 0을 사용한다면(<span class="math math-inline">M_{ij}=0</span>), <span class="math math-inline">e^0 = 1</span>이 되어 해당 위치에도 양수의 확률값이 할당된다. 이는 미래 토큰의 정보가 밸류(Value) 벡터의 가중합에 섞여 들어가는 결과를 초래하므로 인과성을 위배하게 된다. 따라서 반드시 음의 무한대를 사용하여 지수 함수 값을 0으로 수렴시켜야 한다.12</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     subgraph "잘못된 접근 (Mask = 0)"
-
         Wrong["마스크 값 = 0"] --&gt; Exp1["e^0 = 1"]
-
         Exp1 --&gt; PosProb["양수의 확률 발생"]
-
         PosProb --&gt; Leak["정보 누수 (미래 참조)"]
-
     end
-
     
-
     subgraph "올바른 접근 (Mask = -∞)"
-
         Right["마스크 값 = -∞"] --&gt; Exp2["e^-∞ ≈ 0"]
-
         Exp2 --&gt; ZeroProb["확률 0"]
-
         ZeroProb --&gt; Blocked["정보 차단 성공 (인과성 준수)"]
-
     end
-
 </code></pre>
 <h2>4.  학습 역학: 교사 강요(Teacher Forcing)와 병렬화의 역설 해결</h2>
 <p>Masked Attention의 가장 큰 기술적 성취 중 하나는 순차적인 데이터 생성 과정을 학습시키면서도 연산의 병렬성을 확보했다는 점이다. 이는 ‘교사 강요(Teacher Forcing)’ 기법과 결합되어 트랜스포머의 학습 효율을 극대화한다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     Data["전체 정답 데이터&lt;br&gt;(Ground Truth)"] --&gt; Input["입력:&lt;br&gt;A B C D"]
-
     Data --&gt; Target["목표:&lt;br&gt;B C D E"]
-
     
-
     Input --&gt; Trans["트랜스포머 디코더&lt;br&gt;(병렬 연산)"]
-
     
-
     subgraph "Masked Attention 내부"
-
         Trans --&gt; T1["t=1 (A)&lt;br&gt;-&gt; 미래(B,C,D) 마스킹"]
-
         Trans --&gt; T2["t=2 (B)&lt;br&gt;-&gt; 미래(C,D) 마스킹"]
-
         Trans --&gt; T3["t=3 (C)&lt;br&gt;-&gt; 미래(D) 마스킹"]
-
         Trans --&gt; T4["t=4 (D)&lt;br&gt;-&gt; 마스킹 없음"]
-
     end
-
     
-
     T1 --&gt; Loss["손실 계산&lt;br&gt;(동시 수행)"]
-
     T2 --&gt; Loss
-
     T3 --&gt; Loss
-
     T4 --&gt; Loss
-
     Target --&gt; Loss
-
     
-
     Loss --&gt; Update["모델 가중치 업데이트&lt;br&gt;(Backprop)"]
-
 </code></pre>
 <h3>4.1  병렬 학습(Parallel Training)의 메커니즘</h3>
 <p>RNN은 <span class="math math-inline">t</span> 시점의 학습을 위해 반드시 <span class="math math-inline">t-1</span> 시점의 은닉 상태 계산이 완료되어야 했다. 이는 학습 시간을 시퀀스 길이에 비례하여 증가시키는 원인이었다. 반면, 트랜스포머의 디코더는 학습 데이터의 전체 문장(Ground Truth)을 입력으로 받는다.</p>
@@ -439,55 +320,30 @@ graph TD
 <p>이 메커니즘은 GPT와 같은 대규모 언어 모델이 방대한 데이터를 효율적으로 학습할 수 있게 하는 근간이 된다. 만약 Masked Attention 없이 순차적으로 생성하며 학습해야 했다면, 현재의 LLM 학습 속도는 불가능했을 것이다.18</p>
 <h2>5.  추론 역학: 자기회귀적 생성과 KV 캐싱 최적화</h2>
 <p>학습 단계와 달리, 실제 텍스트를 생성하는 추론(Inference) 단계에서는 미래의 정답이 존재하지 않는다. 따라서 모델은 자신의 출력을 다음 단계의 입력으로 사용하는 자기회귀(Autoregressive) 모드로 동작해야 한다.</p>
-<pre><code class="language-mermaid">
-sequenceDiagram
-
+<pre><code class="language-mermaid">sequenceDiagram
     title "추론 단계: 자기회귀 생성 및 KV 캐싱"
-
     participant User as 사용자 입력
-
     participant Model as 모델 (연산)
-
     participant Cache as KV 캐시 메모리
-
     participant Output as 출력 결과
 
-
-
     User-&gt;&gt;Model: "The" (t=1)
-
     Model-&gt;&gt;Model: Q, K, V 계산
-
     Model-&gt;&gt;Cache: "The"의 K, V 저장
-
     Model-&gt;&gt;Output: "cat" 예측
-
     
-
     Output-&gt;&gt;Model: "cat" (t=2) 입력
-
     Model-&gt;&gt;Model: "cat"의 Q, K, V 계산
-
     Cache--&gt;&gt;Model: "The"의 K, V 불러오기
-
     Model-&gt;&gt;Model: Attention ("The" + "cat")
-
     Model-&gt;&gt;Cache: "cat"의 K, V 추가 저장
-
     Model-&gt;&gt;Output: "sat" 예측
 
-
-
     Output-&gt;&gt;Model: "sat" (t=3) 입력
-
     Model-&gt;&gt;Model: "sat"의 Q, K, V 계산
-
     Cache--&gt;&gt;Model: "The", "cat"의 K, V 불러오기
-
     Model-&gt;&gt;Model: Attention ("The"+"cat"+"sat")
-
     Model-&gt;&gt;Output: "on" 예측
-
 </code></pre>
 <h3>5.1  추론 시의 순차적 처리</h3>
 <p>추론 시에는 첫 번째 토큰을 생성하고, 이를 다시 입력에 추가하여 두 번째 토큰을 생성하는 과정을 반복한다.</p>
@@ -503,41 +359,23 @@ sequenceDiagram
 <p>Masked Attention 구조 덕분에 <span class="math math-inline">i</span>번째 토큰의 어텐션 결과는 <span class="math math-inline">j &gt; i</span>인 토큰의 영향을 받지 않음이 보장되므로, 이러한 캐싱 전략이 수학적으로 유효하다. KV 캐싱을 사용하면 추론 시 연산량이 시퀀스 길이의 제곱(<span class="math math-inline">O(N^2)</span>)에서 선형(<span class="math math-inline">O(N)</span>)으로 감소하여 생성 속도가 비약적으로 향상된다. 다만, 긴 시퀀스를 처리할 때 KV 캐시가 차지하는 메모리 용량이 급격히 증가하여 메모리 대역폭(Memory Bandwidth)이 병목이 되는 새로운 문제가 발생하기도 한다.19</p>
 <h2>6.  아키텍처 비교 분석: Encoder vs. Decoder vs. Encoder-Decoder</h2>
 <p>Masked Attention의 유무와 적용 방식은 트랜스포머 기반 모델들의 아키텍처와 활용 목적을 결정짓는 가장 중요한 기준이다.</p>
-<pre><code class="language-mermaid">
-mindmap
-
+<pre><code class="language-mermaid">mindmap
   root(("트랜스포머 아키텍처"))
-
     Encoder_Model["인코더 모델 (Encoder)"]
-
       Type["양방향 Attention"]
-
       Masking["No Causal Mask (MLM 사용)"]
-
       Examples["BERT, RoBERTa"]
-
       Purpose["이해, 분류 (Understanding)"]
-
     Decoder_Model["디코더 모델 (Decoder)"]
-
       Type["Masked Self-Attention"]
-
       Masking["Causal Mask (-∞)"]
-
       Examples["GPT, LLaMA, Claude"]
-
       Purpose["생성 (Generation)"]
-
     Enc_Dec_Model["인코더-디코더 (Encoder-Decoder)"]
-
       Type["Hybrid"]
-
       Masking["인코더: 양방향 / 디코더: Masked"]
-
       Examples["T5, BART"]
-
       Purpose["번역, 요약 (Seq2Seq)"]
-
 </code></pre>
 <h3>6.1  인코더(Encoder) 모델 (예: BERT)</h3>
 <ul>
@@ -572,151 +410,82 @@ mindmap
 <p>실제 프로덕션 레벨의 딥러닝 프레임워크에서 Masked Attention이 구현될 때는 수치적 안정성과 효율성을 위해 다양한 기법이 적용된다.</p>
 <h3>7.1  PyTorch 구현 상세</h3>
 <p>PyTorch에서는 <code>torch.triu</code> 함수를 사용하여 마스크 행렬을 생성하고, <code>masked_fill</code> 메서드를 통해 마스킹을 수행한다.</p>
-<pre><code class="language-Python">
-# 마스크 생성: 상삼각 행렬 (대각선 포함 여부에 주의, 보통 diagonal=1로 설정하여 대각선 위쪽부터 가림)
-
+<pre><code class="language-Python"># 마스크 생성: 상삼각 행렬 (대각선 포함 여부에 주의, 보통 diagonal=1로 설정하여 대각선 위쪽부터 가림)
 mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
 
-
-
 # 어텐션 스코어 계산
-
 scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
 
-
-
 # 마스킹 적용: 마스크가 True인 위치(미래)를 -inf로 채움
-
 scores = scores.masked_fill(mask, float('-inf'))
 
-
-
 # Softmax 적용
-
 attention_weights = torch.softmax(scores, dim=-1)
-
 </code></pre>
 <p>여기서 <code>float('-inf')</code>를 사용하는 것은 이론적으로 완벽하지만, 일부 구현에서는 수치적 오버플로우나 <code>NaN</code> 발생을 방지하기 위해 <code>-1e9</code>와 같은 매우 작은 유한한 값을 사용하기도 한다.11 하지만 최신 라이브러리들은 <code>-inf</code> 처리가 잘 최적화되어 있어 안전하게 사용할 수 있다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     
-
     Init["Q, K, V 텐서 준비"] --&gt; Score["MatMul:&lt;br&gt;Score = Q * K^T"]
-
     Score --&gt; Scale["Scaling:&lt;br&gt;Score / sqrt(d_k)"]
-
     
-
     subgraph "마스크 생성"
-
         M1["Causal Mask&lt;br&gt;(상삼각 행렬)"]
-
         M2["Padding Mask&lt;br&gt;(패딩 토큰 위치)"]
-
         M1 --&gt; Combine["Logical OR 결합"]
-
         M2 --&gt; Combine
-
     end
-
     
-
     Combine --&gt; MaskedFill["Masked Fill&lt;br&gt;(True인 위치에 -inf 대입)"]
-
     Scale --&gt; MaskedFill
-
     
-
     MaskedFill --&gt; Softmax["Softmax 함수 적용"]
-
     Softmax --&gt; WeightedSum["Values와 내적&lt;br&gt;(MatMul)"]
-
     WeightedSum --&gt; Final["최종 출력"]
-
 </code></pre>
 <h3>7.2  패딩 마스크(Padding Mask)와의 결합</h3>
 <p>실제 학습 시에는 배치(Batch) 처리를 위해 서로 다른 길이의 문장들을 패딩(Padding)하여 길이를 맞춘다. 이때 Masked Attention의 인과적 마스크뿐만 아니라, 패딩 토큰을 참조하지 않도록 하는 **패딩 마스크(Key Padding Mask)**도 함께 적용되어야 한다.4</p>
 <p>최종 마스크는 인과적 마스크와 패딩 마스크의 합집합(Logical OR) 형태가 된다. 즉, “미래에 있는 토큰“이거나 “패딩 토큰“인 경우 모두 마스킹 처리된다.</p>
 <h3>7.3  교차 엔트로피 손실(Cross-Entropy Loss)과 시프트(Shift)</h3>
 <p>학습 시 입력과 정답 레이블을 구성할 때, 정답 레이블은 입력보다 한 칸씩 뒤로 밀린 형태(Shifted)여야 한다. 예를 들어 입력이 “A B C D“라면, 정답은 “B C D E“가 된다. 구현 시에는 입력 텐서 전체를 모델에 넣고, 출력 로짓(Logits)의 마지막 토큰을 제외한 부분(<code>logits[:-1]</code>)과 정답 텐서의 첫 번째 토큰을 제외한 부분(<code>targets[1:]</code>)을 비교하여 손실을 계산하는 방식이 주로 사용된다.27 Masked Attention 덕분에 이러한 일괄 처리가 가능하다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
    
-
     RawData["원본 시퀀스: [A, B, C, D]"]
-
     
-
     subgraph "데이터 분할 (Slicing)"
-
         InputSlice["입력 (x): [A, B, C]"]
-
         TargetSlice["정답 (y): [B, C, D]"]
-
     end
-
     
-
     RawData -- "마지막 토큰 제외 ([:-1])" --&gt; InputSlice
-
     RawData -- "첫 토큰 제외 ([1:])" --&gt; TargetSlice
-
     
-
     InputSlice --&gt; Model["트랜스포머 모델"]
-
     Model --&gt; Logits["예측 로짓: [P(B|A), P(C|AB), P(D|ABC)]"]
-
     
-
     Logits &lt;--&gt;|Comparison| TargetSlice
-
     TargetSlice --&gt; Loss["Cross Entropy Loss"]
-
 </code></pre>
 <h2>8.  고급 최적화 및 하드웨어 가속: Flash Attention</h2>
 <p>트랜스포머 모델이 거대화되면서 Masked Attention 연산은 메모리 병목 현상에 직면했다. <span class="math math-inline">N \times N</span> 크기의 어텐션 행렬을 메모리에 쓰고 읽는 과정이 연산 속도보다 느리기 때문이다. 이를 해결하기 위해 등장한 기술이 <strong>Flash Attention</strong>이다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     subgraph "기존 방식 (Standard)"
-
         HBM1["HBM&lt;br&gt;(GPU 메모리)"] -- "전체 행렬 N*N 읽기/쓰기" --&gt; Comp1["GPU 코어&lt;br&gt;연산"]
-
         Comp1 -- "중간 결과(Mask) 저장" --&gt; HBM1
-
         Note1["메모리 대역폭&lt;br&gt;병목 발생"]
-
     end
-
     
-
     subgraph "Flash Attention"
-
         HBM2["HBM&lt;br&gt;(GPU 메모리)"] -- "작은 블록(Tile) 단위 로드" --&gt; SRAM["SRAM&lt;br&gt;(고속 온칩 메모리)"]
-
         
-
         subgraph "SRAM 내부 연산"
-
             Tile["타일 단위 Q, K, V"]
-
             Compute["Softmax &amp;&lt;br&gt;Masking&lt;br&gt;(즉석 계산)"]
-
             Tile --&gt; Compute
-
         end
-
         
-
         Compute -- "최종 결과만 기록" --&gt; HBM2
-
         Note2["마스크 행렬 생성 안 함&lt;br&gt;(No Materialization)"]
-
     end
-
 </code></pre>
 <h3>8.1  IO 인지(IO-Aware) 최적화</h3>
 <p>Flash Attention은 어텐션 행렬 전체를 GPU의 고대역폭 메모리(HBM)에 기록하지 않고, GPU 내부의 고속 온칩 메모리(SRAM)에서 타일(Tile) 단위로 쪼개어 연산한다.28 이 과정에서 Masked Attention의 마스킹 연산도 최적화된다.</p>
@@ -727,153 +496,82 @@ graph TD
 <p>기본적인 Masked Attention의 한계를 극복하고 특정 도메인에 특화시키기 위한 다양한 변형들이 연구되고 있다.</p>
 <h3>9.1  희소 어텐션(Sparse Attention)과 슬라이딩 윈도우</h3>
 <p>시퀀스 길이가 극도로 길어질 때, 모든 과거를 다 참조하는 것은 불필요하거나 비용이 많이 든다. **슬라이딩 윈도우 어텐션(Sliding Window Attention)**은 현재 토큰 <span class="math math-inline">t</span>를 기준으로 고정된 크기 <span class="math math-inline">w</span>만큼의 과거(<span class="math math-inline">t-w \sim t</span>)만 참조하도록 제한한다.31 이때 마스크 행렬은 상삼각 영역뿐만 아니라, 윈도우 범위를 벗어난 먼 과거의 하삼각 영역도 마스킹하여 밴드(Band) 형태를 띤다. 이는 연산량을 <span class="math math-inline">O(N^2)</span>에서 <span class="math math-inline">O(N \times w)</span>로 줄여준다. Mistral 7B와 같은 최신 모델은 이러한 슬라이딩 윈도우와 Flash Attention을 결합하여 긴 문맥 처리를 효율화했다.3</p>
-<pre><code class="language-mermaid">
-graph LR
-
+<pre><code class="language-mermaid">graph LR
     Curr["현재 토큰 (t)"]
-
     
-
     subgraph "참조 가능 영역 (Window w)"
-
         Window1["t-1"]
-
         Window2["t-2"]
-
         Window3["..."]
-
         Window4["t-w"]
-
     end
-
     
-
     subgraph "참조 불가 영역 (Masked by Distance)"
-
         Far1["t-(w+1)"]
-
         Far2["t-(w+2)"]
-
         Far3["먼 과거"]
-
     end
-
     
-
     Curr -- "Attention" --&gt; Window1
-
     Curr -- "Attention" --&gt; Window2
-
     Curr -- "Attention" --&gt; Window4
-
     
-
     Curr -. "Connection Broken" .-x Far1
-
     Curr -. "Connection Broken" .-x Far3
-
 </code></pre>
 <h3>9.2  다이내믹 마스크 어텐션(Dynamic Mask Attention)</h3>
 <p>고정된 마스크 패턴 대신, 입력 데이터의 내용에 따라 동적으로 마스크를 생성하는 연구도 진행 중이다.33 이는 각 어텐션 헤드가 서로 다른 희소 패턴(Sparsity Pattern)을 학습하게 하여, 어떤 헤드는 문법적 관계를 위해 가까운 과거를, 어떤 헤드는 주제 일관성을 위해 먼 과거의 핵심 키워드를 참조하도록 유도한다. 이는 인과성을 유지하면서도 정보의 선택과 집중 효율을 높인다.</p>
-<pre><code class="language-mermaid">
-graph TD    
-
+<pre><code class="language-mermaid">graph TD    
     Input["입력 텍스트 Content"] --&gt; Analyzer["마스크 예측 네트워크"]
-
     
-
     subgraph "다양한 어텐션 헤드"
-
         Head1["Head 1: 문법적 관계"]
-
         Head2["Head 2: 장기 문맥"]
-
     end
-
     
-
     Analyzer -- "Pattern A: 근거리 집중" --&gt; Head1
-
     Analyzer -- "Pattern B: 핵심어 위주" --&gt; Head2
-
     
-
     Head1 --&gt; Out1["희소한 문맥 정보"]
-
     Head2 --&gt; Out2["압축된 문맥 정보"]
-
     
-
     Out1 --&gt; Concat["정보 결합"]
-
     Out2 --&gt; Concat
-
 </code></pre>
 <h3>9.3  비디오 및 멀티모달 생성에서의 응용</h3>
 <p>Masked Attention은 텍스트를 넘어 이미지와 비디오 생성으로 확장되고 있다. 비디오 생성 모델에서 <strong>Complete Teacher Forcing (CTF)</strong> 기술은 훈련 시 시간적 어텐션 마스크(Temporal Attention Mask)를 조작한다.19 기존 방식이 훈련 시 마스킹된 프레임에 과도하게 의존하여 추론 시 성능이 떨어지는 문제를 해결하기 위해, 훈련 시에도 각 프레임이 자기 자신과 이전 프레임들만 참조하도록(마치 추론 때처럼) 마스크를 구성하여 학습시킨다. 이는 Masked Attention이 단순한 텍스트 생성을 넘어 시계열 데이터의 인과적 생성 전반에 적용되는 핵심 원리임을 보여준다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
    
-
     subgraph "표준 학습 (Standard)"
-
         StdInput["마스킹된 프레임 입력"]
-
         StdAttn["전체 문맥 참조 가능"]
-
         StdIssue["추론 시 성능 저하 (과의존)"]
-
         
-
         StdInput --&gt; StdAttn --&gt; StdIssue
-
     end
-
     
-
     subgraph "Complete Teacher Forcing (CTF)"
-
         CTFInput["마스킹된 프레임 입력"]
-
         CTFAttn["과거 프레임만 참조 (Causal Mask)"]
-
         CTFBenefit["추론 조건과 일치 (Robustness)"]
-
         
-
         CTFInput --&gt; CTFAttn --&gt; CTFBenefit
-
     end
-
 </code></pre>
 <h3>9.4  Alibi (Attention with Linear Biases)</h3>
 <p>위치 임베딩(Positional Embedding) 대신 어텐션 스코어에 거리에 비례하는 페널티(Bias)를 더해주는 방식이다. 이 또한 일종의 ’Soft Masking’으로 볼 수 있으며, 먼 과거의 정보일수록 영향력을 줄여 외삽(Extrapolation) 성능을 높이는 데 기여한다. 이는 엄격한 <span class="math math-inline">-\infty</span> 마스킹과는 다르지만, 정보의 흐름을 제어한다는 측면에서 유사한 맥락을 지닌다.</p>
-<pre><code class="language-mermaid">
-graph TD   
-
+<pre><code class="language-mermaid">graph TD   
     Tokens["토큰 쌍 (Query i, Key j)"] --&gt; Dist["거리 계산: |i - j|"]
-
     Dist --&gt; Penalty["선형 페널티: -m * 거리"]
-
     
-
     RawScore["기본 어텐션 스코어 (QK^T)"] --&gt; Add["가산 연산 (+)"]
-
     Penalty --&gt; Add
-
     
-
     Add --&gt; FinalScore["최종 스코어"]
-
     FinalScore --&gt; Softmax["Softmax"]
-
     
-
     Note["먼 과거일수록 점수가 낮아짐&lt;br&gt;(Soft Masking)"]
-
     FinalScore -.-&gt; Note
-
 </code></pre>
 <h2>10.  결론</h2>
 <p>Masked Attention 메커니즘은 트랜스포머 아키텍처가 단순한 패턴 인식 도구를 넘어, 인간 수준의 유창한 텍스트를 생성하는 생성형 AI로 진화하게 만든 결정적인 기술이다. 이 기술의 핵심 의의는 다음과 같이 요약할 수 있다.</p>
@@ -883,49 +581,27 @@ graph TD
 <li><strong>확장성과 유연성:</strong> 텍스트뿐만 아니라 이미지, 비디오, 시계열 예측 등 순서와 인과관계가 중요한 모든 데이터 양식(Modality)으로 확장 적용되고 있으며, Flash Attention과 같은 하드웨어 최적화 기술과 결합하여 그 효율성이 지속적으로 개선되고 있다.</li>
 </ol>
 <p>결론적으로 Masked Attention은 현대 AI, 특히 LLM의 “생성 능력“을 담당하는 심장과도 같은 역할을 수행한다. 향후 연구는 무한히 긴 문맥(Infinite Context)을 다루기 위해 마스킹의 희소성(Sparsity)을 지능적으로 조절하거나, 마스킹 연산 자체의 비용을 더욱 줄이는 방향으로 발전할 것으로 전망된다. 이는 AGI(인공 일반 지능)를 향한 여정에서 기계가 정보를 단순히 기억하는 것을 넘어, 시간의 흐름 속에서 인과관계를 추론하고 창조하는 능력을 갖추게 하는 데 핵심적인 기여를 할 것이다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     ProbDist["Softmax 출력 (확률 분포)"]
-
     
-
     subgraph "결정론적 (Deterministic)"
-
         Greedy["Greedy Search"]
-
         MaxProb["가장 높은 확률(argmax) 선택"]
-
         Result1["일관되지만 반복적인 텍스트"]
-
         
-
         Greedy --&gt; MaxProb --&gt; Result1
-
     end
-
     
-
     subgraph "확률적 (Stochastic)"
-
         Sampling["Top-k / Top-p Sampling"]
-
         RandomPick["분포 내에서 무작위 추출"]
-
         Result2["창의적이고 다양한 텍스트"]
-
         
-
         Sampling --&gt; RandomPick --&gt; Result2
-
     end
-
     
-
     ProbDist --&gt; Greedy
-
     ProbDist --&gt; Sampling
-
 </code></pre>
 <h2>11. 참고 자료</h2>
 <ol>

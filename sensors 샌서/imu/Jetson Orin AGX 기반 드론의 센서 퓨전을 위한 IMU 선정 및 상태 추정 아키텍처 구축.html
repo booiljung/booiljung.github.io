@@ -169,9 +169,9 @@
 <li><strong>ekf_global (Map EKF)</strong>: <code>ekf_local</code>의 출력, IMU, 그리고 지연된 GPS 데이터를 모두 융합한다. GPS의 절대 위치 정보를 사용하여 <code>ekf_local</code>의 누적된 드리프트를 보정하고, 전역적으로 정확한 <code>map</code> -&gt; <code>odom</code> 변환을 생성한다.</li>
 </ul>
 <p>이 구조는 ROS 표준 좌표계(REP-105)를 따르며, 내부적으로 15차원 상태 벡터 <code>x</code>를 추정한다.<br />
-$$</p>
-<p>x =^T</p>
-<p>$$</p>
+<span class="math math-display">
+x =^T
+</span></p>
 <h3>3.2  지연된 GPS 데이터 처리</h3>
 <p>FC를 경유하여 발생하는 GPS 지연 문제는 <code>robot_localization</code> 패키지의 내장 기능으로 해결한다.</p>
 <ol>
@@ -189,9 +189,7 @@ $$</p>
 </li>
 <li>
 <p><code>/etc/udev/rules.d/99-xsens.rules</code> 파일을 생성하고 아래 내용을 작성한다.</p>
-<pre><code class="language-Bash">
-SUBSYSTEM=="tty", ATTRS{idVendor}=="2639", MODE="0666", GROUP="dialout", SYMLINK+="xsens_imu"
-
+<pre><code class="language-Bash">SUBSYSTEM=="tty", ATTRS{idVendor}=="2639", MODE="0666", GROUP="dialout", SYMLINK+="xsens_imu"
 </code></pre>
 </li>
 </ol>
@@ -201,512 +199,266 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="2639", MODE="0666", GROUP="dialout", SYMLINK
 **Xsens 드라이버 설치**:
 
 ```Bash
-
 # 워크스페이스 src 폴더로 이동
-
 cd ~/ros2_ws/src
-
 # 소스 코드 클론
-
 git clone https://github.com/xsens/xsens_mti_ros_node.git
-
 # 워크스페이스 루트로 이동하여 빌드
-
 cd ~/ros2_ws
-
 colcon build --symlink-install
-
 </code></pre>
 <p><strong>PX4-ROS 2 브릿지 설정</strong>: PX4와 ROS2의 통신을 위해 RTPS 브릿지를 설정한다. 이는 PX4 펌웨어에서 직접 지원하며, Jetson Orin AGX에서 <code>micrortps_agent</code>를 실행할 필요가 없다. PX4의 파라미터 <code>UXRCE_DDS_CFG</code>를 Jetson Orin AGX가 연결된 시리얼 포트로 설정한다.</p>
 <h3>3.4  PX4-ROS 2 브릿지 노드 구현</h3>
 <p>PX4 RTPS 브릿지가 발행하는 <code>px4_msgs/msg/SensorGps</code>를 <code>robot_localization</code>이 요구하는 <code>sensor_msgs/msg/NavSatFix</code>로 변환하는 C++ 노드를 작성한다.</p>
 <p><strong><code>px4_gps_bridge_node.cpp</code></strong></p>
-<pre><code class="language-C++">
-#include &lt;rclcpp/rclcpp.hpp&gt;
-
+<pre><code class="language-C++">#include &lt;rclcpp/rclcpp.hpp&gt;
 #include &lt;px4_msgs/msg/sensor_gps.hpp&gt;
-
 #include &lt;sensor_msgs/msg/nav_sat_fix.hpp&gt;
 
-
-
 class Px4GpsBridge : public rclcpp::Node
-
 {
-
 public:
-
     explicit Px4GpsBridge() : Node("px4_gps_bridge")
-
     {
-
         // NavSatFix 메시지를 발행할 퍼블리셔 생성
-
         nav_sat_fix_publisher_ = this-&gt;create_publisher&lt;sensor_msgs::msg::NavSatFix&gt;("/gps/data", 10);
 
-
-
         // PX4의 GPS 토픽을 구독할 서브스크라이버 생성
-
         sensor_gps_subscriber_ = this-&gt;create_subscription&lt;px4_msgs::msg::SensorGps&gt;(
-
             "/fmu/out/vehicle_gps_position",
-
             10,
-
             std::bind(&amp;Px4GpsBridge::gps_callback, this, std::placeholders::_1));
-
         
-
         RCLCPP_INFO(this-&gt;get_logger(), "PX4 GPS Bridge 노드가 시작되었습니다.");
-
     }
-
-
 
 private:
-
     void gps_callback(const px4_msgs::msg::SensorGps::SharedPtr msg)
-
     {
-
         auto nav_sat_fix_msg = std::make_unique&lt;sensor_msgs::msg::NavSatFix&gt;();
 
-
-
         // *** 가장 중요한 부분: PX4의 타임스탬프를 그대로 사용 ***
-
         // 이를 통해 robot_localization이 지연 보상을 정확히 수행할 수 있다.
-
         nav_sat_fix_msg-&gt;header.stamp = rclcpp::Time(msg-&gt;timestamp * 1000); // PX4 timestamp는 마이크로초 단위
-
         nav_sat_fix_msg-&gt;header.frame_id = "gps_link"; // 또는 적절한 프레임 ID
 
-
-
         // GPS 상태 매핑
-
         // PX4의 fix_type 3 이상은 3D fix로 간주
-
         if (msg-&gt;fix_type &gt;= 3) {
-
             nav_sat_fix_msg-&gt;status.status = sensor_msgs::msg::NavSatStatus::STATUS_FIX;
-
         } else {
-
             nav_sat_fix_msg-&gt;status.status = sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX;
-
         }
-
         nav_sat_fix_msg-&gt;status.service = sensor_msgs::msg::NavSatStatus::SERVICE_GPS;
 
-
-
         // 위도, 경도, 고도 데이터 변환 및 복사
-
         // PX4는 1e7을 곱한 정수형, mm 단위로 제공하므로 변환 필요
-
         nav_sat_fix_msg-&gt;latitude = msg-&gt;lat / 1e7;
-
         nav_sat_fix_msg-&gt;longitude = msg-&gt;lon / 1e7;
-
         nav_sat_fix_msg-&gt;altitude = msg-&gt;alt / 1e3;
 
-
-
         // 위치 공분산은 현재 사용하지 않으므로 0으로 설정
-
         nav_sat_fix_msg-&gt;position_covariance.fill(0.0);
-
         nav_sat_fix_msg-&gt;position_covariance_type = sensor_msgs::msg::NavSatFix::COVARIANCE_TYPE_UNKNOWN;
 
-
-
         nav_sat_fix_publisher_-&gt;publish(std::move(nav_sat_fix_msg));
-
     }
 
-
-
     rclcpp::Publisher&lt;sensor_msgs::msg::NavSatFix&gt;::SharedPtr nav_sat_fix_publisher_;
-
     rclcpp::Subscription&lt;px4_msgs::msg::SensorGps&gt;::SharedPtr sensor_gps_subscriber_;
-
 };
 
-
-
 int main(int argc, char * argv)
-
 {
-
     rclcpp::init(argc, argv);
-
     rclcpp::spin(std::make_shared&lt;Px4GpsBridge&gt;());
-
     rclcpp::shutdown();
-
     return 0;
-
 }
-
 </code></pre>
 <p>빌드 설정 (CMakeLists.txt 및 package.xml)</p>
 <p>이 노드를 빌드하기 위해 CMakeLists.txt와 package.xml에 다음 내용을 추가해야 한다.</p>
 <p><code>package.xml</code>:</p>
-<pre><code class="language-XML">
-&lt;depend&gt;rclcpp&lt;/depend&gt;
-
+<pre><code class="language-XML">&lt;depend&gt;rclcpp&lt;/depend&gt;
 &lt;depend&gt;sensor_msgs&lt;/depend&gt;
-
 &lt;depend&gt;px4_msgs&lt;/depend&gt;
-
 </code></pre>
 <p><code>CMakeLists.txt</code>:</p>
-<pre><code class="language-CMake">
-add_executable(px4_gps_bridge_node src/px4_gps_bridge_node.cpp)
-
+<pre><code class="language-CMake">add_executable(px4_gps_bridge_node src/px4_gps_bridge_node.cpp)
 ament_target_dependencies(px4_gps_bridge_node rclcpp sensor_msgs px4_msgs)
 
-
-
 install(TARGETS
-
   px4_gps_bridge_node
-
   DESTINATION lib/${PROJECT_NAME}
-
 )
-
 </code></pre>
 <h3>3.5  YAML 설정 파일 작성 및 튜닝</h3>
 <p>이중 EKF를 위해 <code>ekf_local.yaml</code>, <code>ekf_global.yaml</code>과 GPS 변환을 위한 <code>navsat.yaml</code>을 작성한다.</p>
 <h4>3.5.1 <code>ekf_local.yaml</code> (연속 오도메트리용)</h4>
-<pre><code class="language-YAML">
-# ekf_local.yaml
-
+<pre><code class="language-YAML"># ekf_local.yaml
 ekf_local_node:
-
   ros__parameters:
-
     frequency: 50.0
-
     two_d_mode: false
-
     publish_tf: true
-
     
-
     map_frame: map
-
     odom_frame: odom
-
     base_link_frame: base_link
-
     world_frame: odom
 
-
-
     imu0: /imu/data
-
     imu0_config:  # AX, AY, AZ
-
     imu0_differential: false
-
     imu0_relative: false
-
     
-
     initial_estimate_covariance: [1.0e-3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                   0, 1.0e-3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                   0, 0, 1.0e-3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                   0, 0, 0, 1.0e-3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                   0, 0, 0, 0, 1.0e-3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                   0, 0, 0, 0, 0, 1.0e-3, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                   0, 0, 0, 0, 0, 0, 1.0e-3, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                   0, 0, 0, 0, 0, 0, 0, 1.0e-3, 0, 0, 0, 0, 0, 0, 0,
-
                                   0, 0, 0, 0, 0, 0, 0, 0, 1.0e-3, 0, 0, 0, 0, 0, 0,
-
                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0e-3, 0, 0, 0, 0, 0,
-
                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0e-3, 0, 0, 0, 0,
-
                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0e-3, 0, 0, 0,
-
                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0e-3, 0, 0,
-
                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0e-3, 0,
-
                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0e-3]
-
     
-
     process_noise_covariance: [0.05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                0, 0.05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                0, 0, 0.06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                0, 0, 0, 0.03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                0, 0, 0, 0, 0.03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                0, 0, 0, 0, 0, 0.06, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                0, 0, 0, 0, 0, 0, 0.025, 0, 0, 0, 0, 0, 0, 0, 0,
-
                                0, 0, 0, 0, 0, 0, 0, 0.025, 0, 0, 0, 0, 0, 0, 0,
-
                                0, 0, 0, 0, 0, 0, 0, 0, 0.04, 0, 0, 0, 0, 0, 0,
-
                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0.01, 0, 0, 0, 0, 0,
-
                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.01, 0, 0, 0, 0,
-
                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.02, 0, 0, 0,
-
                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.01, 0, 0,
-
                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.01, 0,
-
                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.015]
-
 </code></pre>
 <h4>3.5.2 <code>ekf_global.yaml</code> (전역 위치 보정용)</h4>
-<pre><code class="language-YAML">
-# ekf_global.yaml
-
+<pre><code class="language-YAML"># ekf_global.yaml
 ekf_global_node:
-
   ros__parameters:
-
     frequency: 30.0
-
     two_d_mode: false
-
     publish_tf: true
-
     
-
     map_frame: map
-
     odom_frame: odom
-
     base_link_frame: base_link
-
     world_frame: map
-
     
-
     history_length: 1.0 
 
-
-
     odom0: /odometry/filtered/local
-
     odom0_config:
-
        # AX, AY, AZ
-
     odom0_differential: false
-
     odom0_relative: false
 
-
-
     odom1: /odometry/gps
-
     odom1_config:
-
        # AX, AY, AZ
-
     odom1_differential: false
-
     odom1_relative: false
 
-
-
     imu0: /imu/data
-
     imu0_config:
-
        # AX, AY, AZ
-
     imu0_differential: false
-
     imu0_relative: false
-
 </code></pre>
 <h4>3.5.3 <code>navsat.yaml</code> (GPS 변환용)</h4>
-<pre><code class="language-YAML">
-# navsat.yaml
-
+<pre><code class="language-YAML"># navsat.yaml
 navsat_transform_node:
-
   ros__parameters:
-
     frequency: 5.0
-
     magnetic_declination_radians: -0.1309 
-
     yaw_offset: 1.57079
-
     zero_altitude: false
-
     broadcast_utm_transform: true
-
     publish_filtered_gps: true
-
     use_odometry_yaw: false
-
     wait_for_datum: true
-
     datum: [35.0280, 126.7529, 0.0]
-
 </code></pre>
 <h3>3.6  ROS2 Launch 파일 통합</h3>
 <p>모든 노드를 하나의 launch 파일로 실행한다.</p>
-<pre><code class="language-Python">
-# in drone_bringup/launch/localization.launch.py
-
+<pre><code class="language-Python"># in drone_bringup/launch/localization.launch.py
 import os
-
 from ament_index_python.packages import get_package_share_directory
-
 from launch import LaunchDescription
-
 from launch_ros.actions import Node
 
-
-
 def generate_launch_description():
-
     pkg_share = get_package_share_directory('drone_bringup') # 자신의 패키지 이름으로 변경
-
     
-
     # 1. Xsens MTi 드라이버 노드
-
     xsens_mti_node = Node(
-
         package='xsens_mti_driver',
-
         executable='xsens_mti_node',
-
         name='xsens_mti_driver',
-
         output='screen',
-
         parameters=[{'port': '/dev/xsens_imu', 'baudrate': 115200}]
-
     )
-
-
 
     # 2. PX4 GPS 브릿지 노드
-
     px4_gps_bridge_node = Node(
-
         package='drone_bringup', # 브릿지 노드가 포함된 패키지 이름
-
         executable='px4_gps_bridge_node',
-
         name='px4_gps_bridge_node',
-
         output='screen'
-
     )
-
-
 
     # 3. Local EKF 노드
-
     ekf_local_node = Node(
-
         package='robot_localization',
-
         executable='ekf_node',
-
         name='ekf_local_node',
-
         output='screen',
-
         parameters=[os.path.join(pkg_share, 'config/ekf_local.yaml')],
-
         remappings=[('/odometry/filtered', '/odometry/filtered/local')]
-
     )
-
-
 
     # 4. Global EKF 노드
-
     ekf_global_node = Node(
-
         package='robot_localization',
-
         executable='ekf_node',
-
         name='ekf_global_node',
-
         output='screen',
-
         parameters=[os.path.join(pkg_share, 'config/ekf_global.yaml')],
-
         remappings=[('/odometry/filtered', '/odometry/filtered/global')]
-
     )
-
-
 
     # 5. Navsat Transform 노드
-
     navsat_transform_node = Node(
-
         package='robot_localization',
-
         executable='navsat_transform_node',
-
         name='navsat_transform_node',
-
         output='screen',
-
         parameters=[os.path.join(pkg_share, 'config/navsat.yaml')],
-
         remappings=[('/imu', '/imu/data'),
-
                     ('/gps/fix', '/gps/data'), # 브릿지 노드가 발행하는 토픽으로 변경
-
                     ('/odometry/filtered', '/odometry/filtered/global'),
-
                     ('/odometry/gps', '/odometry/gps')]
-
     )
 
-
-
     return LaunchDescription([
-
         xsens_mti_node,
-
         px4_gps_bridge_node,
-
         ekf_local_node,
-
         ekf_global_node,
-
         navsat_transform_node
-
     ])
-
 </code></pre>
 <h3>3.7  검증 및 디버깅</h3>
 <p><strong>RViz2 시각화</strong>:</p>

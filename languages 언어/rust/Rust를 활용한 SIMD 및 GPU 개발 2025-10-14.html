@@ -204,99 +204,52 @@
 <p>또 다른 접근법은 #[target_feature] 속성을 사용하는 것이다. 이 속성을 함수에 적용하면, 해당 함수 본문에 한해서만 특정 CPU 기능이 활성화된 코드를 생성하도록 컴파일러에 지시할 수 있다. 이는 -C target-feature=+avx2와 같은 컴파일러 플래그가 프로그램 전체에 영향을 미치는 것과 대조된다. #[target_feature]를 사용하면 AVX2 지원 버전, SSE4.1 지원 버전, 그리고 폴백(fallback) 스칼라 버전 등 여러 버전의 함수를 단일 바이너리에 포함시키고, 런타임 탐지를 통해 적절한 버전을 동적으로 호출하는 ‘함수 멀티버저닝(function multi-versioning)’ 패턴을 구현하기 용이하다.13</p>
 <p>코드 예제: std::arch를 사용한 바이트 슬라이스 검색</p>
 <p>다음은 std::arch를 사용하여 바이트 슬라이스(&amp;[u8])에서 특정 바이트(needle)의 개수를 세는 예제다. 이 코드는 x86-64의 AVX2 명령어를 활용한다.</p>
-<pre><code class="language-Rust">
-#[cfg(target_arch = "x86_64")]
-
+<pre><code class="language-Rust">#[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
-
-
 pub fn count_occurrences_simd(haystack: &amp;[u8], needle: u8) -&gt; usize {
-
     // AVX2를 지원하는지 런타임에 확인
-
     if is_x86_feature_detected!("avx2") {
-
         // 지원한다면 unsafe 블록 내에서 AVX2 내장 함수를 사용하는 함수 호출
-
         return unsafe { count_occurrences_avx2(haystack, needle) };
-
     }
-
-
 
     // 지원하지 않으면 스칼라 폴백 함수 호출
-
     count_occurrences_scalar(haystack, needle)
-
 }
-
-
 
 #[target_feature(enable = "avx2")]
-
 unsafe fn count_occurrences_avx2(haystack: &amp;[u8], needle: u8) -&gt; usize {
-
     let mut count = 0;
-
     let len = haystack.len();
-
     let chunks_len = len / 32;
 
-
-
     // 1. needle 값을 32개의 모든 레인에 복제한 256비트 벡터 생성
-
     let needles = _mm256_set1_epi8(needle as i8);
 
-
-
     for i in 0..chunks_len {
-
         // 2. haystack에서 32바이트를 256비트 벡터로 로드
-
         let chunk_ptr = haystack.as_ptr().add(i * 32) as *const __m256i;
-
         let chunk = _mm256_loadu_si256(chunk_ptr);
 
-
-
         // 3. chunk와 needles 벡터를 레인별로 비교
-
         let comparison_mask = _mm256_cmpeq_epi8(chunk, needles);
 
-
-
         // 4. 비교 결과를 32비트 정수 마스크로 변환
-
         let mask = _mm256_movemask_epi8(comparison_mask);
 
-
-
         // 5. 마스크에서 1의 개수를 세어(population count) 개수에 더함
-
         count += mask.count_ones() as usize;
-
     }
 
-
-
     // 남은 부분은 스칼라 방식으로 처리
-
     count += count_occurrences_scalar(&amp;haystack[chunks_len * 32..], needle);
-
     count
-
 }
-
-
 
 fn count_occurrences_scalar(haystack: &amp;[u8], needle: u8) -&gt; usize {
-
     haystack.iter().filter(|&amp;&amp;b| b == needle).count()
-
 }
-
 </code></pre>
 <p>이 예제는 <code>_mm256_set1_epi8</code>, <code>_mm256_loadu_si256</code>, <code>_mm256_cmpeq_epi8</code>, <code>_mm256_movemask_epi8</code>과 같은 AVX2 내장 함수를 조합하여 한 번에 32바이트씩 비교를 수행함으로써 높은 처리량을 달성한다.5</p>
 <h4>2.2.2 고수준 추상화: <code>std::simd</code> (Portable SIMD)</h4>
@@ -320,67 +273,36 @@ fn count_occurrences_scalar(haystack: &amp;[u8], needle: u8) -&gt; usize {
 <p>std::simd의 가장 큰 장점은 안전성, 이식성, 그리고 높은 가독성이다. 개발자는 복잡한 unsafe 코드나 아키텍처별 분기 처리 없이도 SIMD의 성능 이점을 얻을 수 있다. 반면, 가장 큰 단점은 아직 nightly 전용 API라는 점으로, 안정(stable) Rust 컴파일러를 사용하는 프로덕션 환경에서는 사용이 제한된다.17 또한, 모든 종류의 특수한 하드웨어 내장 함수를 고수준 API로 추상화하는 것은 불가능하므로, 극단적인 최적화가 필요한 경우에는 std::simd 타입과 std::arch 내장 함수를 함께 사용해야 할 수 있다. Simd&lt;T, N&gt; 타입은 .into()를 통해 플랫폼별 내장 타입(예: __m128)으로 제로 비용 변환이 가능하여 이러한 혼용을 지원한다.21</p>
 <p>코드 예제: std::simd를 사용한 ROT13 암호 해독</p>
 <p>다음은 std::simd를 사용하여 32개의 대문자로 이루어진 바이트 배열에 대해 ROT13 암호 해독을 동시에 수행하는 예제다.17</p>
-<pre><code class="language-Rust">
-#![feature(portable_simd)]
-
+<pre><code class="language-Rust">#![feature(portable_simd)]
 use core::simd::prelude::*;
 
-
-
 fn rot13_simd(data: &amp;mut [u8; 32]) {
-
     // u8 타입 32개 레인을 가진 SIMD 벡터 타입 별칭
-
     type U8x32 = Simd&lt;u8, 32&gt;;
 
-
-
     // 상수 SIMD 벡터 정의
-
     const THIRTEENS: U8x32 = U8x32::from_array([13; 32]);
-
     const AS: U8x32 = U8x32::from_array([b'A'; 32]);
-
     const ZS: U8x32 = U8x32::from_array([b'Z'; 32]);
-
     const TWENTYSIXS: U8x32 = U8x32::from_array([26; 32]);
 
-
-
     // 1. 입력 데이터를 SIMD 벡터로 변환
-
     let mut simd_data = U8x32::from_array(*data);
 
-
-
     // 2. 각 레인에 13을 더함 (SIMD 덧셈)
-
     simd_data += THIRTEENS;
 
-
-
     // 3. 'Z'를 초과하는 레인을 찾기 위한 마스크 생성
-
     let mask = simd_data.simd_gt(ZS);
 
-
-
     // 4. 마스크를 사용하여 조건부로 26을 뺌
-
     // mask의 요소가 true인 레인에서는 (simd_data - TWENTYSIXS) 값을,
-
     // false인 레인에서는 원래의 simd_data 값을 선택한다.
-
     simd_data = mask.select(simd_data - TWENTYSIXS, simd_data);
 
-
-
     // 5. 결과를 다시 원래 배열에 저장
-
     *data = simd_data.to_array();
-
 }
-
 </code></pre>
 <p>이 코드는 <code>+</code>, <code>&gt;</code>, <code>-</code>와 같은 친숙한 연산자를 사용하여 복잡한 SIMD 로직을 간결하게 표현한다. 특히 <code>mask.select</code>를 활용한 조건부 연산은 분기(branch) 없이 데이터를 처리하는 전형적인 SIMD 패턴을 보여준다. 이는 GPU 프로그래밍에서도 흔히 사용되는 기법으로, 모든 레인이 동일한 명령어 흐름을 따르도록 하여 성능 저하를 방지한다.</p>
 <h4>2.2.3 컴파일러의 마법: 자동 벡터화(Auto-Vectorization)</h4>
@@ -570,23 +492,14 @@ fn rot13_simd(data: &amp;mut [u8; 32]) {
 <p>launch! 매크로 분석</p>
 <p>cust(및 rustacuda)가 제공하는 launch! 매크로는 CUDA 커널 호출의 복잡성을 크게 줄여주는 핵심적인 편의 기능이다.66 CUDA C/C++의 kernel_name&lt;&lt;&lt;grid, block, shared_mem, stream&gt;&gt;&gt;(arg1, arg2); 구문과 매우 유사한 문법을 제공하여 직관성을 높인다.</p>
 <p>Rust</p>
-<pre><code>
-unsafe {
-
+<pre><code>unsafe {
     launch!(module.sum&lt;&lt;&lt;grid, block, 0, stream&gt;&gt;&gt;(
-
         in_x.as_device_ptr(),
-
         in_y.as_device_ptr(),
-
         out.as_device_ptr(),
-
         out.len()
-
     ))?;
-
 }
-
 </code></pre>
 <p>이 매크로는 내부적으로 다음과 같은 복잡한 작업을 추상화한다 65:</p>
 <ol>

@@ -164,87 +164,46 @@
 <li><code>std::condition_variable</code>: 스레드 간의 효율적인 신호 전달을 위해 사용됩니다. 예를 들어, 큐가 비어 있을 때 소비자는 CPU 자원을 낭비하며 계속 큐를 확인하는 대신(busy-waiting), 조건 변수를 통해 대기 상태에 들어갑니다. 생산자가 큐에 데이터를 추가하면, 조건 변수를 통해 대기 중인 소비자 스레드를 깨워(notify) 작업을 재개하도록 신호를 보냅니다. 반대로 큐가 가득 찼을 때 생산자를 재우고, 소비자가 데이터를 꺼내 공간이 생겼을 때 생산자를 깨우는 데도 사용됩니다.</li>
 </ul>
 <p>이러한 C++ 기본 요소들을 조합하면, 아래와 같은 개념적인 코드로 비동기 로거를 구현할 수 있습니다.</p>
-<pre><code class="language-C++">
-// 개념적 코드 예시
-
+<pre><code class="language-C++">// 개념적 코드 예시
 #include &lt;iostream&gt;
-
 #include &lt;queue&gt;
-
 #include &lt;thread&gt;
-
 #include &lt;mutex&gt;
-
 #include &lt;condition_variable&gt;
 
-
-
 std::queue&lt;std::string&gt; log_queue;
-
 std::mutex mtx;
-
 std::condition_variable cv;
-
 bool finished = false;
 
-
-
 void consumer_thread_func() {
-
     while (true) {
-
         std::unique_lock&lt;std::mutex&gt; lock(mtx);
-
         cv.wait(lock,{ return!log_queue.empty() |
-
-
 
 | finished; });
 
-
-
         while (!log_queue.empty()) {
-
             std::string log_message = log_queue.front();
-
             log_queue.pop();
-
             // 실제 I/O 작업 수행 (예: 파일에 쓰기)
-
             std::cout &lt;&lt; "[Consumer] " &lt;&lt; log_message &lt;&lt; std::endl;
-
         }
-
-
 
         if (finished) {
-
             break;
-
         }
-
     }
-
 }
-
-
 
 void produce_log(const std::string&amp; message) {
-
     std::unique_lock&lt;std::mutex&gt; lock(mtx);
-
     log_queue.push(message);
-
     lock.unlock();
-
     cv.notify_one(); // 대기 중인 소비자 스레드를 깨움
-
 }
 
-
-
 // main 함수에서 스레드 생성 및 로그 생산...
-
 </code></pre>
 <p>이 예시에서 <code>produce_log</code> 함수는 생산자의 역할을, <code>consumer_thread_func</code>는 소비자의 역할을 수행합니다. <code>std::unique_lock</code>과 <code>std::condition_variable::wait</code>의 조합은 스레드 간의 안전하고 효율적인 동기화를 보장합니다. 이 생산자-소비자 모델은 고성능 비동기 로깅 시스템의 가장 기본적인 출발점입니다.</p>
 <h3>1.3  잠금을 넘어서: Lock-Free 프로그래밍 입문</h3>
@@ -285,297 +244,151 @@ void produce_log(const std::string&amp; message) {
 </ol>
 <p><strong>구현 세부 사항 및 C++ 코드:</strong></p>
 <p>아래 코드는 이러한 설계 원칙에 따라 구현된 다중 스레드 비동기 로거의 전체 예시입니다. RAII(Resource Acquisition Is Initialization) 원칙에 따라 <code>Logger</code>의 소멸자에서 워커 스레드를 안전하게 <code>join</code>하여 모든 잔여 로그가 처리되도록 보장합니다.</p>
-<pre><code class="language-C++">
-#pragma once
-
-
+<pre><code class="language-C++">#pragma once
 
 #include &lt;iostream&gt;
-
 #include &lt;string&gt;
-
 #include &lt;queue&gt;
-
 #include &lt;mutex&gt;
-
 #include &lt;condition_variable&gt;
-
 #include &lt;thread&gt;
-
 #include &lt;chrono&gt;
-
 #include &lt;iomanip&gt;
-
 #include &lt;sstream&gt;
 
-
-
 enum class LogLevel {
-
     INFO,
-
     WARNING,
-
     ERROR
-
 };
-
-
 
 struct LogMessage {
-
     LogLevel level;
-
     std::string message;
-
     std::chrono::system_clock::time_point timestamp;
-
     std::thread::id thread_id;
-
 };
 
-
-
 class AsyncLogger {
-
 public:
-
     static AsyncLogger&amp; getInstance() {
-
         static AsyncLogger instance;
-
         return instance;
-
     }
-
-
 
     void log(LogLevel level, const std::string&amp; message) {
-
         LogMessage msg;
-
         msg.level = level;
-
         msg.message = message;
-
         msg.timestamp = std::chrono::system_clock::now();
-
         msg.thread_id = std::this_thread::get_id();
 
-
-
         {
-
             std::lock_guard&lt;std::mutex&gt; lock(m_queue_mutex);
-
             m_log_queue.push(std::move(msg));
-
         }
-
         m_condition.notify_one();
-
     }
-
-
 
     AsyncLogger(const AsyncLogger&amp;) = delete;
-
     AsyncLogger&amp; operator=(const AsyncLogger&amp;) = delete;
 
-
-
 private:
-
     AsyncLogger() {
-
         m_worker_thread = std::thread(&amp;AsyncLogger::processQueue, this);
-
     }
-
-
 
     ~AsyncLogger() {
-
         {
-
             std::lock_guard&lt;std::mutex&gt; lock(m_queue_mutex);
-
             m_exit_flag = true;
-
         }
-
         m_condition.notify_one();
-
         m_worker_thread.join();
-
     }
 
-
-
     void processQueue() {
-
         while (true) {
-
             std::unique_lock&lt;std::mutex&gt; lock(m_queue_mutex);
-
             m_condition.wait(lock, [this] { return!m_log_queue.empty() |
-
-
 
 | m_exit_flag; });
 
-
-
             if (m_exit_flag &amp;&amp; m_log_queue.empty()) {
-
                 break;
-
             }
 
-
-
             LogMessage msg = m_log_queue.front();
-
             m_log_queue.pop();
-
             lock.unlock();
 
-
-
             // 실제 I/O 작업 (파일 또는 콘솔 출력)
-
             printLog(msg);
-
         }
-
     }
-
-
 
     void printLog(const LogMessage&amp; msg) {
-
         std::stringstream ss;
-
         
-
         // 타임스탬프 포맷팅
-
         auto time_t = std::chrono::system_clock::to_time_t(msg.timestamp);
-
         auto tm = *std::localtime(&amp;time_t);
-
         ss &lt;&lt; std::put_time(&amp;tm, "%Y-%m-%d %H:%M:%S");
-
         
-
         // 로그 레벨 포맷팅
-
         ss &lt;&lt; "";
 
-
-
         // 스레드 ID 포맷팅
-
         ss &lt;&lt; " ";
 
-
-
         // 메시지 본문
-
         ss &lt;&lt; msg.message;
 
-
-
         // 콘솔에 출력
-
         std::cout &lt;&lt; ss.str() &lt;&lt; std::endl;
-
     }
-
-
 
     std::thread m_worker_thread;
-
     std::queue&lt;LogMessage&gt; m_log_queue;
-
     std::mutex m_queue_mutex;
-
     std::condition_variable m_condition;
-
     bool m_exit_flag = false;
-
 };
 
-
-
 // 로깅을 위한 매크로 정의
-
 #define LOG_INFO(msg)    AsyncLogger::getInstance().log(LogLevel::INFO, msg)
-
 #define LOG_WARNING(msg) AsyncLogger::getInstance().log(LogLevel::WARNING, msg)
-
 #define LOG_ERROR(msg)   AsyncLogger::getInstance().log(LogLevel::ERROR, msg)
 
-
-
 /*
-
 // 사용 예시 (main.cpp)
-
 #include "AsyncLogger.h"
-
 #include &lt;vector&gt;
 
-
-
 void worker_func(int id) {
-
     for (int i = 0; i &lt; 5; ++i) {
-
         std::stringstream ss;
-
         ss &lt;&lt; "Log message " &lt;&lt; i &lt;&lt; " from worker " &lt;&lt; id;
-
         LOG_INFO(ss.str());
-
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
     }
-
 }
-
-
 
 int main() {
-
     std::vector&lt;std::thread&gt; threads;
-
     for (int i = 0; i &lt; 4; ++i) {
-
         threads.emplace_back(worker_func, i + 1);
-
     }
-
-
 
     for (auto&amp; t : threads) {
-
         t.join();
-
     }
 
-
-
     // main 함수가 종료되면서 AsyncLogger의 소멸자가 호출되고,
-
     // 모든 로그가 처리될 때까지 대기 후 프로그램이 종료됩니다.
-
     return 0;
-
 }
-
 */
-
 </code></pre>
 <p>이 구현체는 <code>log</code> 함수 호출 시 메시지를 큐에 넣고 즉시 반환하여 애플리케이션 스레드의 블로킹을 최소화합니다. 백그라운드 스레드는 이 큐에서 메시지를 비동기적으로 처리하여 I/O 작업을 수행합니다. 이 아키텍처는 단일 프로세스 내에서 효율적이고 확장 가능한 로깅을 위한 견고한 기반이 됩니다.</p>
 <h3>2.2  프로세스 간 아키텍처: 중앙 집중형 다중 프로세스 서비스</h3>
@@ -614,285 +427,149 @@ int main() {
 <li>공유 데이터 구조 및 상수 (common.h)</li>
 </ol>
 <p>서버와 클라이언트가 공통으로 사용할 데이터 구조와 상수를 정의합니다.</p>
-<pre><code class="language-C++">
-#pragma once
-
-
+<pre><code class="language-C++">#pragma once
 
 #include &lt;boost/interprocess/sync/interprocess_mutex.hpp&gt;
-
 #include &lt;boost/interprocess/sync/interprocess_condition.hpp&gt;
 
-
-
 const char* SHM_NAME = "MyCentralizedLoggingSHM";
-
 const int MAX_LOG_MESSAGES = 100;
-
 const int MAX_MESSAGE_LENGTH = 256;
 
-
-
 struct LogEntry {
-
     char message;
-
     // 여기에 타임스탬프, 로그 레벨 등 추가 가능
-
 };
-
-
 
 struct SharedLogBuffer {
-
     // 동기화를 위한 객체들
-
     boost::interprocess::interprocess_mutex mutex;
-
     boost::interprocess::interprocess_condition cond_not_empty;
-
     boost::interprocess::interprocess_condition cond_not_full;
 
-
-
     // 링 버퍼 데이터
-
     LogEntry buffer;
-
     int read_idx = 0;
-
     int write_idx = 0;
-
     int count = 0;
-
 };
-
 </code></pre>
 <ol start="2">
 <li>로깅 서버 구현 (logging_server.cpp)</li>
 </ol>
 <p>공유 메모리를 생성하고 소비자 역할을 수행합니다.</p>
-<pre><code class="language-C++">
-#include &lt;boost/interprocess/managed_shared_memory.hpp&gt;
-
+<pre><code class="language-C++">#include &lt;boost/interprocess/managed_shared_memory.hpp&gt;
 #include &lt;iostream&gt;
-
 #include &lt;chrono&gt;
-
 #include &lt;thread&gt;
-
 #include "common.h"
-
-
 
 namespace bip = boost::interprocess;
 
-
-
 int main() {
-
     // 이전 실행에서 남은 공유 메모리가 있다면 제거
-
     bip::shared_memory_object::remove(SHM_NAME);
 
-
-
     try {
-
         // 관리형 공유 메모리 생성
-
         bip::managed_shared_memory segment(bip::create_only, SHM_NAME, 65536);
 
-
-
         // 공유 메모리에 SharedLogBuffer 객체 생성
-
         SharedLogBuffer* log_buffer = segment.construct&lt;SharedLogBuffer&gt;("LogBuffer")();
-
-
 
         std::cout &lt;&lt; "Logging server started. Waiting for logs..." &lt;&lt; std::endl;
 
-
-
         while (true) {
-
             bip::scoped_lock&lt;bip::interprocess_mutex&gt; lock(log_buffer-&gt;mutex);
 
-
-
             // 버퍼가 비어있으면 대기
-
             if (log_buffer-&gt;count == 0) {
-
                 log_buffer-&gt;cond_not_empty.wait(lock);
-
             }
 
-
-
             // 프로그램 종료 시그널을 받을 때까지 계속 실행 (실제 구현에서는 시그널 핸들링 필요)
-
             
-
             // 버퍼에서 로그 읽기
-
             const LogEntry&amp; entry = log_buffer-&gt;buffer[log_buffer-&gt;read_idx];
-
             std::cout &lt;&lt; " Received: " &lt;&lt; entry.message &lt;&lt; std::endl;
 
-
-
             log_buffer-&gt;read_idx = (log_buffer-&gt;read_idx + 1) % MAX_LOG_MESSAGES;
-
             log_buffer-&gt;count--;
 
-
-
             // 버퍼에 공간이 생겼음을 생산자에게 알림
-
             log_buffer-&gt;cond_not_full.notify_one();
-
         }
 
-
-
     } catch (bip::interprocess_exception &amp;ex) {
-
         std::cerr &lt;&lt; "Server Error: " &lt;&lt; ex.what() &lt;&lt; std::endl;
-
         bip::shared_memory_object::remove(SHM_NAME);
-
         return 1;
-
     }
 
-
-
     bip::shared_memory_object::remove(SHM_NAME);
-
     return 0;
-
 }
-
 </code></pre>
 <ol start="3">
 <li>로깅 클라이언트 구현 (logging_client.cpp)</li>
 </ol>
 <p>공유 메모리에 연결하여 생산자 역할을 수행합니다.</p>
-<pre><code class="language-C++">
-#include &lt;boost/interprocess/managed_shared_memory.hpp&gt;
-
+<pre><code class="language-C++">#include &lt;boost/interprocess/managed_shared_memory.hpp&gt;
 #include &lt;iostream&gt;
-
 #include &lt;string&gt;
-
 #include &lt;cstring&gt;
-
 #include "common.h"
-
-
 
 namespace bip = boost::interprocess;
 
-
-
 int main(int argc, char* argv) {
-
     if (argc!= 2) {
-
         std::cerr &lt;&lt; "Usage: " &lt;&lt; argv &lt;&lt; " &lt;message&gt;" &lt;&lt; std::endl;
-
         return 1;
-
     }
 
-
-
     try {
-
         // 기존 공유 메모리 열기
-
         bip::managed_shared_memory segment(bip::open_only, SHM_NAME);
 
-
-
         // 공유 메모리에서 SharedLogBuffer 객체 찾기
-
         std::pair&lt;SharedLogBuffer*, std::size_t&gt; res = segment.find&lt;SharedLogBuffer&gt;("LogBuffer");
-
         if (res.first == nullptr) {
-
             std::cerr &lt;&lt; "Client Error: Cannot find LogBuffer in shared memory." &lt;&lt; std::endl;
-
             return 1;
-
         }
-
         SharedLogBuffer* log_buffer = res.first;
 
-
-
         {
-
             bip::scoped_lock&lt;bip::interprocess_mutex&gt; lock(log_buffer-&gt;mutex);
 
-
-
             // 버퍼가 가득 찼으면 대기
-
             if (log_buffer-&gt;count == MAX_LOG_MESSAGES) {
-
                 std::cout &lt;&lt; "Buffer is full, waiting..." &lt;&lt; std::endl;
-
                 log_buffer-&gt;cond_not_full.wait(lock);
-
             }
-
             
-
             // 버퍼에 로그 쓰기
-
             LogEntry&amp; entry = log_buffer-&gt;buffer[log_buffer-&gt;write_idx];
-
             strncpy(entry.message, argv, MAX_MESSAGE_LENGTH - 1);
-
             entry.message = '\0'; // Null-terminate
 
-
-
             log_buffer-&gt;write_idx = (log_buffer-&gt;write_idx + 1) % MAX_LOG_MESSAGES;
-
             log_buffer-&gt;count++;
 
-
-
             // 버퍼에 새 로그가 추가되었음을 소비자에게 알림
-
             log_buffer-&gt;cond_not_empty.notify_one();
-
         }
-
-
 
         std::cout &lt;&lt; "Client sent: " &lt;&lt; argv &lt;&lt; std::endl;
 
-
-
     } catch (bip::interprocess_exception &amp;ex) {
-
         std::cerr &lt;&lt; "Client Error: " &lt;&lt; ex.what() &lt;&lt; std::endl;
-
         return 1;
-
     }
 
-
-
     return 0;
-
 }
-
 </code></pre>
 <p>이 구현은 여러 클라이언트 프로세스가 중앙 서버로 비동기적으로 로그를 전송하는 강력하고 효율적인 모델을 보여줍니다. 서버와 클라이언트는 공유 메모리 내의 뮤텍스와 조건 변수를 통해 안전하게 링 버퍼에 접근하며, 이는 고성능 중앙 집중형 로깅 시스템의 핵심 아키텍처를 구성합니다.</p>
 <p>프로세스 내부 로깅에서 공유 메모리를 사용한 프로세스 간 로깅으로 전환하는 것은 단순히 통신 채널을 바꾸는 것 이상의 의미를 가집니다. 이는 데이터 구조 설계 방식에 근본적인 변화를 요구하는 패러다임의 전환입니다. 개발자는 이 과정에서 <code>std::string</code>이나 다른 표준 컨테이너와 같은 편리한 C++ 객체들을 더 이상 자유롭게 사용할 수 없게 되는 중요한 제약에 직면합니다.</p>
@@ -994,53 +671,29 @@ int main(int argc, char* argv) {
 </ul>
 <p>C++에서의 구현:</p>
 <p>C++에서 구조적 로깅을 구현하는 가장 일반적인 방법은 spdlog와 같은 로깅 라이브러리와 nlohmann/json과 같은 JSON 라이브러리를 함께 사용하는 것입니다. 아래는 이 접근 방식을 보여주는 예시입니다.43</p>
-<pre><code class="language-C++">
-#include "spdlog/spdlog.h"
-
+<pre><code class="language-C++">#include "spdlog/spdlog.h"
 #include "nlohmann/json.hpp"
-
-
 
 //... spdlog 로거 설정...
 
-
-
 void log_structured_error(const std::string&amp; event, int attempt, const std::string&amp; pool) {
-
     nlohmann::json log_entry;
-
     log_entry["timestamp"] = std::chrono::system_clock::now().time_since_epoch().count();
-
     log_entry["level"] = "ERROR";
-
     log_entry["service"] = "database-connector";
-
     log_entry["event"] = event;
-
     
-
     nlohmann::json context;
-
     context["connection_pool"] = pool;
-
     context["attempt"] = attempt;
-
     log_entry["context_data"] = context;
 
-
-
     // JSON 객체를 문자열로 변환하여 로깅
-
     spdlog::error(log_entry.dump()); 
-
 }
 
-
-
 // 사용 예시
-
 log_structured_error("database_timeout", 3, "primary");
-
 </code></pre>
 <p>이 방식은 유연하지만, 매번 JSON 객체를 생성하고 문자열로 변환하는 오버헤드가 있습니다. <code>Quill</code>이나 <code>spdlog</code>의 확장 기능과 같이 JSON 포맷터를 네이티브로 지원하는 라이브러리를 사용하면 이 과정을 더 효율적으로 처리할 수 있습니다.9 이러한 라이브러리들은 내부적으로 로그 인자를 직접 JSON 구조로 변환하여 성능을 최적화합니다.</p>
 <h3>4.2  자동화된 로그 관리</h3>

@@ -144,107 +144,57 @@
 <p>현대 자연어 처리(Natural Language Processing, NLP)의 지평은 대규모 텍스트 코퍼스를 활용한 사전 학습(Pre-training) 모델들의 등장으로 급격한 확장을 맞이하였다. 특히 트랜스포머(Transformer) 아키텍처의 인코더(Encoder) 구조를 차용한 BERT(Bidirectional Encoder Representations from Transformers)는 문맥의 양방향성을 심층적으로 포착하는 능력을 입증하며, 검색, 번역, 질의응답 등 다양한 다운스트림 태스크(Downstream Tasks)에서 사실상의 표준(De facto standard)으로 자리 잡았다. 그러나 이러한 모델의 성능 향상은 필연적으로 모델 파라미터 수의 기하급수적인 증가와 이에 따른 막대한 계산 비용(Computational Cost)을 수반한다. 2019년을 기점으로 등장한 XLNet, RoBERTa 등의 후속 모델들은 BERT의 구조적 한계를 보완하거나 데이터의 양을 늘리는 방식으로 성능을 개선했으나, 학습 효율성(Training Efficiency) 측면에서는 여전히 근본적인 의문을 남겼다.1</p>
 <p>이러한 맥락에서 스탠포드 대학교와 구글 브레인 연구팀이 제안한 ELECTRA(Efficiently Learning an Encoder that Classifies Token Replacements Accurately)는 기존의 마스크 언어 모델링(Masked Language Modeling, MLM)이 가진 구조적 비효율성을 지적하며, **교체된 토큰 탐지(Replaced Token Detection, RTD)**라는 새로운 사전 학습 방법론을 제시하였다.2 ELECTRA는 생성자(Generator)와 판별자(Discriminator)라는 이중 네트워크 구조를 도입하여, 입력 시퀀스의 모든 토큰으로부터 학습 신호(Training Signal)를 추출하는 방식을 취한다. 이는 생성적 적대 신경망(Generative Adversarial Networks, GAN)의 아이디어를 텍스트 도메인에 맞게 변형한 것으로 볼 수 있으나, 그 세부적인 학습 메커니즘과 목적 함수는 텍스트 데이터의 이산적(Discrete) 특성을 고려하여 독창적으로 설계되었다.2</p>
 <p>본 장에서는 ’트랜스포머 싱귤래리티’의 핵심적인 기술적 진보 중 하나인 ELECTRA 모델을 심층적으로 분석한다. 특히 판별자를 활용한 학습 방식이 어떻게 MLM의 비효율성을 극복하고, 적은 계산 자원으로도 SOTA(State-of-the-Art) 성능을 달성할 수 있었는지에 대한 이론적 배경과 실험적 증거를 상세히 기술한다. 또한, 모델의 아키텍처 설계, 손실 함수의 수학적 유도, 그리고 하이퍼파라미터 최적화 전략 등 실질적인 구현을 위한 기술적 세부 사항을 망라하여, 독자가 ELECTRA의 작동 원리를 완벽하게 이해하고 이를 자신의 연구나 프로젝트에 적용할 수 있도록 한다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     subgraph "기존 패러다임: 성능 향상의 이면"
-
         A["Transformer 아키텍처 등장"] --&gt; B["BERT (De facto standard)"]
-
         B --&gt; C["파라미터 수의 기하급수적 증가"]
-
         B --&gt; D["막대한 계산 비용 (Computational Cost)"]
-
         C &amp; D --&gt; E["후속 모델 (XLNet, RoBERTa)"]
-
         E --&gt; F["성능 개선: 구조 보완 및 데이터 증량"]
-
         F --&gt; G{"여전한 문제점: 학습 효율성(Training Efficiency)"}
-
     end
-
-
 
     subgraph "새로운 패러다임: ELECTRA"
-
         G --&gt; H["ELECTRA 제안 (Stanford &amp; Google Brain)"]
-
         H --&gt; I["MLM의 비효율성 지적"]
-
         H --&gt; J["RTD (Replaced Token Detection) 도입"]
-
         J --&gt; K["모든 토큰에서 학습 신호 추출"]
-
         K --&gt; L["적은 자원으로 SOTA 달성"]
-
     end
-
     
-
     style G fill:#f96,stroke:#333,stroke-width:2px
-
     style L fill:#9f9,stroke:#333,stroke-width:2px
-
 </code></pre>
 <h2>2.  마스크 언어 모델링(MLM)의 구조적 한계와 샘플 효율성</h2>
 <p>BERT로 대표되는 MLM 방식은 입력 시퀀스의 일부 토큰(통상 15%)을 ``라는 특수 토큰으로 치환하고, 모델이 문맥 정보를 바탕으로 원본 토큰을 복원하도록 학습한다. 이 방식은 단방향 언어 모델(Unidirectional Language Model)과 달리 양방향 문맥을 동시에 고려할 수 있다는 강력한 장점을 지니지만, 학습 효율성 측면에서는 명백한 한계를 내포하고 있다.2</p>
-<pre><code class="language-mermaid">
-graph LR
-
+<pre><code class="language-mermaid">graph LR
     subgraph "MLM (Masked Language Modeling)"
-
         Input_MLM["입력: [The, cook, [MASK], the, meal]"]
-
         Process_MLM["처리: 마스킹된 15%만 예측"]
-
         Signal_MLM["학습 신호: 희소함 (Sparsity)"]
-
         Waste_MLM["나머지 85%: 학습에 직접 기여 안 함"]
-
         Result_MLM["결과: 느린 수렴, 데이터 낭비"]
-
         
-
         Input_MLM --&gt; Process_MLM
-
         Process_MLM --&gt; Signal_MLM
-
         Process_MLM --&gt; Waste_MLM
-
         Signal_MLM --&gt; Result_MLM
-
         Waste_MLM --&gt; Result_MLM
-
     end
-
-
 
     subgraph "RTD (Replaced Token Detection)"
-
         Input_RTD["입력: [The, cook, ate, the, meal] (변조됨)"]
-
         Process_RTD["처리: 모든 토큰의 진위 판별"]
-
         Signal_RTD["학습 신호: 100% (모든 토큰 활용)"]
-
         Result_RTD["결과: 높은 샘플 효율성, 빠른 수렴"]
-
         
-
         Input_RTD --&gt; Process_RTD
-
         Process_RTD --&gt; Signal_RTD
-
         Signal_RTD --&gt; Result_RTD
-
     end
 
-
-
     style Signal_MLM fill:#ffcccc,stroke:#333
-
     style Signal_RTD fill:#ccffcc,stroke:#333
-
 </code></pre>
 <h3>2.1  학습 신호의 희소성 (Sparsity of Training Signals)</h3>
 <p>MLM의 가장 치명적인 단점은 학습 신호의 희소성이다. BERT는 입력된 전체 토큰 중 오직 마스킹된 15%의 토큰에 대해서만 예측을 수행하고 손실(Loss)을 계산한다.2 나머지 85%의 토큰은 문맥을 형성하는 정보로만 사용될 뿐, 역전파(Backpropagation)를 통한 가중치 업데이트에는 직접적으로 기여하지 않는다.</p>
@@ -257,63 +207,34 @@ graph LR
 <p>ELECTRA는 이러한 MLM의 한계를 극복하기 위해, 입력 시퀀스의 <strong>모든 토큰</strong>에 대해 예측을 수행하는 방식을 채택함으로써 샘플 효율성(Sample Efficiency)을 극적으로 향상시켰다.2 이는 단순히 학습 속도를 높이는 것을 넘어, 모델이 언어의 미세한 뉘앙스를 더 적은 데이터로도 포착할 수 있게 하는 질적인 변화를 이끌어냈다.</p>
 <h2>3.  교체된 토큰 탐지(RTD): 이론적 정립 및 메커니즘</h2>
 <p>ELECTRA가 제안하는 **교체된 토큰 탐지(Replaced Token Detection, RTD)**는 입력 시퀀스의 일부를 그럴듯한(plausible) 가짜 토큰으로 교체한 후, 모델이 각 토큰의 진위 여부를 판별하는 이진 분류(Binary Classification) 태스크이다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     Data["원본 입력 데이터 (x)"] --&gt; Masking["마스킹 수행 (입력의 일부를 [MASK]로 치환)"]
-
     Masking --&gt; GenInput["마스킹된 입력 (x_masked)"]
-
     
-
     subgraph "Generator (생성자)"
-
         GenInput --&gt; G_Predict["원본 토큰 예측 (MLM)"]
-
         G_Predict --&gt; Sampling["토큰 샘플링"]
-
         Sampling --&gt; Corrupt["변조된 입력 생성 (x_corrupt)"]
-
     end
-
     
-
     Corrupt --&gt; DiscInput["판별자 입력"]
-
     
-
     subgraph "Discriminator (판별자)"
-
         DiscInput --&gt; D_Predict["각 토큰의 진위 판별 (Real vs Fake)"]
-
         D_Predict --&gt; Sigmoid["Sigmoid 출력 층"]
-
     end
-
     
-
     Sigmoid --&gt; LossCalc{"손실 계산"}
-
     
-
     subgraph "손실 함수 (Loss Function)"
-
         LossCalc --"생성자 손실"--&gt; LossG["L_G: MLM Loss (우도 최대화)"]
-
         LossCalc --"판별자 손실"--&gt; LossD["L_D: 모든 토큰에 대한 이진 분류 Loss"]
-
         LossG &amp; LossD --&gt; TotalLoss["최종 목표: Min (L_G + 50 * L_D)"]
-
     end
-
-
 
     style Data fill:#e1f5fe
-
     style Corrupt fill:#fff9c4
-
     style TotalLoss fill:#dcedc8
-
 </code></pre>
 <h3>3.1  이중 네트워크 구조: 생성자와 판별자</h3>
 <p>RTD를 수행하기 위해 ELECTRA는 두 개의 독립적인 트랜스포머 인코더 모델을 사용한다.</p>
@@ -338,71 +259,49 @@ graph TD
 <li>생성자 손실함수 (<span class="math math-inline">\mathcal{L}_G</span>):</li>
 </ol>
 <p>생성자는 마스킹된 위치 <span class="math math-inline">m</span>에 대해 원본 토큰의 우도(Likelihood)를 최대화하도록 학습된다. 이는 표준적인 MLM 손실함수와 동일하다.<br />
-$$</p>
-<p>\mathcal{L}<em>G(\mathbf{x}, \theta_G) = \mathbb{E} \left[ - \sum</em>{i \in m} \log P_G(x_i | \mathbf{x}^{masked}) \right]</p>
-<p>$$<br />
+<span class="math math-display">
+\mathcal{L}_G(\mathbf{x}, \theta_G) = \mathbb{E} \left[ - \sum_{i \in m} \log P_G(x_i | \mathbf{x}^{masked}) \right]
+</span><br />
 여기서 <span class="math math-inline">\theta_G</span>는 생성자의 파라미터이다. 7</p>
 <ol start="2">
 <li>판별자 손실함수 (<span class="math math-inline">\mathcal{L}_D</span>):</li>
 </ol>
 <p>판별자는 입력된 모든 토큰 <span class="math math-inline">t=1, \dots, n</span>에 대해 이진 교차 엔트로피(Binary Cross-Entropy) 손실을 최소화한다.<br />
-$$</p>
-<p>\mathcal{L}<em>D(\mathbf{x}, \theta_D) = \mathbb{E}</em>{\mathbf{x}<sup>{corrupt} \sim G} \left[ \sum_{t=1}<sup>n - \mathbb{1}(x_t</sup>{corrupt} = x_t) \log D(\mathbf{x}</sup>{corrupt}, t) - \mathbb{1}(x_t^{corrupt} \neq x_t) \log (1 - D(\mathbf{x}^{corrupt}, t)) \right]</p>
-<p>$$<br />
+<span class="math math-display">
+\mathcal{L}_D(\mathbf{x}, \theta_D) = \mathbb{E}_{\mathbf{x}^{corrupt} \sim G} \left[ \sum_{t=1}^n - \mathbb{1}(x_t^{corrupt} = x_t) \log D(\mathbf{x}^{corrupt}, t) - \mathbb{1}(x_t^{corrupt} \neq x_t) \log (1 - D(\mathbf{x}^{corrupt}, t)) \right]
+</span><br />
 여기서 <span class="math math-inline">\mathbb{1}(\cdot)</span>은 지시 함수이며, <span class="math math-inline">D(\mathbf{x}^{corrupt}, t)</span>는 <span class="math math-inline">t</span>번째 토큰이 ’진짜’일 확률이다. 주목할 점은 <span class="math math-inline">\mathbb{1}(x_t^{corrupt} = x_t)</span> 조건이다. 즉, 생성자가 만든 토큰이 원본과 동일하면 판별자는 이를 ’진짜’로 분류해야 정답으로 인정된다.2</p>
 <ol start="3">
 <li>결합된 최적화 목표:</li>
 </ol>
 <p>전체 모델은 다음의 결합 손실을 최소화하도록 학습된다.<br />
-$$</p>
-<p>\min_{\theta_G, \theta_D} \sum_{\mathbf{x} \in \mathcal{X}} \mathcal{L}_G(\mathbf{x}, \theta_G) + \lambda \mathcal{L}_D(\mathbf{x}, \theta_D)</p>
-<p>$$<br />
+<span class="math math-display">
+\min_{\theta_G, \theta_D} \sum_{\mathbf{x} \in \mathcal{X}} \mathcal{L}_G(\mathbf{x}, \theta_G) + \lambda \mathcal{L}_D(\mathbf{x}, \theta_D)
+</span><br />
 여기서 <span class="math math-inline">\lambda</span>는 가중치 파라미터로, ELECTRA 논문에서는 실험적으로 <span class="math math-inline">\lambda = 50</span>을 사용하였다.7 <span class="math math-inline">\lambda</span> 값이 큰 이유는 판별자의 이진 분류 태스크가 생성자의 다중 분류(30,000개 이상의 어휘) 태스크보다 상대적으로 쉬워 손실 값이 작게 나오기 때문에, 두 손실 간의 스케일을 맞춰주기 위함이다.2</p>
 <h2>4.  생성적 적대 신경망(GAN)과의 차별성 및 관계 분석</h2>
 <p>ELECTRA의 구조는 생성자와 판별자를 포함한다는 점에서 GAN과 매우 유사해 보이지만, 텍스트 데이터의 특성을 고려한 결정적인 차이점들이 존재한다. 이를 명확히 이해하는 것은 ELECTRA의 독창성을 파악하는 데 필수적이다.2</p>
-<pre><code class="language-mermaid">
-graph LR
-
+<pre><code class="language-mermaid">graph LR
     subgraph "GAN (Generative Adversarial Networks)"
-
         GAN_Goal["목표: 판별자를 속이는 것"]
-
         GAN_Type["학습: 적대적 학습 (Adversarial)"]
-
         GAN_Flow["Gradient: 판별자 -&gt; 생성자 역전파 (Reinforcement Learning 필요)"]
-
         GAN_Label["레이블: 생성된 데이터는 무조건 'Fake'"]
-
     end
-
-
 
     subgraph "ELECTRA"
-
         ELE_Goal["목표: 정확한 토큰 복원 (MLM)"]
-
         ELE_Type["학습: 최대 우도 추정 (MLE)"]
-
         ELE_Flow["Gradient: 끊김 (Stop Gradient) - 생성자는 독립적 학습"]
-
         ELE_Label["레이블: 생성 토큰이 원본과 같으면 'Real'"]
-
     end
 
-
-
     GAN_Goal -.-&gt; ELE_Goal
-
     GAN_Type -.-&gt; ELE_Type
-
     GAN_Flow -.-&gt; ELE_Flow
-
     GAN_Label -.-&gt; ELE_Label
-
     
-
     style ELE_Label fill:#fff176,stroke:#333
-
 </code></pre>
 <h3>4.1  최대 우도 학습 vs 적대적 학습 (MLE vs Adversarial)</h3>
 <p>GAN에서 생성자는 판별자를 속이는 방향(Adversarial)으로 학습된다. 즉, 판별자의 손실을 최대화하려고 노력한다. 반면, ELECTRA의 생성자는 판별자와 무관하게 마스킹된 단어를 정확히 복원하는 <strong>최대 우도 추정(Maximum Likelihood Estimation, MLE)</strong> 방식으로 학습된다.8</p>
@@ -417,55 +316,30 @@ graph LR
 </ul>
 <h2>5.  ELECTRA 아키텍처 상세 및 하이퍼파라미터 최적화</h2>
 <p>ELECTRA의 높은 효율성은 단순히 RTD 태스크 덕분만이 아니라, 생성자와 판별자의 크기 비율, 가중치 공유 전략 등 정교하게 튜닝된 아키텍처 설계에 기인한다.</p>
-<pre><code class="language-mermaid">
-graph LR
-
+<pre><code class="language-mermaid">graph LR
     subgraph "ELECTRA 아키텍처 설계"
-
         SharedEmb["공유된 임베딩 층 (Embedding Layer)"]
-
         
-
         subgraph "작은 생성자 (Generator)"
-
             SizeG["크기: 판별자의 1/4 ~ 1/2"]
-
             RoleG["역할: 적절한 난이도의 예제 생성"]
-
         end
-
         
-
         subgraph "큰 판별자 (Discriminator)"
-
             SizeD["크기: Base (768), Large (1024)"]
-
             RoleD["역할: 미세 조정(Fine-tuning) 및 다운스트림 태스크 수행"]
-
         end
-
         
-
         SharedEmb --&gt;|"파라미터 공유"| SizeG
-
         SharedEmb --&gt;|"파라미터 공유"| SizeD
-
     end
 
-
-
     Reasoning["효율성 근거"] --&gt; Opt1["생성자가 너무 강하면: 판별 학습 불가"]
-
     Reasoning --&gt; Opt2["생성자가 너무 약하면: 판별이 너무 쉬움"]
-
     Reasoning --&gt; Opt3["결론: 소형 생성자가 최적"]
 
-
-
     SizeG -.-&gt; Opt3
-
     SizeD -.-&gt; Opt3
-
 </code></pre>
 <h3>5.1  생성자와 판별자의 크기 불균형 (Size Mismatch)</h3>
 <p>연구진은 실험을 통해 생성자의 크기를 판별자보다 작게 설정하는 것이 효율적임을 밝혀냈다.2</p>
@@ -496,51 +370,28 @@ graph LR
 <p>특히 ELECTRA-Small 모델은 임베딩 크기를 히든 크기(256)보다 작은 128로 설정하여 파라미터 수를 극단적으로 줄였으며, 이는 모바일 기기나 엣지 디바이스에서의 활용 가능성을 높여준다.2</p>
 <h2>6.  실험적 검증: 성능과 효율성의 비약적 향상</h2>
 <p>ELECTRA의 우수성은 GLUE 벤치마크와 SQuAD 데이터셋을 포함한 광범위한 실험을 통해 입증되었다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     subgraph "실험적 검증 (GLUE &amp; SQuAD)"
-
         Exp1["ELECTRA-Small"] --&gt; Res1["단일 GPU 4일 학습"]
-
         Res1 --&gt; Comp1["GPT-1보다 높은 점수"]
-
         
-
         Exp2["ELECTRA-Large"] --&gt; Res2["RoBERTa/XLNet 대비 1/4 연산량"]
-
         Res2 --&gt; Comp2["동등하거나 더 높은 성능 (SOTA)"]
-
         
-
         Metric["핵심 지표"] --&gt; FLOPs["FLOPs 대 성능비 우수"]
-
     end
-
     
-
     subgraph "결론: 효율적 NLP의 미래"
-
         Con1["패러다임 변화"] --&gt;|"Scale 중심 -&gt; Efficiency 중심"| Con2["민주화된 AI 연구"]
-
         Con2 --&gt; Con3["후속 연구 (DeBERTa 등)"]
-
     end
-
     
-
     Comp1 --&gt; Con1
-
     Comp2 --&gt; Con1
-
     
-
     style Res1 fill:#b2dfdb
-
     style Res2 fill:#b2dfdb
-
     style Con2 fill:#ffcc80
-
 </code></pre>
 <h3>6.1  GLUE 벤치마크 (General Language Understanding Evaluation)</h3>
 <p>ELECTRA는 동일한 계산 자원(Compute Budget) 대비 기존 모델들을 압도하는 성능을 보여주었다.</p>

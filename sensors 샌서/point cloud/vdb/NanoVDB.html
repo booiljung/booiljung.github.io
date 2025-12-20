@@ -196,123 +196,67 @@
 <h3>4.2  OpenVDB에서 NanoVDB로의 변환</h3>
 <p>기존 OpenVDB 자산을 활용하기 위해, NanoVDB는 간편한 변환 유틸리티를 제공한다. 변환 프로세스는 <code>nanovdb/util/CreateNanoGrid.h</code> 또는 <code>nanovdb/util/OpenToNanoVDB.h</code> 헤더에 포함된 함수를 통해 이루어진다.21</p>
 <p>다음은 OpenVDB 그리드를 생성하여 NanoVDB 파일(<code>.nvdb</code>)로 저장하는 기본적인 C++ 코드 예제이다.</p>
-<pre><code class="language-C++">
-// 1. OpenVDB 및 NanoVDB 유틸리티 헤더 포함
-
+<pre><code class="language-C++">// 1. OpenVDB 및 NanoVDB 유틸리티 헤더 포함
 #include &lt;openvdb/tools/LevelSetSphere.h&gt;
-
 #include &lt;nanovdb/util/CreateNanoGrid.h&gt;
-
 #include &lt;nanovdb/util/IO.h&gt;
 
-
-
 int main() {
-
     try {
-
         // 2. OpenVDB 그리드 생성 (예: 구 형태의 레벨셋) [21]
-
         auto srcGrid = openvdb::tools::createLevelSetSphere&lt;openvdb::FloatGrid&gt;(
-
             100.0f, openvdb::Vec3f(0.0f), 1.0f);
 
-
-
         // 3. OpenVDB 그리드를 NanoVDB 그리드로 변환 [21, 23]
-
         // 이 함수가 OpenVDB의 동적 트리를 순회하여 선형화된 메모리 버퍼를 생성한다.
-
         auto handle = nanovdb::createNanoGrid(*srcGrid);
 
-
-
         // 4. 변환된 NanoVDB 그리드를 파일로 저장 [21]
-
         nanovdb::io::writeGrid("data/sphere.nvdb", handle);
 
-
-
     } catch (const std::exception&amp; e) {
-
         std::cerr &lt;&lt; "An exception occurred: \"" &lt;&lt; e.what() &lt;&lt; "\"" &lt;&lt; std::endl;
-
     }
-
     return 0;
-
 }
-
 </code></pre>
 <p>위 코드에서 <code>nanovdb::createNanoGrid()</code> 함수는 복잡한 변환 과정을 캡슐화한다. 반환된 <code>handle</code> 객체(<code>nanovdb::GridHandle</code>)는 생성된 메모리 버퍼의 소유권을 안전하게 관리하는 RAII(Resource Acquisition Is Initialization) 래퍼(wrapper) 역할을 한다.5</p>
 <h3>4.3  CUDA를 이용한 데이터 접근 및 커널 작성</h3>
 <p>NanoVDB의 진정한 힘은 CUDA 커널 내에서 발휘된다. <code>nanovdb::CudaDeviceBuffer</code>를 사용하면 GPU 메모리에 직접 NanoVDB 그리드를 생성하거나, 호스트에서 생성된 그리드를 GPU로 효율적으로 업로드할 수 있다.5</p>
 <p>다음은 OpenVDB 그리드를 GPU 메모리에 상주하는 NanoVDB 그리드로 변환하고, 이를 CUDA 커널에서 접근하는 예제이다.</p>
 <p><strong>호스트 코드 (C++/CUDA):</strong></p>
-<pre><code class="language-C++">
-// (srcGrid는 openvdb::FloatGrid::Ptr 타입으로 미리 생성되었다고 가정)
-
-
+<pre><code class="language-C++">// (srcGrid는 openvdb::FloatGrid::Ptr 타입으로 미리 생성되었다고 가정)
 
 // 1. CudaDeviceBuffer를 템플릿 인자로 지정하여 GPU 메모리에 NanoVDB 그리드 생성 [5, 24]
-
 auto handle = nanovdb::openToNanoVDB&lt;nanovdb::CudaDeviceBuffer&gt;(*srcGrid);
 
-
-
 // 2. (필요 시) 호스트의 데이터를 디바이스로 업로드
-
 handle.deviceUpload();
 
-
-
 // 3. CUDA 커널에 전달할 디바이스 그리드의 포인터 획득
-
 const nanovdb::FloatGrid* deviceGrid = handle.deviceGrid&lt;float&gt;();
 
-
-
 // 4. CUDA 커널 실행
-
 my_nanovdb_kernel&lt;&lt;&lt;gridDim, blockDim&gt;&gt;&gt;(deviceGrid, /*... 다른 파라미터... */);
-
 </code></pre>
 <p><strong>디바이스 코드 (CUDA 커널):</strong></p>
-<pre><code class="language-C++">
-__global__ void my_nanovdb_kernel(const nanovdb::FloatGrid* grid, float* output)
-
+<pre><code class="language-C++">__global__ void my_nanovdb_kernel(const nanovdb::FloatGrid* grid, float* output)
 {
-
     // 스레드 ID 계산
-
     int x = blockIdx.x * blockDim.x + threadIdx.x;
-
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-
     
-
     // 1. 각 스레드는 독립적인 ReadAccessor를 생성 [12]
-
     // 이는 스레드 안전성을 보장하고 접근 캐싱을 활용하기 위함이다.
-
     auto accessor = grid-&gt;getAccessor();
 
-
-
     // 2. 월드 좌표(worldPos)로부터 복셀 값(value)을 조회
-
     nanovdb::Vec3f worldPos(x, y, 0.0f); // 스레드별로 계산된 위치
-
     float value = accessor.getValue(worldPos);
 
-
-
     // 3. 조회된 값을 사용하여 연산 수행
-
     output[y * grid_width + x] = value * 2.0f;
-
 }
-
 </code></pre>
 <p>NanoVDB를 사용하는 CUDA 커널을 최적화할 때는 GPU 아키텍처의 특성을 고려해야 한다. <code>ReadAccessor</code>의 적극적인 사용은 필수적이며, 공간적으로 인접한 픽셀을 처리하는 스레드들이 인접한 복셀에 접근하도록 스레드 작업을 매핑하면 <code>ReadAccessor</code>의 캐시 효율과 GPU의 메모리 병합(coalescing) 효과를 동시에 극대화할 수 있다.5</p>
 <p><code>ReadAccessor</code> 자체가 매우 가볍게 설계되었기 때문에 12, 스레드당 레지스터 사용량을 적게 유지하여 높은 점유율(occupancy)을 달성하고 메모리 접근 지연 시간(latency)을 효과적으로 숨기는 데 유리하다.</p>

@@ -327,179 +327,92 @@
 <p>DDP와 <code>DistributedSampler</code>의 설계는 강력한 추상화의 예시다. 프로세스 동기화, 네트워크 통신, 데이터 샤딩과 같은 엄청난 복잡성을 단 몇 줄의 API 호출 뒤에 숨김으로써, 사용자는 분산 시스템 엔지니어링이 아닌 모델 로직 자체에 집중할 수 있다. 이러한 뛰어난 개발자 경험은 PyTorch가 연구 커뮤니티에서 지배적인 위치를 차지하게 된 주된 이유 중 하나이며, 대규모 실험의 진입 장벽을 낮춤으로써 AI 분야의 혁신 속도를 가속화했다.</p>
 <h3>5.5  완전한 주석 코드 예제</h3>
 <p>다음은 위에서 설명한 모든 요소를 통합한 완전한 DDP 훈련 스크립트다.</p>
-<pre><code class="language-Python">
-import os
-
+<pre><code class="language-Python">import os
 import torch
-
 import torch.distributed as dist
-
 import torch.nn as nn
-
 import torch.optim as optim
-
 from torch.nn.parallel import DistributedDataParallel as DDP
-
 from torch.utils.data import DataLoader, Dataset
-
 from torch.utils.data.distributed import DistributedSampler
 
-
-
 def setup(rank, world_size):
-
     """분산 환경을 초기화한다."""
-
     os.environ = 'localhost'
-
     os.environ = '12355'
-
     # 프로세스 그룹 초기화
-
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
-
     # 현재 프로세스에 GPU 할당
-
     torch.cuda.set_device(rank)
 
-
-
 def cleanup():
-
     """프로세스 그룹을 정리한다."""
-
     dist.destroy_process_group()
 
-
-
 class ToyModel(nn.Module):
-
     """간단한 선형 모델."""
-
     def __init__(self):
-
         super(ToyModel, self).__init__()
-
         self.net1 = nn.Linear(10, 10)
-
         self.relu = nn.ReLU()
-
         self.net2 = nn.Linear(10, 5)
 
-
-
     def forward(self, x):
-
         return self.net2(self.relu(self.net1(x)))
 
-
-
 class ToyDataset(Dataset):
-
     """임의의 데이터를 생성하는 더미 데이터셋."""
-
     def __init__(self, size=1000):
-
         self.size = size
-
         self.data = torch.randn(size, 10)
-
         self.labels = torch.randn(size, 5)
 
-
-
     def __len__(self):
-
         return self.size
 
-
-
     def __getitem__(self, idx):
-
         return self.data[idx], self.labels[idx]
 
-
-
 def train(rank, world_size):
-
     print(f"Rank {rank}에서 DDP 훈련 시작...")
-
     setup(rank, world_size)
 
-
-
     # 1. 모델 생성 및 GPU로 이동
-
     model = ToyModel().to(rank)
-
     # 2. DDP로 모델 래핑
-
     ddp_model = DDP(model, device_ids=[rank])
 
-
-
     loss_fn = nn.MSELoss()
-
     optimizer = optim.SGD(ddp_model.parameters(), lr=0.001)
 
-
-
     # 3. DistributedSampler로 데이터셋 준비
-
     dataset = ToyDataset()
-
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-
     dataloader = DataLoader(dataset, batch_size=32, shuffle=False, sampler=sampler)
 
-
-
     # 4. 훈련 루프
-
     for epoch in range(10):
-
         sampler.set_epoch(epoch) # 매 에포크마다 셔플링 보장
-
         for data, labels in dataloader:
-
             data = data.to(rank)
-
             labels = labels.to(rank)
 
-
-
             optimizer.zero_grad()
-
             outputs = ddp_model(data)
-
             loss = loss_fn(outputs, labels)
-
             loss.backward() # 이 시점에 그래디언트 동기화 발생
-
             optimizer.step()
 
-
-
         if rank == 0:
-
             print(f"Rank {rank}, Epoch {epoch}, Loss: {loss.item()}")
-
-
 
     cleanup()
 
-
-
 if __name__ == "__main__":
-
     import torch.multiprocessing as mp
-
     world_size = torch.cuda.device_count()
-
     # mp.spawn을 사용하여 여러 프로세스를 생성하고 train 함수 실행
-
     mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
-
 </code></pre>
 <h2>6.  <code>torchrun</code>으로 분산 작업 실행 및 관리</h2>
 <p>올바르게 작성된 DDP 스크립트라도 정확하게 실행되지 않으면 무용지물이다. 이 섹션에서는 분산 작업을 실행하는 운영 측면을 다룬다.</p>
@@ -508,22 +421,15 @@ if __name__ == "__main__":
 <p><code>torchrun</code>은 더 나은 오류 복원력, 탄력적 훈련(작업 중간에 워커 수 조정) 지원, 그리고 더 깔끔한 커맨드 라인 인자를 제공한다는 장점이 있다.26</p>
 <h3>6.2  단일 노드, 다중 GPU 실행</h3>
 <p>일반적인 단일 노드 실행 명령어는 다음과 같다 14:</p>
-<pre><code class="language-Bash">
-torchrun --nproc_per_node=NUM_GPUS your_script.py --arg1...
-
+<pre><code class="language-Bash">torchrun --nproc_per_node=NUM_GPUS your_script.py --arg1...
 </code></pre>
 <p><code>torchrun</code>은 <code>NUM_GPUS</code>개의 프로세스를 생성하고, 각 프로세스에 대해 <code>LOCAL_RANK</code>, <code>RANK</code>, <code>WORLD_SIZE</code> 환경 변수를 자동으로 설정한다.</p>
 <h3>6.3  스케일 아웃: 다중 노드, 다중 GPU 실행</h3>
 <p>다중 노드 실행은 참여하는 모든 노드에서 다음 명령어를 실행해야 한다 14:</p>
-<pre><code class="language-Bash">
-torchrun --nnodes=TOTAL_NODES --nproc_per_node=GPUS_PER_NODE \
-
+<pre><code class="language-Bash">torchrun --nnodes=TOTAL_NODES --nproc_per_node=GPUS_PER_NODE \
 --node_rank=NODE_INDEX --rdzv_id=JOB_ID \
-
 --rdzv_backend=c10d --rdzv_endpoint=MASTER_NODE_IP:PORT \
-
 your_script.py...
-
 </code></pre>
 <p>랑데부(<code>rdzv</code>) 관련 인자들은 다음과 같은 의미를 가진다:</p>
 <ul>

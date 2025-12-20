@@ -167,11 +167,8 @@
 <p><strong>문제점:</strong> WebTransport는 웹소켓과 마찬가지로 HTTP 요청 시 자동으로 전송되는 쿠키(Cookie)나 브라우저 자격증명(credentials)을 연결 과정에서 사용하지 않는다.22 따라서 서버는 연결을 요청하는 클라이언트가 누구인지 식별할 내장된 방법이 없다.</p>
 <p><strong>해결 방안:</strong> 현재 가장 널리 사용되고 권장되는 방법은 <strong>인증 토큰(예: JWT)을 연결 URL의 쿼리 파라미터(query parameter)로 전달</strong>하는 것이다.22</p>
 <p>JavaScript</p>
-<pre><code>
-// 클라이언트 측 코드 예시
-
+<pre><code>// 클라이언트 측 코드 예시
 const transport = new WebTransport("https://your-server.com:4433/webtransport?token=YOUR_JWT_HERE");
-
 </code></pre>
 <p>서버는 클라이언트로부터 HTTP/3 CONNECT 요청을 수신했을 때, 요청 URL에서 <code>token</code> 파라미터를 추출하고 그 유효성을 검증한다. 토큰이 유효한 경우에만 세션 수립을 허용하고, 유효하지 않다면 연결을 거부해야 한다.</p>
 <p>이 방식은 간단하지만, URL이 서버 로그, 브라우저 히스토리, 프록시 서버 로그 등에 평문으로 기록될 수 있다는 잠재적 위험을 내포한다. 따라서 다음과 같은 보안 강화 전략을 함께 적용해야 한다.</p>
@@ -216,15 +213,10 @@ const transport = new WebTransport("https://your-server.com:4433/webtransport?to
 </ol>
 <p>Cargo.toml 파일에 필요한 라이브러리를 추가한다. tokio는 비동기 런타임, wtransport는 WebTransport 구현, anyhow는 간결한 에러 처리를 위해 사용된다.</p>
 <p>Ini, TOML</p>
-<pre><code>
-[dependencies]
-
+<pre><code>[dependencies]
 tokio = { version = "1", features = ["full"] }
-
 wtransport = "0.6"
-
 anyhow = "1"
-
 </code></pre>
 <ol start="2">
 <li>TLS 인증서 준비</li>
@@ -232,176 +224,98 @@ anyhow = "1"
 <p>WebTransport는 보안 연결(HTTPS)을 강제하므로 TLS 인증서가 필수다.10 개발 목적으로는</p>
 <p><code>openssl</code> 커맨드나 <code>rcgen</code>과 같은 Rust 크레이트를 사용하여 자체 서명 인증서와 개인 키를 생성할 수 있다. 프로덕션 환경에서는 반드시 공인된 CA로부터 발급받은 인증서를 사용해야 한다.</p>
 <p>Bash</p>
-<pre><code>
-# openssl을 사용한 자체 서명 인증서 생성 예시
-
+<pre><code># openssl을 사용한 자체 서명 인증서 생성 예시
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -keyout key.pem -out cert.pem -days 365
-
 </code></pre>
 <ol start="3">
 <li>서버 엔드포인트 설정 및 실행</li>
 </ol>
 <p>main 함수 내에서 서버를 설정하고 실행한다. ServerConfig를 통해 바인딩할 주소와 포트, 그리고 앞서 생성한 TLS 인증서(Identity)를 지정한다.</p>
 <p>Rust</p>
-<pre><code>
-use wtransport::Endpoint;
-
+<pre><code>use wtransport::Endpoint;
 use wtransport::Identity;
-
 use wtransport::ServerConfig;
-
 use std::net::Ipv4Addr;
 
-
-
 #[tokio::main]
-
 async fn main() -&gt; anyhow::Result&lt;()&gt; {
-
     let config = ServerConfig::builder()
-
        .with_bind_address((, 4433).into())
-
        .with_identity(&amp;Identity::load("cert.pem", "key.pem").await?)
-
        .build();
 
-
-
     let server = Endpoint::server(config)?;
-
     println!("Server listening on port 4433");
 
-
-
     //... 연결 수락 루프...
-
     Ok(())
-
 }
-
 </code></pre>
 <ol start="4">
 <li>연결 수락 및 세션 처리 루프</li>
 </ol>
 <p>무한 루프 내에서 server.accept().await를 호출하여 클라이언트의 연결을 기다린다. 새로운 연결이 들어오면, incoming_session.await를 통해 HTTP/3 핸드셰이크를 완료하고 Request 객체를 얻는다. 이 단계에서 URL의 쿼리 파라미터를 파싱하여 인증 토큰을 검증할 수 있다. 인증에 성공하면 request.accept().await를 호출하여 Connection 객체를 생성하고, 이 객체를 별도의 비동기 태스크로 보내 병렬 처리한다.</p>
 <p>Rust</p>
-<pre><code>
-loop {
-
+<pre><code>loop {
     let incoming_session = server.accept().await;
-
     let request = incoming_session.await?;
 
-
-
     // 여기에 인증 로직 추가 (예: request.authority(), request.path() 확인)
-
     // 인증 실패 시 request.reject() 호출 가능
 
-
-
     let connection = request.accept().await?;
-
     println!("New connection accepted: {}", connection.remote_address());
 
-
-
     tokio::spawn(async move {
-
         handle_connection(connection).await;
-
     });
-
 }
-
 </code></pre>
 <ol start="5">
 <li>스트림 및 데이터그램 처리</li>
 </ol>
 <p>handle_connection 함수에서는 클라이언트와의 실제 통신을 처리한다. connection.accept_bi()를 호출하여 클라이언트가 시작한 양방향 스트림을 수신하고, 받은 스트림을 통해 데이터를 읽고 다시 쓰는 Echo 로직을 구현할 수 있다.26</p>
 <p>Rust</p>
-<pre><code>
-async fn handle_connection(connection: wtransport::Connection) {
-
+<pre><code>async fn handle_connection(connection: wtransport::Connection) {
     loop {
-
         tokio::select! {
-
             // 양방향 스트림 처리
-
             stream = connection.accept_bi() =&gt; {
-
                 match stream {
-
                     Ok((mut send_stream, mut recv_stream)) =&gt; {
-
                         println!("New bidirectional stream accepted");
-
                         // 스트림 데이터를 그대로 에코
-
                         tokio::spawn(async move {
-
                             let mut buffer = vec![0; 65536];
-
                             while let Ok(Some(n)) = recv_stream.read(&amp;mut buffer).await {
-
                                 let _ = send_stream.write_all(&amp;buffer[..n]).await;
-
                             }
-
                         });
-
                     }
-
                     Err(e) =&gt; {
-
                         eprintln!("Error accepting bidirectional stream: {}", e);
-
                         break;
-
                     }
-
                 }
-
             }
-
             // 데이터그램 처리
-
             datagram = connection.receive_datagram() =&gt; {
-
                 match datagram {
-
                     Ok(data) =&gt; {
-
                          println!("Datagram received: {:?}", data);
-
                          // 데이터그램 에코
-
                          let _ = connection.send_datagram(&amp;data);
-
                     }
-
                     Err(e) =&gt; {
-
                         eprintln!("Error receiving datagram: {}", e);
-
                         break;
-
                     }
-
                 }
-
             }
-
         }
-
     }
-
     println!("Connection closed: {}", connection.remote_address());
-
 }
-
 </code></pre>
 <ol start="6">
 <li>에러 처리</li>
@@ -468,147 +382,84 @@ async fn handle_connection(connection: wtransport::Connection) {
 <p>activity_main.xml 레이아웃 파일에 WebView를 추가하거나, onCreate 메서드에서 동적으로 생성한다.42 인터넷 사용을 위해</p>
 <p><code>AndroidManifest.xml</code>에 권한을 추가해야 한다.</p>
 <p>XML</p>
-<pre><code>
-&lt;uses-permission android:name="android.permission.INTERNET" /&gt;
-
+<pre><code>&lt;uses-permission android:name="android.permission.INTERNET" /&gt;
 </code></pre>
 <p><code>Activity</code> 또는 <code>Fragment</code>에서 <code>WebView</code>의 설정을 초기화하고 JavaScript를 활성화한다.</p>
 <p>Kotlin</p>
-<pre><code>
-val myWebView: WebView = findViewById(R.id.webview)
-
+<pre><code>val myWebView: WebView = findViewById(R.id.webview)
 myWebView.settings.javaScriptEnabled = true
-
 </code></pre>
 <ol start="2">
 <li>Kotlin-JavaScript 브릿지 생성</li>
 </ol>
 <p>JavaScript에서 호출할 메서드를 정의하는 Kotlin 클래스를 생성한다. 외부에 노출할 모든 메서드에는 @JavascriptInterface 어노테이션을 반드시 붙여야 보안 취약점을 방지할 수 있다.43</p>
 <p>Kotlin</p>
-<pre><code>
-class WebAppInterface(private val context: Context) {
-
+<pre><code>class WebAppInterface(private val context: Context) {
     @JavascriptInterface
-
     fun onDataReceived(data: String) {
-
         // JS로부터 Base64 인코딩된 데이터를 수신
-
         // 여기에서 Base64 디코딩 및 Protobuf 역직렬화 수행
-
         Log.d("WebAppInterface", "Data received: $data")
-
     }
-
-
 
     @JavascriptInterface
-
     fun onConnectionClosed(reason: String) {
-
         Log.d("WebAppInterface", "Connection closed: $reason")
-
     }
-
 }
-
 </code></pre>
 <p>생성한 인터페이스를 <code>WebView</code>에 등록한다. <code>"Android"</code>는 JavaScript에서 이 객체에 접근할 때 사용할 이름이다.</p>
 <p>Kotlin</p>
-<pre><code>
-myWebView.addJavascriptInterface(WebAppInterface(this), "Android")
-
+<pre><code>myWebView.addJavascriptInterface(WebAppInterface(this), "Android")
 </code></pre>
 <ol start="3">
 <li>JavaScript 클라이언트 코드 작성 (assets 폴더)</li>
 </ol>
 <p>main/assets 디렉터리에 index.html과 webtransport_client.js 파일을 생성한다. WebView는 이 로컬 파일을 로드하게 된다.</p>
 <p>Kotlin</p>
-<pre><code>
-// WebView에서 로컬 HTML 파일 로드
-
+<pre><code>// WebView에서 로컬 HTML 파일 로드
 myWebView.loadUrl("file:///android_asset/index.html")
-
 </code></pre>
 <p><code>webtransport_client.js</code>에서는 실제 WebTransport 통신 로직을 구현한다. 서버로부터 데이터를 수신하면, 등록된 <code>Android</code> 인터페이스의 메서드를 호출하여 네이티브 코드로 데이터를 전달한다. 데이터는 바이너리이므로 Base64 문자열로 인코딩하여 전달하는 것이 일반적이다.</p>
 <p>JavaScript</p>
-<pre><code>
-// webtransport_client.js
-
+<pre><code>// webtransport_client.js
 let transport;
 
-
-
 async function connect(url) {
-
     try {
-
         transport = new WebTransport(url);
-
         await transport.ready;
 
-
-
         // 데이터그램 수신 루프
-
         const reader = transport.datagrams.readable.getReader();
-
         while (true) {
-
             const { value, done } = await reader.read();
-
             if (done) break;
-
             // ArrayBuffer를 Base64 문자열로 변환하여 네이티브로 전달
-
             const base64String = btoa(String.fromCharCode.apply(null, value));
-
             Android.onDataReceived(base64String);
-
         }
-
     } catch (e) {
-
         Android.onConnectionClosed(e.toString());
-
     }
-
 }
-
-
 
 // 네이티브에서 호출할 함수
-
 function sendData(base64String) {
-
     if (!transport) return;
-
     // Base64 문자열을 Uint8Array로 변환하여 전송
-
     const binaryString = atob(base64String);
-
     const len = binaryString.length;
-
     const bytes = new Uint8Array(len);
-
     for (let i = 0; i &lt; len; i++) {
-
         bytes[i] = binaryString.charCodeAt(i);
-
     }
-
     const writer = transport.datagrams.writable.getWriter();
-
     writer.write(bytes);
-
     writer.releaseLock();
-
 }
 
-
-
 connect('https://your-rust-server:4433/path');
-
 </code></pre>
 <ol start="4">
 <li>데이터 흐름 관리 (Protobuf 포함)</li>

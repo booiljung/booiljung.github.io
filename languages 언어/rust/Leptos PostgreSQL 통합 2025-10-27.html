@@ -197,61 +197,33 @@
 <p>가장 먼저 해결해야 할 과제는 <code>sqlx</code>가 클라이언트 측 WASM 바이너리에 포함되지 않도록 하는 것이다. 이는 <code>Cargo.toml</code> 파일의 <code>features</code> 설정을 통해 해결할 수 있다.</p>
 <p><code>Cargo.toml</code> 파일에 다음과 같이 의존성을 추가한다.</p>
 <p>Ini, TOML</p>
-<pre><code>
-[dependencies]
-
+<pre><code>[dependencies]
 leptos = { version = "0.6", features = ["hydrate"] }
-
 leptos_meta = { version = "0.6", features = ["hydrate"] }
-
 leptos_router = { version = "0.6", features = ["hydrate"] }
-
 #... 다른 의존성들
 
-
-
 # 서버 전용 의존성
-
 axum = { version = "0.7", optional = true }
-
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
-
 sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls"], optional = true }
-
 dotenvy = { version = "0.15", optional = true }
 
-
-
 [features]
-
 hydrate = [
-
     "leptos/hydrate",
-
     "leptos_meta/hydrate",
-
     "leptos_router/hydrate",
-
 ]
-
 ssr = [
-
     "dep:axum",
-
     "dep:tokio",
-
     "leptos/ssr",
-
     "leptos_meta/ssr",
-
     "leptos_router/ssr",
-
     "dep:sqlx",
-
     "dep:dotenvy"
-
 ]
-
 </code></pre>
 <p>여기서 핵심적인 부분은 다음과 같다.</p>
 <ol>
@@ -265,486 +237,257 @@ ssr = [
 <p>이 방법은 Leptos의 내장 의존성 주입 메커니즘인 <code>context</code>를 사용하는 가장 순수한 방식이다.</p>
 <p>먼저, <code>main.rs</code>의 <code>main</code> 함수에서 애플리케이션이 시작될 때 커넥션 풀을 생성하고 컨텍스트에 주입한다.</p>
 <p>Rust</p>
-<pre><code>
-// main.rs
-
+<pre><code>// main.rs
 use leptos::*;
-
 use leptos_axum::{LeptosRoutes, leptos_routes_with_context};
-
 use axum::{Router, routing::post};
-
 use sqlx::{PgPool, postgres::PgPoolOptions};
-
 use std::env;
 
-
-
 // 앱 상태를 위한 구조체 (여기서는 풀만 포함)
-
 #
-
 pub struct AppState {
-
     pub pool: PgPool,
-
 }
 
-
-
 #[tokio::main]
-
 async fn main() {
-
     //.env 파일 로드
-
     dotenvy::dotenv().expect("Failed to load.env file");
-
-
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-
-
     // 데이터베이스 커넥션 풀 생성
-
     let pool = PgPoolOptions::new()
-
        .max_connections(5)
-
        .connect(&amp;database_url)
-
        .await
-
        .expect("Failed to create pool.");
 
-
-
     // sqlx 마이그레이션 실행 (프로덕션에서는 별도 스크립트로 관리하는 것이 좋음)
-
     sqlx::migrate!("./migrations")
-
        .run(&amp;pool)
-
        .await
-
        .expect("Migrations failed");
 
-
-
     let conf = get_configuration(None).await.unwrap();
-
     let leptos_options = conf.leptos_options;
-
     let addr = leptos_options.site_addr;
-
     let routes = generate_route_list(App);
 
-
-
     let app = Router::new()
-
        .route("/api/*fn_name", post(leptos_axum::handle_server_fns))
-
        .leptos_routes_with_context(&amp;leptos_options, routes, move |
 
-
-
 | {
-
             // 모든 요청에 대해 커넥션 풀을 컨텍스트에 제공
-
             provide_context(pool.clone());
-
         }, App)
-
        .with_state(leptos_options);
 
-
-
     axum::serve(tokio::net::TcpListener::bind(&amp;addr).await.unwrap(), app)
-
        .await
-
        .unwrap();
-
 }
-
 </code></pre>
 <p>위 코드에서 <code>leptos_routes_with_context</code> 함수의 세 번째 인자로 전달된 클로저 `move |</p>
 <p>| { provide_context(pool.clone()); }<code>가 핵심이다.[24, 25, 26] 이 클로저는 각 요청이 처리될 때마다 실행되어, 미리 생성된 커넥션 풀의 복사본(</code>Arc`의 클론이므로 비용이 저렴하다)을 Leptos의 리액티브 컨텍스트에 주입한다.</p>
 <p>이제 서버 함수 내에서는 <code>use_context</code> 또는 <code>expect_context</code>를 사용하여 이 풀을 안전하게 가져올 수 있다.24</p>
 <p>Rust</p>
-<pre><code>
-// todo.rs (서버 함수 내부)
-
+<pre><code>// todo.rs (서버 함수 내부)
 use leptos::*;
-
 use sqlx::PgPool;
 
-
-
 #[server]
-
 pub async fn get_todos() -&gt; Result&lt;Vec&lt;Todo&gt;, ServerFnError&gt; {
-
     // 컨텍스트에서 PgPool을 가져온다.
-
     let pool = use_context::&lt;PgPool&gt;()
-
        .ok_or_else(|| ServerFnError::ServerError("Database pool not found.".to_string()))?;
 
-
-
     //... 쿼리 실행
-
     Ok(todos)
-
 }
-
 </code></pre>
 <h4>4.2.2  Axum State 및 Context 혼합 활용 (Hybrid Approach)</h4>
 <p>이 전략은 Axum의 <code>State</code> 추출자와 Leptos의 <code>context</code>를 모두 활용하여 유연성을 극대화한다. 기존 Axum 생태계의 미들웨어나 추출자를 재사용해야 할 때 유용하다.</p>
 <p><code>AppState</code> 구조체를 정의하고 <code>#</code>를 추가한다.</p>
 <p>Rust</p>
-<pre><code>
-// main.rs
-
+<pre><code>// main.rs
 use axum::extract::FromRef;
-
 //...
 
-
-
 #
-
 pub struct AppState {
-
     pub leptos_options: LeptosOptions,
-
     pub pool: PgPool,
-
 }
-
 </code></pre>
 <p><code>main</code> 함수에서 라우터를 설정할 때, <code>with_state</code>와 <code>leptos_routes_with_context</code>를 함께 사용한다.</p>
 <p>Rust</p>
-<pre><code>
-// main.rs (main 함수 내부)
-
+<pre><code>// main.rs (main 함수 내부)
     //... pool 생성...
-
     let conf = get_configuration(None).await.unwrap();
-
     let leptos_options = conf.leptos_options;
-
     let addr = leptos_options.site_addr;
-
     let routes = generate_route_list(App);
 
-
-
     let app_state = AppState {
-
         leptos_options,
-
         pool: pool.clone(), // 풀을 AppState에 저장
-
     };
 
-
-
     let app = Router::new()
-
         //... 서버 함수 라우트...
-
        .leptos_routes_with_context(&amp;app_state.leptos_options, routes, move |
 
-
-
 | {
-
             // Leptos 컨텍스트에도 풀을 주입
-
             provide_context(pool.clone());
-
         }, App)
-
        .fallback(file_and_error_handler)
-
        .with_state(app_state); // Axum의 State로 AppState 전체를 주입
 
-
-
     //... 서버 실행...
-
 </code></pre>
 <p>이 패턴은 다소 중복적으로 보일 수 있지만, 강력한 유연성을 제공한다. <code>with_state</code>를 통해 기존 Axum 핸들러나 미들웨어는 <code>State&lt;PgPool&gt;</code> 또는 <code>State&lt;AppState&gt;</code>를 통해 데이터베이스 풀에 접근할 수 있다. 동시에 <code>provide_context</code>를 통해 Leptos 서버 함수는 <code>use_context</code>를 사용하여 관용적인 방식으로 풀에 접근할 수 있다. 이는 순수 Axum 백엔드에서 풀스택 Leptos 애플리케이션으로 점진적으로 마이그레이션하거나, 두 생태계의 장점을 모두 활용하고자 할 때 매우 효과적인 아키텍처 선택이다.24</p>
 <h3>4.3 서버 함수를 통한 CRUD 작업 구현</h3>
 <p>이제 데이터베이스 풀을 공유하는 방법을 알았으니, 실제 CRUD(Create, Read, Update, Delete) 작업을 수행하는 서버 함수를 구현할 차례이다. <code>todo.rs</code>라는 파일을 만들어 <code>Todo</code> 항목을 관리하는 로직을 작성한다.</p>
 <p>Rust</p>
-<pre><code>
-// todo.rs
-
+<pre><code>// todo.rs
 use leptos::*;
-
 use serde::{Deserialize, Serialize};
-
 use sqlx::{PgPool, FromRow};
 
-
-
 #[cfg(feature = "ssr")]
-
 pub mod ssr {
-
     use leptos::ServerFnError;
-
     use sqlx::PgPool;
 
-
-
     pub fn pool() -&gt; Result&lt;PgPool, ServerFnError&gt; {
-
         use_context::&lt;PgPool&gt;()
-
            .ok_or_else(|| ServerFnError::ServerError("Pool missing.".into()))
-
     }
-
 }
-
-
 
 #
-
 pub struct Todo {
-
     pub id: i32,
-
     pub title: String,
-
     pub completed: bool,
-
 }
-
-
 
 // CREATE
-
 #
-
 pub async fn add_todo(title: String) -&gt; Result&lt;(), ServerFnError&gt; {
-
     let pool = ssr::pool()?;
-
     sqlx::query("INSERT INTO todos (title, completed) VALUES ($1, false)")
-
        .bind(title)
-
        .execute(&amp;pool)
-
        .await
-
        .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
-
     Ok(())
-
 }
-
-
 
 // READ
-
 #
-
 pub async fn get_todos() -&gt; Result&lt;Vec&lt;Todo&gt;, ServerFnError&gt; {
-
     let pool = ssr::pool()?;
-
     let todos = sqlx::query_as::&lt;_, Todo&gt;("SELECT * FROM todos ORDER BY id")
-
        .fetch_all(&amp;pool)
-
        .await
-
        .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
-
     Ok(todos)
-
 }
-
-
 
 // UPDATE
-
 #
-
 pub async fn update_todo(id: i32, completed: bool) -&gt; Result&lt;(), ServerFnError&gt; {
-
     let pool = ssr::pool()?;
-
     sqlx::query("UPDATE todos SET completed = $1 WHERE id = $2")
-
        .bind(completed)
-
        .bind(id)
-
        .execute(&amp;pool)
-
        .await
-
        .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
-
     Ok(())
-
 }
-
-
-
 
 
 // DELETE
-
 #
-
 pub async fn delete_todo(id: i32) -&gt; Result&lt;(), ServerFnError&gt; {
-
     let pool = ssr::pool()?;
-
     sqlx::query("DELETE FROM todos WHERE id = $1")
-
        .bind(id)
-
        .execute(&amp;pool)
-
        .await
-
        .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
-
     Ok(())
-
 }
-
 </code></pre>
 <p>각 함수는 <code>#[server]</code> 매크로를 통해 서버 함수로 정의되며, <code>ssr::pool()?</code>을 호출하여 컨텍스트로부터 데이터베이스 풀을 획득한 후 <code>sqlx</code>를 사용하여 비동기 쿼리를 실행한다.</p>
 <h3>4.4 견고한 오류 처리 아키텍처</h3>
 <p>위 예제의 <code>map_err</code>를 사용한 오류 변환은 간단하지만, 애플리케이션이 복잡해질수록 한계에 부딪힌다. 더 나은 방법은 애플리케이션 전반에 걸쳐 사용될 통합된 오류 타입을 정의하는 것이다.</p>
 <p><code>thiserror</code> 크레이트를 사용하여 <code>AppError</code> 열거형을 정의한다.</p>
 <p>Rust</p>
-<pre><code>
-// error.rs (새 파일)
-
+<pre><code>// error.rs (새 파일)
 use leptos::{ServerFnError, ServerFnErrorErr};
-
 use serde::{Deserialize, Serialize};
-
 use thiserror::Error;
 
-
-
 #
-
 pub enum AppError {
-
     #
-
     Sqlx(String),
-
     #[error("Not Found")]
-
     NotFound,
-
     #
-
     ServerError(String),
-
 }
-
-
 
 // sqlx::Error를 AppError로 변환
-
 impl From&lt;sqlx::Error&gt; for AppError {
-
     fn from(e: sqlx::Error) -&gt; Self {
-
         AppError::Sqlx(e.to_string())
-
     }
-
 }
-
-
 
 // ServerFnErrorErr를 AppError로 변환
-
 impl From&lt;ServerFnErrorErr&gt; for AppError {
-
     fn from(e: ServerFnErrorErr) -&gt; Self {
-
         AppError::ServerError(e.to_string())
-
     }
-
 }
-
 </code></pre>
 <p>이제 <code>FromServerFnError</code> 트레이트를 <code>AppError</code>에 대해 구현하여, Leptos 서버 함수가 이 커스텀 오류 타입을 직접 반환할 수 있도록 한다.11</p>
 <p>Rust</p>
-<pre><code>
-// error.rs (계속)
-
+<pre><code>// error.rs (계속)
 use server_fn::codec::{Json, SerdeAny};
-
 use server_fn::error::FromServerFnError;
 
-
-
 impl FromServerFnError&lt;Json&gt; for AppError {
-
     fn from_server_fn_error(err: ServerFnError) -&gt; Self {
-
         match err {
-
             ServerFnError::ServerError(s) =&gt; AppError::ServerError(s),
-
             _ =&gt; AppError::ServerError("An unknown server error occurred.".to_string()),
-
         }
-
     }
-
 }
-
 </code></pre>
 <p>이제 서버 함수들을 리팩토링하여 <code>Result&lt;T, AppError&gt;</code>를 반환하도록 수정할 수 있다. <code>?</code> 연산자를 통해 <code>sqlx::Error</code>가 자동으로 <code>AppError::Sqlx</code>로 변환되어 코드가 훨씬 간결하고 명확해진다.</p>
 <p>Rust</p>
-<pre><code>
-// todo.rs (수정된 버전)
-
+<pre><code>// todo.rs (수정된 버전)
 use crate::error::AppError; // 커스텀 에러 임포트
 
-
-
 #
-
 pub async fn add_todo(title: String) -&gt; Result&lt;(), ServerFnError&lt;AppError&gt;&gt; {
-
     let pool = ssr::pool().map_err(ServerFnError::from)?;
-
     sqlx::query("...")
-
        .bind(title)
-
        .execute(&amp;pool)
-
        .await?; // '?'가 sqlx::Error를 AppError로 자동 변환
-
     Ok(())
-
 }
-
 </code></pre>
 <p>(참고: Leptos 최신 버전에서는 <code>Result&lt;(), ServerFnError&lt;AppError&gt;&gt;</code> 대신 <code>Result&lt;(), AppError&gt;</code>를 직접 반환할 수 있도록 API가 개선되었다.)</p>
 <h2>5.  <code>Diesel</code>을 이용한 대안적 통합 패턴</h2>
@@ -760,148 +503,82 @@ pub async fn add_todo(title: String) -&gt; Result&lt;(), ServerFnError&lt;AppErr
 <li><strong><code>Cargo.toml</code> 설정:</strong> <code>diesel</code> 의존성을 <code>optional = true</code>로 선언하고 <code>ssr</code> 피처에 포함시킨다.</li>
 </ol>
 <p>Ini, TOML</p>
-<pre><code>
-[dependencies]
-
+<pre><code>[dependencies]
 diesel = { version = "2.1", features = ["postgres"], optional = true }
 
-
-
 [features]
-
 ssr = ["dep:diesel",...]
-
 </code></pre>
 <ol start="2">
 <li><strong><code>#[cfg(feature = "ssr")]</code> 사용:</strong> <code>Diesel</code>을 사용하는 모든 모듈, <code>use</code> 구문, 함수, 구조체 정의 앞에 <code>#[cfg(feature = "ssr")]</code> 어트리뷰트를 붙여야 한다.8</li>
 </ol>
 <p>Rust</p>
-<pre><code>
-#[cfg(feature = "ssr")]
-
+<pre><code>#[cfg(feature = "ssr")]
 pub mod schema {
-
     // diesel::table! 매크로로 생성된 스키마
-
 }
 
-
-
 #[cfg(feature = "ssr")]
-
 use crate::schema::posts;
 
-
-
 #[cfg(feature = "ssr")]
-
 #[derive(Queryable)]
-
 pub struct Post { /*... */ }
-
 </code></pre>
 <p>여기서 중요한 점은 클라이언트와 서버 간에 공유되어야 하는 데이터 모델(예: <code>Post</code> 구조체)의 처리이다. 서버에서는 <code>#[derive(Queryable)]</code>과 같은 <code>Diesel</code> 전용 트레이트가 필요하지만, 클라이언트에서는 이 <code>derive</code> 매크로가 컴파일 오류를 유발한다. 이 의존성 역설은 <code>#[cfg_attr]</code> 어트리뷰트를 통해 우아하게 해결할 수 있다.</p>
 <p>Rust</p>
-<pre><code>
-use serde::{Serialize, Deserialize};
-
-
+<pre><code>use serde::{Serialize, Deserialize};
 
 #
-
 #
-
 #[cfg_attr(feature = "ssr", diesel(table_name = crate::schema::posts))]
-
 pub struct Post {
-
     pub id: i32,
-
     pub title: String,
-
     pub body: String,
-
 }
-
 </code></pre>
 <p><code>#[cfg_attr(feature = "ssr",...)]</code>는 “만약 <code>ssr</code> 피처가 활성화되어 있다면, 뒤따르는 어트리뷰트를 적용하라“는 의미이다.8 따라서 서버 빌드에서는 <code>derive(Queryable,...)</code>가 적용되어 <code>Diesel</code>과 호환되는 구조체가 생성되고, 클라이언트(WASM) 빌드에서는 이 어트리뷰트가 무시되어 <code>serde</code> 트레이트만 가진 순수한 데이터 구조체로 컴파일된다. 이는 조건부 컴파일 환경에서 타입을 안전하게 공유하는 핵심적인 기법이다.</p>
 <p>비동기 환경에서의 동기 코드 실행</p>
 <p><code>Diesel</code>의 동기적인 데이터베이스 작업을 비동기 런타임에서 안전하게 실행하려면, <code>tokio::task::spawn_blocking</code>을 사용해야 한다. 이 함수는 전달된 클로저를 별도의 블로킹 스레드 풀에서 실행하여, 메인 비동기 이벤트 루프가 멈추는 것을 방지한다.</p>
 <p>다음은 <code>Diesel</code>과 <code>spawn_blocking</code>을 사용한 서버 함수 예시이다.</p>
 <p>Rust</p>
-<pre><code>
-#[cfg(feature = "ssr")]
-
+<pre><code>#[cfg(feature = "ssr")]
 pub mod ssr {
-
     use diesel::pg::PgConnection;
-
     use diesel::r2d2::{ConnectionManager, Pool};
-
     use leptos::*;
-
-
 
     pub type DbPool = Pool&lt;ConnectionManager&lt;PgConnection&gt;&gt;;
 
-
-
     pub fn pool() -&gt; Result&lt;DbPool, ServerFnError&gt; {
-
         use_context::&lt;DbPool&gt;()
-
            .ok_or_else(|| ServerFnError::ServerError("Pool missing.".into()))
-
     }
-
 }
 
-
-
 #[server]
-
 pub async fn add_post_diesel(title: String, body: String) -&gt; Result&lt;(), ServerFnError&gt; {
-
     use crate::schema::posts;
-
     use diesel::prelude::*;
-
-
 
     let pool = ssr::pool()?;
 
-
-
     // spawn_blocking을 사용하여 동기 작업을 별도 스레드에서 실행
-
     tokio::task::spawn_blocking(move |
 
-
-
 | {
-
         let mut conn = pool.get()?; // 풀에서 커넥션을 동기적으로 가져옴
-
         diesel::insert_into(posts::table)
-
            .values((posts::title.eq(title), posts::body.eq(body)))
-
            .execute(&amp;mut conn)
-
     })
-
    .await // 블로킹 작업이 완료될 때까지 기다림
-
    .map_err(|e| ServerFnError::ServerError(format!("Spawn blocking error: {}", e)))? // JoinError 처리
-
    .map_err(|e| ServerFnError::ServerError(format!("Diesel error: {}", e)))?; // Diesel/R2D2 Error 처리
 
-
-
     Ok(())
-
 }
-
 </code></pre>
 <h2>6.  성능 최적화 및 배포 고려사항</h2>
 <h3>6.1 라이브러리별 성능 함정 및 최적화</h3>
@@ -912,15 +589,10 @@ pub async fn add_post_diesel(title: String, body: String) -&gt; Result&lt;(), Se
 <h3>6.2 커넥션 풀 튜닝</h3>
 <p><code>sqlx::postgres::PgPoolOptions</code>를 사용하면 커넥션 풀의 동작을 세밀하게 제어할 수 있다. 가장 중요한 설정은 <code>max_connections</code>이다.</p>
 <p>Rust</p>
-<pre><code>
-let pool = PgPoolOptions::new()
-
+<pre><code>let pool = PgPoolOptions::new()
    .max_connections(10) // 애플리케이션 부하와 데이터베이스 사양에 맞게 설정
-
    .connect(&amp;database_url)
-
    .await?;
-
 </code></pre>
 <p>최대 연결 수는 애플리케이션의 동시 사용자 수, 데이터베이스 서버의 CPU 코어 수 및 가용 메모리를 고려하여 신중하게 설정해야 한다. 너무 낮게 설정하면 요청이 연결을 기다리며 지연되고, 너무 높게 설정하면 데이터베이스 서버에 과도한 부하를 줄 수 있다.23</p>
 <h3>6.3 데이터베이스 마이그레이션 관리</h3>

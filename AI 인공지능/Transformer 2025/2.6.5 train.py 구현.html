@@ -140,255 +140,130 @@
             </header>
             <article>
                 <h1>2.6.5 train.py 구현</h1>
-<pre><code class="language-python">
-import torch
-
+<pre><code class="language-python">import torch
 import torch.nn as nn
-
 import time
-
 from model import make_model
 
-
-
 class Batch:
-
     """학습 중 마스크를 포함한 데이터 배치를 보유하는 객체입니다."""
-
     def __init__(self, src, trg=None, pad=0):
-
         self.src = src
-
         self.src_mask = (src != pad).unsqueeze(-2)
-
         if trg is not None:
-
             self.trg = trg[:, :-1]
-
             self.trg_y = trg[:, 1:]
-
             self.trg_mask = \
-
                 self.make_std_mask(self.trg, pad)
-
             self.ntokens = (self.trg_y != pad).data.sum()
-
     
-
     @staticmethod
-
     def make_std_mask(tgt, pad):
-
         "패딩과 미래의 단어를 가리는 마스크를 생성합니다."
-
         tgt_mask = (tgt != pad).unsqueeze(-2)
-
         tgt_mask = tgt_mask &amp; Variable(
-
             subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
-
         return tgt_mask
 
-
-
 def subsequent_mask(size):
-
     "이후 위치를 보지 못하게 마스킹 처리합니다."
-
     attn_shape = (1, size, size)
-
     subsequent_mask = torch.triu(torch.ones(attn_shape), diagonal=1).type(torch.uint8)
-
     return subsequent_mask == 0
 
-
-
 def data_gen(V, batch, nbatches):
-
     "복사 과제를 위한 임의의 숫자 데이터를 생성합니다."
-
     for i in range(nbatches):
-
         data = torch.from_numpy(torch.randint(1, V, size=(batch, 10)).numpy()).long()
-
         data[:, 0] = 1 # 시작 토큰 설정
-
         src = data.detach()
-
         tgt = data.detach()
-
         yield Batch(src, tgt, 0)
 
-
-
 class LabelSmoothing(nn.Module):
-
     "라벨 스무딩(Label Smoothing)을 구현합니다."
-
     def __init__(self, size, padding_idx, smoothing=0.0):
-
         super(LabelSmoothing, self).__init__()
-
         self.criterion = nn.KLDivLoss(reduction='sum')
-
         self.padding_idx = padding_idx
-
         self.confidence = 1.0 - smoothing
-
         self.smoothing = smoothing
-
         self.size = size
-
         self.true_dist = None
-
         
-
     def forward(self, x, target):
-
         assert x.size(1) == self.size
-
         true_dist = x.data.clone()
-
         true_dist.fill_(self.smoothing / (self.size - 2))
-
         true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
-
         true_dist[:, self.padding_idx] = 0
-
         mask = torch.nonzero(target.data == self.padding_idx)
-
         if mask.dim() &gt; 0:
-
             true_dist.index_fill_(0, mask.squeeze(), 0.0)
-
         self.true_dist = true_dist
-
         return self.criterion(x, true_dist.detach())
 
-
-
 class SimpleLossCompute:
-
     "손실 계산 및 옵티마이저 업데이트를 담당하는 클래스입니다."
-
     def __init__(self, generator, criterion, opt=None):
-
         self.generator = generator
-
         self.criterion = criterion
-
         self.opt = opt
-
         
-
     def __call__(self, x, y, norm):
-
         x = self.generator(x)
-
         loss = self.criterion(x.contiguous().view(-1, x.size(-1)), 
-
                               y.contiguous().view(-1)) / norm
-
         loss.backward()
-
         if self.opt is not None:
-
             self.opt.step()
-
             self.opt.zero_grad()
-
         return loss.data * norm
 
-
-
 def run_epoch(data_iter, model, loss_compute):
-
     "표준 학습 에포크를 실행하고 로그를 출력합니다."
-
     start = time.time()
-
     total_tokens = 0
-
     total_loss = 0
-
     tokens = 0
-
     for i, batch in enumerate(data_iter):
-
         out = model.forward(batch.src, batch.trg, 
-
                             batch.src_mask, batch.trg_mask)
-
         loss = loss_compute(out, batch.trg_y, batch.ntokens)
-
         total_loss += loss
-
         total_tokens += batch.ntokens
-
         tokens += batch.ntokens
-
         if i % 50 == 1:
-
             elapsed = time.time() - start
-
             print("Epoch Step: %d Loss: %f Tokens per Sec: %f" %
-
                     (i, loss / batch.ntokens, tokens / elapsed))
-
             start = time.time()
-
             tokens = 0
-
     return total_loss / total_tokens
 
-
-
 # 하위 호환성을 위한 Variable 정의
-
 def Variable(x): return x
 
-
-
 def train_copy_task():
-
     "복사 과제 학습을 실행합니다."
-
     V = 11
-
     criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
-
     model = make_model(V, V, N=2)
-
     model_opt = torch.optim.Adam(model.parameters(), lr=0.005, betas=(0.9, 0.98), eps=1e-9)
 
-
-
     print("학습 시작...")
-
     for epoch in range(50):
-
         model.train()
-
         run_epoch(data_gen(V, 30, 20), model, 
-
                   SimpleLossCompute(model.generator, criterion, model_opt))
-
         model.eval()
-
         print("에포크 %d 완료" % epoch)
-
     
-
     torch.save(model.state_dict(), "copy_model.pt")
-
     print("모델이 copy_model.pt 파일로 저장되었습니다.")
 
-
-
 if __name__ == "__main__":
-
     train_copy_task()
-
 </code></pre>
 
             </article>

@@ -146,44 +146,29 @@
 <p>이러한 계산적 장벽을 극복하고 트랜스포머를 진정한 ‘장문맥(long-context)’ 시대로 이끌기 위한 필연적인 대안으로 희소 어텐션(Sparse Attention)이 등장하였다.12 희소 어텐션의 핵심 철학은 모든 토큰 쌍 간의 상호작용이 동등하게 중요하지 않다는 관찰에서 출발한다.13 실제로 대부분의 정보 교환은 일부 핵심적인 연결을 통해 이루어지므로, 전체 어텐션 행렬(<span class="math math-inline">n \times n</span>)에서 중요도가 낮은 연결을 생략하고 일부 중요한 연결에만 계산 자원을 집중함으로써 효율성을 극대화하고자 하는 것이다.9</p>
 <p>초기 연구는 단순히 <span class="math math-inline">O(n^2)</span>라는 계산 복잡도를 줄이는 데 집중하였으나, 연구가 심화됨에 따라 문제는 ’어떻게 모든 계산을 피할 것인가’에서 ’어떤 연결을 유지해야 모델의 표현력을 보존하면서 효율성을 얻을 수 있는가’로 재정의되었다. 즉, 단순한 계산량 감소의 문제를 넘어, 정보가 모델 내에서 어떻게 효율적으로 흐를 수 있는지에 대한 ‘연결성(connectivity)’ 설계의 문제로 발전한 것이다. 이는 Longformer의 ‘로컬+글로벌’ 어텐션이나 BigBird의 ‘로컬+글로벌+랜덤’ 어텐션과 같은 설계 철학에서 명확히 드러나며, 데이터의 내재적 구조에 대한 귀납적 편향(inductive bias)을 아키텍처에 주입하는 정교한 접근법으로 이어졌다.7</p>
 <p>본 안내서는 표준 셀프 어텐션의 근본적인 한계를 명확히 규명하고, 이를 해결하기 위해 제안된 다양한 희소 어텐션 기법들의 철학과 원리를 심층적으로 분석한다. OpenAI의 Sparse Transformer, Longformer, BigBird, Reformer 등 선구적인 아키텍처들의 수학적 원리, 성능 벤치마크, 장단점을 비교 평가하고, 나아가 하드웨어 최적화 동향과 미래 연구 방향을 조망함으로써 희소 어텐션 분야에 대한 포괄적이고 깊이 있는 통찰을 제공하고자 한다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     A["자연어 처리(NLP)의 과거"] --&gt;|순차적 처리/장기 의존성 문제| B["RNN/LSTM의 한계"]
-
     B --&gt; C["2017: Attention Is All You Need"]
-
     C --&gt; D["트랜스포머(Transformer) 등장"]
-
     D --&gt; E["성공 요인: 전역적 문맥 파악"]
-
     E --&gt; F["셀프 어텐션(Self-Attention)"]
-
     
-
     F --&gt; G{"치명적 제약 발생"}
-
     G --&gt; H["계산량과 메모리가 O(n^2)로 증가"]
-
     H --&gt; I["긴 시퀀스 처리 불가 (예: BERT 512 토큰 제한)"]
-
     I --&gt; J["장문서/고해상도 이미지/오디오 처리의 족쇄"]
-
     
-
     J --&gt; K["해결책: 희소 어텐션(Sparse Attention) 등장"]
-
     K --&gt; L["핵심 철학: 모든 토큰이 동등하게 중요하지 않다"]
-
 </code></pre>
 <h2>2. 표준 셀프 어텐션: 계산적 병목 현상의 해부</h2>
 <p>희소 어텐션의 필요성을 이해하기 위해서는 먼저 표준 셀프 어텐션, 특히 스케일드 닷-프로덕트 어텐션(Scaled Dot-Product Attention)의 작동 방식과 그로 인한 계산적 병목 현상을 정확히 파악해야 한다.</p>
 <h3>2.1 스케일드 닷-프로덕트 어텐션의 수학적 정의</h3>
 <p>트랜스포머의 셀프 어텐션은 “쿼리(Query), 키(Key), 값(Value)이라는 세 가지 벡터를 사용하여 입력 시퀀스 내의 각 요소에 대한 가중치를 계산하는 메커니즘“으로 요약할 수 있다.1 입력 시퀀스의 각 토큰 임베딩 벡터는 세 개의 서로 다른 가중치 행렬(<span class="math math-inline">W^Q, W^K, W^V</span>)과 곱해져 각각 쿼리(<span class="math math-inline">Q</span>), 키(<span class="math math-inline">K</span>), 값(<span class="math math-inline">V</span>) 벡터로 변환된다. 이 과정을 통해 모델은 각 토큰이 다른 토큰들과의 관계를 파악(쿼리-키)하고, 그 관계의 중요도에 따라 정보를 취합(값)할 수 있는 능력을 갖추게 된다.1</p>
 <p>스케일드 닷-프로덕트 어텐션 함수는 다음 수식으로 정의된다.1<br />
-$$</p>
-<p>\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V</p>
-<p>$$<br />
+<span class="math math-display">
+\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+</span><br />
 이 수식은 다음과 같은 단계로 해석할 수 있다.</p>
 <ol>
 <li><strong>유사도 계산 (Score):</strong> 각 쿼리 벡터는 모든 키 벡터와 내적(dot-product)을 수행한다. 이 결과(<span class="math math-inline">QK^T</span>)는 각 쿼리가 다른 모든 위치의 키와 얼마나 유사한지를 나타내는 스코어 행렬이 된다.4</li>
@@ -203,43 +188,24 @@ $$</p>
 <h3>2.3 장문맥 처리에 대한 근본적 제약</h3>
 <p>이 <span class="math math-inline">O(n^2)</span> 복잡도는 시퀀스 길이가 길어질수록 재앙에 가까운 계산 비용 증가를 초래한다. 예를 들어, 시퀀스 길이가 64,000(<span class="math math-inline">64K</span>)인 문서를 처리한다고 가정해보자. 이 경우 어텐션 스코어 행렬의 크기는 <span class="math math-inline">(64K, 64K)</span>가 되며, 각 원소를 32비트 부동소수점(4 bytes)으로 저장할 경우 필요한 메모리는 <span class="math math-inline">64000 \times 64000 \times 4</span> bytes, 즉 약 16GB에 달한다.14 이는 단일 어텐션 헤드, 단일 레이어에서 발생하는 메모리 요구량이며, 현대의 대규모 모델이 수십 개의 레이어와 헤드를 사용하는 것을 감안하면 사실상 감당 불가능한 수준이다.</p>
 <p>이러한 근본적인 제약으로 인해 표준 트랜스포머는 장문서 분류, 긴 대화형 QA, 고해상도 이미지 생성, 비디오 처리 등 방대한 문맥 정보가 필수적인 수많은 현실 세계의 문제에 적용되기 어려웠다. 이는 훈련 단계뿐만 아니라 추론 단계에서도 마찬가지로 심각한 병목으로 작용하며 6, 트랜스포머 아키텍처의 잠재력을 제한하는 가장 큰 걸림돌로 지적되어 왔다.</p>
-<pre><code class="language-mermaid">
-sequenceDiagram
-
+<pre><code class="language-mermaid">sequenceDiagram
     participant Input as "입력 토큰 (Embeddings)"
-
     participant Proj as "가중치 투영 (W_Q, W_K, W_V)"
-
     participant Calc as "유사도 계산 (MatMul)"
-
     participant Soft as "소프트맥스 &amp; 스케일링"
-
     participant Out as "최종 출력 (Output)"
 
-
-
     Input-&gt;&gt;Proj: "입력 벡터 전달"
-
     Proj-&gt;&gt;Calc: "Query(Q), Key(K), Value(V) 생성"
-
     Note over Calc: "병목 발생 구간"
-
     Calc-&gt;&gt;Calc: "Q * K^T 연산 (내적)"
-
     Note over Calc: "크기: (n, d_k) * (d_k, n) = (n, n)"
-
     Note over Calc: "복잡도: O(n^2)"
-
     Calc-&gt;&gt;Soft: "어텐션 스코어 전달"
-
     Soft-&gt;&gt;Soft: "스케일링 (div sqrt(d_k))"
-
     Soft-&gt;&gt;Soft: "Softmax (확률 분포화)"
-
     Soft-&gt;&gt;Out: "가중치 * Value(V)"
-
     Out--&gt;&gt;Input: "문맥이 반영된 새 표현"
-
 </code></pre>
 <h2>3. 희소 어텐션의 철학과 분류 체계</h2>
 <p>표준 어텐션의 <span class="math math-inline">O(n^2)</span> 장벽을 넘기 위해 등장한 희소 어텐션은 단순히 계산을 생략하는 기술적 트릭을 넘어, 어텐션 메커니즘의 본질과 데이터의 내재적 구조에 대한 깊은 통찰에 기반한다.</p>
@@ -251,146 +217,76 @@ sequenceDiagram
 <li><strong>창발적 능력(Emergent Abilities)과의 연관성:</strong> 최근 연구는 희소 어텐션이 단순한 효율성 개선 도구를 넘어 모델의 핵심적인 학습 메커니즘과 깊이 연관되어 있음을 시사한다. 특히, 대규모 언어 모델(LLM)이 특정 규모 이상에서 갑자기 발현하는 인-컨텍스트 학습(in-context learning)과 같은 창발적 능력은 훈련 과정에서 특정 희소 어텐션 패턴(예: Induction Head)이 형성되는 시점과 강한 상관관계를 보인다.15 이는 모델이 이전 문맥에서 패턴을 찾아 새로운 예시에 적용하는 능력이, 특정 토큰에 집중하고 그 다음 토큰으로 정보를 복사하는 희소한 정보 흐름을 통해 구현됨을 의미한다. 따라서 희소성은 모델의 고차원적인 추론 능력을 가능하게 하는 근본적인 원리일 수 있다.</li>
 </ul>
 <p>이러한 배경을 바탕으로, 희소 어텐션 연구는 ’정적 설계’에서 ’동적 적응’으로, 그리고 최근에는 ’하드웨어와의 공동 설계’로 진화하는 뚜렷한 궤적을 보여왔다. 초기에는 Longformer나 Sparse Transformer처럼 데이터에 대한 일반적인 가정(예: 지역성)을 바탕으로 ‘설계된’ 고정 희소 패턴을 제안했다.11 이는 효율적이었지만, 가정이 데이터의 특성과 맞지 않을 경우 성능 저하의 한계를 보였다. 이후 Reformer와 같이 콘텐츠의 유사성에 기반해 동적으로 클러스터를 형성하거나 18, VSA처럼 중요한 토큰을 데이터로부터 직접 ’학습’하는 적응형 방식으로 발전했다.19 가장 최근에는 NSA(Natively Trainable Sparse Attention)와 같이, 이론적 계산량 감소가 실제 하드웨어(GPU)에서의 속도 향상으로 직결되도록 메모리 접근 패턴과 산술 강도(Arithmetic Intensity)까지 고려하는 ‘하드웨어-정렬(Hardware-Aligned)’ 설계 패러다임이 부상하고 있다.10 이 진화 과정은 딥러닝 연구가 순수한 알고리즘 설계를 넘어, 실제 배포 환경의 물리적 제약까지 고려하는 방향으로 성숙하고 있음을 보여준다.</p>
-<pre><code class="language-mermaid">
-mindmap
-
+<pre><code class="language-mermaid">mindmap
   root(("희소 어텐션 (Sparse Attention)"))
-
     Theory["이론적 배경: 왜 효과적인가?"]
-
       NaturalSparsity["어텐션 분포의 자연적 희소성"]
-
       Locality["정보의 지역성 및 계층성"]
-
       Emergent["창발적 능력 (인-컨텍스트 학습)"]
-
     Categories["기법 분류 체계"]
-
       Fixed["고정 패턴 (Fixed Patterns)"]
-
         Blockwise["블록 단위 (Blockwise)"]
-
         Sliding["슬라이딩 윈도우 (Sliding Window)"]
-
         Strided["스트라이드/확장 (Strided)"]
-
         Ex_Fixed["예: Sparse Transformer, Longformer"]
-
       Learnable["학습 가능/적응형 (Learnable/Adaptive)"]
-
         Clustering["클러스터링 (Clustering)"]
-
         Routing["라우팅 (Routing)"]
-
         Ex_Learnable["예: Reformer, Routing Transformer"]
-
       LowRank["저랭크/커널 (Low-Rank/Kernel)"]
-
         Approx["행렬 분해 및 근사"]
-
         Ex_LowRank["예: Linformer, Performer"]
-
       Memory["메모리/압축 (Memory/Compression)"]
-
         GlobalTokens["글로벌 토큰 (Global Tokens)"]
-
         Ex_Memory["예: BigBird, NSA"]
-
 </code></pre>
 <h3>3.2 희소 어텐션 기법의 분류</h3>
-<pre><code class="language-mermaid">
-graph LR
-
+<pre><code class="language-mermaid">graph LR
     subgraph ST ["Sparse Transformer (OpenAI)"]
-
         direction TB
-
         ST1["2차원 분해 (Factorized Attention)"]
-
         ST2["스트라이드 어텐션 (Strided): 주기적 패턴"]
-
         ST3["고정 어텐션 (Fixed): 정보 허브"]
-
         ST4["복잡도: O(n * sqrt(n))"]
-
         ST1 --&gt; ST2
-
         ST1 --&gt; ST3
-
         ST3 --&gt; ST4
-
     end
-
-
 
     subgraph LF ["Longformer"]
-
         direction TB
-
         LF1["지역성 + 전역성 결합"]
-
         LF2["슬라이딩 윈도우 (Sliding Window): 지역 문맥"]
-
         LF3["글로벌 어텐션 (Global): CLS 토큰 등"]
-
         LF4["복잡도: O(n) (선형)"]
-
         LF1 --&gt; LF2
-
         LF1 --&gt; LF3
-
         LF3 --&gt; LF4
-
     end
-
-
 
     subgraph BB ["BigBird"]
-
         direction TB
-
         BB1["이론적 보존 (Universal Approximator)"]
-
         BB2["윈도우 (Window)"]
-
         BB3["랜덤 (Random): 숏컷 제공"]
-
         BB4["글로벌 (Global)"]
-
         BB5["복잡도: O(n)"]
-
         BB1 --&gt; BB2
-
         BB1 --&gt; BB3
-
         BB1 --&gt; BB4
-
         BB4 --&gt; BB5
-
     end
-
-
 
     subgraph RF ["Reformer"]
-
         direction TB
-
         RF1["메모리 혁신"]
-
         RF2["LSH 어텐션: 해싱으로 근사"]
-
         RF3["가역 잔차 네트워크 (Reversible Layers)"]
-
         RF4["메모리 사용량: O(1) (레이어 수 무관)"]
-
         RF1 --&gt; RF2
-
         RF1 --&gt; RF3
-
         RF3 --&gt; RF4
-
     end
-
 </code></pre>
 <p>다양한 희소 어텐션 기법들은 그 접근 방식에 따라 여러 범주로 체계적으로 분류할 수 있다. “A Survey of Efficient Transformers“와 같은 연구에서는 다음과 같은 분류 체계를 제시한다.20</p>
 <ul>
@@ -465,65 +361,35 @@ graph LR
 <p>이 분석을 통해 각 희소 어텐션 모델이 특정 트레이드오프(trade-off) 관계 위에 있음을 알 수 있다. Longformer는 단순하고 효과적인 선형 복잡도를 제공하지만, 글로벌 토큰을 수동으로 지정해야 하는 등 태스크 의존적인 측면이 있다. BigBird는 이론적 견고함과 뛰어난 범용성을 자랑하지만, 랜덤 어텐션으로 인해 구현이 다소 복잡할 수 있다. Reformer는 LSH와 가역 레이어를 통해 압도적인 메모리 효율성을 달성하지만, 해싱 기반 근사로 인해 미세한 정확도 손실이 발생할 수 있다. 따라서 특정 응용 분야에 가장 적합한 모델을 선택하기 위해서는 이러한 장단점을 종합적으로 고려하는 것이 중요하다.</p>
 <h2>6. 하드웨어 인식 최적화와 실제 구현</h2>
 <p>희소 어텐션의 연구가 심화되면서, 알고리즘의 이론적 계산 복잡도(FLOPs) 감소가 실제 하드웨어에서의 속도(throughput) 향상으로 반드시 이어지지는 않는다는 점이 명확해졌다. 이는 현대 GPU 아키텍처의 작동 방식과 밀접한 관련이 있으며, ‘하드웨어-인식(hardware-aware)’ 최적화의 중요성을 부각시켰다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     Theory["이론적 희소 어텐션"] --&gt;|FLOPs 감소| Hope["속도 향상 기대"]
-
     
-
     subgraph Reality ["실제 하드웨어(GPU) 환경"]
-
         MemoryBound["메모리 접근 병목 (Memory Bound)"]
-
         Irregular["불규칙한 메모리 접근 패턴 (Random/Sparse)"]
-
         LowAI["낮은 산술 강도 (Arithmetic Intensity)"]
-
         Idle["GPU 연산 유닛 유휴 상태"]
-
         
-
         Irregular --&gt; MemoryBound
-
         MemoryBound --&gt; LowAI
-
         LowAI --&gt; Idle
-
     end
-
-
 
     Hope --&gt;|하지만...| Reality
-
     Idle --&gt; Slow["실제 속도 저하 또는 미미한 향상"]
 
-
-
     subgraph Solutions ["해결책: 하드웨어 인식 최적화"]
-
         CustomKernel["커스텀 CUDA 커널 / Triton 언어"]
-
         FlashAttn["FlashAttention: I/O 인식 최적화"]
-
         CoDesign["하드웨어-소프트웨어 공동 설계 (NSA)"]
-
         
-
         CustomKernel --&gt; Optimized["메모리 접근 최적화"]
-
         FlashAttn --&gt; Optimized
-
         CoDesign --&gt; Optimized
-
     end
 
-
-
     Slow --&gt; Solutions
-
     Optimized --&gt; RealSpeedup["실제 가속 달성"]
-
 </code></pre>
 <h3>6.1 이론적 복잡도와 실제 속도의 간극</h3>
 <p>GPU와 같은 현대 가속기는 계산(computation) 속도에 비해 메모리 접근(memory access) 속도가 상대적으로 느리다. 따라서 연산의 효율성은 순수한 계산량뿐만 아니라, 계산에 필요한 데이터를 얼마나 효율적으로 메모리에서 가져오고 쓰는가에 크게 좌우된다. 이 비율을 나타내는 척도가 산술 강도(Arithmetic Intensity), 즉 메모리 접근 단위 당 수행되는 계산의 양이다.10</p>
@@ -537,67 +403,36 @@ graph TD
 <p>FlashAttention의 성공은 희소 어텐션 연구에도 새로운 방향을 제시했다. 즉, 단순히 0이 아닌 원소의 수를 줄이는 것을 넘어, 그 0이 아닌 원소들이 어떻게 메모리에 배치되고 접근되는지가 실제 성능에 결정적이라는 것이다. 이에 따라, FlashAttention의 I/O 효율적인 계산 방식을 희소 패턴에 맞게 수정하려는 연구가 활발히 진행되고 있다. 예를 들어, Binary Block Masking과 같은 기술은 FlashAttention의 타일링 구조 내에서 희소 마스크를 효율적으로 적용하여, 희소성의 계산량 감소 이점과 FlashAttention의 I/O 효율성 이점을 모두 취하고자 한다.33 이는 차세대 희소 어텐션이 알고리즘적 희소성과 하드웨어적 I/O 효율성을 동시에 고려하는 방향으로 나아갈 것임을 예고한다.</p>
 <h2>7. 미래 전망: 차세대 희소 어텐션을 향하여</h2>
 <p>희소 어텐션 분야는 지난 몇 년간 눈부신 발전을 거듭해왔으며, 현재도 활발한 연구가 진행 중이다. 미래의 희소 어텐션은 더욱 동적이고, 하드웨어에 최적화되며, 모델의 근본적인 학습 능력과 깊이 연관된 방향으로 진화할 것으로 전망된다.</p>
-<pre><code class="language-mermaid">
-graph TD
-
+<pre><code class="language-mermaid">graph TD
     Future["희소 어텐션의 미래 (Future Directions)"]
-
     
-
     Path1["동적 및 데이터 의존적 희소성"]
-
     Detail1["고정 패턴 탈피"]
-
     Detail2["입력 내용에 따라 중요 경로 스스로 학습"]
-
     Detail3["예: VSA (계층적 선택)"]
-
     
-
     Path2["하드웨어-소프트웨어 공동 설계"]
-
     Detail4["알고리즘 설계 시 하드웨어 특성 반영"]
-
     Detail5["텐서 코어 활용 및 메모리 계층 최적화"]
-
     Detail6["예: NSA (Natively Trainable)"]
-
     
-
     Path3["창발적 능력과의 연계 탐구"]
-
     Detail7["희소성이 고차원 추론의 핵심 메커니즘인가?"]
-
     Detail8["Induction Head와 같은 패턴 형성 연구"]
-
     
-
     Path4["통합 프레임워크"]
-
     Detail9["모듈화된 연산 및 자동 최적화"]
-
     Detail10["예: AttentionEngine"]
 
-
-
     Future --&gt; Path1
-
     Future --&gt; Path2
-
     Future --&gt; Path3
-
     Future --&gt; Path4
-
     
-
     Path1 --&gt; Detail1 --&gt; Detail2 --&gt; Detail3
-
     Path2 --&gt; Detail4 --&gt; Detail5 --&gt; Detail6
-
     Path3 --&gt; Detail7 --&gt; Detail8
-
     Path4 --&gt; Detail9 --&gt; Detail10
-
 </code></pre>
 <h3>7.1 동적 및 데이터 의존적 희소 패턴 연구</h3>
 <p>고정된 패턴을 사용하는 초기 희소 어텐션의 한계를 넘어, 입력 데이터의 내용에 따라 실시간으로 어텐션 패턴을 결정하는 동적(dynamic) 및 데이터 의존적(data-dependent) 희소성 연구가 주목받고 있다.12 이러한 접근법은 모델이 각 입력에 가장 적합한 정보 흐름 경로를 스스로 찾게 함으로써 유연성과 성능을 극대화하는 것을 목표로 한다.</p>
