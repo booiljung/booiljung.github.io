@@ -156,13 +156,17 @@
 <h3>2.2 GPU 메모리 계층 구조 (GPU Memory Hierarchy)</h3>
 <p>현대 GPU(A100, H100 등)의 연산 능력은 지난 수년 동안 비약적으로 발전했으나, 메모리 대역폭의 발전 속도는 이에 미치지 못했다. 이를 ’메모리 장벽(Memory Wall)’이라 부른다. GPU의 메모리는 크게 두 가지 계층으로 나눌 수 있다.3</p>
 <ol>
-<li><strong>HBM (High Bandwidth Memory):</strong> 40GB~80GB의 대용량을 제공하지만, 대역폭은 1.5TB/s~3.35TB/s 수준으로 상대적으로 느리다.</li>
-<li><strong>SRAM (Shared Memory/L1 Cache):</strong> 각 스트리밍 멀티프로세서(SM) 내부에 위치하며, 용량은 192KB~228KB로 매우 작지만, 대역폭은 19TB/s 이상으로 HBM보다 훨씬 빠르다.</li>
+<li>
+<p><strong>HBM (High Bandwidth Memory):</strong> 40GB~80GB의 대용량을 제공하지만, 대역폭은 1.5TB/s~3.35TB/s 수준으로 상대적으로 느리다.</p>
+</li>
+<li>
+<p><strong>SRAM (Shared Memory/L1 Cache):</strong> 각 스트리밍 멀티프로세서(SM) 내부에 위치하며, 용량은 192KB~228KB로 매우 작지만, 대역폭은 19TB/s 이상으로 HBM보다 훨씬 빠르다.</p>
+</li>
 </ol>
-<table><thead><tr><th><strong>메모리 유형</strong></th><th><strong>용량 (A100 기준)</strong></th><th><strong>대역폭 (A100 기준)</strong></th><th><strong>특성</strong></th></tr></thead><tbody>
-<tr><td><strong>SRAM</strong></td><td>192 KB / SM (총 20MB)</td><td>~19 TB/s</td><td>매우 빠름, 매우 작음, 연산 유닛과 직접 연결</td></tr>
-<tr><td><strong>HBM</strong></td><td>40 GB ~ 80 GB</td><td>1.5 ~ 2.0 TB/s</td><td>느림, 대용량, 메인 저장소</td></tr>
-</tbody></table>
+<p>| <strong>메모리 유형</strong> | <strong>용량 (A100 기준)</strong>  | <strong>대역폭 (A100 기준)</strong> | <strong>특성</strong>                                    |</p>
+<p>| ————— | ——————— | ––––––––––– | —————————————–– |</p>
+<p>| <strong>SRAM</strong>        | 192 KB / SM (총 20MB) | ~19 TB/s               | 매우 빠름, 매우 작음, 연산 유닛과 직접 연결 |</p>
+<p>| <strong>HBM</strong>         | 40 GB ~ 80 GB         | 1.5 ~ 2.0 TB/s         | 느림, 대용량, 메인 저장소                   |</p>
 <p>기존 어텐션 구현은 연산 시간의 대부분을 HBM 접근(Access)에 소모하는 ‘메모리 바운드(Memory-bound)’ 특성을 가진다. 반면, 행렬 곱셈(GEMM)과 같은 연산은 HBM 접근 대비 연산량의 비율이 높아 ‘컴퓨트 바운드(Compute-bound)’ 특성을 가진다. FlashAttention의 핵심 목표는 어텐션 연산을 메모리 바운드 상태에서 컴퓨트 바운드 상태로 전환하는 것이다. 이를 위해서는 HBM 접근 횟수를 최소화하고, 빠른 SRAM 내에서 데이터를 최대한 재활용해야 한다.1</p>
 <h2>3. FlashAttention-1: 타일링과 재계산을 통한 혁신</h2>
 <p>2022년 Tri Dao 등이 발표한 FlashAttention(이하 FA1)은 정확한 어텐션 값을 계산하면서도 HBM 읽기/쓰기를 획기적으로 줄이는 알고리즘을 제안했다. FA1의 핵심은 **타일링(Tiling)**과 **재계산(Recomputation)**이다.4</p>
@@ -172,11 +176,21 @@
 <h4>3.1.1 알고리즘 원리</h4>
 <p>입력 행렬 <span class="math math-inline">Q, K, V</span>를 SRAM 크기에 맞는 블록 <span class="math math-inline">B_c, B_r</span> 크기로 분할한다.</p>
 <ol>
-<li><strong>초기화:</strong> HBM에서 <span class="math math-inline">Q</span>의 블록 <span class="math math-inline">Q_i</span>를 SRAM으로 로드한다.</li>
-<li><strong>순회:</strong> HBM에서 <span class="math math-inline">K, V</span>의 블록 <span class="math math-inline">K_j, V_j</span>를 순차적으로 SRAM으로 로드한다.</li>
-<li><strong>부분 연산:</strong> <span class="math math-inline">Q_i K_j^T</span>를 계산하여 부분 어텐션 스코어를 구한다.</li>
-<li><strong>통계량 갱신:</strong> 현재 블록에서의 최대값(<span class="math math-inline">m_{curr}</span>)과 지수 합(<span class="math math-inline">l_{curr}</span>)을 계산하고, 이전 블록까지의 통계량(<span class="math math-inline">m_{prev}, l_{prev}</span>)과 결합하여 전체 통계량을 갱신한다. 이 과정에서 출력값 <span class="math math-inline">O_i</span>도 새로운 정규화 상수에 맞춰 리스케일링(Rescaling)된다.</li>
-<li><strong>최종 저장:</strong> 모든 <span class="math math-inline">K, V</span> 블록에 대한 순회가 끝나면 최종 <span class="math math-inline">O_i</span>를 HBM에 기록한다.</li>
+<li>
+<p><strong>초기화:</strong> HBM에서 <span class="math math-inline">Q</span>의 블록 <span class="math math-inline">Q_i</span>를 SRAM으로 로드한다.</p>
+</li>
+<li>
+<p><strong>순회:</strong> HBM에서 <span class="math math-inline">K, V</span>의 블록 <span class="math math-inline">K_j, V_j</span>를 순차적으로 SRAM으로 로드한다.</p>
+</li>
+<li>
+<p><strong>부분 연산:</strong> <span class="math math-inline">Q_i K_j^T</span>를 계산하여 부분 어텐션 스코어를 구한다.</p>
+</li>
+<li>
+<p><strong>통계량 갱신:</strong> 현재 블록에서의 최대값(<span class="math math-inline">m_{curr}</span>)과 지수 합(<span class="math math-inline">l_{curr}</span>)을 계산하고, 이전 블록까지의 통계량(<span class="math math-inline">m_{prev}, l_{prev}</span>)과 결합하여 전체 통계량을 갱신한다. 이 과정에서 출력값 <span class="math math-inline">O_i</span>도 새로운 정규화 상수에 맞춰 리스케일링(Rescaling)된다.</p>
+</li>
+<li>
+<p><strong>최종 저장:</strong> 모든 <span class="math math-inline">K, V</span> 블록에 대한 순회가 끝나면 최종 <span class="math math-inline">O_i</span>를 HBM에 기록한다.</p>
+</li>
 </ol>
 <p>이 방식을 통해 거대한 <span class="math math-inline">N \times N</span> 크기의 <span class="math math-inline">S</span>와 <span class="math math-inline">P</span> 행렬을 HBM에 전혀 기록하지 않고(Materialize하지 않음), 오직 최종 출력 <span class="math math-inline">O</span>와 블록별 통계량(<span class="math math-inline">L, m</span>)만을 저장한다. 이는 메모리 사용량을 <span class="math math-inline">O(N^2)</span>에서 <span class="math math-inline">O(N)</span>으로 줄이는 결정적인 역할을 한다.4</p>
 <h3>3.2 역전파(Backpropagation)를 위한 재계산 전략</h3>
@@ -196,25 +210,33 @@
 <p>또한, 역전파 단계에서도 시퀀스 차원 병렬화를 적용하여 속도를 개선했다. 이를 위해 스레드 블록 간의 통신이 필요해지는데, 원자적 덧셈(Atomic Add) 연산을 사용하여 HBM 상의 결과에 그래디언트를 누적하는 방식을 채택했다.9</p>
 <h3>4.3 워프(Warp) 간 작업 분배 개선</h3>
 <p>FA2는 스레드 블록 내부의 워프(Warp, 32개 스레드 그룹) 간 작업 분배 방식도 개선했다. FA1은 ‘Split-K’ 방식을 사용하여 <span class="math math-inline">K</span> 차원을 나누어 처리했지만, FA2는 <span class="math math-inline">Q</span> 차원을 기준으로 워프에 작업을 할당하는 방식을 최적화하여 공유 메모리(Shared Memory) 접근 시 발생하는 뱅크 충돌(Bank Conflict)을 줄이고 레지스터 사용 효율을 높였다. 이러한 개선을 통해 FA2는 A100 GPU에서 이론적 최대 성능의 73%까지 도달하며 FA1 대비 약 2배의 속도 향상을 이루었다.9</p>
-<table><thead><tr><th><strong>기능</strong></th><th><strong>FlashAttention-1</strong></th><th><strong>FlashAttention-2</strong></th></tr></thead><tbody>
-<tr><td><strong>병렬화 차원</strong></td><td>Batch, Head</td><td>Batch, Head, <strong>Sequence Length</strong></td></tr>
-<tr><td><strong>작업 분할</strong></td><td>Split-K 위주</td><td>최적화된 워프 분할</td></tr>
-<tr><td><strong>소프트맥스 연산</strong></td><td>잦은 리스케일링</td><td>수식 단순화로 연산 감소</td></tr>
-<tr><td><strong>성능 (A100 기준)</strong></td><td>이론 성능의 25~40%</td><td>이론 성능의 <strong>50~73%</strong></td></tr>
-</tbody></table>
+<p>| <strong>기능</strong>             | <strong>FlashAttention-1</strong> | <strong>FlashAttention-2</strong>             |</p>
+<p>| –––––––––– | –––––––––– | –––––––––––––––– |</p>
+<p>| <strong>병렬화 차원</strong>      | Batch, Head          | Batch, Head, <strong>Sequence Length</strong> |</p>
+<p>| <strong>작업 분할</strong>        | Split-K 위주         | 최적화된 워프 분할               |</p>
+<p>| <strong>소프트맥스 연산</strong>  | 잦은 리스케일링      | 수식 단순화로 연산 감소          |</p>
+<p>| <strong>성능 (A100 기준)</strong> | 이론 성능의 25~40%   | 이론 성능의 <strong>50~73%</strong>           |</p>
 <h2>5. FlashAttention-3: Hopper 아키텍처와 비동기성의 극대화</h2>
 <p>2024년, NVIDIA의 H100 (Hopper 아키텍처) GPU가 보급되면서 이에 맞춘 새로운 최적화가 필요해졌다. H100은 강력한 연산 능력뿐만 아니라, 비동기(Asynchronous) 데이터 전송 및 연산 기능이 대폭 강화되었다. FlashAttention-3(이하 FA3)는 이러한 Hopper 아키텍처의 특성을 십분 활용하기 위해 개발되었다.11</p>
 <h3>5.1 Hopper 아키텍처의 핵심: WGMMA와 TMA</h3>
 <p>FA3를 이해하기 위해서는 H100의 두 가지 핵심 기능을 알아야 한다.</p>
 <ol>
-<li><strong>WGMMA (Warp Group Matrix Multiply-Accumulate):</strong> 이전 세대(Ampere)까지는 워프 단위로 텐서 코어 연산을 수행했으나, Hopper는 ‘워프 그룹(Warp Group, 4개의 워프)’ 단위로 더 큰 행렬 연산을 수행할 수 있다. 이는 연산 처리량을 높일 뿐만 아니라, 입력 데이터를 레지스터가 아닌 공유 메모리에서 직접 읽어올 수 있어 레지스터 압박(Register Pressure)을 줄여준다.15</li>
-<li><strong>TMA (Tensor Memory Accelerator):</strong> HBM과 SRAM 사이의 데이터 전송을 전담하는 하드웨어 유닛이다. 기존에는 CUDA 코어가 데이터 복사 명령을 직접 수행해야 했으나, TMA를 사용하면 데이터 복사가 백그라운드에서 비동기적으로 이루어지며, CUDA 코어는 오로지 연산에만 집중할 수 있다.17</li>
+<li>
+<p><strong>WGMMA (Warp Group Matrix Multiply-Accumulate):</strong> 이전 세대(Ampere)까지는 워프 단위로 텐서 코어 연산을 수행했으나, Hopper는 ‘워프 그룹(Warp Group, 4개의 워프)’ 단위로 더 큰 행렬 연산을 수행할 수 있다. 이는 연산 처리량을 높일 뿐만 아니라, 입력 데이터를 레지스터가 아닌 공유 메모리에서 직접 읽어올 수 있어 레지스터 압박(Register Pressure)을 줄여준다.15</p>
+</li>
+<li>
+<p><strong>TMA (Tensor Memory Accelerator):</strong> HBM과 SRAM 사이의 데이터 전송을 전담하는 하드웨어 유닛이다. 기존에는 CUDA 코어가 데이터 복사 명령을 직접 수행해야 했으나, TMA를 사용하면 데이터 복사가 백그라운드에서 비동기적으로 이루어지며, CUDA 코어는 오로지 연산에만 집중할 수 있다.17</p>
+</li>
 </ol>
 <h3>5.2 워프 전문화(Warp Specialization)와 생산자-소비자 모델</h3>
 <p>FA3는 ‘워프 전문화’ 기법을 도입하여 스레드 블록 내의 워프들을 역할별로 분리했다.</p>
 <ul>
-<li><strong>생산자 워프(Producer Warps):</strong> 연산에 참여하지 않고, 오직 TMA를 제어하여 HBM에서 데이터를 SRAM으로 가져오는 역할만 수행한다.</li>
-<li><strong>소비자 워프(Consumer Warps):</strong> 데이터를 로드하는 부담 없이, SRAM에 준비된 데이터를 사용하여 WGMMA 연산과 소프트맥스를 수행한다.</li>
+<li>
+<p><strong>생산자 워프(Producer Warps):</strong> 연산에 참여하지 않고, 오직 TMA를 제어하여 HBM에서 데이터를 SRAM으로 가져오는 역할만 수행한다.</p>
+</li>
+<li>
+<p><strong>소비자 워프(Consumer Warps):</strong> 데이터를 로드하는 부담 없이, SRAM에 준비된 데이터를 사용하여 WGMMA 연산과 소프트맥스를 수행한다.</p>
+</li>
 </ul>
 <p>이 두 그룹은 비동기적으로 동작하며, <strong>핑퐁 버퍼링(Ping-pong buffering)</strong> 또는 **순환 버퍼(Circular Buffer)**를 통해 데이터 로딩과 연산이 완벽하게 중첩(Overlap)되도록 파이프라이닝된다. 이를 통해 메모리 접근 지연 시간(Latency)을 숨기고(Hide), 연산 유닛을 쉴 새 없이 가동시킬 수 있다.11</p>
 <h3>5.3 GEMM과 소프트맥스의 중첩 (Intra-Warpgroup Overlapping)</h3>
@@ -227,37 +249,56 @@
 <h3>6.1 PyTorch 통합 (<code>torch.nn.functional.scaled_dot_product_attention</code>)</h3>
 <p>PyTorch 2.0부터는 <code>torch.nn.functional.scaled_dot_product_attention</code> (SDPA) 함수가 내장되어, 사용자가 별도의 설치 없이도 최적화된 어텐션을 사용할 수 있게 되었다. SDPA는 실행 환경과 입력 데이터의 조건에 따라 다음 세 가지 백엔드 중 하나를 자동으로 선택한다.23</p>
 <ol>
-<li><strong>FlashAttention:</strong> NVIDIA GPU (Ampere 이상)에서 가장 우선적으로 선택된다.</li>
-<li><strong>Memory-Efficient Attention (xFormers):</strong> FlashAttention이 지원되지 않는 하드웨어(예: 구형 GPU)나 데이터 타입(FP32)일 때 사용된다.</li>
-<li><strong>Math (C++ implementation):</strong> 위 두 가지가 모두 불가능할 때 사용되는 표준 구현이다.</li>
+<li>
+<p><strong>FlashAttention:</strong> NVIDIA GPU (Ampere 이상)에서 가장 우선적으로 선택된다.</p>
+</li>
+<li>
+<p><strong>Memory-Efficient Attention (xFormers):</strong> FlashAttention이 지원되지 않는 하드웨어(예: 구형 GPU)나 데이터 타입(FP32)일 때 사용된다.</p>
+</li>
+<li>
+<p><strong>Math (C++ implementation):</strong> 위 두 가지가 모두 불가능할 때 사용되는 표준 구현이다.</p>
+</li>
 </ol>
 <p>사용자는 <code>torch.nn.attention.sdpa_kernel</code> 컨텍스트 매니저를 통해 특정 백엔드 사용을 강제할 수 있다.</p>
 <p>Python</p>
-<pre><code>import torch
+<pre><code>
+import torch
+
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+
+
 # FlashAttention 백엔드 강제 사용 예시
+
 with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-output = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
+    output = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+
 </code></pre>
 <h3>6.2 Hugging Face Transformers 활용</h3>
 <p>Hugging Face의 <code>transformers</code> 라이브러리는 <code>attn_implementation</code> 파라미터를 통해 모델 로딩 시 손쉽게 FlashAttention-2를 활성화할 수 있다.</p>
 <p>Python</p>
-<pre><code>model = AutoModelForCausalLM.from_pretrained(
-"meta-llama/Llama-2-7b-hf",
-torch_dtype=torch.bfloat16,
-attn_implementation="flash_attention_2"
+<pre><code>
+model = AutoModelForCausalLM.from_pretrained(
+
+    "meta-llama/Llama-2-7b-hf",
+
+    torch_dtype=torch.bfloat16,
+
+    attn_implementation="flash_attention_2"
+
 )
+
 </code></pre>
 <p>단, 패딩(Padding) 토큰이 포함된 배치를 처리할 때는 주의가 필요하다. FlashAttention은 패딩 토큰에 대해서도 연산을 수행하지 않도록 최적화되어 있지만(VarLen), 이를 위해서는 데이터를 ’언패딩(Unpadding)’하거나 ’패킹(Packing)’하여 1차원 배열로 만드는 전처리 과정이 필요할 수 있다. Hugging Face TRL 라이브러리 등에서는 이러한 패킹 기능을 지원하여 학습 효율을 극대화한다.25</p>
 <h3>6.3 하드웨어 지원 매트릭스</h3>
 <p>FlashAttention의 버전별 지원 하드웨어는 다음과 같다.27</p>
-<table><thead><tr><th><strong>버전</strong></th><th><strong>지원 GPU 아키텍처</strong></th><th><strong>주요 모델</strong></th><th><strong>비고</strong></th></tr></thead><tbody>
-<tr><td><strong>FlashAttention-1</strong></td><td>Turing, Ampere, Ada, Hopper</td><td>T4, RTX 2080, A100, RTX 30/40</td><td>구형 하드웨어 지원</td></tr>
-<tr><td><strong>FlashAttention-2</strong></td><td>Ampere, Ada, Hopper</td><td>A100, RTX 3090/4090, H100</td><td>FP16/BF16 필수</td></tr>
-<tr><td><strong>FlashAttention-3</strong></td><td><strong>Hopper</strong> (현재 기준)</td><td><strong>H100, H800</strong></td><td>Hopper 전용 기능(TMA, WGMMA) 사용</td></tr>
-<tr><td><strong>AMD ROCm</strong></td><td>CDNA, RDNA</td><td>MI200, MI300, RX 7900</td><td>CK 또는 Triton 백엔드 사용</td></tr>
-</tbody></table>
+<p>| <strong>버전</strong>             | <strong>지원 GPU 아키텍처</strong>       | <strong>주요 모델</strong>                 | <strong>비고</strong>                          |</p>
+<p>| –––––––––– | ————————— | —————————– | ——————————— |</p>
+<p>| <strong>FlashAttention-1</strong> | Turing, Ampere, Ada, Hopper | T4, RTX 2080, A100, RTX 30/40 | 구형 하드웨어 지원                |</p>
+<p>| <strong>FlashAttention-2</strong> | Ampere, Ada, Hopper         | A100, RTX 3090/4090, H100     | FP16/BF16 필수                    |</p>
+<p>| <strong>FlashAttention-3</strong> | <strong>Hopper</strong> (현재 기준)      | <strong>H100, H800</strong>                | Hopper 전용 기능(TMA, WGMMA) 사용 |</p>
+<p>| <strong>AMD ROCm</strong>         | CDNA, RDNA                  | MI200, MI300, RX 7900         | CK 또는 Triton 백엔드 사용        |</p>
 <p>특히 AMD GPU의 경우, OpenAI Triton 언어로 작성된 FlashAttention 구현체를 통해 MI300X 등 최신 가속기에서 경쟁력 있는 성능을 보여주고 있다.</p>
 <h2>7. 관련 기술 및 확장 (Extensions &amp; Related Technologies)</h2>
 <p>FlashAttention의 성공은 다양한 파생 기술의 발전으로 이어졌다.</p>
@@ -272,60 +313,136 @@ attn_implementation="flash_attention_2"
 <p>다양한 벤치마크 결과는 FlashAttention의 우수성을 입증한다.</p>
 <h3>8.1 학습 속도와 메모리</h3>
 <ul>
-<li><strong>GPT-2:</strong> FlashAttention 적용 시 Hugging Face 표준 구현 대비 3배, Megatron-LM 대비 1.7배의 학습 속도 향상을 보였다.4</li>
-<li><strong>BERT-large:</strong> MLPerf 1.1 기록을 15% 갱신하며 가장 빠른 단일 노드 학습 속도를 달성했다.</li>
-<li><strong>긴 문맥:</strong> 시퀀스 길이 4K에서 메모리 사용량이 1/10~1/20 수준으로 감소하여, 기존에는 불가능했던 16K, 32K 문맥 길이의 학습이 가능해졌다. 표준 어텐션은 2K~4K 길이에서 이미 OOM(Out of Memory)이 발생한다.4</li>
+<li>
+<p><strong>GPT-2:</strong> FlashAttention 적용 시 Hugging Face 표준 구현 대비 3배, Megatron-LM 대비 1.7배의 학습 속도 향상을 보였다.4</p>
+</li>
+<li>
+<p><strong>BERT-large:</strong> MLPerf 1.1 기록을 15% 갱신하며 가장 빠른 단일 노드 학습 속도를 달성했다.</p>
+</li>
+<li>
+<p><strong>긴 문맥:</strong> 시퀀스 길이 4K에서 메모리 사용량이 1/10~1/20 수준으로 감소하여, 기존에는 불가능했던 16K, 32K 문맥 길이의 학습이 가능해졌다. 표준 어텐션은 2K~4K 길이에서 이미 OOM(Out of Memory)이 발생한다.4</p>
+</li>
 </ul>
 <h3>8.2 버전별 성능 비교 (A100/H100)</h3>
-<table><thead><tr><th><strong>지표</strong></th><th><strong>표준 어텐션</strong></th><th><strong>FlashAttention-2</strong></th><th><strong>FlashAttention-3</strong></th></tr></thead><tbody>
-<tr><td><strong>속도 (FP16)</strong></td><td>기준 (1x)</td><td>2x ~ 4x (vs 표준)</td><td>FA2 대비 1.5x ~ 2.0x</td></tr>
-<tr><td><strong>속도 (FP8)</strong></td><td>-</td><td>-</td><td><strong>1.2 PFLOPS</strong> (H100)</td></tr>
-<tr><td><strong>메모리 복잡도</strong></td><td><span class="math math-inline">O(N^2)</span></td><td><span class="math math-inline">O(N)</span></td><td><span class="math math-inline">O(N)</span></td></tr>
-<tr><td><strong>H100 활용률</strong></td><td>매우 낮음</td><td>~35%</td><td><strong>~75%</strong></td></tr>
-</tbody></table>
+<p>| <strong>지표</strong>          | <strong>표준 어텐션</strong> | <strong>FlashAttention-2</strong> | <strong>FlashAttention-3</strong>  |</p>
+<p>| —————– | ————— | –––––––––– | ——————— |</p>
+<p>| <strong>속도 (FP16)</strong>   | 기준 (1x)       | 2x ~ 4x (vs 표준)    | FA2 대비 1.5x ~ 2.0x  |</p>
+<p>| <strong>속도 (FP8)</strong>    | -               | -                    | <strong>1.2 PFLOPS</strong> (H100) |</p>
+<p>| <strong>메모리 복잡도</strong> | <span class="math math-inline">O(N^2)</span>        | <span class="math math-inline">O(N)</span>               | <span class="math math-inline">O(N)</span>                |</p>
+<p>| <strong>H100 활용률</strong>   | 매우 낮음       | ~35%                 | <strong>~75%</strong>              |</p>
 <p>FlashAttention-3는 H100에서 FA2 대비 1.5~2배의 성능 향상을 보이며, GPU의 이론적 한계에 가까운 성능을 끌어내고 있음을 알 수 있다.14</p>
 <h2>9. 결론 (Conclusion)</h2>
 <p>FlashAttention은 단순히 어텐션 연산을 빠르게 만든 기술이 아니라, 딥러닝 모델의 최적화 패러다임을 ’연산 중심(Compute-centric)’에서 ’메모리 중심(Memory-centric)’으로 전환시킨 이정표적인 기술이다.</p>
 <ol>
-<li><strong>IO 인지 설계의 승리:</strong> 하드웨어의 특성(HBM vs SRAM)을 정확히 파악하고, 타일링과 재계산이라는 알고리즘적 해법을 통해 메모리 병목을 극복했다.</li>
-<li><strong>공진화(Co-evolution):</strong> FA1에서 FA3로 이어지는 진화 과정은 GPU 하드웨어(Ampere -&gt; Hopper)의 발전과 궤를 같이하며, 소프트웨어가 하드웨어의 잠재력을 어떻게 극대화할 수 있는지를 보여주는 모범 사례다.</li>
-<li><strong>AI 모델링의 확장:</strong> 기술적 제약으로 인해 시도하기 어려웠던 긴 문맥(Long Context) 모델링을 가능하게 함으로써, 문서 요약, 장편 소설 창작, 유전체 분석 등 새로운 AI 응용 분야를 개척하는 기반이 되었다.</li>
+<li>
+<p><strong>IO 인지 설계의 승리:</strong> 하드웨어의 특성(HBM vs SRAM)을 정확히 파악하고, 타일링과 재계산이라는 알고리즘적 해법을 통해 메모리 병목을 극복했다.</p>
+</li>
+<li>
+<p><strong>공진화(Co-evolution):</strong> FA1에서 FA3로 이어지는 진화 과정은 GPU 하드웨어(Ampere -&gt; Hopper)의 발전과 궤를 같이하며, 소프트웨어가 하드웨어의 잠재력을 어떻게 극대화할 수 있는지를 보여주는 모범 사례다.</p>
+</li>
+<li>
+<p><strong>AI 모델링의 확장:</strong> 기술적 제약으로 인해 시도하기 어려웠던 긴 문맥(Long Context) 모델링을 가능하게 함으로써, 문서 요약, 장편 소설 창작, 유전체 분석 등 새로운 AI 응용 분야를 개척하는 기반이 되었다.</p>
+</li>
 </ol>
 <p>앞으로도 NPU 등 새로운 AI 가속기가 등장함에 따라, FlashAttention과 같은 IO 인지 알고리즘의 중요성은 더욱 커질 것이다. 이는 단순한 최적화 라이브러리를 넘어, 차세대 AI 시스템을 지탱하는 핵심 인프라 기술로서 그 가치를 지속할 것이다.</p>
 <h4><strong>참고 자료</strong></h4>
 <ol>
-<li>FlashAttention: Fast and Memory-Efficient Exact Attention with IO …, 12월 13, 2025에 액세스, https://shreyansh26.github.io/post/2023-03-26_flash-attention/</li>
-<li>ELI5: FlashAttention - Aleksa Gordić, 12월 13, 2025에 액세스, https://gordicaleksa.medium.com/eli5-flash-attention-5c44017022ad</li>
-<li>How FlashAttention Eliminates Transformer Memory Bottlenecks, 12월 13, 2025에 액세스, https://galileo.ai/blog/stanford-flashattention-algorithm</li>
-<li>FlashAttention: Fast and Memory-Efficient Exact Attention with IO …, 12월 13, 2025에 액세스, https://arxiv.org/pdf/2205.14135</li>
-<li>[Re] FlashAttention Three Years On - Kia Ghods, 12월 13, 2025에 액세스, https://kiaghods.com/assets/pdfs/[Re]FlashAttention.pdf</li>
-<li>FlashAttention: Fast and Memory-Efficient Exact Attention with IO …, 12월 13, 2025에 액세스, https://arxiv.org/abs/2205.14135</li>
-<li>FlashAttention: Memory-Efficient Attention - Emergent Mind, 12월 13, 2025에 액세스, https://www.emergentmind.com/topics/flashattention-algorithm</li>
-<li>FlashAttention: Fast and Memory-Efficient Exact Attention with IO …, 12월 13, 2025에 액세스, https://www.cs.toronto.edu/~cmaddis/courses/csc2541_w25/presentations/sharma_hocevar_flashattention.pdf</li>
-<li>FLASHATTENTION-2: FASTER ATTENTION WITH BETTER …, 12월 13, 2025에 액세스, https://openreview.net/pdf?id=mZn2Xyh9Ec</li>
-<li>FlashAttention-2: Faster Attention with Better Parallelism and Work …, 12월 13, 2025에 액세스, https://tridao.me/publications/flash2/flash2.pdf</li>
-<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://tridao.me/publications/flash3/flash3.pdf</li>
-<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://proceedings.neurips.cc/paper_files/paper/2024/file/7ede97c3e082c6df10a8d6103a2eebd2-Paper-Conference.pdf</li>
-<li>Next Generation of FlashAttention | NVIDIA Technical Blog, 12월 13, 2025에 액세스, https://developer.nvidia.com/blog/next-generation-of-flashattention/</li>
-<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://wentao.site/flash_attention_v3_summary/</li>
-<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://tridao.me/blog/2024/flash3/</li>
-<li>Flash Attn 3 Gpu Mode Talk | PDF | Computer Engineering - Scribd, 12월 13, 2025에 액세스, https://www.scribd.com/document/872315122/Flash-Attn-3-Gpu-Mode-Talk</li>
-<li>Dissecting the NVIDIA Hopper Architecture through … - arXiv, 12월 13, 2025에 액세스, https://arxiv.org/html/2501.12084v1</li>
-<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://www.together.ai/blog/flashattention-3</li>
-<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://arxiv.org/html/2407.08608v2</li>
-<li>Fast and Accurate Attention with Asynchrony and Low-precision - Liner, 12월 13, 2025에 액세스, https://liner.com/review/flashattention3-fast-and-accurate-attention-with-asynchrony-and-lowprecision</li>
-<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://arxiv.org/abs/2407.08608</li>
-<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and…, 12월 13, 2025에 액세스, <a href="https://openreview.net/forum?id=tVConYid20&amp;referrer=%5Bthe+profile+of+Tri+Dao%5D(/profile?id%3D~Tri_Dao1)">https://openreview.net/forum?id=tVConYid20&amp;referrer=%5Bthe%20profile%20of%20Tri%20Dao%5D(%2Fprofile%3Fid%3D~Tri_Dao1)</a></li>
-<li>torch.nn.functional.scaled_dot_product_attention - PyTorch, 12월 13, 2025에 액세스, https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html</li>
-<li>Scaled_dot_product_attention - PyTorch Forums, 12월 13, 2025에 액세스, https://discuss.pytorch.org/t/scaled-dot-product-attention/201649</li>
-<li>GPU - Hugging Face, 12월 13, 2025에 액세스, https://huggingface.co/docs/transformers/main/perf_infer_gpu_one</li>
-<li>Improving Hugging Face Training Efficiency Through Packing with …, 12월 13, 2025에 액세스, https://huggingface.co/blog/packing-with-FA2</li>
-<li>Dao-AILab/flash-attention: Fast and memory-efficient exact … - GitHub, 12월 13, 2025에 액세스, https://github.com/Dao-AILab/flash-attention</li>
-<li>Inquiry about Turing GPU support progress in FlashAttention-2 #1608, 12월 13, 2025에 액세스, https://github.com/Dao-AILab/flash-attention/issues/1608</li>
-<li>High-Performance Multi-Head Attention for Large Models on Volta …, 12월 13, 2025에 액세스, https://arxiv.org/html/2502.12784v3</li>
-<li>Model acceleration libraries - AMD ROCm documentation, 12월 13, 2025에 액세스, https://rocm.docs.amd.com/en/latest/how-to/rocm-for-ai/inference-optimization/model-acceleration-libraries.html</li>
-<li>Flash-Decoding for long-context inference - Together AI, 12월 13, 2025에 액세스, https://www.together.ai/blog/flash-decoding-for-long-context-inference</li>
-<li>FlashAttention &amp; Paged Attention: GPU Sorcery for Blazing-Fast …, 12월 13, 2025에 액세스, https://medium.com/@afafel/flashattention-paged-attention-gpu-sorcery-for-blazing-fast-transformers-9307df8a3f3f</li>
+<li>
+<p>FlashAttention: Fast and Memory-Efficient Exact Attention with IO …, 12월 13, 2025에 액세스, https://shreyansh26.github.io/post/2023-03-26_flash-attention/</p>
+</li>
+<li>
+<p>ELI5: FlashAttention - Aleksa Gordić, 12월 13, 2025에 액세스, https://gordicaleksa.medium.com/eli5-flash-attention-5c44017022ad</p>
+</li>
+<li>
+<p>How FlashAttention Eliminates Transformer Memory Bottlenecks, 12월 13, 2025에 액세스, https://galileo.ai/blog/stanford-flashattention-algorithm</p>
+</li>
+<li>
+<p>FlashAttention: Fast and Memory-Efficient Exact Attention with IO …, 12월 13, 2025에 액세스, https://arxiv.org/pdf/2205.14135</p>
+</li>
+<li>
+<p>[Re] FlashAttention Three Years On - Kia Ghods, 12월 13, 2025에 액세스, https://kiaghods.com/assets/pdfs/[Re]FlashAttention.pdf</p>
+</li>
+<li>
+<p>FlashAttention: Fast and Memory-Efficient Exact Attention with IO …, 12월 13, 2025에 액세스, https://arxiv.org/abs/2205.14135</p>
+</li>
+<li>
+<p>FlashAttention: Memory-Efficient Attention - Emergent Mind, 12월 13, 2025에 액세스, https://www.emergentmind.com/topics/flashattention-algorithm</p>
+</li>
+<li>
+<p>FlashAttention: Fast and Memory-Efficient Exact Attention with IO …, 12월 13, 2025에 액세스, https://www.cs.toronto.edu/~cmaddis/courses/csc2541_w25/presentations/sharma_hocevar_flashattention.pdf</p>
+</li>
+<li>
+<p>FLASHATTENTION-2: FASTER ATTENTION WITH BETTER …, 12월 13, 2025에 액세스, https://openreview.net/pdf?id=mZn2Xyh9Ec</p>
+</li>
+<li>
+<p>FlashAttention-2: Faster Attention with Better Parallelism and Work …, 12월 13, 2025에 액세스, https://tridao.me/publications/flash2/flash2.pdf</p>
+</li>
+<li>
+<p>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://tridao.me/publications/flash3/flash3.pdf</p>
+</li>
+<li>
+<p>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://proceedings.neurips.cc/paper_files/paper/2024/file/7ede97c3e082c6df10a8d6103a2eebd2-Paper-Conference.pdf</p>
+</li>
+<li>
+<p>Next Generation of FlashAttention | NVIDIA Technical Blog, 12월 13, 2025에 액세스, https://developer.nvidia.com/blog/next-generation-of-flashattention/</p>
+</li>
+<li>
+<p>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://wentao.site/flash_attention_v3_summary/</p>
+</li>
+<li>
+<p>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://tridao.me/blog/2024/flash3/</p>
+</li>
+<li>
+<p>Flash Attn 3 Gpu Mode Talk | PDF | Computer Engineering - Scribd, 12월 13, 2025에 액세스, https://www.scribd.com/document/872315122/Flash-Attn-3-Gpu-Mode-Talk</p>
+</li>
+<li>
+<p>Dissecting the NVIDIA Hopper Architecture through … - arXiv, 12월 13, 2025에 액세스, https://arxiv.org/html/2501.12084v1</p>
+</li>
+<li>
+<p>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://www.together.ai/blog/flashattention-3</p>
+</li>
+<li>
+<p>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://arxiv.org/html/2407.08608v2</p>
+</li>
+<li>
+<p>Fast and Accurate Attention with Asynchrony and Low-precision - Liner, 12월 13, 2025에 액세스, https://liner.com/review/flashattention3-fast-and-accurate-attention-with-asynchrony-and-lowprecision</p>
+</li>
+<li>
+<p>FlashAttention-3: Fast and Accurate Attention with Asynchrony and …, 12월 13, 2025에 액세스, https://arxiv.org/abs/2407.08608</p>
+</li>
+<li>
+<p>FlashAttention-3: Fast and Accurate Attention with Asynchrony and…, 12월 13, 2025에 액세스, <a href="https://openreview.net/forum?id=tVConYid20&amp;referrer=%5Bthe+profile+of+Tri+Dao%5D(/profile?id%3D~Tri_Dao1)">https://openreview.net/forum?id=tVConYid20&amp;referrer=%5Bthe%20profile%20of%20Tri%20Dao%5D(%2Fprofile%3Fid%3D~Tri_Dao1)</a></p>
+</li>
+<li>
+<p>torch.nn.functional.scaled_dot_product_attention - PyTorch, 12월 13, 2025에 액세스, https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html</p>
+</li>
+<li>
+<p>Scaled_dot_product_attention - PyTorch Forums, 12월 13, 2025에 액세스, https://discuss.pytorch.org/t/scaled-dot-product-attention/201649</p>
+</li>
+<li>
+<p>GPU - Hugging Face, 12월 13, 2025에 액세스, https://huggingface.co/docs/transformers/main/perf_infer_gpu_one</p>
+</li>
+<li>
+<p>Improving Hugging Face Training Efficiency Through Packing with …, 12월 13, 2025에 액세스, https://huggingface.co/blog/packing-with-FA2</p>
+</li>
+<li>
+<p>Dao-AILab/flash-attention: Fast and memory-efficient exact … - GitHub, 12월 13, 2025에 액세스, https://github.com/Dao-AILab/flash-attention</p>
+</li>
+<li>
+<p>Inquiry about Turing GPU support progress in FlashAttention-2 #1608, 12월 13, 2025에 액세스, https://github.com/Dao-AILab/flash-attention/issues/1608</p>
+</li>
+<li>
+<p>High-Performance Multi-Head Attention for Large Models on Volta …, 12월 13, 2025에 액세스, https://arxiv.org/html/2502.12784v3</p>
+</li>
+<li>
+<p>Model acceleration libraries - AMD ROCm documentation, 12월 13, 2025에 액세스, https://rocm.docs.amd.com/en/latest/how-to/rocm-for-ai/inference-optimization/model-acceleration-libraries.html</p>
+</li>
+<li>
+<p>Flash-Decoding for long-context inference - Together AI, 12월 13, 2025에 액세스, https://www.together.ai/blog/flash-decoding-for-long-context-inference</p>
+</li>
+<li>
+<p>FlashAttention &amp; Paged Attention: GPU Sorcery for Blazing-Fast …, 12월 13, 2025에 액세스, https://medium.com/@afafel/flashattention-paged-attention-gpu-sorcery-for-blazing-fast-transformers-9307df8a3f3f</p>
+</li>
 </ol>
 
             </article>

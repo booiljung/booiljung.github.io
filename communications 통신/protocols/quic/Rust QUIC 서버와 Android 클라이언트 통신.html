@@ -170,91 +170,172 @@
 <p>QUIC은 TLS 1.3을 기반으로 하므로 모든 통신은 기본적으로 암호화된다. 이를 위해 서버는 자신의 신원을 증명하는 TLS 인증서를 클라이언트에게 제공해야 한다. 프로덕션 환경에서는 Let’s Encrypt와 같은 신뢰할 수 있는 공인 인증 기관(Certificate Authority, CA)에서 발급한 인증서를 사용하는 것이 필수적이다.</p>
 <p>하지만 개발 및 테스트 환경에서는 매번 공인 인증서를 발급받는 것이 번거롭다. 이 경우, <strong>자체 서명 인증서</strong>를 사용하는 것이 효율적이다. <code>quinn</code>은 <code>rcgen</code>이라는 Rust 크레이트를 사용하여 프로그래밍 방식으로 자체 서명 인증서와 개인 키를 동적으로 생성하는 방법을 공식 예제에서 보여준다. 이 방식은 외부 도구(예: <code>openssl</code>)에 대한 의존성 없이 순수 Rust 코드로 인증서 문제를 해결할 수 있어 매우 편리하다.</p>
 <p>다음은 <code>rcgen</code>을 사용하여 <code>localhost</code>를 위한 인증서와 개인 키를 생성하는 함수다.</p>
-<pre><code class="language-Rust">// src/main.rs (일부)
+<pre><code class="language-Rust">
+// src/main.rs (일부)
+
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
+
+
 /// rcgen을 사용하여 자체 서명 인증서를 생성한다.
+
 fn generate_self_signed_cert() -&gt; Result&lt;(CertificateDer&lt;'static&gt;, PrivateKeyDer&lt;'static&gt;), Box&lt;dyn std::error::Error&gt;&gt; {
-let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
-let cert_der = CertificateDer::from(cert.cert);
-let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
-Ok((cert_der, key_der))
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+
+    let cert_der = CertificateDer::from(cert.cert);
+
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+
+    Ok((cert_der, key_der))
+
 }
+
 </code></pre>
 <p>이 함수는 <code>rcgen::generate_simple_self_signed</code>를 호출하여 인증서를 생성하고, <code>quinn</code>이 요구하는 <code>rustls::pki_types</code>의 <code>CertificateDer</code>와 <code>PrivateKeyDer</code> 형식으로 변환하여 반환한다. 생성된 인증서와 키는 서버 시작 시 메모리에 직접 로드하여 사용하거나, <code>cert.der</code>, <code>key.der</code>와 같은 파일로 저장하여 재사용할 수 있다. 인증서를 파일로 저장하고 재사용하는 방식은 클라이언트가 특정 인증서를 기억하고 신뢰하는 Trust-on-First-Use (TOFU) 시나리오를 구현할 때 유용하다.</p>
 <h3>2.3  비동기 Echo 서버 구현</h3>
 <p>이제 <code>quinn</code>과 위에서 만든 자체 서명 인증서를 사용하여 간단한 Echo 서버를 구현한다. 이 서버는 클라이언트로부터 메시지를 받아 그대로 다시 돌려주는 역할을 한다.</p>
 <p>먼저 <code>Cargo.toml</code>에 필요한 의존성을 추가한다.</p>
-<pre><code class="language-Ini,"># Cargo.toml
+<pre><code class="language-Ini,">
+# Cargo.toml
+
 [dependencies]
+
 anyhow = "1.0"
+
 quinn = "0.11"
+
 rustls = "0.23"
+
 rcgen = "0.13"
+
 tokio = { version = "1", features = ["full"] }
+
 tracing = "0.1"
+
 tracing-subscriber = "0.3"
+
 </code></pre>
 <p>다음은 전체 서버 코드다.</p>
-<pre><code class="language-Rust">// src/main.rs
+<pre><code class="language-Rust">
+// src/main.rs
+
+
 
 use anyhow::Result;
+
 use quinn::{Endpoint, ServerConfig};
+
 use std::sync::Arc;
+
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
+
+
 #[tokio::main]
+
 async fn main() -&gt; Result&lt;()&gt; {
-// 1. 자체 서명 인증서 생성
-let (cert, key) = generate_self_signed_cert()?;
-let mut server_crypto = rustls::ServerConfig::builder()
-.with_no_client_auth()
-.with_single_cert(vec![cert], key)?;
-// ALPN 프로토콜 설정 (예: HTTP/0.9)
-server_crypto.alpn_protocols = vec![b"hq-29".to_vec()]; // 예시 프로토콜
-let server_config = ServerConfig::with_crypto(Arc::new(server_crypto));
 
-// 2. QUIC 엔드포인트 생성 및 바인딩
-let listen_addr = "127.0.0.1:4433".parse()?;
-let endpoint = Endpoint::server(server_config, listen_addr)?;
-println!("Listening on {}", endpoint.local_addr()?);
+    // 1. 자체 서명 인증서 생성
 
-// 3. 들어오는 연결 수락
-while let Some(connecting) = endpoint.accept().await {
-println!("Connection incoming");
-tokio::spawn(async move {
-match connecting.await {
-Ok(connection) =&gt; {
-println!("Connection established");
-// 4. 각 연결에 대한 스트림 처리
-while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-let mut buf = vec![0; 1024];
-if let Ok(Some(len)) = recv.read(&amp;mut buf).await {
-let received = &amp;buf[..len];
-println!("Received: {}", String::from_utf8_lossy(received));
-// Echo back
-send.write_all(received).await.unwrap();
-send.finish().await.unwrap();
-}
-}
-}
-Err(e) =&gt; {
-eprintln!("Connection failed: {}", e);
-}
-}
-});
+    let (cert, key) = generate_self_signed_cert()?;
+
+    let mut server_crypto = rustls::ServerConfig::builder()
+
+       .with_no_client_auth()
+
+       .with_single_cert(vec![cert], key)?;
+
+    // ALPN 프로토콜 설정 (예: HTTP/0.9)
+
+    server_crypto.alpn_protocols = vec![b"hq-29".to_vec()]; // 예시 프로토콜
+
+    let server_config = ServerConfig::with_crypto(Arc::new(server_crypto));
+
+
+
+    // 2. QUIC 엔드포인트 생성 및 바인딩
+
+    let listen_addr = "127.0.0.1:4433".parse()?;
+
+    let endpoint = Endpoint::server(server_config, listen_addr)?;
+
+    println!("Listening on {}", endpoint.local_addr()?);
+
+
+
+    // 3. 들어오는 연결 수락
+
+    while let Some(connecting) = endpoint.accept().await {
+
+        println!("Connection incoming");
+
+        tokio::spawn(async move {
+
+            match connecting.await {
+
+                Ok(connection) =&gt; {
+
+                    println!("Connection established");
+
+                    // 4. 각 연결에 대한 스트림 처리
+
+                    while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+
+                        let mut buf = vec![0; 1024];
+
+                        if let Ok(Some(len)) = recv.read(&amp;mut buf).await {
+
+                            let received = &amp;buf[..len];
+
+                            println!("Received: {}", String::from_utf8_lossy(received));
+
+                            // Echo back
+
+                            send.write_all(received).await.unwrap();
+
+                            send.finish().await.unwrap();
+
+                        }
+
+                    }
+
+                }
+
+                Err(e) =&gt; {
+
+                    eprintln!("Connection failed: {}", e);
+
+                }
+
+            }
+
+        });
+
+    }
+
+
+
+    Ok(())
+
 }
 
-Ok(())
-}
+
 
 /// rcgen을 사용하여 자체 서명 인증서를 생성한다.
+
 fn generate_self_signed_cert() -&gt; Result&lt;(CertificateDer&lt;'static&gt;, PrivateKeyDer&lt;'static&gt;), Box&lt;dyn std::error::Error&gt;&gt; {
-let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
-let cert_der = CertificateDer::from(cert.cert);
-let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
-Ok((cert_der, key_der))
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+
+    let cert_der = CertificateDer::from(cert.cert);
+
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+
+    Ok((cert_der, key_der))
+
 }
+
 </code></pre>
 <p>이 코드의 핵심 구성 요소는 다음과 같다.</p>
 <ol>
@@ -268,22 +349,38 @@ Ok((cert_der, key_der))
 <h3>3.1  경로 A: 표준 접근법, Cronet (그리고 그 한계)</h3>
 <p>Android에서 QUIC/HTTP3를 사용하는 가장 표준적인 방법은 <strong>Cronet</strong> 라이브러리를 이용하는 것이다. Cronet은 Google이 Chrome 브라우저에서 사용하는 강력한 네트워킹 스택을 안드로이드 앱에서 사용할 수 있도록 라이브러리 형태로 제공하는 것이다. 수많은 Google 앱(YouTube, Google 포토 등)에서 사용될 만큼 안정성과 성능이 검증되었다.</p>
 <p><code>CronetEngine.Builder</code>를 사용하여 <code>enableQuic(true)</code>를 호출하는 것만으로 QUIC 기능을 간단히 활성화할 수 있다.</p>
-<pre><code class="language-Kotlin">// Cronet 활성화 예시
+<pre><code class="language-Kotlin">
+// Cronet 활성화 예시
+
 val engineBuilder = CronetEngine.Builder(context)
-.enableQuic(true)
-.enableHttp2(true)
+
+   .enableQuic(true)
+
+   .enableHttp2(true)
+
 //... 기타 설정
+
 val cronetEngine = engineBuilder.build()
+
 </code></pre>
 <p>일반적으로 Android 앱에서 자체 서명 인증서를 신뢰하도록 만드는 방법은 <code>res/xml/network_security_config.xml</code> 파일을 사용하는 것이다. 개발자는 이 파일에 커스텀 CA나 특정 도메인의 인증서를 신뢰하도록 명시하여, 로컬 개발 서버나 프록시를 통한 HTTPS 트래픽을 디버깅할 수 있다.</p>
-<pre><code class="language-XML">&lt;network-security-config&gt;
-&lt;base-config&gt;
-&lt;trust-anchors&gt;
-&lt;certificates src="@raw/my_ca" /&gt;
-&lt;certificates src="system" /&gt;
-&lt;/trust-anchors&gt;
-&lt;/base-config&gt;
+<pre><code class="language-XML">
+&lt;network-security-config&gt;
+
+    &lt;base-config&gt;
+
+        &lt;trust-anchors&gt;
+
+            &lt;certificates src="@raw/my_ca" /&gt;
+
+            &lt;certificates src="system" /&gt;
+
+        &lt;/trust-anchors&gt;
+
+    &lt;/base-config&gt;
+
 &lt;/network-security-config&gt;
+
 </code></pre>
 <p>논리적으로는 Cronet의 QUIC 기능과 네트워크 보안 구성을 조합하면 자체 서명 인증서를 사용하는 QUIC 서버와 통신할 수 있을 것처럼 보인다. <strong>하지만 이는 불가능하다.</strong></p>
 <p>Chromium 개발팀은 QUIC 프로토콜의 장기적인 발전을 저해할 수 있는 중간 장비(middlebox)의 QUIC 트래픽 가로채기 및 검사를 원천적으로 방지하기 위해, <strong>Cronet의 QUIC 연결에 대해서는 공인되지 않은 신뢰 앵커(non-publicly-trusted certificates)를 의도적으로 허용하지 않는 정책</strong>을 채택했다. 즉, <code>network_security_config.xml</code>에 자체 서명 인증서를 추가하더라도 Cronet은 QUIC 연결 시 이를 무시한다. 이 정책은 버그가 아니며, QUIC 프로토콜의 ’동맥 경화(ossification)’를 막기 위한 확고한 설계 결정이다.</p>
@@ -298,23 +395,41 @@ val cronetEngine = engineBuilder.build()
 </ol>
 <p><code>quinn</code> 클라이언트에서 자체 서명 인증서를 신뢰하도록 설정하는 방법은 다음과 같다. 먼저 <code>rustls</code>의 <code>dangerous_configuration</code> 기능을 <code>Cargo.toml</code>에서 활성화해야 한다. 이 기능은 이름에서 알 수 있듯이 프로덕션 환경에서는 신중하게 사용해야 하지만, 개발 및 테스트 단계에서 인증서 검증 로직을 커스터마이징할 수 있는 유연성을 제공한다.</p>
 <p>그 후, 서버의 인증서 파일(<code>cert.der</code>)을 Android 앱의 자산(asset)으로 포함시키고, JNI를 통해 이 파일을 읽어 <code>rustls::RootCertStore</code>에 추가하면 된다. <code>quinn</code> 클라이언트 예제는 로컬 디렉토리에서 인증서 파일을 읽어 신뢰 목록에 추가하는 방식을 보여준다.</p>
-<pre><code class="language-Rust">// Rust 클라이언트에서 커스텀 CA를 신뢰하도록 설정하는 예시
+<pre><code class="language-Rust">
+// Rust 클라이언트에서 커스텀 CA를 신뢰하도록 설정하는 예시
+
 use std::fs;
+
 use quinn::ClientConfig;
+
 use rustls::pki_types::CertificateDer;
 
+
+
 //...
+
 let mut roots = rustls::RootCertStore::empty();
+
 // 안드로이드 앱의 asset에서 읽어온 인증서 데이터를 추가
+
 let cert_der = CertificateDer::from(ca_bytes_from_android);
+
 roots.add(cert_der)?;
 
+
+
 let client_crypto = rustls::ClientConfig::builder()
-.with_root_certificates(roots)
-.with_no_client_auth();
+
+   .with_root_certificates(roots)
+
+   .with_no_client_auth();
+
+
 
 let client_config = ClientConfig::new(Arc::new(client_crypto));
+
 //... 이 config를 사용하여 endpoint.connect_with 호출
+
 </code></pre>
 <p>이처럼 JNI를 통한 네이티브 구현은 Cronet의 한계를 완벽하게 극복하고, 우리의 요구사항을 만족시키는 유일하고 강력한 해결책이다.</p>
 <table><thead><tr><th>측면</th><th>경로 A: Cronet</th><th>경로 B: JNI + Native Rust</th><th>선택 근거</th></tr></thead><tbody>
@@ -330,52 +445,97 @@ let client_config = ClientConfig::new(Arc::new(client_crypto));
 <p>먼저 Android Studio 프로젝트 내에 Rust 라이브러리 크레이트를 포함하는 통합 개발 환경을 구성해야 한다.</p>
 <h4>4.1.1 디렉토리 구조</h4>
 <p>일반적으로 Android Studio 프로젝트의 <code>app/src/main/</code> 디렉토리 아래에 <code>rust/</code> 또는 <code>rust-client/</code>와 같은 이름으로 Rust 프로젝트를 위치시킨다.</p>
-<pre><code>MyAndroidApp/
+<pre><code>
+MyAndroidApp/
+
 ├── app/
+
 │   ├── build.gradle
+
 │   └── src/
+
 │       └── main/
+
 │           ├── java/
+
 │           │   └── com/example/myapp/
+
 │           │       ├── MainActivity.kt
+
 │           │       └── QuicClient.kt
+
 │           ├── jniLibs/  &lt;-- 빌드된.so 파일이 위치할 곳
+
 │           │   ├── arm64-v8a/
+
 │           │   │   └── librust_client.so
+
 │           │   └──... (다른 ABI)
+
 │           └── rust-client/  &lt;-- Rust 라이브러리 프로젝트
+
 │               ├── Cargo.toml
+
 │               └── src/
+
 │                   └── lib.rs
+
 └──...
+
 </code></pre>
 <h4>4.1.2 <code>Cargo.toml</code> 설정</h4>
 <p>Rust 라이브러리가 Android에서 동적 공유 라이브러리(<code>.so</code> 파일)로 로드될 수 있도록 <code>Cargo.toml</code>을 설정한다.</p>
-<pre><code class="language-Ini,"># MyAndroidApp/app/src/main/rust-client/Cargo.toml
+<pre><code class="language-Ini,">
+# MyAndroidApp/app/src/main/rust-client/Cargo.toml
+
+
 
 [package]
+
 name = "rust-client"
+
 version = "0.1.0"
+
 edition = "2021"
 
+
+
 [lib]
+
 name = "rust_client" #.so 파일의 이름이 librust_client.so가 됨
+
 crate-type = ["cdylib"] # 동적 공유 라이브러리 생성
 
+
+
 [dependencies]
+
 # QUIC 및 비동기 런타임
+
 quinn = "0.11"
+
 tokio = { version = "1", features = ["full"] }
+
 rustls = { version = "0.23", features = ["dangerous_configuration"] }
 
+
+
 # JNI 연동
+
 jni = "0.21"
 
+
+
 # 기타 유틸리티
+
 anyhow = "1.0"
+
 log = "0.4"
+
 android_logger = "0.13" # Android logcat으로 로깅
+
 once_cell = "1.19" # 전역 런타임 관리를 위해
+
 </code></pre>
 <ul>
 <li><code>crate-type = ["cdylib"]</code>: C 호환 동적 라이브러리를 생성하도록 Rust 컴파일러에 지시한다.</li>
@@ -384,16 +544,27 @@ once_cell = "1.19" # 전역 런타임 관리를 위해
 </ul>
 <h4>4.1.3 <code>build.gradle</code> (모듈 수준) 설정</h4>
 <p>Gradle이 빌드 시 생성된 <code>.so</code> 파일을 APK에 올바르게 포함하도록 설정해야 한다. <code>sourceSets</code> 블록을 사용하여 <code>jniLibs</code> 디렉토리의 위치를 명시하는 것이 가장 간단한 방법이다.</p>
-<pre><code class="language-Groovy">// MyAndroidApp/app/build.gradle
+<pre><code class="language-Groovy">
+// MyAndroidApp/app/build.gradle
+
+
 
 android {
-//...
-sourceSets {
-main {
-jniLibs.srcDirs = ['src/main/jniLibs']
+
+    //...
+
+    sourceSets {
+
+        main {
+
+            jniLibs.srcDirs = ['src/main/jniLibs']
+
+        }
+
+    }
+
 }
-}
-}
+
 </code></pre>
 <p>빌드 스크립트를 통해 Rust 코드를 자동으로 빌드하고 <code>.so</code> 파일을 <code>jniLibs</code>로 복사하는 작업을 추가할 수도 있지만, 이 가이드에서는 수동 빌드 및 복사를 전제로 한다.</p>
 <h3>4.2  네이티브 라이브러리 빌드</h3>
@@ -404,62 +575,112 @@ jniLibs.srcDirs = ['src/main/jniLibs']
 </li>
 <li>
 <p><strong>Rust 타겟 추가</strong>: <code>rustup</code>을 사용하여 Android ABI에 대한 컴파일 타겟을 설치한다.</p>
+<pre><code class="language-Bash">
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+
+</code></pre>
 </li>
 </ol>
-<pre><code class="language-Bash">rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
-</code></pre>
-<ol start="3">
-<li><strong><code>cargo-ndk</code> 사용</strong>: <code>cargo-ndk</code>는 Android NDK와의 연동을 자동화하여 크로스 컴파일 과정을 매우 간단하게 만들어주는 필수 도구다.</li>
-</ol>
-<pre><code class="language-Bash">cargo install cargo-ndk
+<pre><code>
+3. **`cargo-ndk` 사용**: `cargo-ndk`는 Android NDK와의 연동을 자동화하여 크로스 컴파일 과정을 매우 간단하게 만들어주는 필수 도구다.
+
+   ```Bash
+
+   cargo install cargo-ndk
+
 </code></pre>
 <ol start="4">
-<li><strong>빌드 실행</strong>: Rust 프로젝트 디렉토리에서 <code>cargo ndk build</code> 명령을 실행하여 각 ABI에 맞는 <code>.so</code> 파일을 생성한다.</li>
-</ol>
-<pre><code class="language-Bash"># 예: arm64-v8a 아키텍처, API 레벨 21 타겟으로 릴리즈 빌드
+<li>
+<p><strong>빌드 실행</strong>: Rust 프로젝트 디렉토리에서 <code>cargo ndk build</code> 명령을 실행하여 각 ABI에 맞는 <code>.so</code> 파일을 생성한다.</p>
+<pre><code class="language-Bash">
+# 예: arm64-v8a 아키텍처, API 레벨 21 타겟으로 릴리즈 빌드
+
 cargo ndk -t arm64-v8a -p 21 build --release
+
 </code></pre>
-<p>빌드가 완료되면 <code>target/&lt;ABI&gt;/release/</code> 디렉토리에 <code>librust_client.so</code> 파일이 생성된다. 이 파일을 <code>app/src/main/jniLibs/&lt;ABI&gt;/</code> 디렉토리로 복사한다.</p>
-<h3>4.3  JNI 인터페이스 설계 및 구현</h3>
-<p>JNI는 Java(또는 Kotlin) 코드와 네이티브 코드 간의 다리 역할을 한다. Rust 함수를 Kotlin에서 호출할 수 있도록 JNI 인터페이스를 설계하고 구현해야 한다.</p>
-<h4>4.3.1 Rust 함수 노출</h4>
-<p>JNI 규칙에 따라 Rust 함수를 작성해야 한다.</p>
-<ul>
-<li><code>#[no_mangle]</code> 어트리뷰트로 함수 이름이 변경되지 않도록 한다.</li>
-<li><code>extern "system" fn</code> 또는 <code>extern "C" fn</code>으로 C 호출 규약을 따르도록 한다.</li>
-<li>함수 이름은 <code>Java_{패키지}_{클래스}_{메소드}</code> 형식이어야 한다. 패키지의 <code>.</code>은 <code>_</code>로, 클래스 이름의 <code>_</code>는 <code>_1</code>로 변환된다.</li>
-</ul>
-<pre><code class="language-Rust">// rust-client/src/lib.rs (일부)
+</li>
+</ol>
+<pre><code>
+빌드가 완료되면 `target/&lt;ABI&gt;/release/` 디렉토리에 `librust_client.so` 파일이 생성된다. 이 파일을 `app/src/main/jniLibs/&lt;ABI&gt;/` 디렉토리로 복사한다.
+
+### 4.3  JNI 인터페이스 설계 및 구현
+
+
+JNI는 Java(또는 Kotlin) 코드와 네이티브 코드 간의 다리 역할을 한다. Rust 함수를 Kotlin에서 호출할 수 있도록 JNI 인터페이스를 설계하고 구현해야 한다.
+
+#### 4.3.1 Rust 함수 노출
+
+
+JNI 규칙에 따라 Rust 함수를 작성해야 한다.
+
+- `#[no_mangle]` 어트리뷰트로 함수 이름이 변경되지 않도록 한다.
+- `extern "system" fn` 또는 `extern "C" fn`으로 C 호출 규약을 따르도록 한다.
+- 함수 이름은 `Java_{패키지}_{클래스}_{메소드}` 형식이어야 한다. 패키지의 `.`은 `_`로, 클래스 이름의 `_`는 `_1`로 변환된다.
+
+```Rust
+
+// rust-client/src/lib.rs (일부)
+
 use jni::JNIEnv;
+
 use jni::objects::{JClass, JString};
+
 use jni::sys::jstring;
 
+
+
 #[no_mangle]
+
 pub extern "system" fn Java_com_example_myapp_QuicClient_nativeInit(
-env: JNIEnv,
-_class: JClass,
+
+    env: JNIEnv,
+
+    _class: JClass,
+
 ) {
-//... 초기화 로직
+
+    //... 초기화 로직
+
 }
+
+
 
 #[no_mangle]
+
 pub extern "system" fn Java_com_example_myapp_QuicClient_sayHello&lt;'local&gt;(
-mut env: JNIEnv&lt;'local&gt;,
-_class: JClass&lt;'local&gt;,
-input: JString&lt;'local&gt;,
+
+    mut env: JNIEnv&lt;'local&gt;,
+
+    _class: JClass&lt;'local&gt;,
+
+    input: JString&lt;'local&gt;,
+
 ) -&gt; jstring {
-// Java 문자열을 Rust 문자열로 변환
-let input_str: String = env.get_string(&amp;input).expect("Couldn't get java string!").into();
 
-// 새로운 Rust 문자열 생성
-let output_str = format!("Hello from Rust, {}!", input_str);
+    // Java 문자열을 Rust 문자열로 변환
 
-// Rust 문자열을 Java 문자열로 변환하여 반환
-let output = env.new_string(output_str).expect("Couldn't create java string!");
+    let input_str: String = env.get_string(&amp;input).expect("Couldn't get java string!").into();
 
-// 소유권을 Java 측으로 이전
-output.into_raw()
+
+
+    // 새로운 Rust 문자열 생성
+
+    let output_str = format!("Hello from Rust, {}!", input_str);
+
+
+
+    // Rust 문자열을 Java 문자열로 변환하여 반환
+
+    let output = env.new_string(output_str).expect("Couldn't create java string!");
+
+
+
+    // 소유권을 Java 측으로 이전
+
+    output.into_raw()
+
 }
+
 </code></pre>
 <h3>4.4  비동기 런타임 관리: 가장 중요한 난관</h3>
 <p>Android 앱의 UI 스레드나 일반적인 콜백 내에서 JNI 함수를 호출하고, 그 함수 안에서 <code>tokio::runtime::...block_on()</code>을 호출하여 비동기 작업을 동기적으로 기다리는 것은 심각한 문제를 야기한다. 만약 외부 호출 환경이 이미 다른 Tokio 런타임에 의해 관리되는 스레드라면, “Cannot start a runtime from within a runtime“이라는 메시지와 함께 앱이 패닉으로 종료된다. Android 프레임워크나 다른 서드파티 라이브러리가 내부적으로 비동기 런타임을 사용할 수 있으므로 이 문제는 언제든 발생할 수 있다.</p>
@@ -477,483 +698,951 @@ output.into_raw()
 <p>앞서 설명한 아키텍처를 바탕으로 한 완전한 통합 예제 코드를 제시한다. 각 파일에는 상세한 주석을 달아 코드의 흐름을 쉽게 이해할 수 있도록 했다.</p>
 <h3>5.1  Rust QUIC 서버 (<code>server/src/main.rs</code>)</h3>
 <p>1부에서 설명한 Echo 서버의 최종 코드다. <code>cargo run</code>으로 실행하여 클라이언트의 연결을 기다린다.</p>
-<pre><code class="language-Rust">// server/src/main.rs
+<pre><code class="language-Rust">
+// server/src/main.rs
+
+
 
 use anyhow::Result;
+
 use quinn::{Endpoint, ServerConfig};
+
 use std::sync::Arc;
+
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
 use tracing_subscriber::EnvFilter;
 
+
+
 #[tokio::main]
+
 async fn main() -&gt; Result&lt;()&gt; {
-tracing_subscriber::fmt()
-.with_env_filter(EnvFilter::from_default_env())
-.init();
 
-// 1. 자체 서명 인증서 생성
-let (cert, key) = generate_self_signed_cert()?;
-let mut server_crypto = rustls::ServerConfig::builder()
-.with_no_client_auth()
-.with_single_cert(vec![cert], key)?;
-// ALPN 프로토콜은 클라이언트와 서버가 동일하게 맞춰야 한다.
-server_crypto.alpn_protocols = vec![b"echo-proto".to_vec()];
-let server_config = ServerConfig::with_crypto(Arc::new(server_crypto));
+    tracing_subscriber::fmt()
 
-// 2. QUIC 엔드포인트 생성 및 바인딩
-let listen_addr = "0.0.0.0:4433".parse()?; // 모든 인터페이스에서 수신
-let endpoint = Endpoint::server(server_config, listen_addr)?;
-println!(" Listening on {}", endpoint.local_addr()?);
+       .with_env_filter(EnvFilter::from_default_env())
 
-// 3. 들어오는 연결 수락
-while let Some(connecting) = endpoint.accept().await {
-println!(" Connection incoming");
-tokio::spawn(async move {
-match connecting.await {
-Ok(connection) =&gt; {
-println!(" Connection established from: {}", connection.remote_address());
-// 4. 각 연결에 대한 스트림 처리
-loop {
-match connection.accept_bi().await {
-Ok((mut send, mut recv)) =&gt; {
-tokio::spawn(async move {
-let mut buf = vec![0; 2048];
-while let Ok(Some(len)) = recv.read(&amp;mut buf).await {
-let received = &amp;buf[..len];
-println!(" Received: {}", String::from_utf8_lossy(received));
-// Echo back
-if let Err(e) = send.write_all(received).await {
-eprintln!(" Write error: {}", e);
-break;
-}
-}
-});
-}
-Err(quinn::ConnectionError::ApplicationClosed {.. }) =&gt; {
-println!(" Connection closed by application");
-break;
-}
-Err(e) =&gt; {
-eprintln!(" Stream accept error: {}", e);
-break;
-}
-}
-}
-}
-Err(e) =&gt; {
-eprintln!(" Connection failed: {}", e);
-}
-}
-});
+       .init();
+
+
+
+    // 1. 자체 서명 인증서 생성
+
+    let (cert, key) = generate_self_signed_cert()?;
+
+    let mut server_crypto = rustls::ServerConfig::builder()
+
+       .with_no_client_auth()
+
+       .with_single_cert(vec![cert], key)?;
+
+    // ALPN 프로토콜은 클라이언트와 서버가 동일하게 맞춰야 한다.
+
+    server_crypto.alpn_protocols = vec![b"echo-proto".to_vec()];
+
+    let server_config = ServerConfig::with_crypto(Arc::new(server_crypto));
+
+
+
+    // 2. QUIC 엔드포인트 생성 및 바인딩
+
+    let listen_addr = "0.0.0.0:4433".parse()?; // 모든 인터페이스에서 수신
+
+    let endpoint = Endpoint::server(server_config, listen_addr)?;
+
+    println!(" Listening on {}", endpoint.local_addr()?);
+
+
+
+    // 3. 들어오는 연결 수락
+
+    while let Some(connecting) = endpoint.accept().await {
+
+        println!(" Connection incoming");
+
+        tokio::spawn(async move {
+
+            match connecting.await {
+
+                Ok(connection) =&gt; {
+
+                    println!(" Connection established from: {}", connection.remote_address());
+
+                    // 4. 각 연결에 대한 스트림 처리
+
+                    loop {
+
+                        match connection.accept_bi().await {
+
+                            Ok((mut send, mut recv)) =&gt; {
+
+                                tokio::spawn(async move {
+
+                                    let mut buf = vec![0; 2048];
+
+                                    while let Ok(Some(len)) = recv.read(&amp;mut buf).await {
+
+                                        let received = &amp;buf[..len];
+
+                                        println!(" Received: {}", String::from_utf8_lossy(received));
+
+                                        // Echo back
+
+                                        if let Err(e) = send.write_all(received).await {
+
+                                            eprintln!(" Write error: {}", e);
+
+                                            break;
+
+                                        }
+
+                                    }
+
+                                });
+
+                            }
+
+                            Err(quinn::ConnectionError::ApplicationClosed {.. }) =&gt; {
+
+                                println!(" Connection closed by application");
+
+                                break;
+
+                            }
+
+                            Err(e) =&gt; {
+
+                                eprintln!(" Stream accept error: {}", e);
+
+                                break;
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+                Err(e) =&gt; {
+
+                    eprintln!(" Connection failed: {}", e);
+
+                }
+
+            }
+
+        });
+
+    }
+
+
+
+    Ok(())
+
 }
 
-Ok(())
-}
+
 
 fn generate_self_signed_cert() -&gt; Result&lt;(CertificateDer&lt;'static&gt;, PrivateKeyDer&lt;'static&gt;), Box&lt;dyn std::error::Error&gt;&gt; {
-let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
-let cert_der = CertificateDer::from(cert.cert);
-let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
-Ok((cert_der, key_der))
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+
+    let cert_der = CertificateDer::from(cert.cert);
+
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+
+    Ok((cert_der, key_der))
+
 }
+
 </code></pre>
 <h3>5.2  Rust JNI 클라이언트 라이브러리 (<code>android/rust-client/src/lib.rs</code>)</h3>
 <p>3.4절에서 설명한 전역 Tokio 런타임과 MPSC 채널 패턴을 구현한 JNI 라이브러리다.</p>
-<pre><code class="language-Rust">// android/rust-client/src/lib.rs
+<pre><code class="language-Rust">
+// android/rust-client/src/lib.rs
+
+
 
 use jni::objects::{JClass, JObject, JString, GlobalRef};
+
 use jni::sys::{jint, jstring};
+
 use jni::{JNIEnv, JavaVM};
+
 use once_cell::sync::OnceCell;
+
 use std::sync::{Arc, Mutex};
+
 use tokio::runtime::Runtime;
+
 use tokio::sync::mpsc;
 
+
+
 use quinn::{ClientConfig, Endpoint};
+
 use rustls::pki_types::CertificateDer;
 
+
+
 // 전역 Tokio 런타임과 통신 채널을 관리하기 위한 구조체
+
 static TOKIO_RUNTIME: OnceCell&lt;Runtime&gt; = OnceCell::new();
+
 static COMMAND_SENDER: OnceCell&lt;mpsc::Sender&lt;Command&gt;&gt; = OnceCell::new();
+
 static JVM: OnceCell&lt;JavaVM&gt; = OnceCell::new();
+
 static CALLBACK_HANDLER: OnceCell&lt;Mutex&lt;GlobalRef&gt;&gt; = OnceCell::new();
 
+
+
 // Kotlin과 Rust 간의 통신을 위한 명령
+
 enum Command {
-Connect {
-addr: String,
-port: u16,
-ca_cert_der: Vec&lt;u8&gt;,
-},
-SendMessage(String),
-Shutdown,
+
+    Connect {
+
+        addr: String,
+
+        port: u16,
+
+        ca_cert_der: Vec&lt;u8&gt;,
+
+    },
+
+    SendMessage(String),
+
+    Shutdown,
+
 }
+
+
 
 // JNI 초기화 함수. 앱 시작 시 한 번만 호출되어야 한다.
+
 #[no_mangle]
+
 pub extern "system" fn Java_com_example_myapp_QuicClient_nativeInit&lt;'local&gt;(
-mut env: JNIEnv&lt;'local&gt;,
-_class: JClass&lt;'local&gt;,
-callback: JObject&lt;'local&gt;,
+
+    mut env: JNIEnv&lt;'local&gt;,
+
+    _class: JClass&lt;'local&gt;,
+
+    callback: JObject&lt;'local&gt;,
+
 ) {
-android_logger::init_once(
-android_logger::Config::default().with_min_level(log::Level::Info),
-);
 
-let jvm = env.get_java_vm().unwrap();
-JVM.set(jvm).unwrap();
+    android_logger::init_once(
 
-let callback_ref = env.new_global_ref(callback).unwrap();
-CALLBACK_HANDLER.set(Mutex::new(callback_ref)).unwrap();
+        android_logger::Config::default().with_min_level(log::Level::Info),
 
-let (tx, mut rx) = mpsc::channel(10);
-COMMAND_SENDER.set(tx).unwrap();
+    );
 
-let runtime = tokio::runtime::Builder::new_multi_thread()
-.enable_all()
-.build()
-.unwrap();
 
-std::thread::spawn(move |
+
+    let jvm = env.get_java_vm().unwrap();
+
+    JVM.set(jvm).unwrap();
+
+
+
+    let callback_ref = env.new_global_ref(callback).unwrap();
+
+    CALLBACK_HANDLER.set(Mutex::new(callback_ref)).unwrap();
+
+
+
+    let (tx, mut rx) = mpsc::channel(10);
+
+    COMMAND_SENDER.set(tx).unwrap();
+
+
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+
+       .enable_all()
+
+       .build()
+
+       .unwrap();
+
+
+
+    std::thread::spawn(move |
+
+
 
 | {
-runtime.block_on(async move {
-log::info!(" Tokio runtime started");
-let mut connection_sender: Option&lt;mpsc::Sender&lt;String&gt;&gt; = None;
 
-while let Some(command) = rx.recv().await {
-match command {
-Command::Connect { addr, port, ca_cert_der } =&gt; {
-let (conn_tx, conn_rx) = mpsc::channel(10);
-connection_sender = Some(conn_tx);
-tokio::spawn(run_quic_client(addr, port, ca_cert_der, conn_rx));
+        runtime.block_on(async move {
+
+            log::info!(" Tokio runtime started");
+
+            let mut connection_sender: Option&lt;mpsc::Sender&lt;String&gt;&gt; = None;
+
+
+
+            while let Some(command) = rx.recv().await {
+
+                match command {
+
+                    Command::Connect { addr, port, ca_cert_der } =&gt; {
+
+                        let (conn_tx, conn_rx) = mpsc::channel(10);
+
+                        connection_sender = Some(conn_tx);
+
+                        tokio::spawn(run_quic_client(addr, port, ca_cert_der, conn_rx));
+
+                    }
+
+                    Command::SendMessage(msg) =&gt; {
+
+                        if let Some(sender) = &amp;connection_sender {
+
+                            if sender.send(msg).await.is_err() {
+
+                                log::error!(" Failed to send message to connection task");
+
+                            }
+
+                        }
+
+                    }
+
+                    Command::Shutdown =&gt; {
+
+                        log::info!(" Shutdown command received");
+
+                        break;
+
+                    }
+
+                }
+
+            }
+
+        });
+
+    });
+
 }
-Command::SendMessage(msg) =&gt; {
-if let Some(sender) = &amp;connection_sender {
-if sender.send(msg).await.is_err() {
-log::error!(" Failed to send message to connection task");
-}
-}
-}
-Command::Shutdown =&gt; {
-log::info!(" Shutdown command received");
-break;
-}
-}
-}
-});
-});
-}
+
+
 
 // QUIC 클라이언트 로직을 실행하는 비동기 함수
+
 async fn run_quic_client(addr: String, port: u16, ca_cert_der: Vec&lt;u8&gt;, mut msg_rx: mpsc::Receiver&lt;String&gt;) {
-let server_addr = format!("{}:{}", addr, port).parse().unwrap();
 
-// 자체 서명 CA 신뢰 설정
-let mut roots = rustls::RootCertStore::empty();
-roots.add(CertificateDer::from(ca_cert_der)).unwrap();
-let client_crypto = rustls::ClientConfig::builder()
-.with_root_certificates(roots)
-.with_no_client_auth();
-let client_config = ClientConfig::new(Arc::new(client_crypto));
+    let server_addr = format!("{}:{}", addr, port).parse().unwrap();
 
-let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
-endpoint.set_default_client_config(client_config);
+    
 
-log::info!(" Connecting to {}:{}", addr, port);
-let connection = match endpoint.connect(server_addr, "localhost").unwrap().await {
-Ok(conn) =&gt; {
-on_event("ConnectionEstablished".to_string());
-conn
-},
-Err(e) =&gt; {
-log::error!(" Connection error: {}", e);
-on_event(format!("Error: Connection failed: {}", e));
-return;
+    // 자체 서명 CA 신뢰 설정
+
+    let mut roots = rustls::RootCertStore::empty();
+
+    roots.add(CertificateDer::from(ca_cert_der)).unwrap();
+
+    let client_crypto = rustls::ClientConfig::builder()
+
+       .with_root_certificates(roots)
+
+       .with_no_client_auth();
+
+    let client_config = ClientConfig::new(Arc::new(client_crypto));
+
+
+
+    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
+
+    endpoint.set_default_client_config(client_config);
+
+
+
+    log::info!(" Connecting to {}:{}", addr, port);
+
+    let connection = match endpoint.connect(server_addr, "localhost").unwrap().await {
+
+        Ok(conn) =&gt; {
+
+            on_event("ConnectionEstablished".to_string());
+
+            conn
+
+        },
+
+        Err(e) =&gt; {
+
+            log::error!(" Connection error: {}", e);
+
+            on_event(format!("Error: Connection failed: {}", e));
+
+            return;
+
+        }
+
+    };
+
+
+
+    let (mut send, mut recv) = connection.open_bi().await.unwrap();
+
+    on_event("StreamOpened".to_string());
+
+
+
+    // 메시지 수신 루프
+
+    tokio::spawn(async move {
+
+        let mut buf = vec![0; 2048];
+
+        while let Ok(Some(len)) = recv.read(&amp;mut buf).await {
+
+            let msg = String::from_utf8_lossy(&amp;buf[..len]).to_string();
+
+            log::info!(" Received from server: {}", msg);
+
+            on_event(format!("MessageReceived:{}", msg));
+
+        }
+
+        on_event("ReceiveStreamClosed".to_string());
+
+    });
+
+
+
+    // 메시지 전송 루프
+
+    while let Some(msg) = msg_rx.recv().await {
+
+        log::info!(" Sending to server: {}", msg);
+
+        if let Err(e) = send.write_all(msg.as_bytes()).await {
+
+            log::error!(" Send error: {}", e);
+
+            on_event(format!("Error: Send failed: {}", e));
+
+            break;
+
+        }
+
+    }
+
 }
-};
 
-let (mut send, mut recv) = connection.open_bi().await.unwrap();
-on_event("StreamOpened".to_string());
 
-// 메시지 수신 루프
-tokio::spawn(async move {
-let mut buf = vec![0; 2048];
-while let Ok(Some(len)) = recv.read(&amp;mut buf).await {
-let msg = String::from_utf8_lossy(&amp;buf[..len]).to_string();
-log::info!(" Received from server: {}", msg);
-on_event(format!("MessageReceived:{}", msg));
-}
-on_event("ReceiveStreamClosed".to_string());
-});
-
-// 메시지 전송 루프
-while let Some(msg) = msg_rx.recv().await {
-log::info!(" Sending to server: {}", msg);
-if let Err(e) = send.write_all(msg.as_bytes()).await {
-log::error!(" Send error: {}", e);
-on_event(format!("Error: Send failed: {}", e));
-break;
-}
-}
-}
 
 // Kotlin 콜백을 호출하는 헬퍼 함수
+
 fn on_event(event_str: String) {
-if let (Some(jvm), Some(callback_handler)) = (JVM.get(), CALLBACK_HANDLER.get()) {
-let mut env = jvm.attach_current_thread().unwrap();
-let callback = callback_handler.lock().unwrap();
-let event_jstring = env.new_string(&amp;event_str).unwrap();
 
-env.call_method(
-callback.as_obj(),
-"onRustEvent",
-"(Ljava/lang/String;)V",
-&amp;[(&amp;event_jstring).into()],
-).unwrap();
+    if let (Some(jvm), Some(callback_handler)) = (JVM.get(), CALLBACK_HANDLER.get()) {
+
+        let mut env = jvm.attach_current_thread().unwrap();
+
+        let callback = callback_handler.lock().unwrap();
+
+        let event_jstring = env.new_string(&amp;event_str).unwrap();
+
+        
+
+        env.call_method(
+
+            callback.as_obj(),
+
+            "onRustEvent",
+
+            "(Ljava/lang/String;)V",
+
+            &amp;[(&amp;event_jstring).into()],
+
+        ).unwrap();
+
+    }
+
 }
-}
+
+
 
 #[no_mangle]
+
 pub extern "system" fn Java_com_example_myapp_QuicClient_nativeConnect&lt;'local&gt;(
-mut env: JNIEnv&lt;'local&gt;,
-_class: JClass&lt;'local&gt;,
-addr: JString&lt;'local&gt;,
-port: jint,
-ca_cert: jni::sys::jbyteArray,
+
+    mut env: JNIEnv&lt;'local&gt;,
+
+    _class: JClass&lt;'local&gt;,
+
+    addr: JString&lt;'local&gt;,
+
+    port: jint,
+
+    ca_cert: jni::sys::jbyteArray,
+
 ) {
-let addr_str: String = env.get_string(&amp;addr).unwrap().into();
-let ca_cert_der = env.convert_byte_array(ca_cert).unwrap();
-if let Some(sender) = COMMAND_SENDER.get() {
-let cmd = Command::Connect { addr: addr_str, port: port as u16, ca_cert_der };
-sender.try_send(cmd).unwrap();
-}
+
+    let addr_str: String = env.get_string(&amp;addr).unwrap().into();
+
+    let ca_cert_der = env.convert_byte_array(ca_cert).unwrap();
+
+    if let Some(sender) = COMMAND_SENDER.get() {
+
+        let cmd = Command::Connect { addr: addr_str, port: port as u16, ca_cert_der };
+
+        sender.try_send(cmd).unwrap();
+
+    }
+
 }
 
+
+
 #[no_mangle]
+
 pub extern "system" fn Java_com_example_myapp_QuicClient_nativeSendMessage&lt;'local&gt;(
-mut env: JNIEnv&lt;'local&gt;,
-_class: JClass&lt;'local&gt;,
-message: JString&lt;'local&gt;,
+
+    mut env: JNIEnv&lt;'local&gt;,
+
+    _class: JClass&lt;'local&gt;,
+
+    message: JString&lt;'local&gt;,
+
 ) {
-let msg_str: String = env.get_string(&amp;message).unwrap().into();
-if let Some(sender) = COMMAND_SENDER.get() {
-sender.try_send(Command::SendMessage(msg_str)).unwrap();
-}
+
+    let msg_str: String = env.get_string(&amp;message).unwrap().into();
+
+    if let Some(sender) = COMMAND_SENDER.get() {
+
+        sender.try_send(Command::SendMessage(msg_str)).unwrap();
+
+    }
+
 }
 
+
+
 #[no_mangle]
+
 pub extern "system" fn Java_com_example_myapp_QuicClient_nativeShutdown(_env: JNIEnv, _class: JClass) {
-if let Some(sender) = COMMAND_SENDER.get() {
-sender.try_send(Command::Shutdown).unwrap();
+
+    if let Some(sender) = COMMAND_SENDER.get() {
+
+        sender.try_send(Command::Shutdown).unwrap();
+
+    }
+
 }
-}
+
 </code></pre>
 <h3>5.3  Kotlin JNI 래퍼 클래스 (<code>QuicClient.kt</code>)</h3>
 <p>Rust JNI 함수들을 감싸는 Kotlin 싱글톤 객체다. 네이티브 메소드를 선언하고, 서버의 인증서를 로드하는 로직을 포함한다.</p>
-<pre><code class="language-Kotlin">// android/app/src/main/java/com/example/myapp/QuicClient.kt
+<pre><code class="language-Kotlin">
+// android/app/src/main/java/com/example/myapp/QuicClient.kt
+
+
 
 package com.example.myapp
 
+
+
 import android.content.Context
+
 import java.io.InputStream
 
+
+
 // Rust 라이브러리와 상호작용하는 콜백 인터페이스
+
 interface RustEventListener {
-fun onRustEvent(event: String)
+
+    fun onRustEvent(event: String)
+
 }
+
+
 
 object QuicClient {
-private var listener: RustEventListener? = null
-private lateinit var caCertBytes: ByteArray
 
-init {
-System.loadLibrary("rust_client")
+    private var listener: RustEventListener? = null
+
+    private lateinit var caCertBytes: ByteArray
+
+
+
+    init {
+
+        System.loadLibrary("rust_client")
+
+    }
+
+
+
+    fun initialize(context: Context, listener: RustEventListener) {
+
+        this.listener = listener
+
+        // 서버의 자체 서명 인증서를 raw 리소스로부터 로드
+
+        // 이 예제에서는 서버가 생성한 cert.der 파일을 cert.crt로 이름을 바꿔 raw에 추가했다고 가정
+
+        val inputStream: InputStream = context.resources.openRawResource(R.raw.cert)
+
+        caCertBytes = inputStream.readBytes()
+
+        inputStream.close()
+
+        
+
+        nativeInit(object : RustEventCallback {
+
+            override fun onRustEvent(event: String) {
+
+                this@QuicClient.listener?.onRustEvent(event)
+
+            }
+
+        })
+
+    }
+
+
+
+    fun connect(addr: String, port: Int) {
+
+        nativeConnect(addr, port, caCertBytes)
+
+    }
+
+
+
+    fun sendMessage(message: String) {
+
+        nativeSendMessage(message)
+
+    }
+
+
+
+    fun shutdown() {
+
+        nativeShutdown()
+
+    }
+
+
+
+    // Rust에서 호출할 콜백 인터페이스
+
+    private interface RustEventCallback {
+
+        fun onRustEvent(event: String)
+
+    }
+
+
+
+    // JNI 함수 선언
+
+    private external fun nativeInit(callback: RustEventCallback)
+
+    private external fun nativeConnect(addr: String, port: Int, caCert: ByteArray)
+
+    private external fun nativeSendMessage(message: String)
+
+    private external fun nativeShutdown()
+
 }
 
-fun initialize(context: Context, listener: RustEventListener) {
-this.listener = listener
-// 서버의 자체 서명 인증서를 raw 리소스로부터 로드
-// 이 예제에서는 서버가 생성한 cert.der 파일을 cert.crt로 이름을 바꿔 raw에 추가했다고 가정
-val inputStream: InputStream = context.resources.openRawResource(R.raw.cert)
-caCertBytes = inputStream.readBytes()
-inputStream.close()
-
-nativeInit(object : RustEventCallback {
-override fun onRustEvent(event: String) {
-this@QuicClient.listener?.onRustEvent(event)
-}
-})
-}
-
-fun connect(addr: String, port: Int) {
-nativeConnect(addr, port, caCertBytes)
-}
-
-fun sendMessage(message: String) {
-nativeSendMessage(message)
-}
-
-fun shutdown() {
-nativeShutdown()
-}
-
-// Rust에서 호출할 콜백 인터페이스
-private interface RustEventCallback {
-fun onRustEvent(event: String)
-}
-
-// JNI 함수 선언
-private external fun nativeInit(callback: RustEventCallback)
-private external fun nativeConnect(addr: String, port: Int, caCert: ByteArray)
-private external fun nativeSendMessage(message: String)
-private external fun nativeShutdown()
-}
 </code></pre>
 <h3>5.4  Android UI 및 클라이언트 로직 (<code>MainActivity.kt</code>)</h3>
 <p>앱의 메인 화면으로, <code>QuicClient</code>를 초기화하고 사용자 입력을 받아 Rust로 전달하며, Rust로부터 받은 이벤트를 화면에 표시한다.</p>
-<pre><code class="language-Kotlin">// android/app/src/main/java/com/example/myapp/MainActivity.kt
+<pre><code class="language-Kotlin">
+// android/app/src/main/java/com/example/myapp/MainActivity.kt
+
+
 
 package com.example.myapp
 
+
+
 import android.os.Bundle
+
 import android.widget.Button
+
 import android.widget.EditText
+
 import android.widget.TextView
+
 import androidx.appcompat.app.AppCompatActivity
+
+
 
 class MainActivity : AppCompatActivity(), RustEventListener {
 
-private lateinit var statusTextView: TextView
-private lateinit var messageLogTextView: TextView
-private lateinit var serverIpEditText: EditText
-private lateinit var messageEditText: EditText
 
-override fun onCreate(savedInstanceState: Bundle?) {
-super.onCreate(savedInstanceState)
-setContentView(R.layout.activity_main)
 
-statusTextView = findViewById(R.id.statusTextView)
-messageLogTextView = findViewById(R.id.messageLogTextView)
-serverIpEditText = findViewById(R.id.serverIpEditText)
-messageEditText = findViewById(R.id.messageEditText)
-val connectButton: Button = findViewById(R.id.connectButton)
-val sendButton: Button = findViewById(R.id.sendButton)
+    private lateinit var statusTextView: TextView
 
-// QuicClient 초기화
-QuicClient.initialize(this, this)
+    private lateinit var messageLogTextView: TextView
 
-connectButton.setOnClickListener {
-val ip = serverIpEditText.text.toString()
-// 로컬 개발 환경에서는 PC의 IP 주소를 사용
-QuicClient.connect(ip, 4433)
-statusTextView.text = "Connecting..."
+    private lateinit var serverIpEditText: EditText
+
+    private lateinit var messageEditText: EditText
+
+
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+
+        super.onCreate(savedInstanceState)
+
+        setContentView(R.layout.activity_main)
+
+
+
+        statusTextView = findViewById(R.id.statusTextView)
+
+        messageLogTextView = findViewById(R.id.messageLogTextView)
+
+        serverIpEditText = findViewById(R.id.serverIpEditText)
+
+        messageEditText = findViewById(R.id.messageEditText)
+
+        val connectButton: Button = findViewById(R.id.connectButton)
+
+        val sendButton: Button = findViewById(R.id.sendButton)
+
+
+
+        // QuicClient 초기화
+
+        QuicClient.initialize(this, this)
+
+
+
+        connectButton.setOnClickListener {
+
+            val ip = serverIpEditText.text.toString()
+
+            // 로컬 개발 환경에서는 PC의 IP 주소를 사용
+
+            QuicClient.connect(ip, 4433)
+
+            statusTextView.text = "Connecting..."
+
+        }
+
+
+
+        sendButton.setOnClickListener {
+
+            val message = messageEditText.text.toString()
+
+            if (message.isNotEmpty()) {
+
+                QuicClient.sendMessage(message)
+
+                messageEditText.text.clear()
+
+            }
+
+        }
+
+    }
+
+
+
+    override fun onRustEvent(event: String) {
+
+        runOnUiThread {
+
+            when {
+
+                event.startsWith("MessageReceived:") -&gt; {
+
+                    val msg = event.substringAfter("MessageReceived:")
+
+                    messageLogTextView.append("Server: $msg\n")
+
+                }
+
+                event.startsWith("Error:") -&gt; {
+
+                    val error = event.substringAfter("Error:")
+
+                    statusTextView.text = "Error: $error"
+
+                }
+
+                else -&gt; {
+
+                    statusTextView.text = "Status: $event"
+
+                }
+
+            }
+
+        }
+
+    }
+
+
+
+    override fun onDestroy() {
+
+        super.onDestroy()
+
+        QuicClient.shutdown()
+
+    }
+
 }
 
-sendButton.setOnClickListener {
-val message = messageEditText.text.toString()
-if (message.isNotEmpty()) {
-QuicClient.sendMessage(message)
-messageEditText.text.clear()
-}
-}
-}
-
-override fun onRustEvent(event: String) {
-runOnUiThread {
-when {
-event.startsWith("MessageReceived:") -&gt; {
-val msg = event.substringAfter("MessageReceived:")
-messageLogTextView.append("Server: $msg\n")
-}
-event.startsWith("Error:") -&gt; {
-val error = event.substringAfter("Error:")
-statusTextView.text = "Error: $error"
-}
-else -&gt; {
-statusTextView.text = "Status: $event"
-}
-}
-}
-}
-
-override fun onDestroy() {
-super.onDestroy()
-QuicClient.shutdown()
-}
-}
 </code></pre>
 <h3>5.5  빌드 스크립트</h3>
 <p>위 코드들이 올바르게 빌드되고 패키징되기 위한 <code>Cargo.toml</code>과 <code>build.gradle</code> 파일의 전체 내용이다.</p>
 <p><strong><code>Cargo.toml</code></strong>:</p>
-<pre><code class="language-Ini,"># android/rust-client/Cargo.toml
+<pre><code class="language-Ini,">
+# android/rust-client/Cargo.toml
+
 [package]
+
 name = "rust-client"
+
 version = "0.1.0"
+
 edition = "2021"
 
+
+
 [lib]
+
 name = "rust_client"
+
 crate-type = ["cdylib"]
 
+
+
 [dependencies]
+
 quinn = "0.11"
+
 tokio = { version = "1", features = ["full"] }
+
 rustls = { version = "0.23", features = ["dangerous_configuration"] }
+
 jni = "0.21"
+
 anyhow = "1.0"
+
 log = "0.4"
+
 android_logger = "0.13"
+
 once_cell = "1.19"
+
 </code></pre>
 <p><strong><code>app/build.gradle</code></strong>:</p>
-<pre><code class="language-Groovy">// android/app/build.gradle
+<pre><code class="language-Groovy">
+// android/app/build.gradle
+
 plugins {
-id 'com.android.application'
-id 'org.jetbrains.kotlin.android'
+
+    id 'com.android.application'
+
+    id 'org.jetbrains.kotlin.android'
+
 }
+
+
 
 android {
-namespace 'com.example.myapp'
-compileSdk 34
 
-defaultConfig {
-applicationId "com.example.myapp"
-minSdk 24
-targetSdk 34
-versionCode 1
-versionName "1.0"
-testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    namespace 'com.example.myapp'
+
+    compileSdk 34
+
+
+
+    defaultConfig {
+
+        applicationId "com.example.myapp"
+
+        minSdk 24
+
+        targetSdk 34
+
+        versionCode 1
+
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+    }
+
+
+
+    buildTypes {
+
+        release {
+
+            minifyEnabled false
+
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+
+        }
+
+    }
+
+    compileOptions {
+
+        sourceCompatibility JavaVersion.VERSION_1_8
+
+        targetCompatibility JavaVersion.VERSION_1_8
+
+    }
+
+    kotlinOptions {
+
+        jvmTarget = '1.8'
+
+    }
+
+    sourceSets {
+
+        main {
+
+            // 빌드된.so 파일이 위치할 디렉토리를 Gradle에 알려줌
+
+            jniLibs.srcDirs = ['src/main/jniLibs']
+
+        }
+
+    }
+
+    // 레이아웃 파일은 생략
+
 }
 
-buildTypes {
-release {
-minifyEnabled false
-proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-}
-}
-compileOptions {
-sourceCompatibility JavaVersion.VERSION_1_8
-targetCompatibility JavaVersion.VERSION_1_8
-}
-kotlinOptions {
-jvmTarget = '1.8'
-}
-sourceSets {
-main {
-// 빌드된.so 파일이 위치할 디렉토리를 Gradle에 알려줌
-jniLibs.srcDirs = ['src/main/jniLibs']
-}
-}
-// 레이아웃 파일은 생략
-}
+
 
 dependencies {
-implementation 'androidx.core:core-ktx:1.12.0'
-implementation 'androidx.appcompat:appcompat:1.6.1'
-implementation 'com.google.android.material:material:1.11.0'
-//...
+
+    implementation 'androidx.core:core-ktx:1.12.0'
+
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+
+    implementation 'com.google.android.material:material:1.11.0'
+
+    //...
+
 }
+
 </code></pre>
 <h2>6. 결론 및 권장 사항</h2>
 <p>이 안내서는 Rust로 작성된 QUIC 서버와 Android 클라이언트 간에 자체 서명 인증서를 사용하여 TLS 보안 통신을 구현하는 전체 과정을 상세히 다루었다.</p>

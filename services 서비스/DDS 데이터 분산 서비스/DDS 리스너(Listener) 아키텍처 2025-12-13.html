@@ -264,61 +264,114 @@
 <h3>5.2  Modern C++ (C++11/14) 리스너 구현 예제</h3>
 <p>현대적인 C++ API는 람다와 <code>std::function</code>을 활용하여 리스너 구현을 간소화한다. 아래 예제는 데이터를 복사하여 워커 쓰레드로 넘기는 패턴을 보여준다.27</p>
 <p>C++</p>
-<pre><code>// Modern C++ 예제: 안전한 리스너 구현
+<pre><code>
+// Modern C++ 예제: 안전한 리스너 구현
+
 class SafeListener : public dds::sub::NoOpDataReaderListener&lt;MyType&gt; {
-ThreadSafeQueue&lt;MyType&gt;&amp; work_queue_; // 외부 워커 큐 참조
+
+    ThreadSafeQueue&lt;MyType&gt;&amp; work_queue_; // 외부 워커 큐 참조
+
+
 
 public:
-explicit SafeListener(ThreadSafeQueue&lt;MyType&gt;&amp; queue) : work_queue_(queue) {}
 
-void on_data_available(dds::sub::DataReader&lt;MyType&gt;&amp; reader) override {
-// 1. 데이터 접근 (Zero-Copy)
-auto samples = reader.take();
+    explicit SafeListener(ThreadSafeQueue&lt;MyType&gt;&amp; queue) : work_queue_(queue) {}
 
-// 2. 유효 데이터만 필터링하여 복사 후 큐에 삽입
-for (const auto&amp; sample : samples) {
-if (sample.info().valid()) {
-// LoanedSample은 큐에 직접 넣을 수 없으므로 복사본 생성
-MyType data_copy = sample.data();
-work_queue_.push(std::move(data_copy));
-}
-}
-// 3. 즉시 리턴 (samples 소멸자가 호출되며 미들웨어에 메모리 반환)
-}
+
+
+    void on_data_available(dds::sub::DataReader&lt;MyType&gt;&amp; reader) override {
+
+        // 1. 데이터 접근 (Zero-Copy)
+
+        auto samples = reader.take();
+
+
+
+        // 2. 유효 데이터만 필터링하여 복사 후 큐에 삽입
+
+        for (const auto&amp; sample : samples) {
+
+            if (sample.info().valid()) {
+
+                // LoanedSample은 큐에 직접 넣을 수 없으므로 복사본 생성
+
+                MyType data_copy = sample.data(); 
+
+                work_queue_.push(std::move(data_copy));
+
+            }
+
+        }
+
+        // 3. 즉시 리턴 (samples 소멸자가 호출되며 미들웨어에 메모리 반환)
+
+    }
+
 };
+
 </code></pre>
 <h3>5.3  Java 리스너 구현 예제</h3>
 <p>Java 환경에서는 가비지 컬렉션(GC)의 영향을 고려해야 한다. OpenDDS 등의 Java 바인딩은 JNI를 통해 호출되므로, 리스너 내부에서 과도한 객체 생성은 지양해야 한다.28</p>
 <p>Java</p>
-<pre><code>// Java 예제: 리스너 구현
+<pre><code>
+// Java 예제: 리스너 구현
+
 public class MyDataReaderListener extends DDS._DataReaderListenerLocalBase {
-private final BlockingQueue&lt;MyType&gt; queue;
 
-public MyDataReaderListener(BlockingQueue&lt;MyType&gt; queue) {
-this.queue = queue;
+    private final BlockingQueue&lt;MyType&gt; queue;
+
+
+
+    public MyDataReaderListener(BlockingQueue&lt;MyType&gt; queue) {
+
+        this.queue = queue;
+
+    }
+
+
+
+    @Override
+
+    public void on_data_available(DDS.DataReader reader) {
+
+        MyTypeDataReader myReader = MyTypeDataReaderHelper.narrow(reader);
+
+        MyTypeSeqHolder dataSeq = new MyTypeSeqHolder(new MyType);
+
+        SampleInfoSeqHolder infoSeq = new SampleInfoSeqHolder(new SampleInfo);
+
+
+
+        // 데이터 가져오기
+
+        int ret = myReader.take(dataSeq, infoSeq,...);
+
+        
+
+        if (ret == RETCODE_OK.value) {
+
+            for (int i = 0; i &lt; dataSeq.value.length; i++) {
+
+                if (infoSeq.value[i].valid_data) {
+
+                    // 큐에 삽입 (블로킹되지 않는 offer 사용 권장)
+
+                    queue.offer(dataSeq.value[i]);
+
+                }
+
+            }
+
+            // 미들웨어에 메모리 반환
+
+            myReader.return_loan(dataSeq, infoSeq);
+
+        }
+
+    }
+
 }
 
-@Override
-public void on_data_available(DDS.DataReader reader) {
-MyTypeDataReader myReader = MyTypeDataReaderHelper.narrow(reader);
-MyTypeSeqHolder dataSeq = new MyTypeSeqHolder(new MyType);
-SampleInfoSeqHolder infoSeq = new SampleInfoSeqHolder(new SampleInfo);
-
-// 데이터 가져오기
-int ret = myReader.take(dataSeq, infoSeq,...);
-
-if (ret == RETCODE_OK.value) {
-for (int i = 0; i &lt; dataSeq.value.length; i++) {
-if (infoSeq.value[i].valid_data) {
-// 큐에 삽입 (블로킹되지 않는 offer 사용 권장)
-queue.offer(dataSeq.value[i]);
-}
-}
-// 미들웨어에 메모리 반환
-myReader.return_loan(dataSeq, infoSeq);
-}
-}
-}
 </code></pre>
 <hr />
 <h2>6.  QoS와 리스너의 상호작용 (Liveliness 및 Deadline)</h2>

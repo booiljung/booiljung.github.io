@@ -160,7 +160,9 @@
 <p>가장 견고하고 효율적인 접근 방식은 <strong>2단계 빌드 전략</strong>을 채택하는 것이다.</p>
 <p>1단계: ROS2 Humble 베이스 이미지 확보</p>
 <p>먼저, jetson-containers의 기본 빌드 스크립트를 사용하여 안정적인 ROS2 Humble 데스크톱 이미지를 생성하라.</p>
-<pre><code class="language-Bash">$ jetson-containers build --name=agx_orin/ros:humble-base ros:humble-desktop
+<pre><code class="language-Bash">
+$ jetson-containers build --name=agx_orin/ros:humble-base ros:humble-desktop
+
 </code></pre>
 <p>이 명령어는 ROS2의 복잡한 패키지 종속성, RViZ2 및 데스크톱 환경을 JetPack 6.x 기반에 맞게 선행 설치한다 .</p>
 <p>2단계: 커스텀 Dockerfile을 통한 PCL/VTK/Qt5 통합</p>
@@ -172,80 +174,145 @@
 <p>빌드 전에 호스트 AGX Orin의 JetPack 버전을 확인해야 한다. JetPack 6.x (L4T R36.x, Ubuntu 22.04)를 사용하는 것이 ROS2 Humble의 안정적인 기반이다 .</p>
 <p>GPU 가속을 컨테이너 내부에서 사용하기 위해 Docker 런타임이 NVIDIA Container Runtime을 사용하도록 명시적으로 설정해야 한다. 이 설정이 누락되면 컨테이너는 GPU를 인지하지 못하거나, 3D 렌더링 시 OpenGL 관련 오류를 발생시킨다 . NVIDIA는 최신 버전에서 <code>nvidia-ctk</code> 명령을 사용하여 이 구성을 표준화했다.</p>
 <ol>
-<li><strong>Docker 데몬 설정 변경:</strong> <code>nvidia-ctk</code> 명령을 사용하여 Docker가 NVIDIA Container Runtime을 기본 런타임으로 사용하도록 <code>/etc/docker/daemon.json</code> 파일을 수정하라 .</li>
-</ol>
-<pre><code class="language-Bash">$ sudo nvidia-ctk runtime configure --runtime=docker
+<li>
+<p><strong>Docker 데몬 설정 변경:</strong> <code>nvidia-ctk</code> 명령을 사용하여 Docker가 NVIDIA Container Runtime을 기본 런타임으로 사용하도록 <code>/etc/docker/daemon.json</code> 파일을 수정하라 .</p>
+<pre><code class="language-Bash">
+$ sudo nvidia-ctk runtime configure --runtime=docker
+
 </code></pre>
-<p>이 과정은 Docker가 컨테이너 실행 시 필요한 NVIDIA 라이브러리 및 드라이버를 자동으로 마운트할 수 있도록 보장한다 .</p>
-<ol start="2">
-<li><strong>Docker 데몬 재시작:</strong> 변경 사항을 적용하기 위해 Docker 서비스를 재시작하라 .</li>
+</li>
 </ol>
-<pre><code class="language-Bash">$ sudo systemctl restart docker
+<pre><code>
+이 과정은 Docker가 컨테이너 실행 시 필요한 NVIDIA 라이브러리 및 드라이버를 자동으로 마운트할 수 있도록 보장한다 .
+
+2. **Docker 데몬 재시작:** 변경 사항을 적용하기 위해 Docker 서비스를 재시작하라 .
+
+   ```Bash
+
+   $ sudo systemctl restart docker
+
 </code></pre>
 <p><strong>안정성 확보의 기초:</strong> 이 단계는 컨테이너 내부에서 실행되는 VTK, RViZ2, cuPCL과 같은 GPU 의존적인 애플리케이션의 안정적인 구동을 위한 필수 전제 조건이다. 3D 시각화 도구가 GLXContext 생성 실패 오류  없이 실행되도록 보장하는 기반이 된다.</p>
 <h3>2.2  GUI 가속을 위한 X11 호스트 환경 준비</h3>
 <p>VTK와 Qt5를 통해 렌더링된 GUI (RViZ2 또는 PCL Visualizer)를 호스트 AGX Orin의 화면에 출력하려면 X11 포워딩 메커니즘을 설정해야 한다.</p>
 <ol>
-<li><strong>X Server 접근 권한 부여:</strong> 컨테이너 내부의 사용자(일반적으로 <code>root</code> 또는 <code>dustynv</code> 유저)가 호스트 시스템의 X 서버에 GUI를 출력할 수 있도록 권한을 부여하라 .</li>
-</ol>
-<pre><code class="language-Bash"># 호스트 Jetson AGX Orin에서 실행
+<li>
+<p><strong>X Server 접근 권한 부여:</strong> 컨테이너 내부의 사용자(일반적으로 <code>root</code> 또는 <code>dustynv</code> 유저)가 호스트 시스템의 X 서버에 GUI를 출력할 수 있도록 권한을 부여하라 .</p>
+<pre><code class="language-Bash">
+# 호스트 Jetson AGX Orin에서 실행
+
 $ xhost +si:localuser:root
+
 </code></pre>
-<p>이 명령은 컨테이너가 호스트의 디스플레이 소켓에 접근하는 것을 명시적으로 허용하여 런타임 시 발생하는 X11 권한 오류를 방지한다.7</p>
-<ol start="2">
-<li><strong>컨테이너 실행 시 환경 변수 설정:</strong> 컨테이너를 실행할 때 X11 관련 환경 변수 (<code>DISPLAY</code>)와 X11 소켓 볼륨 마운트 (<code>/tmp/.X11-unix</code>)가 반드시 포함되어야 한다. 또한, Qt 기반 애플리케이션에서 발생할 수 있는 X11 공유 메모리 관련 문제를 완화하기 위해 <code>QT_X11_NO_MITSHM=1</code> 환경 변수를 설정하는 것이 권장된다 .</li>
+</li>
 </ol>
-<h2>3.  커스텀 통합 Dockerfile 설계 및 PCL/VTK 통합 지침</h2>
-<p>1단계에서 <code>agx_orin/ros:humble-base</code> 이미지를 확보했다고 가정하고, 이 이미지를 기반으로 Qt5, VTK, PCL (cuPCL 포함)을 통합하는 커스텀 <code>Dockerfile</code>의 핵심 구성 요소를 상세히 제시한다.</p>
-<h3>3.1  Dockerfile 기반 구성: 베이스 이미지 및 Qt5 종속성 설치</h3>
-<p>통합 이미지의 빌드는 <strong>JetPack 6.x</strong> 기반의 <strong>ROS2 Humble 데스크톱</strong> 이미지를 상속받는 것으로 시작하라.</p>
-<pre><code class="language-dockerfile"># Step 1: Base Image selection (Assumes previously built by jetson-containers on JetPack 6.x)
+<pre><code>
+이 명령은 컨테이너가 호스트의 디스플레이 소켓에 접근하는 것을 명시적으로 허용하여 런타임 시 발생하는 X11 권한 오류를 방지한다.7
+
+2. **컨테이너 실행 시 환경 변수 설정:** 컨테이너를 실행할 때 X11 관련 환경 변수 (`DISPLAY`)와 X11 소켓 볼륨 마운트 (`/tmp/.X11-unix`)가 반드시 포함되어야 한다. 또한, Qt 기반 애플리케이션에서 발생할 수 있는 X11 공유 메모리 관련 문제를 완화하기 위해 `QT_X11_NO_MITSHM=1` 환경 변수를 설정하는 것이 권장된다 .
+
+## 3.  커스텀 통합 Dockerfile 설계 및 PCL/VTK 통합 지침
+
+
+1단계에서 `agx_orin/ros:humble-base` 이미지를 확보했다고 가정하고, 이 이미지를 기반으로 Qt5, VTK, PCL (cuPCL 포함)을 통합하는 커스텀 `Dockerfile`의 핵심 구성 요소를 상세히 제시한다.
+
+### 3.1  Dockerfile 기반 구성: 베이스 이미지 및 Qt5 종속성 설치
+
+
+통합 이미지의 빌드는 **JetPack 6.x** 기반의 **ROS2 Humble 데스크톱** 이미지를 상속받는 것으로 시작하라.
+
+```dockerfile
+
+# Step 1: Base Image selection (Assumes previously built by jetson-containers on JetPack 6.x)
+
 FROM agx_orin/ros:humble-base
 
+
+
 # Set up environment variables for non-interactive installation
+
 ENV DEBIAN_FRONTEND=noninteractive
 
+
+
 # Step 2: Install core build tools and essential dependencies
+
 RUN apt update &amp;&amp; \
-apt install -y --no-install-recommends \
-build-essential \
-cmake \
-git \
-libboost-all-dev \
-libeigen3-dev \
-libflann-dev \
-# PCL and VTK need Qt5 development headers for GUI support
-qtbase5-dev \
-qt5-qmake \
-libqt5opengl5-dev \
-libxmu-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev &amp;&amp; \
-rm -rf /var/lib/apt/lists/*
+
+    apt install -y --no-install-recommends \
+
+    build-essential \
+
+    cmake \
+
+    git \
+
+    libboost-all-dev \
+
+    libeigen3-dev \
+
+    libflann-dev \
+
+    # PCL and VTK need Qt5 development headers for GUI support
+
+    qtbase5-dev \
+
+    qt5-qmake \
+
+    libqt5opengl5-dev \
+
+    libxmu-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev &amp;&amp; \
+
+    rm -rf /var/lib/apt/lists/*
+
 </code></pre>
 <p>VTK가 GUI 렌더링을 위해 Qt5 위젯을 사용할 수 있도록 <code>qtbase5-dev</code> 및 <code>libqt5opengl5-dev</code>와 같은 핵심 개발 패키지를 Ubuntu 22.04 저장소에서 설치해야 한다 . 또한, OpenGL 기반의 시각화 및 X11 사용을 위한 <code>libgl1-mesa-dev</code> 등의 라이브러리도 필수적으로 포함한다.</p>
 <h3>3.2  고도화된 VTK 소스 빌드 전략</h3>
 <p>PCL 시각화 기능은 VTK에 의존하며, VTK는 3D 렌더링과 시각화를 담당한다. VTK를 APT 패키지로 설치하면 Qt5나 CUDA 지원이 비활성화되거나 Jetson 환경과 호환되지 않는 경우가 많다. 따라서, 원하는 GUI 기능을 명시적으로 활성화하기 위해 최신 버전(예: VTK 9.x)을 소스 컴파일하는 것이 가장 안정적인 방법이다.8</p>
 <p>다음은 VTK를 Qt5 지원과 함께 컴파일하기 위한 핵심 절차와 CMake 설정이다.</p>
-<pre><code class="language-dockerfile"># Step 3: Source Build VTK with Qt5 and OpenGL support
+<pre><code class="language-dockerfile">
+# Step 3: Source Build VTK with Qt5 and OpenGL support
+
 # VTK 9.x source URL (adjust version as needed)
+
 ARG VTK_VERSION=9.3.0
+
 WORKDIR /opt/VTK
+
 RUN git clone https://gitlab.kitware.com/vtk/vtk.git --branch v${VTK_VERSION} --depth 1.
 
+
+
 # Configuration and Compilation
+
 RUN mkdir build &amp;&amp; cd build &amp;&amp; \
-cmake.. \
--DCMAKE_BUILD_TYPE=Release \
--DCMAKE_INSTALL_PREFIX=/usr/local \
--DVTK_GROUP_ENABLE_Qt=YES \
--DVTK_QT_VERSION=5 \
--DVTK_USE_X=ON \
--DVTK_RENDERING_BACKEND=OpenGL \
--DVTK_MODULE_ENABLE_VTK_RenderingFreeTypeFontConfig=ON \
--DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2=ON \
--DVTK_WRAP_PYTHON=OFF &amp;&amp; \
-make -j$(nproc) &amp;&amp; \
-make install &amp;&amp; \
-cd / &amp;&amp; rm -rf /opt/VTK
+
+    cmake.. \
+
+        -DCMAKE_BUILD_TYPE=Release \
+
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+
+        -DVTK_GROUP_ENABLE_Qt=YES \
+
+        -DVTK_QT_VERSION=5 \
+
+        -DVTK_USE_X=ON \
+
+        -DVTK_RENDERING_BACKEND=OpenGL \
+
+        -DVTK_MODULE_ENABLE_VTK_RenderingFreeTypeFontConfig=ON \
+
+        -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2=ON \
+
+        -DVTK_WRAP_PYTHON=OFF &amp;&amp; \
+
+    make -j$(nproc) &amp;&amp; \
+
+    make install &amp;&amp; \
+
+    cd / &amp;&amp; rm -rf /opt/VTK
+
 </code></pre>
 <p><strong>핵심 CMake 옵션의 중요성:</strong></p>
 <ul>
@@ -256,25 +323,45 @@ cd / &amp;&amp; rm -rf /opt/VTK
 <p>PCL은 그 자체로 방대한 라이브러리이며, 전체를 소스 빌드하는 것은 엄청난 시간 소모와 의존성 문제(특히 VTK 버전 충돌)를 유발할 수 있다. 가장 효율적인 방법은 PCL의 핵심 기능 라이브러리를 APT를 통해 확보하고, 성능이 중요한 모듈만 NVIDIA가 제공하는 GPU 가속 버전인 <strong>cuPCL</strong>로 대체하거나 보완하는 것이다.8</p>
 <h4>3.3.1 cuPCL 통합 절차</h4>
 <p>NVIDIA-AI-IOT에서 제공하는 cuPCL은 ICP, VoxelGrid 필터, 평면 세그먼테이션 등 포인트 클라우드 처리의 핵심 알고리즘을 CUDA로 구현하여 Jetson 환경에서 높은 가속 성능을 제공한다.11</p>
-<pre><code># Step 4: Install PCL headers and core dependencies (already partially done in Step 2)
+<pre><code>
+# Step 4: Install PCL headers and core dependencies (already partially done in Step 2)
+
 # Ensure libpcl-dev is installed:
+
 RUN apt install -y libpcl-dev
 
+
+
 # Step 5: Integrate and compile NVIDIA cuPCL modules
+
 # Clone cuPCL. Note: Specific branch might be required for JetPack 6.x/CUDA 12.x compatibility.
+
 WORKDIR /opt/cuPCL
+
 RUN git clone https://github.com/NVIDIA-AI-IOT/cuPCL.git.
 
+
+
 # cuPCL compilation strategy: It uses makefiles and requires separate compilation per module.
+
 # Compilation must succeed using the host-mounted CUDA Toolkit (12.x) provided by the Docker runtime.
+
 # We build the libraries and samples for demonstration purposes.
+
 RUN cd cuICP &amp;&amp; make &amp;&amp; cd.. &amp;&amp; \
-cd cuFilter &amp;&amp; make &amp;&amp; cd.. &amp;&amp; \
-cd cuSegmentation &amp;&amp; make &amp;&amp; cd.. &amp;&amp; \
-cd cuOctree &amp;&amp; make &amp;&amp; cd..
+
+    cd cuFilter &amp;&amp; make &amp;&amp; cd.. &amp;&amp; \
+
+    cd cuSegmentation &amp;&amp; make &amp;&amp; cd.. &amp;&amp; \
+
+    cd cuOctree &amp;&amp; make &amp;&amp; cd..
+
+
 
 # Install necessary libraries (e.g., copy.so files to /usr/local/lib or adjust LD_LIBRARY_PATH)
+
 # NOTE: The resulting compiled cuPCL binaries/libs should be linked in ROS packages.
+
 </code></pre>
 <p><strong>모듈형 GPU 가속 전략:</strong> cuPCL은 전체 PCL 스택을 대체하는 것이 아니라, 특정 알고리즘만 GPU 가속을 제공하는 모듈형 라이브러리이다.11 따라서 ROS2 노드에서 cuPCL의 가속화된 기능을 C++ 인터페이스를 통해 호출하고, 나머지 표준 PCL 기능(파일 입출력, 기본 데이터 구조 등)은 시스템의 <code>libpcl-dev</code>를 통해 안정적으로 활용하는 것이 최적의 설계이다.13</p>
 <h2>4.  복합 종속성 충돌 해결 및 파이썬 환경 관리</h2>
@@ -302,15 +389,25 @@ cd cuOctree &amp;&amp; make &amp;&amp; cd..
 </tbody></table>
 <h4>5.1.1 통합 컨테이너 이미지 구동 명령</h4>
 <p>호스트 환경에서 <code>xhost +si:localuser:root</code>를 실행한 후, 다음 명령어를 사용하여 컨테이너를 실행하라.7</p>
-<pre><code class="language-Bash">docker run --rm -it \
---runtime nvidia \
---net=host --ipc=host \
--e DISPLAY=$DISPLAY \
--e QT_X11_NO_MITSHM=1 \
--e NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute \
--v /tmp/.X11-unix:/tmp/.X11-unix:rw \
---name ros2_3d_stack \
-agx_orin/ros2_pcl_integrated:latest bash
+<pre><code class="language-Bash">
+docker run --rm -it \
+
+    --runtime nvidia \
+
+    --net=host --ipc=host \
+
+    -e DISPLAY=$DISPLAY \
+
+    -e QT_X11_NO_MITSHM=1 \
+
+    -e NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute \
+
+    -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+
+    --name ros2_3d_stack \
+
+    agx_orin/ros2_pcl_integrated:latest bash
+
 </code></pre>
 <h3>5.2  통합 컨테이너 이미지 구동 및 기능 테스트</h3>
 <p>컨테이너에 진입한 후에는 핵심 통합 기능이 정상 작동하는지 검증해야 한다.</p>

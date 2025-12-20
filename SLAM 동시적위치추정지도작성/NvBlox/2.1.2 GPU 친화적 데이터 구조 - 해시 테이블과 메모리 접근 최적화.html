@@ -202,9 +202,9 @@
 <p>반대로 스레드들이 서로 멀리 떨어진 주소에 접근하거나(Strided Access), 무작위 주소에 접근하면 여러 번의 트랜잭션이 발생하여 유효 대역폭(Effective Bandwidth)이 급격히 감소한다. 이는 고속도로에 32명의 승객이 각각 별도의 승용차를 타고 가는 것(비효율적)과, 버스 한 대에 타고 가는 것(효율적)의 차이로 비유할 수 있다.</p>
 <h3>4.2  블록 내부의 선형 메모리 배치와 인덱싱</h3>
 <p>NvBlox의 VoxelBlock 내 512개 복셀은 3차원 배열처럼 논리적으로 구성되지만, 물리적으로는 1차원 배열로 평탄화(Flatten)되어 연속적으로 저장된다. 인덱싱 공식은 일반적으로 다음과 같다:<br />
-<span class="math math-display">
-\text{Index} = z \cdot (W \cdot H) + y \cdot W + x
-</span><br />
+$$</p>
+<p>\text{Index} = z \cdot (W \cdot H) + y \cdot W + x</p>
+<p>$$<br />
 여기서 <span class="math math-inline">W=8, H=8</span>이다.</p>
 <p>GPU 커널이 VoxelBlock을 처리할 때, 보통 블록의 <span class="math math-inline">x</span>축(가로) 방향을 스레드 인덱스(<code>threadIdx.x</code>)와 매핑한다. 이렇게 하면 워프 내의 인접한 스레드(0번 스레드, 1번 스레드…)가 복셀 배열의 인접한 인덱스(0번 복셀, 1번 복셀…)에 접근하게 된다.</p>
 <ul>
@@ -220,68 +220,103 @@
 <p>데이터 구조 설계의 또 다른 중요한 축은 데이터를 구조체의 배열(AoS)로 저장할지, 배열의 구조체(SoA)로 저장할지 결정하는 것이다. NvBlox는 GPU 캐시 효율을 극대화하기 위해 <strong>SoA (Structure of Arrays)</strong> 방식을 적극적으로 채용한다.6</p>
 <h3>5.1  AoS와 SoA의 비교</h3>
 <ul>
-<li><strong>AoS (Array of Structures):</strong></li>
-</ul>
-<pre><code class="language-C++">struct Voxel {
-float distance;
-float weight;
-uchar color;
+<li>
+<p><strong>AoS (Array of Structures):</strong></p>
+<pre><code class="language-C++">
+struct Voxel {
+
+    float distance;
+
+    float weight;
+
+    uchar color;
+
 };
+
 Voxel block;
+
 </code></pre>
-<p>AoS 방식은 객체지향적 관점에서는 직관적이다. 하나의 복셀에 대한 모든 정보가 인접해 있다. 그러나 GPU 커널이 TSDF 통합을 수행할 때, 오직 <code>distance</code>와 <code>weight</code> 값만 필요하고 <code>color</code>는 필요하지 않은 경우가 많다. AoS 방식에서는 <code>distance</code>를 읽을 때 인접한 <code>color</code> 데이터까지 캐시 라인에 딸려오게 된다. 이는 사용하지 않을 데이터를 메모리 버스에 태우는 것으로, 대역폭 낭비(Bandwidth Wastage)를 초래한다.</p>
-<ul>
-<li><strong>SoA (Structure of Arrays):</strong></li>
+</li>
 </ul>
-<p>C++</p>
-<pre><code>struct VoxelBlock {
-float distances;
-float weights;
-uchar colors;
-};
+<pre><code>
+AoS 방식은 객체지향적 관점에서는 직관적이다. 하나의 복셀에 대한 모든 정보가 인접해 있다. 그러나 GPU 커널이 TSDF 통합을 수행할 때, 오직 `distance`와 `weight` 값만 필요하고 `color`는 필요하지 않은 경우가 많다. AoS 방식에서는 `distance`를 읽을 때 인접한 `color` 데이터까지 캐시 라인에 딸려오게 된다. 이는 사용하지 않을 데이터를 메모리 버스에 태우는 것으로, 대역폭 낭비(Bandwidth Wastage)를 초래한다.
+
+- **SoA (Structure of Arrays):**
+
+C++
+
 </code></pre>
-<p>SoA 방식은 속성별로 배열을 분리한다. <code>distance</code> 배열은 <code>distance</code>끼리 뭉쳐 있다. 따라서 거리 업데이트 커널은 <code>distances</code> 배열만 연속적으로 읽어오면 되므로, 메모리 버스의 모든 비트를 유효한 데이터 전송에 사용할 수 있다.</p>
-<h3>5.2  NvBlox의 하이브리드 접근 및 성능 이점</h3>
-<p>NvBlox 및 이를 기반으로 한 최신 연구(coVoxSLAM 등)는 SoA 레이아웃을 통해 TSDF 통합 속도를 비약적으로 향상시켰다. 연구 결과에 따르면 SoA 방식은 AoS 대비 메모리 읽기/쓰기 처리량을 크게 높여주며, 특히 데이터 필드가 많아질수록(예: 시맨틱 레이블, 신뢰도 점수 등 추가) 그 격차는 벌어진다. NvBlox의 VoxelBlock 구조는 이러한 SoA 설계를 통해 특정 연산(예: ESDF 계산을 위한 거리 값 전파)에서 불필요한 데이터 로딩을 방지하고 커널 실행 속도를 높인다. 이는 제한된 메모리 대역폭을 가진 젯슨(Jetson)과 같은 임베디드 GPU 환경에서 더욱 결정적인 성능 차이를 만든다.6</p>
-<h2>6.  해시 충돌과 최악의 경우(Worst-Case) 시나리오 분석</h2>
-<p>현실 세계의 로봇 매핑에서 해시 충돌은 피할 수 없는 문제이다. NvBlox는 이를 어떻게 견디는가?</p>
-<h3>6.1  공간적 지역성과 해시 함수의 설계</h3>
-<p>로봇이 스캔하는 환경은 연속적이다. 즉, 새로운 블록이 생성될 때 그 블록의 좌표는 이전 블록의 좌표와 인접해 있을 확률이 높다. 만약 단순한 해시 함수를 사용하면 인접한 좌표들이 비슷한 해시 값을 가져 충돌이 빈번해질 수 있다. NvBlox는 이를 방지하기 위해 XOR 기반의 공간 해싱 함수나 Z-order curve (Morton Code) 등을 활용하여 공간적 인접성이 해시 테이블 상에서는 무작위로 분산되도록 설계한다.</p>
-<p>일반적인 해시 함수의 형태는 다음과 같다:<br />
-<span class="math math-display">
+<p>struct VoxelBlock {</p>
+<pre><code>  float distances;
+
+  float weights;
+
+  uchar colors;
+</code></pre>
+<p>};</p>
+<pre><code>
+SoA 방식은 속성별로 배열을 분리한다. `distance` 배열은 `distance`끼리 뭉쳐 있다. 따라서 거리 업데이트 커널은 `distances` 배열만 연속적으로 읽어오면 되므로, 메모리 버스의 모든 비트를 유효한 데이터 전송에 사용할 수 있다.
+
+### 5.2  NvBlox의 하이브리드 접근 및 성능 이점
+
+
+NvBlox 및 이를 기반으로 한 최신 연구(coVoxSLAM 등)는 SoA 레이아웃을 통해 TSDF 통합 속도를 비약적으로 향상시켰다. 연구 결과에 따르면 SoA 방식은 AoS 대비 메모리 읽기/쓰기 처리량을 크게 높여주며, 특히 데이터 필드가 많아질수록(예: 시맨틱 레이블, 신뢰도 점수 등 추가) 그 격차는 벌어진다. NvBlox의 VoxelBlock 구조는 이러한 SoA 설계를 통해 특정 연산(예: ESDF 계산을 위한 거리 값 전파)에서 불필요한 데이터 로딩을 방지하고 커널 실행 속도를 높인다. 이는 제한된 메모리 대역폭을 가진 젯슨(Jetson)과 같은 임베디드 GPU 환경에서 더욱 결정적인 성능 차이를 만든다.6
+
+## 6.  해시 충돌과 최악의 경우(Worst-Case) 시나리오 분석
+
+
+현실 세계의 로봇 매핑에서 해시 충돌은 피할 수 없는 문제이다. NvBlox는 이를 어떻게 견디는가?
+
+### 6.1  공간적 지역성과 해시 함수의 설계
+
+
+로봇이 스캔하는 환경은 연속적이다. 즉, 새로운 블록이 생성될 때 그 블록의 좌표는 이전 블록의 좌표와 인접해 있을 확률이 높다. 만약 단순한 해시 함수를 사용하면 인접한 좌표들이 비슷한 해시 값을 가져 충돌이 빈번해질 수 있다. NvBlox는 이를 방지하기 위해 XOR 기반의 공간 해싱 함수나 Z-order curve (Morton Code) 등을 활용하여 공간적 인접성이 해시 테이블 상에서는 무작위로 분산되도록 설계한다.
+
+일반적인 해시 함수의 형태는 다음과 같다:
+$$
+
 H(x, y, z) = ((x \cdot p_1) \oplus (y \cdot p_2) \oplus (z \cdot p_3)) \mod N
-</span><br />
-여기서 <span class="math math-inline">p_1, p_2, p_3</span>는 큰 소수(Prime Number)이며, <span class="math math-inline">\oplus</span>는 XOR 연산이다. XOR 연산은 GPU 하드웨어에서 매우 적은 사이클로 처리되면서도 비트 레벨의 엔트로피를 효과적으로 섞어주는 특성이 있다.16</p>
-<h3>6.2  지연 시간 은폐 (Latency Hiding)</h3>
-<p>선형 탐사에서 충돌이 많아지면(탐사 길이가 길어지면) 원하는 데이터를 찾기 위해 여러 번 메모리를 읽어야 하므로 레이턴시가 증가한다. 하지만 GPU의 막대한 스레드 병렬성은 이러한 레이턴시를 ’은폐(Hide)’하는 데 탁월하다. 즉, 하나의 워프가 메모리를 읽느라 대기하는(Stall) 동안, 워프 스케줄러(Warp Scheduler)는 대기 상태가 아닌 다른 워프를 즉시 실행시킨다.2 NvBlox의 아키텍처는 이러한 GPU의 <strong>지연 시간 은폐(Latency Hiding)</strong> 능력을 믿고, 복잡한 충돌 해결 로직 대신 단순하고 빠른 선형 탐사를 선택한 것이다. 이는 CPU와는 전혀 다른 접근법이며, GPU 하드웨어에 대한 깊은 이해 없이는 내릴 수 없는 설계적 결단이다.</p>
-<h2>7.  결론: 하드웨어를 이해한 소프트웨어 설계의 승리</h2>
-<p>요약하자면, NvBlox의 “2.1.2 GPU 친화적 데이터 구조“는 단순히 데이터를 저장하는 방식의 변화가 아니다. 이는 CPU의 직렬 처리 패러다임을 완전히 버리고, GPU의 SIMT 아키텍처, 메모리 계층 구조, 트랜잭션 특성을 밑바닥부터 고려하여 재설계한 결과물이다.</p>
-<ol>
-<li><strong>희소 해시 테이블</strong>은 불필요한 메모리 사용을 억제하고 <span class="math math-inline">O(1)</span> 접근을 보장한다.</li>
-<li><strong>개방 주소법과 선형 탐사</strong>는 포인터 추적을 제거하고 캐시 지역성을 높여 지연 시간을 최소화한다.</li>
-<li><strong><span class="math math-inline">8 \times 8 \times 8</span> VoxelBlock</strong>은 워프 크기와 캐시 라인 크기에 딱 맞아떨어지는 메모리 병합 접근을 가능케 한다.</li>
-<li><strong>SoA 레이아웃</strong>은 필요한 데이터만 선별적으로 로드하여 유효 메모리 대역폭(Effective Memory Bandwidth)을 극대화한다.</li>
-</ol>
-<p>이러한 설계 덕분에 NvBlox는 Voxblox 대비 수십 배에서 백 배 이상의 성능 향상을 이뤄낼 수 있었으며, 이는 제한된 컴퓨팅 자원을 가진 엣지 디바이스(Jetson Orin 등)에서도 실시간으로 고해상도 3D 매핑을 가능하게 하는 원동력이 된다. 이는 로봇 소프트웨어 엔지니어들에게 하드웨어의 특성을 고려한 데이터 구조 설계가 얼마나 파괴적인 성능 혁신을 가져올 수 있는지를 보여주는 교과서적인 사례라 할 수 있다.</p>
-<h2>8. 참고 자료</h2>
-<ol>
-<li>Understanding Latency Hiding on GPUs - Berkeley EECS, https://www2.eecs.berkeley.edu/Pubs/TechRpts/2016/EECS-2016-143.pdf</li>
-<li>How to understand the “hide latency” - CUDA Programming and Performance, https://forums.developer.nvidia.com/t/how-to-understand-the-hide-latency/258938</li>
-<li>nvblox: GPU-Accelerated Incremental Signed Distance Field Mapping - arXiv, https://arxiv.org/html/2311.00626v2</li>
-<li>Technical Details - NVIDIA Isaac ROS, https://nvidia-isaac-ros.github.io/concepts/scene_reconstruction/nvblox/technical_details.html</li>
-<li>Real-Time Metric-Semantic Mapping for Autonomous Navigation in Outdoor Environments, https://arxiv.org/html/2412.00291v1</li>
-<li>coVoxSLAM: GPU accelerated globally consistent dense SLAM - arXiv, https://arxiv.org/html/2410.21149v1</li>
-<li>Optimizing Open Addressing - Max Slater, https://thenumb.at/Hashtables/</li>
-<li>Maximizing Performance with Massively Parallel Hash Maps on GPUs - NVIDIA Developer, https://developer.nvidia.com/blog/maximizing-performance-with-massively-parallel-hash-maps-on-gpus/</li>
-<li>Hashtable Implementation Using Cuckoo Hashing - Warpzone Studios, https://warpzonestudios.com/hashtable-cuckoo/</li>
-<li>WarpCore: A Library for fast Hash Tables on GPUs | Request PDF - ResearchGate, https://www.researchgate.net/publication/351163278_WarpCore_A_Library_for_fast_Hash_Tables_on_GPUs</li>
-<li>Nvblox quickstart example crashing - Isaac ROS - NVIDIA Developer Forums, https://forums.developer.nvidia.com/t/nvblox-quickstart-example-crashing/333188</li>
-<li>Analyzing memory access coalescing of my CUDA kernel - Stack Overflow, https://stackoverflow.com/questions/13771538/analyzing-memory-access-coalescing-of-my-cuda-kernel</li>
-<li>definition - In CUDA, what is memory coalescing, and how is it achieved? - Stack Overflow, https://stackoverflow.com/questions/5041328/in-cuda-what-is-memory-coalescing-and-how-is-it-achieved</li>
-<li>Block size and occupancy - CUDA - NVIDIA Developer Forums, https://forums.developer.nvidia.com/t/block-size-and-occupancy/317352</li>
-<li>coVoxSLAM: GPU Accelerated Globally Consistent Dense SLAM | Request PDF, https://www.researchgate.net/publication/395224211_coVoxSLAM_GPU_Accelerated_Globally_Consistent_Dense_SLAM</li>
-<li>A Simple GPU Hash Table - Nosferalatu, https://nosferalatu.com/SimpleGPUHashTable.html</li>
-</ol>
+
+$$
+여기서 $p_1, p_2, p_3$는 큰 소수(Prime Number)이며, $\oplus$는 XOR 연산이다. XOR 연산은 GPU 하드웨어에서 매우 적은 사이클로 처리되면서도 비트 레벨의 엔트로피를 효과적으로 섞어주는 특성이 있다.16
+
+### 6.2  지연 시간 은폐 (Latency Hiding)
+
+
+선형 탐사에서 충돌이 많아지면(탐사 길이가 길어지면) 원하는 데이터를 찾기 위해 여러 번 메모리를 읽어야 하므로 레이턴시가 증가한다. 하지만 GPU의 막대한 스레드 병렬성은 이러한 레이턴시를 '은폐(Hide)'하는 데 탁월하다. 즉, 하나의 워프가 메모리를 읽느라 대기하는(Stall) 동안, 워프 스케줄러(Warp Scheduler)는 대기 상태가 아닌 다른 워프를 즉시 실행시킨다.2 NvBlox의 아키텍처는 이러한 GPU의 **지연 시간 은폐(Latency Hiding)** 능력을 믿고, 복잡한 충돌 해결 로직 대신 단순하고 빠른 선형 탐사를 선택한 것이다. 이는 CPU와는 전혀 다른 접근법이며, GPU 하드웨어에 대한 깊은 이해 없이는 내릴 수 없는 설계적 결단이다.
+
+## 7.  결론: 하드웨어를 이해한 소프트웨어 설계의 승리
+
+
+요약하자면, NvBlox의 "2.1.2 GPU 친화적 데이터 구조"는 단순히 데이터를 저장하는 방식의 변화가 아니다. 이는 CPU의 직렬 처리 패러다임을 완전히 버리고, GPU의 SIMT 아키텍처, 메모리 계층 구조, 트랜잭션 특성을 밑바닥부터 고려하여 재설계한 결과물이다.
+
+1. **희소 해시 테이블**은 불필요한 메모리 사용을 억제하고 $O(1)$ 접근을 보장한다.
+2. **개방 주소법과 선형 탐사**는 포인터 추적을 제거하고 캐시 지역성을 높여 지연 시간을 최소화한다.
+3. **$8 \times 8 \times 8$ VoxelBlock**은 워프 크기와 캐시 라인 크기에 딱 맞아떨어지는 메모리 병합 접근을 가능케 한다.
+4. **SoA 레이아웃**은 필요한 데이터만 선별적으로 로드하여 유효 메모리 대역폭(Effective Memory Bandwidth)을 극대화한다.
+
+이러한 설계 덕분에 NvBlox는 Voxblox 대비 수십 배에서 백 배 이상의 성능 향상을 이뤄낼 수 있었으며, 이는 제한된 컴퓨팅 자원을 가진 엣지 디바이스(Jetson Orin 등)에서도 실시간으로 고해상도 3D 매핑을 가능하게 하는 원동력이 된다. 이는 로봇 소프트웨어 엔지니어들에게 하드웨어의 특성을 고려한 데이터 구조 설계가 얼마나 파괴적인 성능 혁신을 가져올 수 있는지를 보여주는 교과서적인 사례라 할 수 있다.
+
+## 8. 참고 자료
+
+
+1. Understanding Latency Hiding on GPUs - Berkeley EECS, https://www2.eecs.berkeley.edu/Pubs/TechRpts/2016/EECS-2016-143.pdf
+2. How to understand the "hide latency" - CUDA Programming and Performance, https://forums.developer.nvidia.com/t/how-to-understand-the-hide-latency/258938
+3. nvblox: GPU-Accelerated Incremental Signed Distance Field Mapping - arXiv, https://arxiv.org/html/2311.00626v2
+4. Technical Details - NVIDIA Isaac ROS, https://nvidia-isaac-ros.github.io/concepts/scene_reconstruction/nvblox/technical_details.html
+5. Real-Time Metric-Semantic Mapping for Autonomous Navigation in Outdoor Environments, https://arxiv.org/html/2412.00291v1
+6. coVoxSLAM: GPU accelerated globally consistent dense SLAM - arXiv, https://arxiv.org/html/2410.21149v1
+7. Optimizing Open Addressing - Max Slater, https://thenumb.at/Hashtables/
+8. Maximizing Performance with Massively Parallel Hash Maps on GPUs - NVIDIA Developer, https://developer.nvidia.com/blog/maximizing-performance-with-massively-parallel-hash-maps-on-gpus/
+9. Hashtable Implementation Using Cuckoo Hashing - Warpzone Studios, https://warpzonestudios.com/hashtable-cuckoo/
+10. WarpCore: A Library for fast Hash Tables on GPUs | Request PDF - ResearchGate, https://www.researchgate.net/publication/351163278_WarpCore_A_Library_for_fast_Hash_Tables_on_GPUs
+11. Nvblox quickstart example crashing - Isaac ROS - NVIDIA Developer Forums, https://forums.developer.nvidia.com/t/nvblox-quickstart-example-crashing/333188
+12. Analyzing memory access coalescing of my CUDA kernel - Stack Overflow, https://stackoverflow.com/questions/13771538/analyzing-memory-access-coalescing-of-my-cuda-kernel
+13. definition - In CUDA, what is memory coalescing, and how is it achieved? - Stack Overflow, https://stackoverflow.com/questions/5041328/in-cuda-what-is-memory-coalescing-and-how-is-it-achieved
+14. Block size and occupancy - CUDA - NVIDIA Developer Forums, https://forums.developer.nvidia.com/t/block-size-and-occupancy/317352
+15. coVoxSLAM: GPU Accelerated Globally Consistent Dense SLAM | Request PDF, https://www.researchgate.net/publication/395224211_coVoxSLAM_GPU_Accelerated_Globally_Consistent_Dense_SLAM
+16. A Simple GPU Hash Table - Nosferalatu, https://nosferalatu.com/SimpleGPUHashTable.html
+</code></pre>
 
             </article>
             <footer>

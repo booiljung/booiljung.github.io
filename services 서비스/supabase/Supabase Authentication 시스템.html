@@ -212,12 +212,19 @@
 <p>RLS를 특정 테이블에 활성화(<code>ENABLE ROW LEVEL SECURITY</code>)하면, 기본적으로 해당 테이블에 대한 모든 접근이 차단되는 ‘기본 거부(default-deny)’ 원칙이 적용된다.6 이후, 명시적으로 정의된 정책을 통해서만 데이터 접근이 허용된다. 이 방식의 가장 큰 장점은 보안 규칙이 데이터와 함께 존재한다는 점이다. 따라서 자동 생성된 REST API, 직접적인 데이터베이스 연결, 서버리스 함수 등 어떤 경로로 데이터에 접근하더라도 동일한 보안 정책이 일관되게 강제된다.6 이는 애플리케이션 코드의 논리적 오류나 버그로 인해 발생할 수 있는 데이터 유출 위험을 원천적으로 감소시키는 강력한 ‘심층 방어(defense in depth)’ 전략을 제공한다.6</p>
 <h3>3.2  RLS 정책(Policy) 작성 및 활용</h3>
 <p>RLS 정책은 표준 SQL을 사용하여 정의되므로, 데이터베이스 관리자와 개발자가 쉽게 이해하고 작성할 수 있다.6 정책의 기본 구조는 다음과 같다.</p>
-<pre><code class="language-SQL">CREATE POLICY "policy_name"
+<pre><code class="language-SQL">
+CREATE POLICY "policy_name"
+
 ON table_name
+
 FOR &lt;command&gt;
+
 TO &lt;role&gt;
+
 USING (boolean_expression)
+
 WITH CHECK (boolean_expression);
+
 </code></pre>
 <p>정책의 핵심은 <code>USING</code> 절과 <code>WITH CHECK</code> 절에 정의되는 불리언 표현식(boolean expression)이다.</p>
 <ul>
@@ -237,26 +244,44 @@ WITH CHECK (boolean_expression);
 <h3>3.3  RLS 정책 구현 시나리오</h3>
 <p>RLS를 활용한 구체적인 인가 시나리오는 다음과 같다.</p>
 <h4>3.3.1 시나리오 1: 사용자는 자신의 프로필만 수정할 수 있다.</h4>
-<pre><code class="language-SQL">-- profiles 테이블에 RLS 활성화
+<pre><code class="language-SQL">
+-- profiles 테이블에 RLS 활성화
+
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 
+
+
 -- 본인 프로필만 보고 수정할 수 있는 정책 생성
+
 CREATE POLICY "Users can view and update their own profile"
+
 ON profiles FOR ALL
+
 USING ( auth.uid() = id )
+
 WITH CHECK ( auth.uid() = id );
+
 </code></pre>
 <p>이 정책에서 <code>USING</code> 절은 <code>SELECT</code> 시 현재 로그인한 사용자의 ID(<code>auth.uid()</code>)가 프로필 행의 <code>id</code>와 일치하는 경우에만 해당 행을 반환하도록 제한한다. <code>WITH CHECK</code> 절은 <code>INSERT</code>나 <code>UPDATE</code> 시 새로운 데이터의 <code>id</code> 값이 반드시 현재 사용자의 ID와 일치하도록 강제하여, 다른 사용자의 프로필을 생성하거나 수정하는 행위를 방지한다.3</p>
 <h4>3.3.2 시나리오 2: 팀 멤버는 소속된 팀의 정보만 볼 수 있다.</h4>
 <p><code>teams</code> 테이블과 사용자와 팀을 연결하는 <code>members</code> 테이블이 있다고 가정할 때, 다음과 같은 정책을 수립할 수 있다.</p>
-<pre><code class="language-SQL">-- 팀 멤버만 해당 팀 정보를 볼 수 있는 정책
+<pre><code class="language-SQL">
+-- 팀 멤버만 해당 팀 정보를 볼 수 있는 정책
+
 CREATE POLICY "Team members can view their team details"
+
 ON teams FOR SELECT
+
 USING (
-id IN (
-SELECT team_id FROM members WHERE user_id = auth.uid()
-)
+
+  id IN (
+
+    SELECT team_id FROM members WHERE user_id = auth.uid()
+
+  )
+
 );
+
 </code></pre>
 <p>이 정책의 <code>USING</code> 절은 서브쿼리를 사용하여 <code>members</code> 테이블에서 현재 사용자가 속한 모든 <code>team_id</code>를 조회하고, <code>teams</code> 테이블에서 해당 <code>id</code>를 가진 행들만 <code>SELECT</code> 할 수 있도록 허용한다. 이는 다중 테넌시(multi-tenancy) 애플리케이션에서 각 테넌트의 데이터를 안전하게 격리하는 핵심적인 패턴이다.3</p>
 <p>RLS는 매우 강력하지만, 성능과 복잡성 간의 트레이드오프를 내포한다. RLS 정책 내부에 복잡한 서브쿼리나 여러 테이블을 조인하는 로직을 포함하면, 해당 테이블에 대한 모든 CRUD 작업마다 이 정책 쿼리가 추가로 실행된다. 만약 정책 쿼리가 비효율적이거나 관련 컬럼에 인덱스가 제대로 설정되지 않았다면, 이는 데이터베이스 성능에 심각한 병목 현상을 유발할 수 있다.5 따라서 RLS를 효과적으로 사용하기 위해서는 단순히 SQL 정책을 작성하는 능력을 넘어, PostgreSQL의 쿼리 최적화와 실행 계획(Execution Plan) 분석에 대한 깊은 이해가 필수적이다. 개발자는 보안 정책이 성능 저하의 원인이 되지 않도록 데이터베이스 스키마와 인덱스를 신중하게 설계해야 한다.6</p>
@@ -309,10 +334,15 @@ SELECT team_id FROM members WHERE user_id = auth.uid()
 <li>마지막으로, Supabase 대시보드의 ‘Authentication &gt; Hooks’ 설정 페이지에서 방금 작성한 PostgreSQL 함수를 ’Custom Access Token Hook’으로 등록한다.38</li>
 </ol>
 <p>이렇게 JWT에 주입된 커스텀 클레임은 RLS 정책에서 <code>auth.jwt()</code> 함수를 통해 쉽게 접근하고 활용할 수 있다. 이를 통해 매우 정교하고 동적인 RBAC를 데이터베이스 수준에서 구현하는 것이 가능해진다.40</p>
-<pre><code class="language-SQL">-- 'admin' 역할을 가진 사용자만 posts 테이블의 모든 행을 볼 수 있는 정책
+<pre><code class="language-SQL">
+-- 'admin' 역할을 가진 사용자만 posts 테이블의 모든 행을 볼 수 있는 정책
+
 CREATE POLICY "Admins can view all posts"
+
 ON posts FOR SELECT
+
 USING ( (auth.jwt()-&gt;'app_metadata'-&gt;&gt;'role') = 'admin' );
+
 </code></pre>
 <p>Auth Hooks는 인증 로직의 중심을 데이터베이스로 가져오는 패러다임 전환을 이끈다. JWT 발급 시점에 DB 함수가 직접 호출되므로, 인증 관련 로직이 데이터베이스 트랜잭션 내에서 처리될 수 있다. 이는 인증과 데이터베이스 로직의 경계를 허물어, 데이터의 상태와 인증 상태 간의 실시간 일관성을 보장한다. 예를 들어, 사용자의 구독 상태가 <code>subscriptions</code> 테이블에서 만료되면, 다음 토큰 갱신 시점에 Auth Hook이 이를 즉시 감지하고 JWT에서 ‘premium’ 역할을 제거할 수 있다. 이는 외부 웹훅이나 별도의 동기화 프로세스 없이도 가능한, 매우 강력하고 효율적인 방식이다.</p>
 <h3>5.2  Edge Function을 이용한 인증 워크플로우 확장</h3>

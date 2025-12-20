@@ -184,19 +184,33 @@
 </ul>
 <h3>3.2 Zero-Copy와 LoanedSamples</h3>
 <p>C++와 같은 시스템 언어에서 성능 최적화의 핵심은 메모리 복사(Memcpy)를 줄이는 것이다. DDS는 <code>LoanedSamples</code>라는 개념을 통해 이를 구현한다.</p>
-<pre><code class="language-C++">// Modern C++ (C++11 이상) 예시
-void on_data_available(dds::sub::DataReader&lt;MarketData&gt;&amp; reader) {
-// take() 호출 시 인자를 주지 않거나 빈 시퀀스를 주면 Zero-Copy 모드로 동작
-dds::sub::LoanedSamples&lt;MarketData&gt; samples = reader.take();
+<pre><code class="language-C++">
+// Modern C++ (C++11 이상) 예시
 
-for (const auto&amp; sample : samples) {
-if (sample.info().valid()) {
-// sample.data()는 미들웨어 내부 버퍼를 직접 가리키는 참조임
-process_tick(sample.data());
+void on_data_available(dds::sub::DataReader&lt;MarketData&gt;&amp; reader) {
+
+    // take() 호출 시 인자를 주지 않거나 빈 시퀀스를 주면 Zero-Copy 모드로 동작
+
+    dds::sub::LoanedSamples&lt;MarketData&gt; samples = reader.take();
+
+
+
+    for (const auto&amp; sample : samples) {
+
+        if (sample.info().valid()) {
+
+            // sample.data()는 미들웨어 내부 버퍼를 직접 가리키는 참조임
+
+            process_tick(sample.data());
+
+        }
+
+    }
+
+    // 루프를 벗어나 samples 객체가 소멸될 때 자동으로 return_loan()이 호출됨
+
 }
-}
-// 루프를 벗어나 samples 객체가 소멸될 때 자동으로 return_loan()이 호출됨
-}
+
 </code></pre>
 <p>4</p>
 <p>이 코드에서 <code>sample.data()</code>는 애플리케이션의 메모리에 복사된 데이터가 아니라, 미들웨어가 관리하는 수신 버퍼 내의 메모리 주소를 직접 가리킨다. 이는 수 기가바이트의 데이터를 처리할 때 엄청난 성능 이득을 제공하지만, **데이터의 소유권(Ownership)**이 여전히 미들웨어에 있다는 점을 명심해야 한다. <code>samples</code> 객체가 소멸되어 대여(Loan)가 반환(<code>return_loan</code>)된 이후에 해당 데이터의 주소에 접근하면 <code>Use-After-Free</code> 오류가 발생한다.</p>
@@ -224,71 +238,135 @@ process_tick(sample.data());
 <p>앞서 언급한 “리스너 내 블로킹 금지” 원칙과 “데이터 처리의 복잡성“이라는 상충되는 요구사항을 해결하기 위한 표준적인 해법은 <strong>생산자-소비자(Producer-Consumer) 패턴</strong>을 적용하는 것이다. 리스너는 데이터를 수집하여 큐(Queue)에 넣는 생산자 역할만 수행하고, 실제 무거운 처리는 별도의 워커 스레드(Worker Thread)가 소비자가 되어 수행한다.14</p>
 <h3>5.1 C++11 표준을 활용한 스레드 안전 큐 구현</h3>
 <p>표준 STL의 <code>std::queue</code>는 스레드 안전하지 않으므로, <code>mutex</code>와 <code>condition_variable</code>을 사용하여 직접 래핑(Wrapping)해야 한다. 다음은 DDS 리스너와 결합하기 위한 최적화된 큐의 구현 예시다.14</p>
-<pre><code class="language-C++">#include &lt;queue&gt;
+<pre><code class="language-C++">
+#include &lt;queue&gt;
+
 #include &lt;mutex&gt;
+
 #include &lt;condition_variable&gt;
 
+
+
 template &lt;typename T&gt;
+
 class ThreadSafeQueue {
+
 private:
-std::queue&lt;T&gt; queue_;
-mutable std::mutex mutex_;
-std::condition_variable cond_;
+
+    std::queue&lt;T&gt; queue_;
+
+    mutable std::mutex mutex_;
+
+    std::condition_variable cond_;
+
+
 
 public:
-// 데이터를 큐에 추가 (Producer: Listener에서 호출)
-void push(T value) {
-{
-std::lock_guard&lt;std::mutex&gt; lock(mutex_);
-queue_.push(std::move(value));
-}
-cond_.notify_one(); // 대기 중인 워커 스레드를 깨움
-}
 
-// 데이터를 큐에서 꺼냄 (Consumer: Worker Thread에서 호출)
-// 큐가 비어있으면 데이터가 들어올 때까지 대기(Blocking)
-void wait_and_pop(T&amp; value) {
-std::unique_lock&lt;std::mutex&gt; lock(mutex_);
-cond_.wait(lock, [this]{ return!queue_.empty(); });
-value = std::move(queue_.front());
-queue_.pop();
-}
+    // 데이터를 큐에 추가 (Producer: Listener에서 호출)
 
-// 넌블로킹 방식의 pop (옵션)
-bool try_pop(T&amp; value) {
-std::lock_guard&lt;std::mutex&gt; lock(mutex_);
-if (queue_.empty()) return false;
-value = std::move(queue_.front());
-queue_.pop();
-return true;
-}
+    void push(T value) {
+
+        {
+
+            std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+
+            queue_.push(std::move(value));
+
+        }
+
+        cond_.notify_one(); // 대기 중인 워커 스레드를 깨움
+
+    }
+
+
+
+    // 데이터를 큐에서 꺼냄 (Consumer: Worker Thread에서 호출)
+
+    // 큐가 비어있으면 데이터가 들어올 때까지 대기(Blocking)
+
+    void wait_and_pop(T&amp; value) {
+
+        std::unique_lock&lt;std::mutex&gt; lock(mutex_);
+
+        cond_.wait(lock, [this]{ return!queue_.empty(); });
+
+        value = std::move(queue_.front());
+
+        queue_.pop();
+
+    }
+
+    
+
+    // 넌블로킹 방식의 pop (옵션)
+
+    bool try_pop(T&amp; value) {
+
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+
+        if (queue_.empty()) return false;
+
+        value = std::move(queue_.front());
+
+        queue_.pop();
+
+        return true;
+
+    }
+
 };
+
 </code></pre>
 <h3>5.2 리스너와 워커 스레드의 결합</h3>
 <p>이제 이 큐를 사용하여 <code>on_data_available</code>을 구현한다. 핵심은 리스너 내부에서 데이터를 처리하지 않고, 가장 빠른 방법(복사 또는 이동)으로 큐에 밀어 넣고 즉시 리턴하는 것이다.</p>
-<pre><code class="language-C++">class MarketDataListener : public dds::sub::NoOpDataReaderListener&lt;MarketData&gt; {
+<pre><code class="language-C++">
+class MarketDataListener : public dds::sub::NoOpDataReaderListener&lt;MarketData&gt; {
+
 private:
-ThreadSafeQueue&lt;MarketData&gt;&amp; queue_;
+
+    ThreadSafeQueue&lt;MarketData&gt;&amp; queue_;
+
+
 
 public:
-explicit MarketDataListener(ThreadSafeQueue&lt;MarketData&gt;&amp; q) : queue_(q) {}
 
-void on_data_available(dds::sub::DataReader&lt;MarketData&gt;&amp; reader) override {
-// 1. Zero-Copy로 데이터 접근
-dds::sub::LoanedSamples&lt;MarketData&gt; samples = reader.take();
+    explicit MarketDataListener(ThreadSafeQueue&lt;MarketData&gt;&amp; q) : queue_(q) {}
 
-// 2. 유효한 데이터만 큐로 전송
-for (const auto&amp; sample : samples) {
-if (sample.info().valid()) {
-// 주의: LoanedSamples의 메모리는 리턴해야 하므로,
-// 데이터를 큐에 넣을 때는 복사(Copy)가 일어남.
-// MarketData 구조체가 크다면 여기서 병목이 될 수 있으므로
-// 필요한 필드만 추출하거나 별도의 메모리 풀 전략이 필요함.
-queue_.push(sample.data());
-}
-}
-} // 3. 함수 종료 시 Loan 반환
+
+
+    void on_data_available(dds::sub::DataReader&lt;MarketData&gt;&amp; reader) override {
+
+        // 1. Zero-Copy로 데이터 접근
+
+        dds::sub::LoanedSamples&lt;MarketData&gt; samples = reader.take();
+
+
+
+        // 2. 유효한 데이터만 큐로 전송
+
+        for (const auto&amp; sample : samples) {
+
+            if (sample.info().valid()) {
+
+                // 주의: LoanedSamples의 메모리는 리턴해야 하므로,
+
+                // 데이터를 큐에 넣을 때는 복사(Copy)가 일어남.
+
+                // MarketData 구조체가 크다면 여기서 병목이 될 수 있으므로
+
+                // 필요한 필드만 추출하거나 별도의 메모리 풀 전략이 필요함.
+
+                queue_.push(sample.data()); 
+
+            }
+
+        }
+
+    } // 3. 함수 종료 시 Loan 반환
+
 };
+
 </code></pre>
 <p>이 패턴을 사용하면 미들웨어의 수신 스레드는 큐에 데이터를 넣는(Push) 아주 짧은 시간 동안만 락을 획득하고 즉시 해제되므로, 네트워크 버퍼 오버플로 문제를 효과적으로 예방할 수 있다.</p>
 <h2>6.  고급 활용: StatusCondition과 WaitSet의 전략적 사용</h2>
@@ -308,16 +386,27 @@ queue_.push(sample.data());
 <p><code>on_data_available</code>을 구현할 때 자주 발생하는 문제와 그 해결책을 정리한다.</p>
 <h3>7.1  예외 처리 (Exception Handling)</h3>
 <p>C++ 환경에서 리스너 콜백 내부에서 예외(Exception)가 발생하여 함수 밖으로 던져지면(Throw), 미들웨어 스레드가 비정상 종료되거나 정의되지 않은 동작(Undefined Behavior)을 유발할 수 있다. 따라서 반드시 <code>noexcept</code> 수준의 예외 처리를 해야 한다.</p>
-<pre><code class="language-C++">void on_data_available(...) {
-try {
-// 데이터 처리 로직
-} catch (const std::exception&amp; e) {
-// 로그만 남기고 절대 예외를 다시 던지지 말 것
-std::cerr &lt;&lt; "Exception in listener: " &lt;&lt; e.what() &lt;&lt; std::endl;
-} catch (...) {
-std::cerr &lt;&lt; "Unknown exception in listener" &lt;&lt; std::endl;
+<pre><code class="language-C++">
+void on_data_available(...) {
+
+    try {
+
+        // 데이터 처리 로직
+
+    } catch (const std::exception&amp; e) {
+
+        // 로그만 남기고 절대 예외를 다시 던지지 말 것
+
+        std::cerr &lt;&lt; "Exception in listener: " &lt;&lt; e.what() &lt;&lt; std::endl;
+
+    } catch (...) {
+
+        std::cerr &lt;&lt; "Unknown exception in listener" &lt;&lt; std::endl;
+
+    }
+
 }
-}
+
 </code></pre>
 <h3>7.2  Loan 미반환으로 인한 자원 고갈</h3>
 <p><code>read()</code>나 <code>take()</code>를 호출할 때 <code>LoanedSamples</code> 객체를 사용하지 않고 저수준 API를 사용하면서 <code>return_loan</code>을 호출하지 않는 경우, 미들웨어의 수신 버퍼 풀(Receive Buffer Pool)이 고갈된다.11 이렇게 되면 더 이상 새로운 데이터를 수신할 수 없게 되며, 겉으로는 시스템이 멈춘 것처럼 보인다. Modern C++ API를 사용하면 RAII 패턴에 의해 이 문제가 대부분 해결되지만, 명시적 관리가 필요한 경우 각별한 주의가 필요하다.</p>

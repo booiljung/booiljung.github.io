@@ -230,147 +230,170 @@
 </li>
 </ol>
 <p>YAML</p>
-<pre><code>- ros_topic_name: "/cmd_vel"
-gz_topic_name: "/model/my_robot/cmd_vel"
-ros_type_name: "geometry_msgs/msg/Twist"
-gz_type_name: "gz.msgs.Twist"
-direction: ROS_TO_GZ
-- ros_topic_name: "/odom"
-gz_topic_name: "/model/my_robot/odom"
-ros_type_name: "nav_msgs/msg/Odometry"
-gz_type_name: "gz.msgs.Odometry"
-direction: GZ_TO_ROS
+<pre><code> ```
+
+ - ros_topic_name: "/cmd_vel"
+
+   gz_topic_name: "/model/my_robot/cmd_vel"
+
+   ros_type_name: "geometry_msgs/msg/Twist"
+
+   gz_type_name: "gz.msgs.Twist"
+
+   direction: ROS_TO_GZ
+
+ - ros_topic_name: "/odom"
+
+   gz_topic_name: "/model/my_robot/odom"
+
+   ros_type_name: "nav_msgs/msg/Odometry"
+
+   gz_type_name: "gz.msgs.Odometry"
+
+   direction: GZ_TO_ROS
 </code></pre>
-<ol start="3">
-<li>메인 런치 파일은 Gazebo, 로봇 스폰 노드, 그리고 위에서 정의한 YAML 설정 파일을 사용하는 <code>ros_gz_bridge</code> 노드를 실행하도록 수정된다.5</li>
-</ol>
-<p>이 마이그레이션 과정은 개발자의 책임이 “암묵적인” 관례 기반 설정에서 “명시적인” 구성 기반 설정으로 전환되었음을 보여준다. Gazebo Classic에서는 <code>gazebo_ros_diff_drive</code> 플러그인을 추가하는 것만으로도 내부 관례에 따라 <code>/cmd_vel</code>과 <code>/odom</code> 같은 ROS 토픽이 암묵적으로 생성되었다.1 반면, Gazebo Sim에서는 개발자가 1) Gazebo 네이티브 시스템 플러그인을 추가하고, 2) 별도의 YAML 파일에 ROS 토픽과 Gazebo 토픽 간의 매핑을 명시적으로 정의하며, 3) 이 구성을 사용하여 브리지 노드를 실행하는 세 가지 명시적인 단계를 거쳐야 한다.5 이러한 변화는 초기 설정의 복잡성을 증가시키지만, 두 통신 계층(ROS DDS와 Gazebo Transport)과 그 사이의 변환 계층을 개발자가 명확하게 인지하게 만든다. 이는 고급 사용자에게 훨씬 더 큰 유연성과 명확성을 제공하고, 네임스페이스 관리가 중요한 복잡한 다중 로봇 시나리오에서 시스템을 더 쉽게 사용자 정의할 수 있게 해준다.</p>
-<h2>5. 장: 알려진 문제 및 기술적 과제 분석</h2>
-<h3>5.1  데이터 브리징의 성능 병목 현상: <code>gpu_lidar</code> 사례 연구</h3>
-<p>고주파 센서 데이터, 특히 <code>gpu_lidar</code> 센서의 데이터를 브리징할 때 심각한 성능 저하가 발생하는 문제가 문서화되어 있다.37 이 문제는 ROS 2 토픽의 주파수가 센서에 설정된 <code>update_rate</code>보다 현저히 낮게 나타나고(예: 목표 속도의 60%), 동시에 Gazebo의 실시간 계수(Real-Time Factor, RTF)가 급격히 하락하는 현상으로 나타난다.37</p>
-<p>문제의 원인은 브리지 자체에 국한된다. 센서에 대한 <code>ros_gz_bridge</code> 노드를 비활성화하면 RTF가 즉시 정상 수준으로 회복되기 때문이다.37 이는 특정 데이터 유형에 대한 브리지 내부의 메시지 처리 또는 변환 과정에 병목이 있음을 시사한다. 이 문제는 분리된 아키텍처가 고대역폭 데이터 스트림에 대해 가질 수 있는 성능 비용을 명확히 보여주고, 3.3절에서 논의된 <code>use_composition</code> 최적화의 중요성을 강조한다.</p>
-<h3>5.2  동기화 및 타이밍 불일치: <code>ros2_control</code> 통합 버그 조사</h3>
-<p><code>ros2_control</code>을 Gazebo와 함께 사용할 때 센서 데이터와 주행 거리계 변환 정보 간에 시간 동기화 문제가 발생하는 미묘하지만 치명적인 버그가 보고되었다.38</p>
-<ul>
-<li>
-<p><strong>증상:</strong> 로봇이 회전할 때 RViz에서 LaserScan과 같은 센서 데이터가 로봇의 회전을 “앞서가는” 것처럼 보인다. 이는 센서 데이터의 타임스탬프와 <code>ros2_control</code> 스택이 발행하는 TF 변환 정보의 타임스탬프가 일치하지 않음을 나타낸다.38 이 문제는 클래식 Gazebo 플러그인을 사용할 때는 발생하지 않아, <code>ros2_control</code> 통합 경로에 문제가 있음을 시사한다.38</p>
-</li>
-<li>
-<p><strong>의심되는 원인:</strong> 문제는 바퀴 미끄러짐과 같은 물리적 현상이 아닌 타이밍 또는 동기화 문제로 추정된다.38 논의는</p>
-</li>
-</ul>
-<p><code>diff_drive_controller</code> 자체의 문제, 특히 가속도 제한을 처리하거나 주행 거리계를 계산할 때 타임스탬프를 찍는 방식과 관련이 있을 가능성을 제기한다.38</p>
-<p>핵심 과제는 시뮬레이션 시간(<code>/clock</code>), 센서 데이터 타임스탬프, 그리고 <code>ros2_control</code> 업데이트 루프가 모두 완벽하게 동기화되도록 보장하는 것이다. 여기서 <code>use_sim_time</code> 파라미터가 매우 중요하다. ROS 2에서는 이 파라미터를 노드별로 설정해야 하므로, 런치 파일에서 신중하게 관리하지 않으면 시스템 전체에 걸쳐 일관되지 않은 시간 소스가 발생할 수 있다.40</p>
-<p><code>No clock received, using time argument instead!</code>와 같은 경고는 이러한 설정 오류의 명백한 신호다.44</p>
-<h3>5.3  센서 정확도 및 플러그인별 부정확성</h3>
-<p>특정 버전 조합에서 특정 센서가 부정확한 데이터를 제공하는 사례도 보고되었다. 대표적인 예로 ROS 2 Humble과 함께 사용된 Gazebo Classic 11의 힘/토크(Force/Torque) 센서가 있다. 이 센서는 “매우 부정확한” 데이터를 생성하고, 측정값이 틀릴 뿐만 아니라 로봇의 스폰 높이에 따라 달라지는 문제를 보였다.45 동일한 설정이 ROS 1이나 ROS 2의 Gazebo Fortress에서는 올바르게 작동하므로, 이는 <code>libgazebo_ros_ft_sensor.so</code> 플러그인과 ROS 2 Humble 환경 간의 특정 상호작용 버그임을 시사한다.45 이 외에도 <code>gazebo_ros_pkgs</code> 저장소에는 IMU 센서의 스파이크 발생, 레이 센서의 미발행, 차동 구동 플러그인의 부정확한 주행 거리계 데이터 등 여러 문제가 보고되어 레거시 스택의 지속적인 유지보수 어려움을 보여준다.46</p>
-<h3>5.4  오래된 문서와 커뮤니티 지식의 파편화 문제</h3>
-<p>기술적인 문제 외에도, 문서와 커뮤니티 지식의 상태는 중요한 도전 과제다. 오랜 역사와 여러 차례의 주요 아키텍처 변경(Classic –&gt;&gt; Ignition –&gt;&gt; Gazebo Sim)으로 인해, 온라인에 존재하는 수많은 튜토리얼, 포럼 답변, 문서들이 현재는 시대에 뒤떨어져 있다.2 이러한 “문서 부채“는 새로운 사용자들이 올바른 정보를 찾는 것을 어렵게 만들고, 결국 잘못되거나 폐기된 방법에 의존하게 만든다.2 혼란스러운 이름 변경의 역사는 관련 정보 검색을 더욱 어렵게 하여 이 문제를 악화시킨다.47</p>
-<p>이러한 문서 파편화는 ROS 생태계 전반에서 나타나는 문제이지만, 두 프로젝트가 병렬적으로, 때로는 혼란스럽게 진화해 온 Gazebo 통합의 경우 특히 두드러진다.2</p>
-<p>이러한 문제들은 단순히 개별적인 버그가 아니라, 서로 다른 두 아키텍처 패러다임(분리된 브리지 대 단일체 제어 루프)의 본질적인 복잡성에서 비롯된 증상들이다. <code>gpu_lidar</code> 문제는 메시지 전달 파이프라인의 처리량 문제이고, <code>ros2_control</code> 버그는 분산 시스템의 타이밍 문제다. 두 문제 모두 긴밀하게 결합된 단일체 아키텍처에서는 발생할 가능성이 훨씬 낮다. 이는 새로운 모듈식 아키텍처의 유연성이 성능 튜닝과 시간 동기화의 복잡성 증가라는 대가를 치른다는 것을 의미한다.</p>
-<h2>6. 장: 미래 궤도 및 전략적 권장 사항</h2>
-<h3>6.1  Gazebo 로드맵: Qt6, Zenoh, 그리고 강화학습 기능 강화의 의미</h3>
-<p>Gazebo의 공식 로드맵은 시뮬레이터의 미래 방향을 예측하는 데 중요한 단서를 제공한다.48</p>
-<ul>
-<li><strong>기술 업그레이드:</strong> GUI 툴킷을 현대화하기 위한 Qt5에서 Qt6로의 마이그레이션과 빌드 성능 및 재현성 향상을 위한 Bazel 빌드 시스템 채택이 계획되어 있다.48</li>
-<li><strong>통신 계층 혁신:</strong> <code>gz-transport</code>에 Zenoh를 통합하려는 계획은 매우 중요하다. Zenoh는 로보틱스와 IoT를 위해 설계된 현대적인 통신 프로토콜로, 이를 채택하면 Gazebo의 핵심 통신 계층에서 상당한 성능 및 확장성 향상을 기대할 수 있다.48</li>
-<li><strong>고급 애플리케이션 지원:</strong> 강화학습(Reinforcement Learning, RL) 인터페이스 개선에 중점을 두고 있다. 이는 커뮤니티의 요구와 Isaac Sim과 같은 경쟁 시뮬레이터에 대응하기 위한 직접적인 조치다.2</li>
-<li><strong>생태계 성장:</strong> “연합된 서드파티 플러그인 생태계” 구축 계획은 커뮤니티 기여를 위한 보다 접근성 높고 분산된 모델로의 전환을 시사한다.48</li>
-</ul>
-<h3>6.2  ROS 2의 비전: 기술 운영 위원회(TSC)의 방향성이 미래 통합에 미치는 영향</h3>
-<p>ROS 2 기술 운영 위원회(Technical Steering Committee, TSC)는 프로젝트의 기술적 방향, 로드맵, 릴리스 일정을 책임진다.49 최근 릴리스(Iron, Humble 등)의 로드맵은 DDS 사용자 경험 개선, 성능 향상(<code>rclcpp</code> 실행기, 대용량 메시지 처리 등), 그리고 <code>rosbag2</code>, <code>launch</code>와 같은 도구 개선에 초점을 맞추어 왔다.52</p>
-<p>ROS 2를 “제품 수준으로 준비“시키고 ROS 1로부터의 마이그레이션을 용이하게 하려는 명시적인 목표는, 벤더 패키지를 통해 Gazebo 통합을 강화하는 전략과 완벽하게 일치한다. 안정적이고 사용하기 쉬운 시뮬레이션 환경은 제품 수준의 로보틱스 프레임워크의 초석이기 때문이다. Microsoft, Bosch, Amazon 등 주요 산업체들의 자원 투입에 기반한 TSC의 의사결정 구조는, 향후 통합 노력이 이들 기업의 요구에 의해 주도될 가능성이 높음을 시사한다.49</p>
-<h3>6.3  개발자를 위한 권장 사항: 버전 선택, 마이그레이션 계획 및 견고한 시뮬레이션을 위한 모범 사례</h3>
-<ul>
-<li>
-<p><strong>신규 프로젝트:</strong> 현재 최신 ROS 2 LTS 릴리스(Jazzy Jalisco)와 공식적으로 페어링된 Gazebo 버전(Harmonic)을 권장 Ubuntu 버전(24.04)에서 새로운 벤더 패키지를 통해 설치하는 것이 가장 확실한 선택이다.18 이 경로는 가장 긴 지원 기간과 가장 안정적이고 간소화된 경험을 제공한다.</p>
-</li>
-<li>
-<p><strong>레거시 프로젝트:</strong> Gazebo Classic 기반 프로젝트의 경우, 마이그레이션은 더 이상 선택이 아닌 필수다. EOL이 임박함에 따라 18, 팀은 현대적 Gazebo로의 전환을 위한 자원을 할당해야 한다.</p>
-</li>
-</ul>
-<p><code>ros1_bridge</code>를 사용하여 컴포넌트를 하나씩 점진적으로 마이그레이션하는 접근 방식이 권장된다.55</p>
-<ul>
-<li>
-<p><strong>모범 사례:</strong></p>
-</li>
-<li>
-<p>모든 노드에 대해 모든 런치 파일에서 <code>use_sim_time</code> 파라미터를 명시적으로 관리하여 일관된 시간 동기화를 보장해야 한다.40</p>
-</li>
-<li>
-<p>고대역폭 토픽의 <code>ros_gz_bridge</code> 성능을 극대화하기 위해 가능한 모든 곳에서 <code>use_composition</code>을 활용해야 한다.32</p>
-</li>
-<li>
-<p>마이그레이션 시, 암묵적인 플러그인 동작에 의존하기보다 모든 토픽 브리지를 YAML 파일에 명시적으로 정의하여 명확성과 유지보수성을 확보하는 것이 좋다.5</p>
-</li>
-<li>
-<p>제어에는 <code>gz_ros2_control</code>을 사용하는 것이 ROS 2 제어 생태계와의 원활한 통합을 위한 표준적이고 권장되는 접근 방식이다.28</p>
-</li>
-</ul>
-<p>ROS 2와 Gazebo의 병렬적인 로드맵은 더 깊고 성능 지향적인 통합의 미래를 예고한다. 특히, 양쪽 프로젝트 모두에서 차세대 통신 기술로 Zenoh를 검토하고 있다는 점은 주목할 만하다.48 만약 ROS 2와 Gazebo가 Zenoh를 네이티브 전송 계층으로 채택한다면, 서로 다른 미들웨어 프로토콜 간의 변환을 담당하는 현재의 <code>ros_gz_bridge</code>는 불필요해질 수 있다. 이는 ROS-Gazebo 통합의 궁극적인 형태로, 성능 병목 현상을 해결하고 아키텍처를 극적으로 단순화할 수 있는 잠재력을 가진다. 현재의 브리지 아키텍처와 <code>use_composition</code> 최적화는 진정으로 원활한 상호 운용성을 향한 과도기적 단계일 수 있고, 개발자들은 이러한 통합 방식이 미래에 근본적으로 다시 한번 진화할 가능성이 있음을 인지해야 한다.</p>
-<h2>7. 참고 자료</h2>
-<ol>
-<li>gazebo_tutorials/ros2_overview/tutorial.md at master - GitHub, accessed July 22, 2025, https://github.com/osrf/gazebo_tutorials/blob/master/ros2_overview/tutorial.md</li>
-<li>Why is Gazebo very famous in the ROS community? what about Webots?, accessed July 22, 2025, https://discourse.ros.org/t/why-is-gazebo-very-famous-in-the-ros-community-what-about-webots/42459</li>
-<li>gazebo_ros_pkgs - ROS Wiki, accessed July 22, 2025, http://wiki.ros.org/gazebo_ros_pkgs</li>
-<li>Tutorial : ROS 2 overview - Gazebo Classic, accessed July 22, 2025, https://classic.gazebosim.org/tutorials?tut=ros2_overview</li>
-<li>Migrating ROS 2 packages that use Gazebo Classic, accessed July 22, 2025, https://gazebosim.org/docs/latest/migrating_gazebo_classic_ros2_packages/</li>
-<li>Tutorial: ROS integration overview - Gazebo, accessed July 22, 2025, https://classic.gazebosim.org/tutorials?tut=ros_overview</li>
-<li>
-<ol start="2">
-<li>Gazebo - ROS Notes 0.9.0 documentation, accessed July 22, 2025, https://ros-notes.readthedocs.io/en/latest/chapters/ROS/15_mobile_robot/gazebo.html</li>
-</ol>
-</li>
-<li>Tutorial : Installing gazebo_ros_pkgs (ROS 2) - Gazebo Classic, accessed July 22, 2025, https://classic.gazebosim.org/tutorials?tut=ros2_installing</li>
-<li>Gazebo Classic Migration, accessed July 22, 2025, https://gazebosim.org/docs/latest/gazebo_classic_migration/</li>
-<li>Ignition Gazebo motivation, accessed July 22, 2025, https://community.gazebosim.org/t/ignition-gazebo-motivation/1240</li>
-<li>State of Gazebo 2024 - ROSCon 2025, accessed July 22, 2025, https://roscon.ros.org/2024/talks/The_State_of_Gazebo.pdf</li>
-<li>Gazebo Sim: Migration from Gazebo Classic: Plugins, accessed July 22, 2025, https://gazebosim.org/api/sim/9/migrationplugins.html</li>
-<li>Migration Guide - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/migration_from_ignition/</li>
-<li>Move/rename osrf/gazebo repository to gazebosim/gazebo-classic - Open Robotics Discourse, accessed July 22, 2025, https://discourse.openrobotics.org/t/move-rename-osrf-gazebo-repository-to-gazebosim-gazebo-classic/48180</li>
-<li>A new era for Gazebo - Open Robotics Discourse, accessed July 22, 2025, https://discourse.openrobotics.org/t/a-new-era-for-gazebo/48995</li>
-<li>Gazebo Classic (gazebo11) can’t be installed on Ubuntu 22.04 Jammy with ROS2 Humble. / Issue #3357 - GitHub, accessed July 22, 2025, https://github.com/gazebosim/gazebo-classic/issues/3357</li>
-<li>Gazebo Classic End-Of-Life &amp; ROS 2 Jazzy - General, accessed July 22, 2025, https://discourse.ros.org/t/gazebo-classic-end-of-life-ros-2-jazzy/36239</li>
-<li>Gazebo Classic End-of-Life and Migration Survey - Open Robotics Discourse - ROS, accessed July 22, 2025, https://discourse.ros.org/t/gazebo-classic-end-of-life-and-migration-survey/35690</li>
-<li>Gazebo Classic to Gazebo Sim: Essential Upgrade Before Jan 2025! - YouTube, accessed July 22, 2025, https://www.youtube.com/watch?v=KVe2u_2igkc&amp;pp=0gcJCfwAo7VqN5tD</li>
-<li>Gazebo Classic and Citadel End of Life - General, accessed July 22, 2025, https://community.gazebosim.org/t/gazebo-classic-and-citadel-end-of-life/3242</li>
-<li>Installing Gazebo with ROS - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/ros_installation/</li>
-<li>For ROS2 Beginners - Install ROS 2 and Gazebo on Ubuntu 22.04 Jammy (LTS) Step-by-Step Instruction | by Claudia Yao | Medium, accessed July 22, 2025, https://medium.com/@claudia.yao2012/for-ros2-beginners-install-ros-2-and-gazebo-on-ubuntu-22-04-jammy-lts-step-by-step-instruction-08327c3764a5</li>
-<li>Getting Started with Gazebo? - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/getstarted/</li>
-<li>ROS 2 Jazzy Jalisco Released - Open Robotics, accessed July 22, 2025, https://www.openrobotics.org/blog/2024/5/ros-jazzy-jalisco-released</li>
-<li>Compatibility of Gazebo and TurtleBot3 with Ubuntu 24.04 and ROS 2 Jazzy, accessed July 22, 2025, https://community.gazebosim.org/t/compatibility-of-gazebo-and-turtlebot3-with-ubuntu-24-04-and-ros-2-jazzy/3533</li>
-<li>ROS 2 Gazebo Vendor Packages - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/ros2_gz_vendor_pkgs/</li>
-<li>ROS 2 Jazzy Jalisco Released! - Open Robotics Discourse, accessed July 22, 2025, https://discourse.ros.org/t/ros-2-jazzy-jalisco-released/37862</li>
-<li>gz_ros2_control - ROS2_Control: Humble Jul 2025 documentation, accessed July 22, 2025, https://control.ros.org/humble/doc/gz_ros2_control/doc/index.html</li>
-<li>gazebosim.org, accessed July 22, 2025, <a href="https://gazebosim.org/docs/latest/ros_installation/#:~:text=Gazebo%20Harmonic%20can%20be%20used,Humble%20officially%20supports%20Gazebo%20Fortress">https://gazebosim.org/docs/latest/ros_installation/#:~:text=Gazebo%20Harmonic%20can%20be%20used,Humble%20officially%20supports%20Gazebo%20Fortress).</a>.)</li>
-<li>ros_gz/README.md at ros2 / gazebosim/ros_gz / GitHub, accessed July 22, 2025, https://github.com/gazebosim/ros_gz/blob/ros2/README.md</li>
-<li>10 Problems Every Beginner Roboticist Faces (And How to Solve Them) - RoboSmiths, accessed July 22, 2025, https://www.robosmiths.com/blog/ten-problems-beginner-roboticists</li>
-<li>ROS 2 integration overview - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/ros2_overview/</li>
-<li>Use ROS 2 to interact with Gazebo, accessed July 22, 2025, https://gazebosim.org/docs/latest/ros2_integration/</li>
-<li>robotic_notes/docs/ros2_gazebo_integration.md at master - GitHub, accessed July 22, 2025, https://github.com/behnamasadi/robotic_notes/blob/master/docs/ros2_gazebo_integration.md</li>
-<li>Ros_gz bridge improvements - General - Gazebo Community, accessed July 22, 2025, https://community.gazebosim.org/t/ros-gz-bridge-improvements/3135</li>
-<li>Migrating from Gazebo Classic to Gazebo Sim: A Practical Guide - Ibrahim Bin Mansur, accessed July 22, 2025, https://ibrahimmansur4.medium.com/migrating-from-gazebo-classic-to-gazebo-sim-a-practical-guide-804af2011011</li>
-<li>Performance issues with bridging gpu_lidar data / Issue #368 …, accessed July 22, 2025, https://github.com/gazebosim/ros_gz/issues/368</li>
-<li>Sensor synchronisation bug between Gazebo and ros2_control with diff_drive_controller, accessed July 22, 2025, https://answers.ros.org/question/387856/</li>
-<li>joshnewans/mwe_diffdrive_bug: Minimum Working Example for a bug in differential drive ROS/Gazebo simulations - GitHub, accessed July 22, 2025, https://github.com/joshnewans/mwe_diffdrive_bug</li>
-<li>Ros2: use_sim_time leads to inconsistent clocks - ROS General - Open Robotics Discourse, accessed July 22, 2025, https://discourse.ros.org/t/ros2-use-sim-time-leads-to-inconsistent-clocks/42030</li>
-<li>Clock and Time - ROS 2 Design, accessed July 22, 2025, https://design.ros2.org/articles/clock_and_time.html</li>
-<li>Time synchronisation between ROS2 and Gazebo - LXRobotics, accessed July 22, 2025, https://lxrobotics.com/blog/time-synchronisation-ros2-gazebo/</li>
-<li>Simulating with Gazebo | Articulated Robotics, accessed July 22, 2025, https://articulatedrobotics.xyz/tutorials/ready-for-ros/gazebo/</li>
-<li>Gazebo No clock received Use_Sim_time Error : r/ROS - Reddit, accessed July 22, 2025, https://www.reddit.com/r/ROS/comments/1i06kb3/gazebo_no_clock_received_use_sim_time_error/</li>
-<li>Inaccurate FT Sensor Values in Gazebo Classic 11 (22.04 ROS2 …, accessed July 22, 2025, https://github.com/gazebosim/gazebo-classic/issues/3398</li>
-<li>Issues / ros-simulation/gazebo_ros_pkgs - GitHub, accessed July 22, 2025, https://github.com/ros-simulation/gazebo_ros_pkgs/issues</li>
-<li>RANT: Gazebo (new) is a terrible piece of software and I don’t think we should recommend it to newbies : r/ROS - Reddit, accessed July 22, 2025, https://www.reddit.com/r/ROS/comments/1jqn8wb/rant_gazebo_new_is_a_terrible_piece_of_software/</li>
-<li>Gazebo Roadmap - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/roadmap/</li>
-<li>ROS 2 Technical Steering Committee Charter, accessed July 22, 2025, https://docs.ros.org/en/foxy/The-ROS2-Project/Governance/ROS2-TSC-Charter.html</li>
-<li>Open Robotics names ROS 2 Technical Steering Committee - The Robot Report, accessed July 22, 2025, https://www.therobotreport.com/ros-2-steering-committee-open-robotics/</li>
-<li>Introducing the ROS 2 Technical Steering Committee - ROS General - ROS Discourse, accessed July 22, 2025, https://discourse.ros.org/t/introducing-the-ros-2-technical-steering-committee/6132</li>
-<li>Roadmap - Eloquent documentation - the official ROS docs, accessed July 22, 2025, https://docs.ros.org/en/eloquent/Roadmap.html</li>
-<li>Roadmap - ROS 2 Documentation: Foxy 文档, accessed July 22, 2025, https://daobook.github.io/ros2-docs/foxy/Roadmap.html</li>
-<li>Roadmap - ROS 2 Documentation: Galactic documentation, accessed July 22, 2025, https://docs.ros.org/en/galactic/The-ROS2-Project/Roadmap.html</li>
-<li>Migration of a Gazebo ROS simulation to a ROS2 Ignition Gazebo - YouTube, accessed July 22, 2025, https://www.youtube.com/watch?v=DY7QTtDpVzw</li>
-<li>GSoC 2024 - Proposal writing - General - Gazebo Community, accessed July 22, 2025, https://community.gazebosim.org/t/gsoc-2024-proposal-writing/2666</li>
-</ol>
+<pre><code>
+3. 메인 런치 파일은 Gazebo, 로봇 스폰 노드, 그리고 위에서 정의한 YAML 설정 파일을 사용하는 `ros_gz_bridge` 노드를 실행하도록 수정된다.5
+
+이 마이그레이션 과정은 개발자의 책임이 "암묵적인" 관례 기반 설정에서 "명시적인" 구성 기반 설정으로 전환되었음을 보여준다. Gazebo Classic에서는 `gazebo_ros_diff_drive` 플러그인을 추가하는 것만으로도 내부 관례에 따라 `/cmd_vel`과 `/odom` 같은 ROS 토픽이 암묵적으로 생성되었다.1 반면, Gazebo Sim에서는 개발자가 1) Gazebo 네이티브 시스템 플러그인을 추가하고, 2) 별도의 YAML 파일에 ROS 토픽과 Gazebo 토픽 간의 매핑을 명시적으로 정의하며, 3) 이 구성을 사용하여 브리지 노드를 실행하는 세 가지 명시적인 단계를 거쳐야 한다.5 이러한 변화는 초기 설정의 복잡성을 증가시키지만, 두 통신 계층(ROS DDS와 Gazebo Transport)과 그 사이의 변환 계층을 개발자가 명확하게 인지하게 만든다. 이는 고급 사용자에게 훨씬 더 큰 유연성과 명확성을 제공하고, 네임스페이스 관리가 중요한 복잡한 다중 로봇 시나리오에서 시스템을 더 쉽게 사용자 정의할 수 있게 해준다.
+
+## 5. 장: 알려진 문제 및 기술적 과제 분석
+
+
+### 5.1  데이터 브리징의 성능 병목 현상: `gpu_lidar` 사례 연구
+
+
+고주파 센서 데이터, 특히 `gpu_lidar` 센서의 데이터를 브리징할 때 심각한 성능 저하가 발생하는 문제가 문서화되어 있다.37 이 문제는 ROS 2 토픽의 주파수가 센서에 설정된 `update_rate`보다 현저히 낮게 나타나고(예: 목표 속도의 60%), 동시에 Gazebo의 실시간 계수(Real-Time Factor, RTF)가 급격히 하락하는 현상으로 나타난다.37
+
+문제의 원인은 브리지 자체에 국한된다. 센서에 대한 `ros_gz_bridge` 노드를 비활성화하면 RTF가 즉시 정상 수준으로 회복되기 때문이다.37 이는 특정 데이터 유형에 대한 브리지 내부의 메시지 처리 또는 변환 과정에 병목이 있음을 시사한다. 이 문제는 분리된 아키텍처가 고대역폭 데이터 스트림에 대해 가질 수 있는 성능 비용을 명확히 보여주고, 3.3절에서 논의된 `use_composition` 최적화의 중요성을 강조한다.
+
+### 5.2  동기화 및 타이밍 불일치: `ros2_control` 통합 버그 조사
+
+
+`ros2_control`을 Gazebo와 함께 사용할 때 센서 데이터와 주행 거리계 변환 정보 간에 시간 동기화 문제가 발생하는 미묘하지만 치명적인 버그가 보고되었다.38
+
+- **증상:** 로봇이 회전할 때 RViz에서 LaserScan과 같은 센서 데이터가 로봇의 회전을 "앞서가는" 것처럼 보인다. 이는 센서 데이터의 타임스탬프와 `ros2_control` 스택이 발행하는 TF 변환 정보의 타임스탬프가 일치하지 않음을 나타낸다.38 이 문제는 클래식 Gazebo 플러그인을 사용할 때는 발생하지 않아, `ros2_control` 통합 경로에 문제가 있음을 시사한다.38
+
+- **의심되는 원인:** 문제는 바퀴 미끄러짐과 같은 물리적 현상이 아닌 타이밍 또는 동기화 문제로 추정된다.38 논의는
+
+`diff_drive_controller` 자체의 문제, 특히 가속도 제한을 처리하거나 주행 거리계를 계산할 때 타임스탬프를 찍는 방식과 관련이 있을 가능성을 제기한다.38
+
+핵심 과제는 시뮬레이션 시간(`/clock`), 센서 데이터 타임스탬프, 그리고 `ros2_control` 업데이트 루프가 모두 완벽하게 동기화되도록 보장하는 것이다. 여기서 `use_sim_time` 파라미터가 매우 중요하다. ROS 2에서는 이 파라미터를 노드별로 설정해야 하므로, 런치 파일에서 신중하게 관리하지 않으면 시스템 전체에 걸쳐 일관되지 않은 시간 소스가 발생할 수 있다.40
+
+`No clock received, using time argument instead!`와 같은 경고는 이러한 설정 오류의 명백한 신호다.44
+
+### 5.3  센서 정확도 및 플러그인별 부정확성
+
+
+특정 버전 조합에서 특정 센서가 부정확한 데이터를 제공하는 사례도 보고되었다. 대표적인 예로 ROS 2 Humble과 함께 사용된 Gazebo Classic 11의 힘/토크(Force/Torque) 센서가 있다. 이 센서는 "매우 부정확한" 데이터를 생성하고, 측정값이 틀릴 뿐만 아니라 로봇의 스폰 높이에 따라 달라지는 문제를 보였다.45 동일한 설정이 ROS 1이나 ROS 2의 Gazebo Fortress에서는 올바르게 작동하므로, 이는 `libgazebo_ros_ft_sensor.so` 플러그인과 ROS 2 Humble 환경 간의 특정 상호작용 버그임을 시사한다.45 이 외에도 `gazebo_ros_pkgs` 저장소에는 IMU 센서의 스파이크 발생, 레이 센서의 미발행, 차동 구동 플러그인의 부정확한 주행 거리계 데이터 등 여러 문제가 보고되어 레거시 스택의 지속적인 유지보수 어려움을 보여준다.46
+
+### 5.4  오래된 문서와 커뮤니티 지식의 파편화 문제
+
+
+기술적인 문제 외에도, 문서와 커뮤니티 지식의 상태는 중요한 도전 과제다. 오랜 역사와 여러 차례의 주요 아키텍처 변경(Classic --&gt;&gt; Ignition --&gt;&gt; Gazebo Sim)으로 인해, 온라인에 존재하는 수많은 튜토리얼, 포럼 답변, 문서들이 현재는 시대에 뒤떨어져 있다.2 이러한 "문서 부채"는 새로운 사용자들이 올바른 정보를 찾는 것을 어렵게 만들고, 결국 잘못되거나 폐기된 방법에 의존하게 만든다.2 혼란스러운 이름 변경의 역사는 관련 정보 검색을 더욱 어렵게 하여 이 문제를 악화시킨다.47
+
+이러한 문서 파편화는 ROS 생태계 전반에서 나타나는 문제이지만, 두 프로젝트가 병렬적으로, 때로는 혼란스럽게 진화해 온 Gazebo 통합의 경우 특히 두드러진다.2
+
+이러한 문제들은 단순히 개별적인 버그가 아니라, 서로 다른 두 아키텍처 패러다임(분리된 브리지 대 단일체 제어 루프)의 본질적인 복잡성에서 비롯된 증상들이다. `gpu_lidar` 문제는 메시지 전달 파이프라인의 처리량 문제이고, `ros2_control` 버그는 분산 시스템의 타이밍 문제다. 두 문제 모두 긴밀하게 결합된 단일체 아키텍처에서는 발생할 가능성이 훨씬 낮다. 이는 새로운 모듈식 아키텍처의 유연성이 성능 튜닝과 시간 동기화의 복잡성 증가라는 대가를 치른다는 것을 의미한다.
+
+## 6. 장: 미래 궤도 및 전략적 권장 사항
+
+
+### 6.1  Gazebo 로드맵: Qt6, Zenoh, 그리고 강화학습 기능 강화의 의미
+
+
+Gazebo의 공식 로드맵은 시뮬레이터의 미래 방향을 예측하는 데 중요한 단서를 제공한다.48
+
+- **기술 업그레이드:** GUI 툴킷을 현대화하기 위한 Qt5에서 Qt6로의 마이그레이션과 빌드 성능 및 재현성 향상을 위한 Bazel 빌드 시스템 채택이 계획되어 있다.48
+- **통신 계층 혁신:** `gz-transport`에 Zenoh를 통합하려는 계획은 매우 중요하다. Zenoh는 로보틱스와 IoT를 위해 설계된 현대적인 통신 프로토콜로, 이를 채택하면 Gazebo의 핵심 통신 계층에서 상당한 성능 및 확장성 향상을 기대할 수 있다.48
+- **고급 애플리케이션 지원:** 강화학습(Reinforcement Learning, RL) 인터페이스 개선에 중점을 두고 있다. 이는 커뮤니티의 요구와 Isaac Sim과 같은 경쟁 시뮬레이터에 대응하기 위한 직접적인 조치다.2
+- **생태계 성장:** "연합된 서드파티 플러그인 생태계" 구축 계획은 커뮤니티 기여를 위한 보다 접근성 높고 분산된 모델로의 전환을 시사한다.48
+
+### 6.2  ROS 2의 비전: 기술 운영 위원회(TSC)의 방향성이 미래 통합에 미치는 영향
+
+
+ROS 2 기술 운영 위원회(Technical Steering Committee, TSC)는 프로젝트의 기술적 방향, 로드맵, 릴리스 일정을 책임진다.49 최근 릴리스(Iron, Humble 등)의 로드맵은 DDS 사용자 경험 개선, 성능 향상(`rclcpp` 실행기, 대용량 메시지 처리 등), 그리고 `rosbag2`, `launch`와 같은 도구 개선에 초점을 맞추어 왔다.52
+
+ROS 2를 "제품 수준으로 준비"시키고 ROS 1로부터의 마이그레이션을 용이하게 하려는 명시적인 목표는, 벤더 패키지를 통해 Gazebo 통합을 강화하는 전략과 완벽하게 일치한다. 안정적이고 사용하기 쉬운 시뮬레이션 환경은 제품 수준의 로보틱스 프레임워크의 초석이기 때문이다. Microsoft, Bosch, Amazon 등 주요 산업체들의 자원 투입에 기반한 TSC의 의사결정 구조는, 향후 통합 노력이 이들 기업의 요구에 의해 주도될 가능성이 높음을 시사한다.49
+
+### 6.3  개발자를 위한 권장 사항: 버전 선택, 마이그레이션 계획 및 견고한 시뮬레이션을 위한 모범 사례
+
+
+- **신규 프로젝트:** 현재 최신 ROS 2 LTS 릴리스(Jazzy Jalisco)와 공식적으로 페어링된 Gazebo 버전(Harmonic)을 권장 Ubuntu 버전(24.04)에서 새로운 벤더 패키지를 통해 설치하는 것이 가장 확실한 선택이다.18 이 경로는 가장 긴 지원 기간과 가장 안정적이고 간소화된 경험을 제공한다.
+
+- **레거시 프로젝트:** Gazebo Classic 기반 프로젝트의 경우, 마이그레이션은 더 이상 선택이 아닌 필수다. EOL이 임박함에 따라 18, 팀은 현대적 Gazebo로의 전환을 위한 자원을 할당해야 한다.
+
+`ros1_bridge`를 사용하여 컴포넌트를 하나씩 점진적으로 마이그레이션하는 접근 방식이 권장된다.55
+
+- **모범 사례:**
+
+- 모든 노드에 대해 모든 런치 파일에서 `use_sim_time` 파라미터를 명시적으로 관리하여 일관된 시간 동기화를 보장해야 한다.40
+- 고대역폭 토픽의 `ros_gz_bridge` 성능을 극대화하기 위해 가능한 모든 곳에서 `use_composition`을 활용해야 한다.32
+- 마이그레이션 시, 암묵적인 플러그인 동작에 의존하기보다 모든 토픽 브리지를 YAML 파일에 명시적으로 정의하여 명확성과 유지보수성을 확보하는 것이 좋다.5
+- 제어에는 `gz_ros2_control`을 사용하는 것이 ROS 2 제어 생태계와의 원활한 통합을 위한 표준적이고 권장되는 접근 방식이다.28
+
+ROS 2와 Gazebo의 병렬적인 로드맵은 더 깊고 성능 지향적인 통합의 미래를 예고한다. 특히, 양쪽 프로젝트 모두에서 차세대 통신 기술로 Zenoh를 검토하고 있다는 점은 주목할 만하다.48 만약 ROS 2와 Gazebo가 Zenoh를 네이티브 전송 계층으로 채택한다면, 서로 다른 미들웨어 프로토콜 간의 변환을 담당하는 현재의 `ros_gz_bridge`는 불필요해질 수 있다. 이는 ROS-Gazebo 통합의 궁극적인 형태로, 성능 병목 현상을 해결하고 아키텍처를 극적으로 단순화할 수 있는 잠재력을 가진다. 현재의 브리지 아키텍처와 `use_composition` 최적화는 진정으로 원활한 상호 운용성을 향한 과도기적 단계일 수 있고, 개발자들은 이러한 통합 방식이 미래에 근본적으로 다시 한번 진화할 가능성이 있음을 인지해야 한다.
+
+## 7. 참고 자료
+
+
+1. gazebo_tutorials/ros2_overview/tutorial.md at master - GitHub, accessed July 22, 2025, https://github.com/osrf/gazebo_tutorials/blob/master/ros2_overview/tutorial.md
+2. Why is Gazebo very famous in the ROS community? what about Webots?, accessed July 22, 2025, https://discourse.ros.org/t/why-is-gazebo-very-famous-in-the-ros-community-what-about-webots/42459
+3. gazebo_ros_pkgs - ROS Wiki, accessed July 22, 2025, http://wiki.ros.org/gazebo_ros_pkgs
+4. Tutorial : ROS 2 overview - Gazebo Classic, accessed July 22, 2025, https://classic.gazebosim.org/tutorials?tut=ros2_overview
+5. Migrating ROS 2 packages that use Gazebo Classic, accessed July 22, 2025, https://gazebosim.org/docs/latest/migrating_gazebo_classic_ros2_packages/
+6. Tutorial: ROS integration overview - Gazebo, accessed July 22, 2025, https://classic.gazebosim.org/tutorials?tut=ros_overview
+7. 2. Gazebo - ROS Notes 0.9.0 documentation, accessed July 22, 2025, https://ros-notes.readthedocs.io/en/latest/chapters/ROS/15_mobile_robot/gazebo.html
+8. Tutorial : Installing gazebo_ros_pkgs (ROS 2) - Gazebo Classic, accessed July 22, 2025, https://classic.gazebosim.org/tutorials?tut=ros2_installing
+9. Gazebo Classic Migration, accessed July 22, 2025, https://gazebosim.org/docs/latest/gazebo_classic_migration/
+10. Ignition Gazebo motivation, accessed July 22, 2025, https://community.gazebosim.org/t/ignition-gazebo-motivation/1240
+11. State of Gazebo 2024 - ROSCon 2025, accessed July 22, 2025, https://roscon.ros.org/2024/talks/The_State_of_Gazebo.pdf
+12. Gazebo Sim: Migration from Gazebo Classic: Plugins, accessed July 22, 2025, https://gazebosim.org/api/sim/9/migrationplugins.html
+13. Migration Guide - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/migration_from_ignition/
+14. Move/rename osrf/gazebo repository to gazebosim/gazebo-classic - Open Robotics Discourse, accessed July 22, 2025, https://discourse.openrobotics.org/t/move-rename-osrf-gazebo-repository-to-gazebosim-gazebo-classic/48180
+15. A new era for Gazebo - Open Robotics Discourse, accessed July 22, 2025, https://discourse.openrobotics.org/t/a-new-era-for-gazebo/48995
+16. Gazebo Classic (gazebo11) can't be installed on Ubuntu 22.04 Jammy with ROS2 Humble. / Issue #3357 - GitHub, accessed July 22, 2025, https://github.com/gazebosim/gazebo-classic/issues/3357
+17. Gazebo Classic End-Of-Life &amp; ROS 2 Jazzy - General, accessed July 22, 2025, https://discourse.ros.org/t/gazebo-classic-end-of-life-ros-2-jazzy/36239
+18. Gazebo Classic End-of-Life and Migration Survey - Open Robotics Discourse - ROS, accessed July 22, 2025, https://discourse.ros.org/t/gazebo-classic-end-of-life-and-migration-survey/35690
+19. Gazebo Classic to Gazebo Sim: Essential Upgrade Before Jan 2025! - YouTube, accessed July 22, 2025, https://www.youtube.com/watch?v=KVe2u_2igkc&amp;pp=0gcJCfwAo7VqN5tD
+20. Gazebo Classic and Citadel End of Life - General, accessed July 22, 2025, https://community.gazebosim.org/t/gazebo-classic-and-citadel-end-of-life/3242
+21. Installing Gazebo with ROS - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/ros_installation/
+22. For ROS2 Beginners - Install ROS 2 and Gazebo on Ubuntu 22.04 Jammy (LTS) Step-by-Step Instruction | by Claudia Yao | Medium, accessed July 22, 2025, https://medium.com/@claudia.yao2012/for-ros2-beginners-install-ros-2-and-gazebo-on-ubuntu-22-04-jammy-lts-step-by-step-instruction-08327c3764a5
+23. Getting Started with Gazebo? - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/getstarted/
+24. ROS 2 Jazzy Jalisco Released - Open Robotics, accessed July 22, 2025, https://www.openrobotics.org/blog/2024/5/ros-jazzy-jalisco-released
+25. Compatibility of Gazebo and TurtleBot3 with Ubuntu 24.04 and ROS 2 Jazzy, accessed July 22, 2025, https://community.gazebosim.org/t/compatibility-of-gazebo-and-turtlebot3-with-ubuntu-24-04-and-ros-2-jazzy/3533
+26. ROS 2 Gazebo Vendor Packages - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/ros2_gz_vendor_pkgs/
+27. ROS 2 Jazzy Jalisco Released! - Open Robotics Discourse, accessed July 22, 2025, https://discourse.ros.org/t/ros-2-jazzy-jalisco-released/37862
+28. gz_ros2_control - ROS2_Control: Humble Jul 2025 documentation, accessed July 22, 2025, https://control.ros.org/humble/doc/gz_ros2_control/doc/index.html
+29. gazebosim.org, accessed July 22, 2025, [https://gazebosim.org/docs/latest/ros_installation/#:~:text=Gazebo%20Harmonic%20can%20be%20used,Humble%20officially%20supports%20Gazebo%20Fortress).](https://gazebosim.org/docs/latest/ros_installation/#:~:text=Gazebo%20Harmonic%20can%20be%20used,Humble%20officially%20supports%20Gazebo%20Fortress).)
+30. ros_gz/README.md at ros2 / gazebosim/ros_gz / GitHub, accessed July 22, 2025, https://github.com/gazebosim/ros_gz/blob/ros2/README.md
+31. 10 Problems Every Beginner Roboticist Faces (And How to Solve Them) - RoboSmiths, accessed July 22, 2025, https://www.robosmiths.com/blog/ten-problems-beginner-roboticists
+32. ROS 2 integration overview - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/ros2_overview/
+33. Use ROS 2 to interact with Gazebo, accessed July 22, 2025, https://gazebosim.org/docs/latest/ros2_integration/
+34. robotic_notes/docs/ros2_gazebo_integration.md at master - GitHub, accessed July 22, 2025, https://github.com/behnamasadi/robotic_notes/blob/master/docs/ros2_gazebo_integration.md
+35. Ros_gz bridge improvements - General - Gazebo Community, accessed July 22, 2025, https://community.gazebosim.org/t/ros-gz-bridge-improvements/3135
+36. Migrating from Gazebo Classic to Gazebo Sim: A Practical Guide - Ibrahim Bin Mansur, accessed July 22, 2025, https://ibrahimmansur4.medium.com/migrating-from-gazebo-classic-to-gazebo-sim-a-practical-guide-804af2011011
+37. Performance issues with bridging gpu_lidar data / Issue #368 ..., accessed July 22, 2025, https://github.com/gazebosim/ros_gz/issues/368
+38. Sensor synchronisation bug between Gazebo and ros2_control with diff_drive_controller, accessed July 22, 2025, https://answers.ros.org/question/387856/
+39. joshnewans/mwe_diffdrive_bug: Minimum Working Example for a bug in differential drive ROS/Gazebo simulations - GitHub, accessed July 22, 2025, https://github.com/joshnewans/mwe_diffdrive_bug
+40. Ros2: use_sim_time leads to inconsistent clocks - ROS General - Open Robotics Discourse, accessed July 22, 2025, https://discourse.ros.org/t/ros2-use-sim-time-leads-to-inconsistent-clocks/42030
+41. Clock and Time - ROS 2 Design, accessed July 22, 2025, https://design.ros2.org/articles/clock_and_time.html
+42. Time synchronisation between ROS2 and Gazebo - LXRobotics, accessed July 22, 2025, https://lxrobotics.com/blog/time-synchronisation-ros2-gazebo/
+43. Simulating with Gazebo | Articulated Robotics, accessed July 22, 2025, https://articulatedrobotics.xyz/tutorials/ready-for-ros/gazebo/
+44. Gazebo No clock received Use_Sim_time Error : r/ROS - Reddit, accessed July 22, 2025, https://www.reddit.com/r/ROS/comments/1i06kb3/gazebo_no_clock_received_use_sim_time_error/
+45. Inaccurate FT Sensor Values in Gazebo Classic 11 (22.04 ROS2 ..., accessed July 22, 2025, https://github.com/gazebosim/gazebo-classic/issues/3398
+46. Issues / ros-simulation/gazebo_ros_pkgs - GitHub, accessed July 22, 2025, https://github.com/ros-simulation/gazebo_ros_pkgs/issues
+47. RANT: Gazebo (new) is a terrible piece of software and I don't think we should recommend it to newbies : r/ROS - Reddit, accessed July 22, 2025, https://www.reddit.com/r/ROS/comments/1jqn8wb/rant_gazebo_new_is_a_terrible_piece_of_software/
+48. Gazebo Roadmap - Gazebo ionic documentation, accessed July 22, 2025, https://gazebosim.org/docs/latest/roadmap/
+49. ROS 2 Technical Steering Committee Charter, accessed July 22, 2025, https://docs.ros.org/en/foxy/The-ROS2-Project/Governance/ROS2-TSC-Charter.html
+50. Open Robotics names ROS 2 Technical Steering Committee - The Robot Report, accessed July 22, 2025, https://www.therobotreport.com/ros-2-steering-committee-open-robotics/
+51. Introducing the ROS 2 Technical Steering Committee - ROS General - ROS Discourse, accessed July 22, 2025, https://discourse.ros.org/t/introducing-the-ros-2-technical-steering-committee/6132
+52. Roadmap - Eloquent documentation - the official ROS docs, accessed July 22, 2025, https://docs.ros.org/en/eloquent/Roadmap.html
+53. Roadmap - ROS 2 Documentation: Foxy 文档, accessed July 22, 2025, https://daobook.github.io/ros2-docs/foxy/Roadmap.html
+54. Roadmap - ROS 2 Documentation: Galactic documentation, accessed July 22, 2025, https://docs.ros.org/en/galactic/The-ROS2-Project/Roadmap.html
+55. Migration of a Gazebo ROS simulation to a ROS2 Ignition Gazebo - YouTube, accessed July 22, 2025, https://www.youtube.com/watch?v=DY7QTtDpVzw
+56. GSoC 2024 - Proposal writing - General - Gazebo Community, accessed July 22, 2025, https://community.gazebosim.org/t/gsoc-2024-proposal-writing/2666
+</code></pre>
 
             </article>
             <footer>

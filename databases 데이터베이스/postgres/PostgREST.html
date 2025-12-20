@@ -237,13 +237,21 @@
 <li><code>current_setting('request.jwt.claims', true)</code>: PostgREST가 현재 요청의 JWT 클레임을 JSON 형태로 저장해두는 세션 변수이다. <code>-&gt;&gt;</code> 연산자를 사용하여 특정 클레임 값(예: <code>user_id</code>, <code>tenant_id</code>)을 추출할 수 있다.10</li>
 </ul>
 <p>이 기능들을 활용하면 “사용자는 자신의 게시물만 수정할 수 있다“와 같은 복잡한 비즈니스 규칙을 애플리케이션 코드 없이 순수 SQL 정책으로 선언할 수 있다. 예를 들어, <code>posts</code> 테이블에 <code>author_id</code> 컬럼이 있고, JWT에 <code>user_id</code> 클레임이 포함되어 있다고 가정하자. 다음과 같은 RLS 정책을 생성할 수 있다:</p>
-<pre><code class="language-SQL">-- posts 테이블에 RLS 활성화
+<pre><code class="language-SQL">
+-- posts 테이블에 RLS 활성화
+
 ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
 
+
+
 -- 자신의 게시물만 수정/삭제할 수 있도록 하는 정책
+
 CREATE POLICY posts_author_policy ON posts
+
 FOR ALL USING (author_id = (current_setting('request.jwt.claims', true)::json-&gt;&gt;'user_id')::uuid)
+
 WITH CHECK (author_id = (current_setting('request.jwt.claims', true)::json-&gt;&gt;'user_id')::uuid);
+
 </code></pre>
 <p>이제 어떤 사용자가 <code>PATCH /posts/123</code> 요청을 보내면, PostgreSQL은 <code>UPDATE</code> 쿼리를 실행하기 전에 자동으로 이 RLS 정책을 적용한다. 데이터베이스는 123번 게시물의 <code>author_id</code>가 요청 JWT의 <code>user_id</code> 클레임 값과 일치하는지 확인하고, 일치하지 않으면 마치 해당 행이 존재하지 않는 것처럼 처리하여 업데이트를 거부한다. 이 모든 과정은 개발자가 <code>WHERE author_id =?</code> 조건을 쿼리에 명시적으로 추가하지 않아도 데이터베이스에 의해 투명하게 이루어진다.</p>
 <p>특히, RLS는 다중 테넌시(Multi-Tenancy) SaaS 애플리케이션에서 테넌트 간의 데이터를 완벽하게 격리하는 데 이상적인 솔루션이다. 모든 데이터 테이블에 <code>tenant_id</code> 컬럼을 추가하고, <code>USING (tenant_id = (current_setting('request.jwt.claims', true)::json-&gt;&gt;'tenant_id')::uuid)</code>와 같은 공통 정책을 적용하면, 애플리케이션 코드의 변경 없이 데이터베이스 수준에서 견고한 데이터 격리를 보장할 수 있다.30</p>
@@ -274,48 +282,84 @@ WITH CHECK (author_id = (current_setting('request.jwt.claims', true)::json-&gt;&
 <p>REST API의 고질적인 문제 중 하나는 관련된 리소스를 가져오기 위해 여러 번의 HTTP 요청이 필요한, 이른바 ’N+1 쿼리 문제’이다. 예를 들어, 게시글 목록과 각 게시글의 작성자 정보를 함께 표시하려면, 먼저 게시글 목록을 가져온 뒤(<code>GET /posts</code>), 각 게시글에 대해 작성자 정보를 개별적으로 요청(<code>GET /users/{id}</code>)해야 할 수 있다.</p>
 <p>PostgREST의 리소스 임베딩 기능은 이 문제를 해결하는 강력한 메커니즘이다. 데이터베이스에 정의된 외래 키(Foreign Key) 관계를 자동으로 인식하여, 단 한 번의 API 요청으로 관련된 리소스들을 중첩된 JSON 구조로 함께 반환할 수 있다.37</p>
 <p>임베딩은 select 쿼리 파라미터를 통해 명시적으로 요청된다. 예를 들어, films 테이블과 directors 테이블이 외래 키로 연결되어 있을 때, 영화 정보와 감독 정보를 함께 가져오려면 다음과 같이 요청한다:</p>
-<pre><code>GET /films?select=title,year,director:directors(first_name,last_name)
+<pre><code>
+GET /films?select=title,year,director:directors(first_name,last_name)
+
 </code></pre>
 <p>이 요청에 대한 응답은 다음과 같은 구조를 가질 것이다:</p>
-<pre><code class="language-JSON">[
-{
-"title": "Inception",
-"year": 2010,
-"director": {
-"first_name": "Christopher",
-"last_name": "Nolan"
-}
-}
+<pre><code class="language-JSON">
+[
+
+  {
+
+    "title": "Inception",
+
+    "year": 2010,
+
+    "director": {
+
+      "first_name": "Christopher",
+
+      "last_name": "Nolan"
+
+    }
+
+  }
+
 ]
+
 </code></pre>
 <p>PostgREST는 일대다(one-to-many), 다대일(many-to-one), 다대다(many-to-many) 관계를 모두 지원하며, 관계의 종류에 따라 중첩된 데이터는 JSON 객체(to-one) 또는 JSON 배열(to-many)로 표현된다.37 또한, 임베드된 리소스에 대해서도 필터링, 정렬, 개수 제한이 가능하다. 예를 들어, 특정 영화의 출연 배우 중 성이 ’D’로 시작하는 배우만 알파벳 순으로 5명까지 가져오려면 다음과 같이 요청할 수 있다:</p>
-<pre><code>GET /films?id=eq.123&amp;select=title,actors(first_name,last_name)&amp;actors.last_name=like.D*&amp;actors.order=last_name.asc&amp;actors.limit=5
+<pre><code>
+GET /films?id=eq.123&amp;select=title,actors(first_name,last_name)&amp;actors.last_name=like.D*&amp;actors.order=last_name.asc&amp;actors.limit=5
+
 </code></pre>
 <p>내부적으로 PostgREST는 이러한 임베딩 요청을 효율적인 단일 SQL 쿼리로 변환한다. 이를 위해 PostgreSQL의 <code>JOIN</code> 구문과 <code>json_agg</code>, <code>json_build_object</code>와 같은 JSON 집계 함수를 적극적으로 활용한다. 이 방식은 네트워크 왕복 횟수를 최소화하고, 데이터베이스가 가장 효율적으로 데이터를 집계하도록 하여 전체적인 애플리케이션 성능을 크게 향상시킨다.</p>
 <h3>4.3 원격 프로시저 호출(RPC): 데이터베이스 함수를 비즈니스 로직 엔드포인트로 활용</h3>
 <p>PostgREST는 테이블과 뷰를 통한 데이터 중심의 접근뿐만 아니라, PostgreSQL 함수(저장 프로시저)를 직접 호출하여 복잡한 비즈니스 로직을 수행할 수 있는 원격 프로시저 호출(RPC) 기능을 제공한다.16 노출된 스키마에 정의된 모든 함수는 <code>/rpc/{function_name}</code> 형태의 엔드포인트를 통해 API로 노출된다.</p>
 <p>RPC는 단순한 CRUD를 넘어서는 작업들을 캡슐화하는 데 매우 유용하다. 예를 들어, ’사용자 등록’과 같은 작업은 단순히 <code>users</code> 테이블에 행을 하나 추가하는 것으로 끝나지 않는다. 관련 테이블(예: <code>user_profiles</code>)에 기본 데이터를 생성하고, 환영 이메일을 발송하기 위해 큐에 작업을 넣는 등 여러 단계의 로직이 포함될 수 있다. 이러한 여러 단계를 개별 API 호출로 처리하면 트랜잭션의 원자성을 보장하기 어렵다.</p>
 <p>PostgREST의 RPC를 사용하면, 이 모든 로직을 <code>signup(email text, password text)</code>와 같은 단일 PostgreSQL 함수 안에 캡슐화할 수 있다. 함수 내에서 트랜잭션 블록(<code>BEGIN...COMMIT/ROLLBACK</code>)을 사용하여 모든 작업의 원자성을 완벽하게 보장할 수 있다. 클라이언트는 단순히 <code>POST /rpc/signup</code> 엔드포인트에 필요한 파라미터를 JSON 본문으로 전송하는 것만으로 이 복잡한 워크플로우를 안전하게 실행할 수 있다.16</p>
-<pre><code class="language-SQL">-- 사용자 등록을 처리하는 PostgreSQL 함수 예시
+<pre><code class="language-SQL">
+-- 사용자 등록을 처리하는 PostgreSQL 함수 예시
+
 CREATE OR REPLACE FUNCTION api.signup(email text, password text)
+
 RETURNS void AS $$
+
 DECLARE
-new_user_id uuid;
+
+  new_user_id uuid;
+
 BEGIN
--- 1. users 테이블에 새로운 사용자 삽입
-INSERT INTO auth.users (email, password_hash)
-VALUES (email, crypt(password, gen_salt('bf')))
-RETURNING id INTO new_user_id;
 
--- 2. user_profiles 테이블에 기본 프로필 생성
-INSERT INTO public.user_profiles (user_id, username)
-VALUES (new_user_id, split_part(email, '@', 1));
+  -- 1. users 테이블에 새로운 사용자 삽입
 
--- 3. 이메일 발송 큐에 작업 추가 (가상의 테이블)
-INSERT INTO jobs.email_queue (type, payload)
-VALUES ('welcome_email', jsonb_build_object('user_id', new_user_id));
+  INSERT INTO auth.users (email, password_hash)
+
+  VALUES (email, crypt(password, gen_salt('bf')))
+
+  RETURNING id INTO new_user_id;
+
+
+
+  -- 2. user_profiles 테이블에 기본 프로필 생성
+
+  INSERT INTO public.user_profiles (user_id, username)
+
+  VALUES (new_user_id, split_part(email, '@', 1));
+
+
+
+  -- 3. 이메일 발송 큐에 작업 추가 (가상의 테이블)
+
+  INSERT INTO jobs.email_queue (type, payload)
+
+  VALUES ('welcome_email', jsonb_build_object('user_id', new_user_id));
+
 END;
+
 $$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER;
+
 </code></pre>
 <p>또한, 함수가 테이블 타입(<code>SETOF table_name</code> 또는 <code>RETURNS TABLE(...)</code>)을 반환하는 경우, 해당 RPC 엔드포인트는 일반 테이블 엔드포인트처럼 필터링, 정렬, 리소스 임베딩 등 모든 고급 쿼리 기능을 동일하게 지원한다.16 이는 데이터베이스를 단순한 저장소를 넘어, 강력하고 유연한 애플리케이션 서버로 활용할 수 있는 가능성을 열어준다.</p>
 <h2>5.  성능 최적화 전략</h2>

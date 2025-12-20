@@ -161,11 +161,17 @@
 <li><strong><code>child_pointer</code> (32-bit or other):</strong> 유효한 자식 노드들이 시작되는 메모리 위치를 가리키는 포인터 또는 오프셋이다. Laine &amp; Karras의 설계에서 중요한 점은, 한 부모의 유효한 자식 노드들은 메모리 상에 반드시 연속적으로 배치된다는 것이다. 따라서 이 <code>child_pointer</code>와 <code>valid_mask</code>의 특정 비트까지 1의 개수(popcount 연산)를 알면, 특정 자식 노드의 정확한 메모리 주소를 계산할 수 있다.</li>
 </ul>
 <p>이러한 구조는 다음과 같은 비트 필드 레이아웃으로 개념적으로 표현될 수 있다. 실제 논문에서는 64비트 중 32비트는 자식 정보에, 나머지 32비트는 표면의 미세한 디테일을 표현하기 위한 컨투어(contour) 정보에 할당했다.12</p>
-<pre><code>[ 63... 32 ][ 31... 24 ][ 23... 16 ][ 15... 0 ]
+<pre><code>
+[ 63... 32 ][ 31... 24 ][ 23... 16 ][ 15... 0 ]
+
 +---------------------+-------------+-------------+-------------+
 
+
+
 | child_pointer/other | (unused) | leaf_mask | valid_mask | (예시적 구성)
+
 +---------------------+-------------+-------------+-------------+
+
 </code></pre>
 <p>이 64비트 디스크립터는 GPU 최적화의 정수라 할 수 있다. GPU의 수많은 스레드가 각각 레이 트레이싱을 수행할 때, 단 한 번의 64비트 메모리 읽기 연산만으로 8개 자식의 존재 여부, 타입, 그리고 시작 위치까지 모든 정보를 획득할 수 있다. 이는 여러 번의 포인터 역참조(pointer dereferencing)를 피하게 해 메모리 접근 횟수를 최소화하고, 데이터 지역성(data locality)을 높여 캐시 효율을 극대화한다. 또한, 스레드 내에서 조건부 분기(branching)를 줄여 SIMT(Single Instruction, Multiple Threads) 실행 모델에 더 잘 부합하게 만든다.</p>
 <p>이러한 하드웨어 친화적 노드 구조를 바탕으로, Laine과 Karras는 스택을 사용하지 않는(stackless) 효율적인 레이 캐스팅 알고리즘을 구현했다.10 광선이 현재 노드(복셀)와 교차하면, 알고리즘은 광선이 8개의 자식 옥턴트와 교차하는 순서를 빠르게 계산한다. 그 후 계산된 순서에 따라 자식 노드들을 방문하며 탐색을 이어간다. 이 방식은 재귀 호출로 인한 스택 오버플로우의 위험이 없고, GPU 스레드에서 독립적으로 실행되기에 매우 적합하다.</p>
@@ -202,11 +208,13 @@
 <h3>4.2 레이 트레이싱(Ray Tracing) 기본 원리</h3>
 <p>레이 트레이싱은 가상의 카메라에서 화면의 각 픽셀을 향해 광선(ray)을 쏘아, 그 광선이 씬의 어떤 객체와 처음 부딪히는지를 계산하여 픽셀의 색상을 결정하는 렌더링 기법이다.</p>
 <ul>
-<li><strong>광선(Ray) 표현:</strong> 기하학적으로 광선은 하나의 원점(Origin) <code>$O$</code>와 단위 방향 벡터(Direction) <code>$D$</code>로 정의된다. 광선 상의 임의의 점 <code>$P(t)$</code>는 파라미터 <code>$t$</code> (<code>$t \ge 0$</code>)를 이용하여 다음과 같은 선형 방정식으로 표현된다.20</li>
+<li>
+<p><strong>광선(Ray) 표현:</strong> 기하학적으로 광선은 하나의 원점(Origin) <code>$O$</code>와 단위 방향 벡터(Direction) <code>$D$</code>로 정의된다. 광선 상의 임의의 점 <code>$P(t)$</code>는 파라미터 <code>$t$</code> (<code>$t \ge 0$</code>)를 이용하여 다음과 같은 선형 방정식으로 표현된다.20</p>
+<p>$$</p>
+<p>P(t) = O + t \cdot D</p>
+</li>
 </ul>
-<p><span class="math math-display">
-P(t) = O + t \cdot D
-</span></p>
+<p>$$</p>
 <ul>
 <li><strong>SVDAG 순회:</strong> SVDAG를 이용한 레이 트레이싱은 루트 노드에서 시작된다. 광선이 현재 노드가 나타내는 공간(AABB)과 교차하는지 판정한다. 만약 교차한다면, 현재 노드가 리프 노드인지 내부 노드인지 확인한다. 리프 노드라면 광선과 리프 내부의 복셀 간의 충돌을 계산하고 순회를 종료한다. 내부 노드라면, 광선이 통과하는 순서대로 8개의 자식 노드들을 방문하며 이 과정을 재귀적으로 반복한다. 이 계층적 탐색을 통해, 광선과 무관한 방대한 공간을 효율적으로 건너뛸 수 있다.8</li>
 </ul>
@@ -214,20 +222,20 @@ P(t) = O + t \cdot D
 <p>SVDAG의 모든 노드는 축에 정렬된 경계 상자(Axis-Aligned Bounding Box, AABB)로 표현될 수 있으므로, 광선과 AABB의 교차를 빠르고 강건하게 판정하는 것은 순회 알고리즘의 성능에 지대한 영향을 미치는 핵심 연산이다. 여러 기법이 있지만, 가장 널리 사용되고 이해하기 쉬운 방법은 **슬랩 기법(Slab Method)**이다.20</p>
 <p>이 기법은 3차원 AABB를 x, y, z 각 축에 수직인 한 쌍의 무한 평면으로 구성된 세 개의 ’슬랩(slab)’의 교집합으로 간주한다. 알고리즘은 각 축(슬랩)에 대해 광선이 슬랩 안으로 들어가는 시점(<code>$t_{near}$</code>)과 슬랩 밖으로 나가는 시점(<code>$t_{far}$</code>)을 계산한다.</p>
 <p>예를 들어, x축에 대한 슬랩은 <code>$x = x_{min}$</code>과 <code>$x = x_{max}$</code> 두 평면으로 정의된다. 광선 방정식 <code>$O_x + t \cdot D_x = x_{plane}$</code>을 <code>$t$</code>에 대해 풀면 교차 시점을 구할 수 있다.</p>
-<p><span class="math math-display">
-t_{x1} = \frac{x_{min} - O_x}{D_x}
-</span></p>
-<p><span class="math math-display">
-t_{x2} = \frac{x_{max} - O_x}{D_x}
-</span></p>
+<p>$$</p>
+<p>t_{x1} = \frac{x_{min} - O_x}{D_x}</p>
+<p>$$</p>
+<p>$$</p>
+<p>t_{x2} = \frac{x_{max} - O_x}{D_x}</p>
+<p>$$</p>
 <p>만약 <code>$D_x &gt; 0$</code> 이면 <code>$t_{near_x} = t_{x1}$</code>, <code>$t_{far_x} = t_{x2}$</code>가 되고, <code>$D_x &lt; 0$</code> 이면 그 반대가 된다. <code>$D_x = 0$</code>인 경우(광선이 x축 평면과 평행)는 AABB의 x 범위 내에 광선의 원점이 있는지 확인하는 특별한 처리가 필요하다.20</p>
 <p>이 계산을 세 축 모두에 대해 반복하여 각 축의 (<code>$t_{near_x}$</code>, <code>$t_{far_x}$</code>), (<code>$t_{near_y}$</code>, <code>$t_{far_y}$</code>), (<code>$t_{near_z}$</code>, <code>$t_{far_z}$</code>) 구간을 얻는다. 광선이 AABB와 교차하려면 이 세 구간이 모두 겹치는 부분이 있어야 한다. 따라서, 최종적인 교차 구간의 시작점 <code>$t_{min}$</code>은 각 축의 <code>$t_{near}$</code> 값들 중 가장 큰 값이 되고, 끝점 <code>$t_{max}$</code>는 각 축의 <code>$t_{far}$</code> 값들 중 가장 작은 값이 된다.</p>
-<p><span class="math math-display">
-t_{min} = \max(\max(t_{near_x}, t_{near_y}), t_{near_z})
-</span></p>
-<p><span class="math math-display">
-t_{max} = \min(\min(t_{far_x}, t_{far_y}), t_{far_z})
-</span></p>
+<p>$$</p>
+<p>t_{min} = \max(\max(t_{near_x}, t_{near_y}), t_{near_z})</p>
+<p>$$</p>
+<p>$$</p>
+<p>t_{max} = \min(\min(t_{far_x}, t_{far_y}), t_{far_z})</p>
+<p>$$</p>
 <p>만약 최종적으로 계산된 <code>$t_{min}$</code>이 <code>$t_{max}$</code>보다 크다면, 세 구간의 공통 부분이 존재하지 않는 것이므로 광선은 AABB와 교차하지 않는다. 그렇지 않다면 교차하며, 교차 구간은 <code>$[t_{min}, t_{max}]$</code>가 된다.</p>
 <h3>4.4 고급 렌더링 응용</h3>
 <p>SVDAG가 제공하는 전례 없는 수준의 기하학적 디테일은 기존의 실시간 렌더링 파이프라인에서는 구현이 어렵거나 불가능했던 고품질의 전역 조명(Global Illumination) 효과를 가능하게 한다.</p>
