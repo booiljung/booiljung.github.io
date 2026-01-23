@@ -140,6 +140,168 @@
             </header>
             <article>
                 <h1>5.5.4 지속 학습(Continual Learning)과 망각(Forgetting) 문제 해결</h1>
+<p>로봇이 미지의 환경을 탐색하며 스스로 지도를 작성하고 자신의 위치를 파악하는 SLAM(Simultaneous Localization and Mapping) 기술은 로봇 공학의 성배와도 같다. 최근 딥러닝 기술의 비약적인 발전, 특히 NeRF(Neural Radiance Fields)와 3D Gaussian Splatting(3DGS)과 같은 뉴럴 렌더링(Neural Rendering) 기술의 등장은 SLAM의 패러다임을 희소한 특징점(Sparse Feature) 기반에서 밀도 높은(Dense) 연속적 표현으로 전환시켰다. 그러나 이러한 Neural SLAM 시스템이 실험실 환경을 벗어나 대규모의 실제 환경에서 장시간 운용되기 위해 반드시 넘어야 할 가장 거대하고 본질적인 장벽이 존재한다. 바로 ’파국적 망각(Catastrophic Forgetting)’이다.</p>
+<p>본 절에서는 Neural SLAM 시스템, 특히 로봇을 구성하는 최신 SOTA(State-of-the-Art) 인공지능 및 제어 기술의 핵심인 뉴럴 필드(Neural Fields) 기반 매핑 과정에서 발생하는 지속 학습의 난제들을 심층적으로 분석한다. 단순히 문제를 정의하는 수준을 넘어, 망각 현상의 수학적 기원부터 이를 해결하기 위한 리플레이(Replay), 정칙화(Regularization), 아키텍처(Architecture) 차원의 최신 연구 성과들을 망라하여 기술한다. 나아가, 동적 환경에서 ’망각’을 오히려 긍정적인 적응 기제로 활용하는 역설적인 접근법과, Kolmogorov-Arnold Networks(KAN)와 같은 차세대 신경망 구조가 제시하는 새로운 가능성까지 포괄적으로 논의한다.</p>
+<h2>1.  Neural SLAM에서의 안정성-가소성 딜레마 (Stability-Plasticity Dilemma)의 본질</h2>
+<p>인공지능 모델, 특히 인공 신경망(ANN)이 연속적인 데이터 스트림을 학습할 때 직면하는 가장 근본적인 문제는 ’안정성-가소성 딜레마(Stability-Plasticity Dilemma)’로 귀결된다.1 로봇 에이전트가 시간 <span class="math math-inline">t</span>에 관측한 데이터 <span class="math math-inline">D_t</span>를 통해 환경에 대한 지식(지도)을 업데이트한다고 가정하자. 이때 신경망 모델 <span class="math math-inline">f_\theta</span>는 새로운 데이터 <span class="math math-inline">D_t</span>에 포함된 새로운 지오메트리나 텍스처 정보를 빠르게 습득할 수 있는 ’가소성(Plasticity)’을 가져야 한다. 동시에, 과거의 시점 <span class="math math-inline">t-k</span>에서 학습했던 데이터 <span class="math math-inline">D_{t-k}</span>에 대한 정보, 즉 이미 방문했던 구역의 구조나 색상 정보를 잃지 않고 유지해야 하는 ‘안정성(Stability)’ 또한 필수적이다.</p>
+<h3>1.1  파국적 망각의 메커니즘과 SLAM의 특수성</h3>
+<p>인간이나 동물의 뇌는 해마(Hippocampus)와 대뇌 피질(Neocortex)의 상호작용을 통해 단기 기억을 장기 기억으로 전이시키며 새로운 정보를 학습하면서도 기존 지식을 보존한다. 반면, 전통적인 역전파(Backpropagation) 알고리즘을 사용하는 인공 신경망은 이러한 기제가 부재하다. 전체 데이터셋을 한 번에 학습하는 오프라인(Offline) 학습과 달리, SLAM은 로봇이 이동함에 따라 데이터가 순차적(Sequential)으로 입력되는 온라인(Online) 학습 환경이다.3</p>
+<p>새로운 데이터 <span class="math math-inline">D_t</span>에 대해 손실 함수 <span class="math math-inline">\mathcal{L}(\theta; D_t)</span>를 최소화하는 방향으로 가중치 <span class="math math-inline">\theta</span>를 업데이트하면, 이 가중치는 이전 데이터 <span class="math math-inline">D_{0...t-1}</span>에 대해 최적화되어 있던 상태에서 이탈하게 된다. 신경망의 가중치는 분산된 표현(Distributed Representation)을 저장하고 있기 때문에, 네트워크의 특정 가중치가 변경되면 이는 비단 현재 학습 중인 영역뿐만 아니라, 해당 가중치와 연결된 과거의 모든 기억에 영향을 미치게 된다. 이를 간섭(Interference)이라 하며, 이 간섭이 급격하게 발생하여 이전 지식을 완전히 소실하는 현상을 ’파국적 망각’이라 칭한다.5</p>
+<p>Neural SLAM, 특히 iMAP 7과 같이 단일 MLP(Multi-Layer Perceptron)가 전체 씬(Scene)을 표현하는 전역적(Global) 모델의 경우 이 문제는 더욱 심각하다. 로봇이 거실을 매핑한 후 부엌으로 이동하여 부엌 데이터를 학습하는 순간, 거실의 벽면 구조가 뭉개지거나(Geometric Forgetting), 텍스처가 뒤섞이는(Photometric Forgetting) 현상이 발생한다. 이는 로봇이 다시 거실로 돌아왔을 때(Loop Closure), 자신의 위치를 인식하지 못하게 만들어 SLAM 시스템 전체의 붕괴를 초래한다.</p>
+<h3>1.2  파국적 기억(Catastrophic Remembering)과 과소적합</h3>
+<p>망각의 반대편에는 ’파국적 기억(Catastrophic Remembering)’이라는 또 다른 위험이 도사리고 있다.8 이는 모델이 과거의 데이터(안정성)를 지나치게 보존하려다 새로운 데이터(가소성)를 학습하지 못하거나, 서로 다른 태스크나 환경 간의 차이를 구별하지 못하는 현상을 말한다. 예를 들어, 로봇이 환경의 변화(가구의 재배치, 조명의 변화 등)를 새로운 정보로 받아들이지 않고 과거의 기억에 고착되어 잘못된 판단을 내리는 경우이다.</p>
+<p>Kaushik 등(2021)은 이 현상을 해결하기 위해 Relevance Mapping Networks (RMNs)를 제안하며, 가중치에 대한 ’관련성 매핑(Relevance Mapping)’을 통해 중요한 파라미터는 보호하고 덜 중요한 파라미터는 새로운 학습에 할당하는 최적화된 중첩(Overlap) 학습을 주장하였다.8 SLAM에서는 특히 동적 객체가 존재하는 환경에서, 움직이는 물체를 배경의 일부로 영구히 ’기억’해버리는 오류가 이에 해당할 수 있다. 따라서 이상적인 Neural SLAM 시스템은 무조건적인 기억 보존이 아닌, ’선별적 기억’과 ‘적응적 망각’ 사이의 정교한 균형점을 찾아야 한다.</p>
+<h2>2.  경험 리플레이(Experience Replay)와 키프레임 관리 전략</h2>
+<p>Neural SLAM에서 파국적 망각을 완화하기 위해 현존하는 가장 강력하고 보편적인 방법론은 ’경험 리플레이(Experience Replay)’이다.4 이는 뇌과학의 ‘기억 재강화(Reconsolidation)’ 이론에 착안한 것으로, 과거에 경험했던 데이터의 일부를 버퍼(Buffer)에 저장해 두었다가, 현재의 새로운 데이터와 함께 섞어서(Interleaved) 반복 학습시키는 기법이다.</p>
+<h3>2.1  리플레이 버퍼의 수학적 정식화</h3>
+<p>리플레이 버퍼 <span class="math math-inline">\mathcal{B}</span>는 과거의 관측 데이터 튜플 <span class="math math-inline">e_k = \{I_k, D_k, T_k\}</span> (이미지, 깊이 맵, 추정된 포즈)들의 집합으로 구성된다. 시간 <span class="math math-inline">t</span>에서의 학습 목적 함수 <span class="math math-inline">\mathcal{L}*{total}(\theta)</span>는 현재 관측 데이터 <span class="math math-inline">D*{curr}</span>에 대한 손실과 버퍼에서 샘플링된 과거 데이터 <span class="math math-inline">D_{replay}</span>에 대한 손실의 가중 합으로 정의된다.<br />
+<span class="math math-display">
+\mathcal{L}_{total}(\theta) = \mathbb{E}_{(x, y) \sim D_{curr}} [\mathcal{L}(f_\theta(x), y)] + \lambda \cdot \mathbb{E}_{(x&#39;, y&#39;) \sim \mathcal{B}} [\mathcal{L}(f_\theta(x&#39;), y&#39;)]
+</span><br />
+여기서 <span class="math math-inline">\lambda</span>는 리플레이 손실의 중요도를 조절하는 하이퍼파라미터이다. iMAP 7은 전체 맵의 키프레임 중 일부를 매 이터레이션마다 무작위로 샘플링하여 리플레이하는 방식을 채택하였다. 이 방식은 초기에는 효과적이었으나, 맵의 규모가 커질수록 전체 데이터를 커버하기 위해 필요한 샘플링 수가 기하급수적으로 증가하고, 학습 속도가 저하되는 한계를 노출했다.11</p>
+<h3>2.2  지능적 키프레임 선정 (Intelligent Keyframe Selection)</h3>
+<p>무작위 샘플링의 비효율성을 극복하기 위해, 어떤 데이터를 ’기억’할 것인가에 대한 지능적인 키프레임 선정(Keyframe Selection) 전략이 필수적이다. 이는 제한된 메모리 자원 내에서 정보의 엔트로피를 최대화하는 최적화 문제로 귀결된다.12</p>
+<table><thead><tr><th><strong>전략 명칭</strong></th><th><strong>메커니즘 및 특징</strong></th><th><strong>대표 적용 사례</strong></th><th><strong>장점</strong></th><th><strong>단점</strong></th></tr></thead><tbody>
+<tr><td><strong>공간적 커버리지 (Spatial Coverage)</strong></td><td>카메라의 이동 거리(<span class="math math-inline">\Delta t</span>)와 회전 각도(<span class="math math-inline">\Delta R</span>)가 임계값을 초과할 때 키프레임 생성.</td><td>ORB-SLAM, NICE-SLAM 11</td><td>구현이 간단하고 직관적임. 맵의 전역적 커버리지 보장.</td><td>정지 상태나 제자리 회전 시 데이터 과적 혹은 부족 발생 가능. 텍스처 변화 반영 미흡.</td></tr>
+<tr><td><strong>손실 기반 (Loss-based)</strong></td><td>현재 모델로 렌더링했을 때 예측 오차(Loss)가 큰 프레임을 저장. “모델이 모르는 것“을 우선 저장.</td><td>Active Neural SLAM 14</td><td>학습 효율 극대화. 모델의 약점을 보완하는 방향으로 데이터 수집.</td><td>노이즈나 동적 객체(Outlier)를 중요 정보로 오인할 위험 있음.</td></tr>
+<tr><td><strong>정보 이득 (Information Gain)</strong></td><td>렌더링된 뷰의 엔트로피나 피셔 정보를 계산하여 맵의 불확실성을 가장 크게 줄이는 프레임 선택.</td><td>SplaTAM 17</td><td>수학적으로 최적화된 정보 수집 가능. 불확실성 기반 탐사(Exploration)와 연계 용이.</td><td>계산 비용이 높음. 실시간성 확보에 부담.</td></tr>
+<tr><td><strong>적응형 임계값 (Adaptive Threshold)</strong></td><td>환경의 변화량이나 로봇의 속도에 따라 키프레임 생성 빈도를 동적으로 조절.</td><td>DKB-SLAM 12</td><td>다양한 주행 환경(고속/저속, 복잡/단순)에 유연하게 대응.</td><td>환경 변화 감지 알고리즘의 정확도에 의존적.</td></tr>
+</tbody></table>
+<p>최근 연구인 <strong>“Region sampling NeRF-SLAM based on Kolmogorov-Arnold network”</strong> 18에서는 이미지 전체를 균일하게 샘플링하는 대신, 쿼드트리(Quadtree)를 이용하여 이미지 내의 텍스처 복잡도(Color Difference)가 높은 영역을 집중적으로 샘플링하는 지역적 샘플링(Region Sampling) 전략을 제안하였다. 이는 적은 수의 샘플링으로도 정보량이 높은 엣지나 텍스처를 효과적으로 학습하여, 망각 현상을 줄이면서도 디테일을 보존하는 결과를 보여주었다.</p>
+<h3>2.3  생성적 리플레이(Generative Replay)와 MEIL-NeRF</h3>
+<p>로봇의 메모리가 극도로 제한된 상황이나, 프라이버시 문제로 원본 이미지를 저장할 수 없는 경우, 데이터를 직접 저장하는 리플레이 방식은 적용하기 어렵다. 이에 대한 대안으로 제시된 것이 **생성적 리플레이(Generative Replay)**이며, 이를 NeRF 기반 SLAM에 적용한 대표적인 사례가 <strong>MEIL-NeRF (Memory-Efficient Incremental Learning of NeRF)</strong> 20이다.</p>
+<p>MEIL-NeRF는 신경망 자체를 일종의 ’메모리 저장소’로 간주한다. 별도의 이미지 버퍼를 구축하는 대신, **Ray Generator Network (RGN)**라는 작고 가벼운 보조 신경망을 도입한다. RGN은 로봇이 과거에 관측했던 유효한 광선(Ray)의 위치와 방향 분포를 학습한다. 새로운 데이터를 학습할 때, RGN은 과거의 광선들을 생성해내고, 이 광선들을 현재 업데이트되기 전의 모델(Old Model)에 통과시켜 색상과 깊이 값을 예측한다. 이 예측값은 일종의 ’가짜 정답(Pseudo-Ground Truth)’이 되어, 현재 업데이트 중인 모델(New Model)이 이를 모방하도록 강제한다. 이를 **자기 증류(Self-Distillation)**라고 한다.</p>
+<p>자기 증류 손실 함수 <span class="math math-inline">\mathcal{L}_{distill}</span>은 다음과 같이 정의된다.<br />
+<span class="math math-display">
+\mathcal{L}_{distill} = \frac{1}{|\mathcal{R}|} \sum_{\mathbf{r} \in \mathcal{R}} \lVert \hat{C}_{curr}(\mathbf{r}) - \hat{C}_{old}(\mathbf{r}) \rVert_2^2
+</span><br />
+여기서 <span class="math math-inline">\mathcal{R}</span>은 RGN이 생성한 광선들의 집합이며, <span class="math math-inline">\hat{C}*{curr}</span>와 <span class="math math-inline">\hat{C}*{old}</span>는 각각 현재 모델과 이전 모델이 해당 광선에 대해 렌더링한 색상 값이다. 이 방식은 <span class="math math-inline">O(1)</span>의 메모리 복잡도를 가지며, 데이터셋의 크기가 무한히 커져도 메모리 사용량이 증가하지 않는다는 점에서 평생 학습(Lifelong Learning) 관점에서 매우 중요한 의미를 갖는다.22 또한, 원본 이미지를 저장하지 않으므로 보안이 중요한 국방이나 사생활 보호가 필요한 가정용 로봇 애플리케이션에 적합하다.</p>
+<p>유사한 접근으로 <strong>Continual-Neural Graphics Primitives (C-NGP)</strong> 24는 여러 개의 씬(Scene)을 하나의 NeRF 모델에 순차적으로 학습시킬 때, 생성적 리플레이를 사용하여 이전 씬에 대한 정보를 보존한다. C-NGP는 해시 인코딩(Hash Encoding) 기반의 Instant-NGP 구조를 활용하여 학습 속도를 비약적으로 높이면서도, 생성적 리플레이를 통해 모델의 파라미터 크기를 고정한 채로 지속적인 지식 확장을 가능하게 했다.</p>
+<h2>3.  정칙화(Regularization) 기반의 망각 방지 기술</h2>
+<p>리플레이가 데이터 수준에서 망각을 방지한다면, 정칙화(Regularization)는 파라미터 수준에서 네트워크의 가중치가 급격하게 변하는 것을 억제하는 기술이다. 이는 모든 파라미터가 지식 보존에 동일하게 기여하지 않는다는 사실에 기반한다.</p>
+<h3>3.1  탄성 가중치 통합 (Elastic Weight Consolidation, EWC)의 심화</h3>
+<p>EWC 26는 베이지안 학습 이론에 기반하여, 이전 태스크 학습 후의 파라미터 분포를 가우시안으로 근사한다. 특정 파라미터 <span class="math math-inline">\theta_i</span>가 이전 지식을 유지하는 데 중요할수록 해당 파라미터의 변화에 대해 높은 페널티(Penalty)를 부여한다. 이를 위해 피셔 정보 행렬(Fisher Information Matrix, FIM) <span class="math math-inline">F</span>를 계산한다.3<br />
+<span class="math math-display">
+F_{ij} = \mathbb{E}_{x \sim \mathcal{D}} \left[ \frac{\partial \log p(x|\theta)}{\partial \theta_i} \frac{\partial \log p(x|\theta)}{\partial \theta_j} \right]
+</span><br />
+EWC를 적용한 손실 함수는 다음과 같다.<br />
+<span class="math math-display">
+\mathcal{L}(\theta) = \mathcal{L}_{new}(\theta) + \sum_{i} \frac{\lambda}{2} F_{ii} (\theta_i - \theta^*_{old, i})^2
+</span><br />
+여기서 <span class="math math-inline">\theta^*_{old}</span>는 이전 태스크 학습이 완료된 시점의 파라미터 값이다. Neural SLAM에서 EWC를 적용할 때는 계산 효율성을 위해 FIM의 대각 성분(Diagonal approximation)만을 사용하는 것이 일반적이다. 최근 연구인 <strong>“Instant Continual Learning of Neural Radiance Fields”</strong> 29이나 <strong>FIM-NeRF</strong> 28에서는 NeRF의 지속 학습 시료 효율성을 높이기 위해 FIM을 활용하여 중요한 샘플이나 파라미터를 선별하고, 이를 통해 렌더링 품질 저하 없이 학습 속도를 가속화하는 방법을 제안하였다.</p>
+<h3>3.2  기하학적 정칙화: 3D Gaussian Splatting의 등방성 제약</h3>
+<p>최신 Neural SLAM의 주류로 부상한 3D Gaussian Splatting (3DGS) 기반 시스템에서도 정칙화는 중요한 역할을 한다. 3DGS는 명시적인 가우시안 프리미티브를 사용하므로 MLP와 같은 형태의 가중치 망각은 발생하지 않으나, 새로운 뷰에서 관측된 데이터가 기존 가우시안의 형상을 기형적으로 변형시키거나(Over-elongation), 텍스처가 없는 영역에 불필요한 부유물(Floaters)을 생성하는 형태의 ’구조적 망각’이 발생한다.</p>
+<p><strong>Gaussian Splatting SLAM</strong> 32에서는 이를 방지하기 위해 **등방성 정칙화(Isotropic Regularization)**를 도입하였다. 이는 가우시안이 과도하게 길쭉해지는 것을 방지하여 맵의 기하학적 일관성을 유지한다. 가우시안의 스케일 벡터 <span class="math math-inline">s_k</span>에 대해 다음과 같은 손실을 추가한다.<br />
+<span class="math math-display">
+\mathcal{L}_{iso} = \sum_{k} \left\vert \ln(s_{k, max}) - \ln(s_{k, min}) \right\vert
+</span><br />
+또한, <strong>High-Fidelity SLAM (HF-SLAM)</strong> 33은 연속적인 매핑 과정에서 가우시안 파라미터가 최신 프레임에 과적합(Overfitting)되어 이전 프레임의 렌더링 품질이 떨어지는 것을 방지하기 위해, 렌더링 손실(Rendering Loss)에 기반한 정교한 정칙화 전략을 사용한다. 이 시스템은 현재 프레임에서 관측되지 않은 영역(Unobserved Areas)에 대해 렌더링된 가상의 뷰와 실제 맵 사이의 일관성을 유지하도록 하는 정칙화 항을 추가하여, 보이지 않는 영역의 정보가 소실되는 것을 막는다.<br />
+<span class="math math-display">
+\mathcal{L}_{reg} = \lambda_{depth} \mathcal{L}_{depth} + \lambda_{color} \mathcal{L}_{color} + \lambda_{opacity} \mathcal{L}_{opacity}
+</span><br />
+이러한 정칙화 항들은 가우시안이 물리적으로 타당한 형상을 유지하도록 강제하며, 특히 텍스처가 부족한 영역이나 복잡한 엣지 부분에서의 재구성 품질을 획기적으로 향상시킨다.36</p>
+<h2>4.  아키텍처(Architecture)의 진화: 지역성(Locality)과 명시적 표현(Explicit Representation)</h2>
+<p>Neural SLAM의 아키텍처 설계 철학은 ’전역적(Global) 암시적 표현’에서 ’지역적(Local) 명시적 표현’으로 진화하고 있다. 이는 파국적 망각이 근본적으로 파라미터 간의 공유(Sharing)에서 기인한다는 점을 고려할 때, 구조적인 해결책을 제시한다.</p>
+<h3>4.1  전역 표현에서 지역 특징 그리드로의 전환</h3>
+<p>초기 iMAP 7은 하나의 거대한 MLP가 전체 환경을 표현했다. 이는 메모리 효율은 좋으나, 맵의 국소적인 수정이 전체 맵에 영향을 미치는 치명적인 단점이 있었다. 이를 극복하기 위해 <strong>NICE-SLAM</strong> 11과 <strong>Co-SLAM</strong> 7은 공간을 계층적(Hierarchical) 혹은 해시(Hash) 기반의 복셀 그리드(Voxel Grid)로 분할하였다.</p>
+<p>각 복셀은 자신만의 학습 가능한 특징 벡터(Feature Vector)를 저장한다. 로봇이 특정 위치 <span class="math math-inline">(x, y, z)</span>를 관측할 때, 해당 좌표를 포함하는 복셀의 특징 벡터만이 업데이트된다. 이 <strong>지역성(Locality)</strong> 덕분에 로봇이 ’주방’을 매핑할 때 ’거실’에 해당하는 복셀들은 동결(Freeze) 상태를 유지할 수 있다. 이는 그래디언트의 전파 범위를 물리적으로 제한하여 파국적 망각을 구조적으로 차단한다.</p>
+<table><thead><tr><th><strong>아키텍처</strong></th><th><strong>특징 표현 방식</strong></th><th><strong>망각 방지 메커니즘</strong></th><th><strong>장점</strong></th><th><strong>단점</strong></th></tr></thead><tbody>
+<tr><td><strong>iMAP</strong> 7</td><td>Global MLP</td><td>리플레이 버퍼 의존</td><td>메모리 사용량 적음</td><td>데이터 증가 시 망각 심각, 디테일 부족</td></tr>
+<tr><td><strong>NICE-SLAM</strong> 11</td><td>Hierarchical Grids</td><td>지역적 특징 업데이트</td><td>고해상도 디테일 보존, 국소적 수정 가능</td><td>그리드 해상도에 따른 메모리 증가</td></tr>
+<tr><td><strong>Co-SLAM</strong> 7</td><td>Hash Grid + MLP</td><td>해시 충돌 관리 및 지역적 최적화</td><td>빠른 수렴 속도, 메모리와 성능의 균형</td><td>해시 충돌 시 정보 간섭 가능성 존재</td></tr>
+<tr><td><strong>Point-SLAM</strong> 7</td><td>Neural Point Cloud</td><td>포인트 기반의 특징 저장</td><td>형상 적응적 표현, 빈 공간 메모리 낭비 없음</td><td>포인트 관리(생성/삭제) 복잡도 높음</td></tr>
+</tbody></table>
+<h3>4.2  3D Gaussian Splatting: 명시적 표현으로의 회귀와 SplaTAM</h3>
+<p><strong>SplaTAM</strong> 17과 <strong>GS-SLAM</strong> 32은 신경망(MLP)을 완전히 배제하거나 보조적인 역할로 축소하고, 3D 가우시안(Ellipsoid)이라는 명시적 프리미티브를 사용한다. 이 방식의 가장 큰 특징은 **‘수정(Modification)’ 대신 ‘추가(Addition)’**를 통한 학습이다.</p>
+<p>SplaTAM의 맵 업데이트 메커니즘을 살펴보자. 시스템은 현재 맵의 실루엣 <span class="math math-inline">S_t(\mathbf{u})</span>를 렌더링하여 빈 공간을 파악한다.<br />
+<span class="math math-display">
+S_t(\mathbf{u}) = \sum_{i \in \mathcal{N}} \alpha_i \prod_{j=1}^{i-1} (1 - \alpha_j)
+</span><br />
+만약 렌더링된 실루엣 값이 임계값(예: <span class="math math-inline">\tau &lt; 0.9</span>)보다 작다면, 이는 해당 영역이 아직 맵핑되지 않았음을 의미한다. 시스템은 해당 위치에 새로운 가우시안을 생성(Densification)하여 추가한다. 기존에 잘 학습된 영역(<span class="math math-inline">S_t \approx 1</span>)은 건드리지 않으므로, 이전 지식이 손상될 위험이 거의 없다.</p>
+<p>그러나 무한정 가우시안을 추가할 수는 없으므로, <strong>Splat-LOAM</strong> 39과 같은 최신 시스템은 불필요하거나 신뢰도가 낮은 가우시안을 제거하는 <strong>가지치기(Pruning)</strong> 전략을 병행한다. 이는 불투명도(Opacity)가 너무 낮거나, 기하학적으로 불안정한(너무 크거나 찌그러진) 가우시안을 주기적으로 삭제하여 메모리 효율성을 유지한다.</p>
+<h3>4.3  Kolmogorov-Arnold Networks (KAN): 엣지 활성화의 혁신</h3>
+<p>가장 최근에 제안된 <strong>Kolmogorov-Arnold Networks (KAN)</strong> 18은 MLP의 구조적 한계를 극복할 새로운 대안으로 급부상하고 있다. MLP가 노드(뉴런)에 고정된 활성 함수(ReLU, Sigmoid 등)를 두는 반면, KAN은 <strong>Kolmogorov-Arnold 표현 정리</strong>에 기반하여 엣지(연결선)에 학습 가능한 1차원 함수(주로 B-Spline)를 배치한다.<br />
+<span class="math math-display">
+f(\mathbf{x}) = \sum_{q=1}^{2n+1} \Phi_q \left( \sum_{p=1}^{n} \phi_{q,p}(x_p) \right)
+</span><br />
+여기서 <span class="math math-inline">\phi_{q,p}</span>는 학습 가능한 스플라인 함수이다. 스플라인 함수는 <strong>국소적 지지(Local Support)</strong> 특성을 가진다. 즉, 입력값의 특정 구간에서만 함수의 값이 변하고, 그 외 구간에서는 0에 가까운 값을 유지하거나 영향력이 없다. 따라서 입력 데이터의 분포가 달라지면(예: 새로운 장소), 스플라인의 서로 다른 제어점(Control Point)들이 업데이트된다. 이는 물리적으로 분리된 뉴런을 사용하는 것과 유사한 효과를 내어, **국소적 가소성(Local Plasticity)**을 극대화한다.41</p>
+<p><strong>“Region sampling NeRF-SLAM based on Kolmogorov-Arnold network”</strong> 18 연구 결과, KAN을 적용한 SLAM 시스템은 기존 MLP 기반 시스템보다 동일한 파라미터 수 대비 더 높은 PSNR을 기록했으며, 특히 순차적 학습 과정에서 이전 맵의 디테일을 유지하는 능력이 탁월함이 입증되었다. 이는 KAN이 리플레이 버퍼의 의존도를 낮추면서도 망각을 제어할 수 있는 차세대 아키텍처임을 시사한다. 단, 고차원 데이터에서의 연산 비용 최적화는 여전히 해결해야 할 과제이다.</p>
+<h2>5.  동적 환경에서의 적응: 망각의 역설적 활용과 베이지안 접근</h2>
+<p>동적 환경(Dynamic Environment)에서는 ’완벽한 기억’이 오히려 독이 된다. 움직이는 사람, 지나가는 차량, 위치가 바뀐 의자 등을 맵에 영구적으로 기록하면, 이후의 로컬라이제이션(Localization)에 치명적인 오류를 유발한다. 따라서 최신 연구의 흐름은 “어떻게 잘 잊을 것인가(Selective Forgetting)“에 초점을 맞추고 있다.</p>
+<h3>5.1  동적 객체 식별 및 의도적 망각</h3>
+<p>ECCV 2024에서 발표된 <strong>“A Continual Learning Perspective of Dynamic SLAM”</strong> 44 논문은 이러한 관점을 명확히 보여준다. 이 연구는 망각을 시스템의 결함이 아닌, 동적 환경 적응을 위한 필수 기능으로 재해석한다. 시스템은 두 개의 상호보완적인 네트워크를 동시에 학습시킨다.</p>
+<ol>
+<li><strong>Neural Map <span class="math math-inline">f(x; \theta_M)</span>:</strong> 정적 환경의 지오메트리와 텍스처를 기억하는 네트워크.</li>
+<li><strong>Motion Classifier <span class="math math-inline">g(z; \theta_C)</span>:</strong> 입력된 영역이 동적인지 정적인지를 판별하는 이진 분류기.</li>
+</ol>
+<p>리플레이 버퍼를 운용할 때, Motion Classifier가 ’동적(Dynamic)’이라고 판단한 영역의 데이터는 리플레이 과정에서 제외하거나, 손실 함수 가중치를 대폭 낮춘다. 반면, 정적(Static) 영역은 지속적으로 리플레이하여 기억을 강화한다. 결과적으로 Neural Map은 자연스럽게 동적 객체에 대한 정보를 빠르게 ’망각’하고, 불변하는 배경 정보만을 선별적으로 ’기억’하게 된다. 이는 파국적 망각 방지와 동적 객체 제거(Dynamic Object Removal)라는 두 가지 난제를 하나의 프레임워크 안에서 해결한 획기적인 접근이다.</p>
+<h3>5.2  Variational Bayes Gaussian Splatting (VBGS): 리플레이 없는 학습</h3>
+<p>대부분의 Neural SLAM이 경사 하강법(Gradient Descent)에 의존하는 것과 달리, <strong>Variational Bayes Gaussian Splatting (VBGS)</strong> 47는 베이지안 추론(Variational Inference)을 도입하여 지속 학습 문제를 해결한다. VBGS는 가우시안 파라미터를 확정적인 값(Point Estimate)이 아닌 확률 분포(Distribution)로 모델링한다.</p>
+<p>데이터가 스트림으로 들어올 때, VBGS는 베이지안 업데이트 규칙에 따라 사후 확률(Posterior)을 갱신한다. 다변량 가우시안의 켤레(Conjugate) 특성을 활용하면, 복잡한 역전파 과정 없이 **닫힌 형태(Closed-form)**의 수식으로 파라미터를 업데이트할 수 있다.<br />
+<span class="math math-display">
+q_{t+1}(\theta) \propto p(D_{t+1} | \theta) q_t(\theta)
+</span><br />
+이 방식의 가장 큰 장점은 이전 데이터의 정보가 현재의 확률 분포 <span class="math math-inline">q_t(\theta)</span>에 수학적으로 내재화된다는 것이다. 따라서 별도의 리플레이 버퍼를 유지할 필요가 없으며, 이론적으로 파국적 망각이 발생하지 않는다. 실험 결과, VBGS는 경사 하강법 기반 방식보다 훨씬 빠른 수렴 속도를 보였으며, 순차적 데이터 처리 시에도 맵의 품질이 저하되지 않음을 입증하였다. 이는 연산 자원이 극도로 제한된 마이크로 로봇이나 드론과 같은 플랫폼에서 매우 유망한 기술이다.</p>
+<h2>6.  종합적 논의 및 향후 연구 방향</h2>
+<p>Neural SLAM에서의 지속 학습 기술은 단순한 ’맵 작성’을 넘어, 로봇이 인간과 공존하며 장기간(Lifelong) 생존하기 위한 인지 능력의 핵심이다. 현재의 기술 발전 양상은 다음과 같은 세 가지 큰 흐름으로 요약할 수 있다.</p>
+<ol>
+<li><strong>데이터 중심(Data-centric)에서 모델 중심(Model-centric)으로의 이동:</strong> 단순히 데이터를 많이 저장하고 반복하는 리플레이 방식에서 벗어나, EWC나 KAN과 같이 모델의 구조나 파라미터 자체의 특성을 이용하여 망각을 제어하는 방향으로 나아가고 있다.</li>
+<li><strong>명시적 표현의 부활:</strong> 딥러닝 초기에는 모든 것을 암시적(Implicit) MLP로 해결하려 했으나, 최근에는 3DGS나 Voxel Grid와 같이 수정과 확장이 용이한 명시적(Explicit) 표현이 다시금 각광받고 있다. 이는 SLAM이라는 애플리케이션의 특성상 국소적인 업데이트와 실시간성이 중요하기 때문이다.</li>
+<li><strong>망각의 능동적 제어:</strong> 망각을 무조건 막아야 할 대상이 아니라, 환경 변화에 적응하기 위해 능동적으로 조절해야 할 변수(Variable)로 다루기 시작했다.</li>
+</ol>
+<p>향후 연구는 이러한 흐름 위에서 <strong>뉴로모픽(Neuromorphic) 컴퓨팅</strong>과의 결합을 통해 스파이킹 신경망(SNN) 기반의 초저전력 SLAM을 구현하거나, **대규모 언어 모델(LLM)**의 의미론적(Semantic) 이해 능력을 접목하여 “빨간색 의자가 옮겨졌다“와 같은 고차원적인 환경 변화를 인식하고 기억을 갱신하는 방향으로 발전할 것이다. 로봇이 진정한 의미의 자율성을 갖기 위해서는, 기억하는 법만큼이나 잊는 법을 배우는 것이 중요하다.</p>
+<h2>7. 참고 자료</h2>
+<ol>
+<li>The Stability-Plasticity Dilemma: How Memory Architectures Are …, https://rewire.it/blog/the-stability-plasticity-dilemma-how-memory-architectures-are-solving-continual-learning/</li>
+<li>Stability–Plasticity Dilemma in Continual Learning - Emergent Mind, https://www.emergentmind.com/topics/stability-plasticity-dilemma</li>
+<li>What is Catastrophic Forgetting? - IBM, https://www.ibm.com/think/topics/catastrophic-forgetting</li>
+<li>Experience Replay for Continual Learning - NeurIPS, http://papers.neurips.cc/paper/8327-experience-replay-for-continual-learning.pdf</li>
+<li>The stability-plasticity dilemma: investigating the continuum from …, https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2013.00504/full</li>
+<li>The stability-plasticity dilemma: investigating the continuum from …, https://pmc.ncbi.nlm.nih.gov/articles/PMC3732997/</li>
+<li>A Continual Learning Perspective of Dynamic SLAM, https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/09837-supp.pdf</li>
+<li>Understanding Catastrophic Forgetting and Remembering in …, https://www.cs.jhu.edu/~alanlab/Pubs21/kaushik2021understanding.pdf</li>
+<li>Continual Learning with Strong Experience Replay - arXiv, https://arxiv.org/html/2305.13622v2</li>
+<li>[1811.11682] Experience Replay for Continual Learning - arXiv, https://arxiv.org/abs/1811.11682</li>
+<li>NICE-SLAM: Neural Implicit Scalable Encoding for SLAM, https://pengsongyou.github.io/media/nice-slam/NICE-SLAM.pdf</li>
+<li>Dynamic RGB-D Visual SLAM with Efficient Keyframe Selection and …, https://www.mdpi.com/2218-6581/14/10/134</li>
+<li>Keyframe Selection for Visual Localization and Mapping Tasks - MDPI, https://www.mdpi.com/2218-6581/12/3/88</li>
+<li>Adaptive Keyframe Selection for Scalable 3D Scene Reconstruction …, https://arxiv.org/html/2510.23928v1</li>
+<li>Submodular Optimization for Keyframe Selection &amp; Usage in SLAM, https://arxiv.org/html/2410.05576v1</li>
+<li>AFRL-RI-RS-TR-2022-146 - DTIC, https://apps.dtic.mil/sti/pdfs/AD1183861.pdf</li>
+<li>Splat, Track &amp; Map 3D Gaussians for Dense RGB-D SLAM, https://mobuk.tistory.com/m/154</li>
+<li>Region sampling NeRF-SLAM based on Kolmogorov-Arnold network, https://journals.plos.org/plosone/article/figures?id=10.1371/journal.pone.0325024</li>
+<li>Region sampling NeRF-SLAM based on Kolmogorov-Arnold network, https://www.researchgate.net/publication/392129207_Region_sampling_NeRF-SLAM_based_on_Kolmogorov-Arnold_network</li>
+<li>MEIL-NeRF: Memory-Efficient Incremental Learning of Neural …, https://ieeexplore.ieee.org/iel8/6287639/10820123/11029250.pdf</li>
+<li>MEIL-NeRF: Memory-Efficient Incremental Learning of Neural … - arXiv, https://arxiv.org/pdf/2212.08328</li>
+<li>Memory-Efficient Incremental Learning of Neural Radiance Fields, https://www.researchgate.net/publication/392577607_MEIL-NeRF_Memory-Efficient_Incremental_Learning_of_Neural_Radiance_Fields</li>
+<li>MEIL-NeRF: Memory-Efficient Incremental Learning of Neural … - arXiv, https://arxiv.org/abs/2212.08328</li>
+<li>Incremental Multi-Scene Modeling via Continual Neural Graphics …, https://arxiv.org/html/2411.19903v4</li>
+<li>Incremental Multi-Scene Modeling via Continual Neural Graphics …, https://bmva-archive.org.uk/bmvc/2025/assets/papers/Paper_630/paper.pdf</li>
+<li>Efficient Reinforcement Learning using Improved Prior Modeling, https://espace.etsmtl.ca/id/eprint/3735/1/Agarwal_Pranav.pdf</li>
+<li>ICLR 2020 - Bird’s-eye views of conference proceedings, https://www.confviews.com/iclr2020/</li>
+<li>Instant Continual Learning of Neural Radiance Fields - ResearchGate, https://www.researchgate.net/publication/376827284_Instant_Continual_Learning_of_Neural_Radiance_Fields</li>
+<li>Instant Continual Learning of Neural Radiance Fields, https://openaccess.thecvf.com/content/ICCV2023W/VCL/papers/Po_Instant_Continual_Learning_of_Neural_Radiance_Fields_ICCVW_2023_paper.pdf</li>
+<li>Meta-Continual Learning of Neural Fields - OpenReview, https://openreview.net/forum?id=OCpxDSn0G4</li>
+<li>UNcertainty-Filtered Incremental Knowledge Distillation for Neural …, https://www.researchgate.net/publication/385506092_UNIKD_UNcertainty-Filtered_Incremental_Knowledge_Distillation_for_Neural_Implicit_Representation</li>
+<li>Gaussian Splatting SLAM: Real-Time Dense 3D Reconstruction with …, https://www.researchgate.net/publication/396821117_Gaussian_Splatting_SLAM_Real-Time_Dense_3D_Reconstruction_with_Photorealistic_Rendering</li>
+<li>High-Fidelity SLAM Using Gaussian Splatting with Rendering …, <a href="https://darko-project.eu/wp-content/uploads/papers/2024/High-Fidelity%20SLAM%20Using%20Gaussian%20Splatting%20with%20Rendering-Guided%20Densification%20and%20Regularized%20Optimization.pdf">https://darko-project.eu/wp-content/uploads/papers/2024/High-Fidelity%20SLAM%20Using%20Gaussian%20Splatting%20with%20Rendering-Guided%20Densification%20and%20Regularized%20Optimization.pdf</a></li>
+<li>High-Fidelity SLAM Using Gaussian Splatting with Rendering … - arXiv, https://arxiv.org/html/2403.12535v1</li>
+<li>High-Fidelity SLAM Using Gaussian Splatting with Rendering …, https://ieeexplore.ieee.org/iel8/10801246/10801290/10802373.pdf</li>
+<li>High-Fidelity SLAM Using Gaussian Splatting with Rendering …, https://www.researchgate.net/publication/387423241_High-Fidelity_SLAM_Using_Gaussian_Splatting_with_Rendering-Guided_Densification_and_Regularized_Optimization</li>
+<li>SplaTAM.pdf, https://spla-tam.github.io/assets/SplaTAM.pdf</li>
+<li>GI-SLAM: Gaussian-Inertial SLAM - arXiv, https://arxiv.org/html/2503.18275v1</li>
+<li>Gaussian Splatting LiDAR Odometry and Mapping - CVF Open Access, https://www.openaccess.thecvf.com/content/ICCV2025/papers/Giacomini_Splat-LOAM_Gaussian_Splatting_LiDAR_Odometry_and_Mapping_ICCV_2025_paper.pdf</li>
+<li>Kolmogorov-Arnold Networks (KAN): Alternative to Multi-Layer …, https://www.digitalocean.com/community/tutorials/kolmogorov-arnold-networks-kan-revolutionizing-deep-learning</li>
+<li>Exploring Kolmogorov–Arnold Network Expansions in Vision … - MDPI, https://www.mdpi.com/2227-7390/13/18/2988</li>
+<li>KAC: Kolmogorov-Arnold Classifier for Continual Learning, https://mftp.mmcheng.net/Papers/25CVPR_KAC.pdf</li>
+<li>Catastrophic Forgetting in Kolmogorov-Arnold Networks - arXiv, https://arxiv.org/html/2511.12828v1</li>
+<li>A Continual Learning Perspective of Dynamic SLAM, https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/09837.pdf</li>
+<li>A Continual Learning Perspective of Dynamic SLAM - arXiv, https://arxiv.org/html/2407.13338v1</li>
+<li>A Continual Learning Perspective of Dynamic SLAM - ResearchGate, https://www.researchgate.net/publication/385328761_Learn_to_Memorize_and_to_Forget_A_Continual_Learning_Perspective_of_Dynamic_SLAM</li>
+<li>Variational Bayes Gaussian Splatting - arXiv, https://arxiv.org/html/2410.03592v1</li>
+<li>(PDF) Variational Bayes Gaussian Splatting - ResearchGate, https://www.researchgate.net/publication/384680700_Variational_Bayes_Gaussian_Splatting/download</li>
+<li>Variational Bayes Gaussian Splatting - OpenReview, <a href="https://openreview.net/forum?id=Z4499q83Td&amp;referrer=%5Bthe+profile+of+Christopher+Buckley%5D(/profile?id%3D~Christopher_Buckley1)">https://openreview.net/forum?id=Z4499q83Td&amp;referrer=%5Bthe%20profile%20of%20Christopher%20Buckley%5D(%2Fprofile%3Fid%3D~Christopher_Buckley1)</a></li>
+</ol>
 
             </article>
             <footer>

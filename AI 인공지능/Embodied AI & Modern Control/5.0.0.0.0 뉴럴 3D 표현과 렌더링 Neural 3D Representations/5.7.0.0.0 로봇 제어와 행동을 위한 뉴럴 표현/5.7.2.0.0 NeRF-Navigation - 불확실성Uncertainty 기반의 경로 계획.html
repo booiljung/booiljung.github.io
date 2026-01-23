@@ -140,6 +140,176 @@
             </header>
             <article>
                 <h1>5.7.2 NeRF-Navigation: 불확실성(Uncertainty) 기반의 경로 계획</h1>
+<h2>1.  서론: 신경 방사장(NeRF) 기반 로봇 내비게이션의 패러다임 전환과 불확실성의 본질</h2>
+<p>로봇 공학, 특히 자율 주행 시스템과 무인 항공기(UAV)의 경로 계획(Path Planning) 분야에서 환경에 대한 표현(Representation) 방식은 시스템의 성능과 안전성을 결정짓는 가장 근본적인 요소이다. 지난 수십 년간 로봇 내비게이션은 점유 격자 지도(Occupancy Grid Map), 복셀(Voxel) 지도, 포인트 클라우드(Point Cloud), 그리고 부호 거리 함수(Signed Distance Function, SDF)와 같은 명시적(Explicit)이거나 고전적인 기하학적 표현 방식에 의존해 왔다. 이러한 방식들은 물리적 공간의 점유 여부를 이진법적(Binary) 혹은 확률적(Probabilistic)으로 명확히 구분할 수 있다는 장점이 있으나, 메모리 효율성의 한계와 이산화(Discretization) 과정에서 발생하는 정보 손실, 그리고 텍스처 정보의 부재라는 단점을 안고 있었다.</p>
+<p>2020년 등장한 신경 방사장(Neural Radiance Fields, NeRF)은 이러한 고전적 접근법에 파괴적인 혁신을 가져왔다. 3차원 공간을 연속적인 함수 <span class="math math-inline">F_\Theta(\mathbf{x}, \mathbf{d}) \rightarrow (\mathbf{c}, \sigma)</span>로 모델링하는 암시적 신경 표현(Implicit Neural Representation) 방식은 사진과 같은 고해상도의 렌더링 성능(Photorealism)을 제공하면서도, 기하학적 형상을 매우 적은 용량의 신경망 파라미터 내에 압축적으로 저장할 수 있는 가능성을 열었다. 이는 로봇이 단순히 장애물을 피하는 수준을 넘어, 시각적 랜드마크를 활용한 정밀한 자기 위치 추정(Localization)과 인간 수준의 장면 이해(Scene Understanding)를 수행할 수 있게 함을 시사한다.</p>
+<p>그러나 로봇 내비게이션, 특히 안전이 최우선시되는 경로 계획의 관점에서 NeRF는 치명적인 “블랙박스(Black Box)” 특성을 내포하고 있다. 신경망이 예측한 밀도(Density, <span class="math math-inline">\sigma</span>)는 기하학적 점유(Occupancy)와 높은 상관관계를 가지지만, 이것이 물리적인 “충돌 확률(Collision Probability)“과 수학적으로 등가인 것은 아니다. 또한, 학습 데이터가 희소한 영역(Sparse views)이나 텍스처가 없는 영역(Textureless regions), 또는 반사(Reflection)가 심한 표면에서 NeRF는 기하학적 구조를 잘못 추론하거나 실제로는 존재하지 않는 ‘유령(Floater)’ 아티팩트를 생성하는 경향이 있다. 이러한 기하학적 오류는 로봇이 장애물을 자유 공간으로 오인하여 충돌하거나, 반대로 자유 공간을 장애물로 인식하여 경로를 찾지 못하는(Path blockage) 치명적인 실패로 이어질 수 있다.</p>
+<p>따라서 NeRF를 실세계의 로봇 내비게이션, 특히 경로 계획에 통합하기 위해서는 단순한 기하학적 복원을 넘어 **불확실성 정량화(Uncertainty Quantification, UQ)**가 필수불가결한 선결 과제가 된다. 불확실성 기반의 경로 계획(Uncertainty-Aware Path Planning)은 로봇이 환경에 대해 “아는 것(Known)“과 “모르는 것(Unknown)“을 구분하게 함으로써, 신뢰도가 높은 영역으로 경로를 생성하거나(Exploitation), 불확실성이 높은 영역을 능동적으로 탐사하여 지도의 완성도를 높이는(Exploration) 고도의 지능적 행동을 가능하게 한다.</p>
+<p>본 절에서는 NeRF 및 최근 급부상하고 있는 3D Gaussian Splatting(3DGS) 기반의 내비게이션 시스템에서 불확실성을 수학적으로 모델링하고, 이를 기반으로 안전하고 효율적인 경로를 계획하는 방법론을 심층적으로 분석한다. 특히 2023년부터 2025년 사이에 비약적으로 발전한 베이지안(Bayesian) 접근법, 피셔 정보(Fisher Information) 기반의 능동적 탐사 전략, 그리고 푸아송 점 과정(Poisson Point Process)에 기반한 엄밀한 충돌 확률 유도 이론을 중심으로, 차세대 신경망 기반 내비게이션의 이론적 토대와 실용적 구현 전략을 포괄적으로 다룬다.</p>
+<h2>2.  신경 방사장의 확률적 해석과 불확실성 분해</h2>
+<p>NeRF를 안전한 경로 계획에 활용하기 위해서는 먼저 신경망의 출력값에 내재된 불확실성을 통계적으로 정의하고 분해해야 한다. 로봇 공학 및 딥러닝 문헌에서 불확실성은 크게 **데이터 불확실성(Aleatoric Uncertainty)**과 **모델 불확실성(Epistemic Uncertainty)**으로 구분되며, 이 두 가지는 경로 계획 전략 수립에 있어 서로 다른 함의를 가진다.</p>
+<h3>2.1  불확실성의 이원적 분류와 내비게이션적 함의</h3>
+<table><thead><tr><th><strong>불확실성 유형</strong></th><th><strong>정의 (Definition)</strong></th><th><strong>발생 원인 (Source)</strong></th><th><strong>경로 계획 시 대응 전략</strong></th></tr></thead><tbody>
+<tr><td><strong>Aleatoric Uncertainty</strong> (데이터 불확실성)</td><td>데이터 자체에 내재된, 줄일 수 없는 잡음</td><td>센서 노이즈, 모션 블러, 동적 객체, 복잡한 텍스처, 조명 변화</td><td>해당 영역을 <strong>회피(Avoidance)</strong>. 더 많은 데이터를 수집해도 해결되지 않으므로 위험 영역으로 간주해야 함.</td></tr>
+<tr><td><strong>Epistemic Uncertainty</strong> (모델 불확실성)</td><td>지식의 부재로 인한, 줄일 수 있는 불확실성</td><td>학습 데이터 부족(Sparse views), 관측되지 않은 영역(Occlusion), 모델 용량 부족</td><td>해당 영역을 <strong>탐사(Exploration)</strong>. 추가 관측을 통해 불확실성을 낮추고 지도를 확장해야 함.</td></tr>
+</tbody></table>
+<p>안전한 경로 계획을 위해서는 이 두 불확실성을 명확히 분리해야 한다. 예를 들어, 투명한 유리창이나 거울은 Aleatoric Uncertainty가 높은 영역으로, 로봇이 아무리 가까이 가서 관측해도 깊이 값을 확정하기 어려울 수 있다. 반면, 단순히 가보지 않아서 정보가 없는 방(Unvisited Room)은 Epistemic Uncertainty가 높은 영역이며, 로봇이 다가가서 관측하면 지도의 품질이 향상된다.</p>
+<h3>2.2  확률적 볼륨 렌더링(Probabilistic Volume Rendering)의 수학적 정식화</h3>
+<p>표준 NeRF의 볼륨 렌더링 방정식은 결정론적(Deterministic)이다. 광선(Ray) <span class="math math-inline">\mathbf{r}(t) = \mathbf{o} + t\mathbf{d}</span>를 따라 샘플링된 점들의 색상 <span class="math math-inline">\mathbf{c}_i</span>와 밀도 <span class="math math-inline">\sigma_i</span>를 적분하여 픽셀 색상 <span class="math math-inline">\hat{C}(\mathbf{r})</span>을 합성한다.<br />
+<span class="math math-display">
+\hat{C}(\mathbf{r}) = \sum_{i=1}^{N} T_i (1 - \exp(-\sigma_i \delta_i)) \mathbf{c}_i
+</span><br />
+여기서 <span class="math math-inline">T_i = \exp(-\sum_{j=1}^{i-1} \sigma_j \delta_j)</span>는 투과율(Transmittance)이다. 그러나 불확실성을 고려하기 위해 <strong>Stochastic NeRF</strong>나 <strong>ActiveNeRF</strong>와 같은 연구들은 각 샘플 포인트의 밀도와 색상을 확률 변수(Random Variable)로 모델링한다.</p>
+<p>가장 일반적인 접근법은 각 샘플 포인트 <span class="math math-inline">i</span>에서의 방사(Radiance)가 평균 <span class="math math-inline">\mu_i</span>와 분산 <span class="math math-inline">\beta_i^2</span>을 가지는 가우시안 분포 <span class="math math-inline">\mathcal{N}(\mu_i, \beta_i^2)</span>를 따른다고 가정하는 것이다. 이때 렌더링된 픽셀의 색상 분포 역시 가우시안 분포의 선형 결합으로 근사할 수 있다. 볼륨 렌더링 가중치 <span class="math math-inline">w_i = T_i (1 - \exp(-\sigma_i \delta_i))</span>를 사용하면, 렌더링된 픽셀의 불확실성(분산) <span class="math math-inline">\mathcal{B}^2(\mathbf{r})</span>은 다음과 같이 유도된다:<br />
+<span class="math math-display">
+\mathcal{B}^2(\mathbf{r}) \approx \sum_{i=1}^{N} w_i^2 \beta_i^2 + \sum_{i=1}^{N} \sum_{j \neq i} w_i w_j \text{Cov}(\mathbf{c}_i, \mathbf{c}_j)
+</span><br />
+대부분의 연구에서는 계산의 복잡성을 줄이기 위해 샘플 간의 공분산(Covariance)을 0으로 가정(독립성 가정)하여 첫 번째 항만을 사용하거나, 밀도 자체의 불확실성을 추가로 고려하여 식을 확장한다. 이렇게 계산된 픽셀 단위의 불확실성 <span class="math math-inline">\mathcal{B}^2(\mathbf{r})</span>은 로봇이 바라보는 뷰의 신뢰도를 나타내는 척도가 되며, 경로 계획 비용 함수(Cost Function)의 불확실성 페널티 항(Penalty Term)으로 직접 통합된다. 이는 로봇이 시각적으로 신뢰할 수 없는 경로(예: 연기나 강한 반사가 있는 구역)를 회피하도록 유도한다.</p>
+<h2>3.  충돌 확률의 엄밀한 유도: 밀도장(Density Field)에서 점유 확률(Occupancy Probability)로</h2>
+<p>NeRF가 예측하는 볼륨 밀도(Volume Density) <span class="math math-inline">\sigma(\mathbf{x})</span>는 0에서 무한대까지의 값을 가지는 연속적인 스칼라 필드이다. 전통적인 경로 계획 알고리즘들은 “점유됨(1)” 또는 “비점유됨(0)“과 같은 이산적인 상태를 요구하므로, NeRF의 밀도를 내비게이션에 적합한 충돌 확률(Collision Probability)로 변환하는 엄밀한 수학적 과정이 필요하다. 2022년에서 2024년 사이 발표된 주요 연구들(Adamkiewicz et al., CATNIPS 등)은 이를 위해 <strong>푸아송 점 과정(Poisson Point Process, PPP)</strong> 이론을 도입하여 NeRF의 기하학적 해석을 재정립하였다.</p>
+<h3>3.1  푸아송 점 과정(PPP) 기반의 충돌 모델링 이론</h3>
+<p>CATNIPS(Collision Avoidance Through Neural Implicit Probabilistic Scenes) 연구는 NeRF의 밀도 함수 <span class="math math-inline">\sigma(\mathbf{x})</span>를 공간상에 분포하는 입자(Particle)들의 강도(Intensity) 함수 <span class="math math-inline">\lambda(\mathbf{x})</span>와 수학적으로 등가로 해석한다. 이 해석에 따르면, 공간 내의 장애물은 무수히 많은 미세 입자들의 구름으로 표현되며, 밀도가 높은 곳일수록 입자가 존재할 확률이 높아진다.</p>
+<p>로봇의 기하학적 형상을 3차원 공간상의 부피 <span class="math math-inline">\mathcal{B} \subset \mathbb{R}^3</span>라고 정의할 때, 이 부피 내에 입자가 <strong>하나라도 존재할 확률</strong>, 즉 로봇이 장애물과 충돌할 확률 <span class="math math-inline">P_{\text{collision}}(\mathcal{B})</span>는 PPP의 공허 확률(Void Probability) 성질을 이용하여 유도된다. PPP에서 특정 영역 <span class="math math-inline">\mathcal{B}</span> 내에 입자가 <span class="math math-inline">k</span>개 존재할 확률은 푸아송 분포를 따른다:<br />
+<span class="math math-display">
+P(N(\mathcal{B}) = k) = \frac{\Lambda(\mathcal{B})^k e^{-\Lambda(\mathcal{B})}}{k!}
+</span><br />
+여기서 <span class="math math-inline">\Lambda(\mathcal{B}) = \int_{\mathbf{x} \in \mathcal{B}} \lambda(\mathbf{x}) d\mathbf{x}</span>는 해당 부피 내의 기대 입자 수(Expected Number of Particles)이다. NeRF의 밀도 <span class="math math-inline">\sigma(\mathbf{x})</span>를 강도 함수 <span class="math math-inline">\lambda(\mathbf{x})</span>로 대입하면, 부피 <span class="math math-inline">\mathcal{B}</span> 내에 입자가 하나도 없을 확률(무충돌 확률, Safety Probability)은 <span class="math math-inline">k=0</span>일 때이다:<br />
+<span class="math math-display">
+P_{\text{safe}}(\mathcal{B}) = P(N(\mathcal{B}) = 0) = e^{-\Lambda(\mathcal{B})} = \exp\left( - \int_{\mathbf{x} \in \mathcal{B}} \sigma(\mathbf{x}) d\mathbf{x} \right)
+</span><br />
+따라서, 로봇의 충돌 확률 <span class="math math-inline">P_{\text{collision}}</span>은 다음과 같이 도출된다:<br />
+<span class="math math-display">
+P_{\text{collision}}(\mathcal{B}) = 1 - P_{\text{safe}}(\mathcal{B}) = 1 - \exp\left( - \int_{\mathbf{x} \in \mathcal{B}} \sigma(\mathbf{x}) d\mathbf{x} \right)
+</span><br />
+이 수식은 NeRF 기반 내비게이션에서 매우 중요한 의미를 갖는다. 기존의 방식들이 단순히 밀도 값에 임의의 임계값(Threshold)을 적용하여(<span class="math math-inline">\sigma(\mathbf{x}) &gt; \tau</span>이면 충돌) 이진 맵을 생성했던 것과 달리, 이 공식은 로봇의 부피와 밀도 분포를 모두 고려한 연속적이고 미분 가능한 충돌 확률을 제공한다. 이는 최적화 기반 경로 계획(Optimization-based Path Planning)에서 경사 하강법(Gradient Descent)을 통해 충돌 확률을 직접 최소화하는 궤적을 생성할 수 있게 한다.</p>
+<h3>3.2  PURR (Probabilistically Unsafe Robot Region)를 이용한 공간 제약</h3>
+<p>실시간 경로 계획을 위해서는 매 스텝마다 위 적분식을 계산하는 것은 계산 비용이 너무 높다. 이를 해결하기 위해 **PURR(Probabilistically Unsafe Robot Region)**라는 개념이 도입되었다. PURR는 사용자 정의 허용 충돌 확률 <span class="math math-inline">\delta</span>에 대해, 충돌 확률이 <span class="math math-inline">\delta</span>를 초과하는 모든 로봇 설정 공간(Configuration Space)의 집합으로 정의된다.<br />
+<span class="math math-display">
+\text{PURR}_\delta = \{ \mathbf{q} \in \mathcal{C} \mid P_{\text{collision}}(\mathcal{B}(\mathbf{q})) &gt; \delta \}
+</span><br />
+이를 로그 부등식으로 변환하면, 로봇이 안전하기 위한 조건은 다음과 같이 간소화된다:<br />
+<span class="math math-display">
+\int_{\mathcal{B}(\mathbf{q})} \sigma(\mathbf{x}) d\mathbf{x} \le -\ln(1-\delta)
+</span><br />
+즉, 로봇 부피 내의 누적 밀도(Integrated Density)가 <span class="math math-inline">-\ln(1-\delta)</span> 이하가 되도록 경로를 계획하면, 확률적으로 <span class="math math-inline">\delta</span> 수준의 안전성을 보장할 수 있다. RRT*나 TrajOpt와 같은 경로 계획 알고리즘은 이 조건을 제약 조건(Constraint)으로 사용하여, NeRF를 명시적인 메쉬(Mesh)로 변환하는 과정(Marching Cubes 등) 없이도 안전한 경로를 직접 탐색할 수 있다. 이는 복잡한 형상의 장애물이 있는 환경에서 특히 유리하며, 메쉬 변환 과정에서 발생하는 기하학적 정보 손실을 방지한다.</p>
+<h2>4.  최신 불확실성 정량화 기법의 비교 분석</h2>
+<p>경로 계획에 필요한 불확실성 맵(Uncertainty Map)을 생성하는 방법론은 계산 효율성(Real-time Performance)과 추정 정확도(Estimation Quality) 사이의 트레이드오프를 가진다. 2023년부터 2025년 사이의 연구 동향은 계산 비용이 높은 앙상블(Ensemble) 방식에서, 경량화된 베이지안 근사(Bayesian Approximation) 및 피셔 정보(Fisher Information) 기반 방식으로 빠르게 이동하고 있다.</p>
+<h3>4.1  앙상블 접근법 (Deep Ensemble Methods)</h3>
+<p>가장 직관적이고 널리 사용되었던 초기 접근법이다. 여러 개의 NeRF 모델(예: 5~10개)을 서로 다른 초기화(Random Initialization) 상태에서 독립적으로 학습시키고, 그 예측값들의 분산을 불확실성으로 간주한다.<br />
+<span class="math math-display">
+\text{Uncertainty}_{\text{Ensemble}}(\mathbf{r}) \approx \frac{1}{M} \sum_{m=1}^{M} (\hat{C}_m(\mathbf{r}) - \bar{C}(\mathbf{r}))^2
+</span></p>
+<ul>
+<li><strong>장점:</strong> 구현이 간단하며, 별도의 복잡한 수식 유도 없이도 데이터 불확실성과 모델 불확실성을 모두 잘 포착한다. 특히 OOD(Out-of-Distribution) 데이터 감지 능력이 뛰어나다.</li>
+<li><strong>단점:</strong> <span class="math math-inline">M</span>개의 네트워크를 학습하고 렌더링해야 하므로 메모리와 연산 비용이 <span class="math math-inline">M</span>배로 증가한다. 실시간 내비게이션이나 모바일 로봇 환경에서는 적용하기 매우 어렵다.</li>
+</ul>
+<h3>4.2  베이지안 라플라스 근사 (Bayesian Laplace Approximation)</h3>
+<p><strong>Bayes’ Rays</strong> 와 같은 연구는 앙상블의 비용 문제를 해결하기 위해, 이미 학습된 단일 NeRF 모델에 대해 사후 학습(Post-hoc) 방식으로 불확실성을 추정한다. 라플라스 근사를 사용하여 파라미터 <span class="math math-inline">\theta</span>의 사후 분포(Posterior)를 최빈값(Mode) <span class="math math-inline">\theta^*</span> 주변의 가우시안 분포로 근사한다.<br />
+<span class="math math-display">
+p(\theta | \mathcal{D}) \approx \mathcal{N}(\theta^*, (\mathbf{H} + \lambda \mathbf{I})^{-1})
+</span><br />
+여기서 <span class="math math-inline">\mathbf{H}</span>는 손실 함수의 헤시안(Hessian) 행렬이다. 수백만 개의 파라미터를 가진 NeRF의 전체 헤시안을 역행렬 연산하는 것은 불가능하므로, 실제 구현에서는 **대각 근사(Diagonal Approximation)**나 **피셔 정보 행렬(Fisher Information Matrix, FIM)**을 사용하여 계산을 단순화한다. 이 방식은 재학습 없이 기존 NeRF 모델에 즉시 적용할 수 있어(Plug-and-Play), 2024년 이후 로봇 내비게이션 분야에서 표준적인 불확실성 추정 도구로 자리 잡고 있다.</p>
+<h3>4.3  증거적 딥러닝 (Evidential Deep Learning, EDL)</h3>
+<p>최신 연구(2025년 동향)에서는 <strong>Evidential Deep Learning</strong> 이론을 NeRF에 접목하여, 단일 전방향 패스(Single Forward Pass)만으로 불확실성을 추정하는 시도가 이루어지고 있다. EDL은 신경망이 예측값뿐만 아니라 그 예측의 “증거(Evidence)” 양, 즉 집중도(Concentration) 파라미터를 함께 출력하도록 설계된다.</p>
+<p>주로 Normal-Inverse-Gamma (NIG) 분포를 가정하여, 깊이(Depth)와 색상(Color)에 대한 불확실성을 동시에 추정한다.<br />
+<span class="math math-display">
+p(\mu, \sigma^2 | \gamma, \nu, \alpha, \beta) = \text{NIG}(\gamma, \nu, \alpha, \beta)
+</span><br />
+이 방식은 데이터가 충분한 영역(낮은 불확실성)과 부족한 영역(높은 Epistemic Uncertainty)을 명확히 구분할 수 있어, 능동적 탐사(Active Exploration)를 위한 정보 이득 계산에 매우 효율적이다. 특히 모델 불확실성을 명시적으로 출력하기 때문에, 로봇이 “내가 무엇을 모르는지“를 인지하는 데 탁월하다.</p>
+<h3>4.4  피셔 정보 기반 접근 (Fisher Information-based Approach)</h3>
+<p><strong>FisherRF</strong> 는 렌더링 과정 없이 파라미터 공간에서의 정보량만을 계산하여 불확실성을 추정한다. 이는 픽셀 단위 렌더링이 필요 없어 계산 속도가 획기적으로 빠르다. 뷰 <span class="math math-inline">v</span>에 대한 정보 이득은 해당 뷰에서의 자코비안 <span class="math math-inline">\mathbf{J}_v</span>와 현재 정보 행렬 <span class="math math-inline">\mathbf{H}</span>를 이용하여 계산된다.<br />
+<span class="math math-display">
+\mathcal{I}(v) = \text{tr}(\mathbf{J}_v^\top \mathbf{J}_v \mathbf{H}^{-1})
+</span><br />
+이 방식은 수백 개의 후보 뷰를 실시간으로 평가해야 하는 Next-Best-View 계획 문제에서 압도적인 효율성을 보여준다.</p>
+<hr />
+<h2>5.  능동적 탐사 및 뷰 계획 (Active Exploration &amp; Next-Best-View Planning)</h2>
+<p>불확실성 기반 내비게이션의 궁극적인 목표는 단순히 주어진 지도를 사용하는 것이 아니라, 지도의 불확실성을 최소화하는 경로를 스스로 계획하는 **능동적 매핑(Active Mapping)**이다. 이를 위해 로봇은 현재 위치에서 정보 이득(Information Gain)이 최대화되는 다음 뷰(Next-Best-View, NBV)를 선택해야 한다.</p>
+<h3>5.1  정보 이득(Information Gain)과 엔트로피 최소화</h3>
+<p>정보 이론적 관점에서 최적의 탐사 뷰 <span class="math math-inline">v^*</span>는 관측 후 전체 지도 <span class="math math-inline">\mathcal{M}</span>의 엔트로피(불확실성) 감소량, 즉 상호 의존성(Mutual Information)이 최대가 되는 지점이다. 이를 수식으로 표현하면 다음과 같다 :<br />
+<span class="math math-display">
+v^* = \arg\max_{v \in \mathcal{V}} IG(Z_v, \mathcal{M}) = \arg\max_{v} \left( H(\mathcal{M}) - H(\mathcal{M} | Z_v) \right)
+</span><br />
+여기서 <span class="math math-inline">H(\mathcal{M})</span>은 현재 맵의 엔트로피, <span class="math math-inline">H(\mathcal{M} | Z_v)</span>는 뷰 <span class="math math-inline">v</span>에서 예상되는 관측값 <span class="math math-inline">Z_v</span>를 얻었을 때의 조건부 엔트로피이다. <strong>ActiveNeRF</strong> 와 <strong>Neural Visibility Field (NVF)</strong> 는 NeRF가 예측하지 못한 영역(Unobserved regions)이나 불확실성이 높은 영역(High Variance)을 타겟팅하여 엔트로피가 높은 곳을 우선적으로 탐사하도록 설계되었다. 특히 NVF는 “가시성(Visibility)” 자체를 별도의 필드로 학습하여, 현재 뷰에서 보이지 않는 영역(Occluded)에 대한 불확실성을 더 정확하게 모델링한다.</p>
+<h3>5.2  프론티어 기반 탐사와의 하이브리드 전략</h3>
+<p>순수한 정보 이론적 접근은 전체 공간에 대한 엔트로피를 계산해야 하므로 계산 비용이 높을 수 있다. 따라서 실용적인 시스템에서는 전통적인 **프론티어 기반 탐사(Frontier-based Exploration)**와 정보 이론을 결합한다.</p>
+<ol>
+<li>점유 지도(Occupancy Grid)나 복셀 맵에서 ’미지 영역’과 ’자유 영역’의 경계인 **프론티어(Frontier)**들을 1차 후보로 추출한다.</li>
+<li>추출된 프론티어 후보들에 대해 NeRF 또는 FisherRF 기반의 **정보 이득(Information Gain)**을 계산한다.</li>
+<li>이동 비용(Cost)과 정보 이득(Utility)을 결합한 목적 함수를 최적화하여 최종 목표점을 선정한다.</li>
+</ol>
+<p><span class="math math-display">
+U(p) = \alpha \cdot \text{IG}(p) - \beta \cdot \text{Cost}(p)
+</span></p>
+<p>이러한 하이브리드 방식은 광역적인 탐색(Global Exploration)은 프론티어가 담당하고, 국소적인 정밀 재구성(Local Reconstruction)은 NeRF의 불확실성이 담당하게 하여 탐사 효율을 극대화한다.</p>
+<hr />
+<h2>6.  차세대 기술: 3D Gaussian Splatting (3DGS) 기반 내비게이션</h2>
+<p>2024년 하반기부터 2025년에 이르러, NeRF의 느린 렌더링 및 학습 속도 문제를 근본적으로 해결하기 위해 **3D Gaussian Splatting (3DGS)**이 로봇 내비게이션의 주류 기술로 부상하고 있다. 3DGS는 공간을 명시적인 3D 가우시안 타원체(Ellipsoid)들의 집합으로 표현하므로, NeRF보다 불확실성 모델링과 지도 수정이 훨씬 직관적이고 빠르다.</p>
+<h3>6.1  3DGS에서의 불확실성 모델링 (GauSS-MI, POp-GS)</h3>
+<p>3DGS 기반 내비게이션에서는 각 가우시안 프리미티브(Primitive) 자체가 불확실성 정보를 담도록 확장된다. <strong>ActiveGS</strong>나 <strong>ActiveGAMER</strong>와 같은 시스템은 가우시안의 투명도(Opacity), 크기(Scale), 그리고 해당 가우시안이 관측된 뷰의 수(View Count)와 각도 등을 기반으로 <strong>신뢰도(Confidence) 맵</strong>을 실시간으로 생성한다.</p>
+<p>특히 <strong>GauSS-MI</strong> (Gaussian Splatting Shannon Mutual Information)와 <strong>POp-GS</strong> (P-Optimality Gaussian Splatting) 연구는 3DGS의 파라미터(위치, 회전, 크기, 색상)에 대한 피셔 정보(Fisher Information)를 유도하여, 어떤 뷰에서 가우시안들을 관측해야 지도의 불확실성이 가장 빠르게 감소하는지를 수학적으로 정립하였다.</p>
+<p>3DGS의 픽셀 단위 불확실성 <span class="math math-inline">\Sigma_{C}(u)</span>는 기하학적 불확실성과 외관(Appearance) 불확실성의 합으로 분해될 수 있으며, 자코비안 <span class="math math-inline">\mathbf{J}_u</span>를 이용해 다음과 같이 근사된다:<br />
+<span class="math math-display">
+\Sigma_C(u) \approx \mathbf{J}_u^g \Sigma_g (\mathbf{J}_u^g)^\top + \mathbf{J}_u^a \Sigma_a (\mathbf{J}_u^a)^\top
+</span><br />
+이 식을 통해 렌더링 과정에서 불확실성을 실시간으로 전파(Propagate)하고 시각화할 수 있다.</p>
+<h3>6.2  3DGS 기반 실시간 충돌 회피</h3>
+<p>3DGS는 명시적인 타원체 집합이므로, 로봇과의 충돌 검사가 NeRF의 볼륨 적분보다 훨씬 빠르게 수행된다. 가우시안의 공분산 행렬 <span class="math math-inline">\Sigma</span>를 이용하여 로봇의 바운딩 박스(Bounding Box)와의 교차 여부를 확률적으로 판단하는 알고리즘들이 개발되었으며, 이는 수백 Hz의 속도로 작동하여 고속 드론 비행과 같은 동적인 환경에서도 안전한 회피 기동을 가능하게 한다. 가우시안의 <span class="math math-inline">\sigma</span>-bound(예: <span class="math math-inline">3\sigma</span>)를 충돌 경계로 설정하면 통계적으로 99.7% 이상의 신뢰 구간에서 안전성을 보장할 수 있다.</p>
+<hr />
+<h2>7.  비교 분석 및 구현 전략</h2>
+<p>NeRF 및 3DGS 기반 불확실성 경로 계획 시스템을 실제 로봇에 구현할 때 고려해야 할 주요 알고리즘들의 특성을 비교 분석하면 다음과 같다.</p>
+<p><strong>표 5.7.2-1 주요 불확실성 기반 매핑 및 경로 계획 방법론 비교</strong></p>
+<table><thead><tr><th><strong>방법론 (Methodology)</strong></th><th><strong>기반 기술</strong></th><th><strong>불확실성 추정 원리</strong></th><th><strong>장점 (Pros)</strong></th><th><strong>단점 (Cons)</strong></th><th><strong>주요 적용 분야</strong></th></tr></thead><tbody>
+<tr><td><strong>Ensemble NeRF</strong></td><td>NeRF</td><td>다중 모델 간 분산 (Variance)</td><td>구현 용이, 높은 신뢰성, OOD 감지 우수</td><td>극도로 높은 연산/메모리 비용 (N배)</td><td>오프라인 정밀 분석, 고성능 서버 기반 계획</td></tr>
+<tr><td><strong>ActiveNeRF / NVF</strong></td><td>NeRF</td><td>Latent Variance 학습 (EDL 유사)</td><td>단일 모델로 추정 가능, End-to-End 학습</td><td>학습 불안정성, 새로운 환경 적응 시 튜닝 필요</td><td>실내 자율 탐사, 로봇 청소기 등 제한된 환경</td></tr>
+<tr><td><strong>Bayes’ Rays</strong></td><td>NeRF</td><td>Laplace Approximation (Post-hoc)</td><td>재학습 불필요, 기존 모델 호환성 최상</td><td>근사 오차 존재, 정적 환경에 한정</td><td>사전 학습된 맵을 이용한 경로 계획</td></tr>
+<tr><td><strong>FisherRF</strong></td><td>NeRF/3DGS</td><td>Fisher Information Matrix (FIM)</td><td>렌더링 불필요, 압도적인 뷰 평가 속도</td><td>헤시안 근사의 한계, 대규모 메모리 사용</td><td>고속 드론 탐사, 대규모 환경 매핑</td></tr>
+<tr><td><strong>ActiveGS / GauSS-MI</strong></td><td>3DGS</td><td>Gaussian Confidence &amp; FIM</td><td>실시간 렌더링/학습, 명시적 충돌 검사</td><td>초기 연구 단계, 대규모 맵 관리(VRAM) 이슈</td><td>차세대 실시간 로봇 내비게이션, 동적 환경</td></tr>
+</tbody></table>
+<p><strong>구현 시 핵심 고려사항:</strong></p>
+<ol>
+<li><strong>실시간성 (Real-time Constraints):</strong> 드론과 같이 빠른 이동과 즉각적인 반응이 필요한 경우, 3DGS 기반의 ActiveGS나 FisherRF와 같이 추론 속도가 빠른 방법을 채택해야 한다. 반면, 매니퓰레이터와 같이 정적인 상태에서 정밀한 조작이 필요한 경우 Ensemble이나 ActiveNeRF 방식이 더 높은 안전성을 제공할 수 있다.</li>
+<li><strong>메모리 제약 (Memory Constraints):</strong> 모바일 로봇의 엣지 디바이스(Edge Device)에서는 수백만 개의 파라미터에 대한 헤시안 행렬을 저장하는 것이 불가능하다. 따라서 대각 근사(Diagonal Approximation)나 이동 평균(Moving Average) 기법을 사용하여 메모리 사용량을 최소화해야 한다.</li>
+<li><strong>계층적 맵핑 (Hierarchical Mapping):</strong> NeRF나 3DGS 단독으로는 광역 경로 계획(Global Planning)이 비효율적일 수 있다. 따라서 전체적인 구조는 <strong>Voxel Map</strong>이나 <strong>Topological Graph</strong>로 관리하고, 로봇 주변의 국소적 정밀 회피(Local Avoidance)와 관심 물체 재구성에만 신경망 모델의 불확실성을 활용하는 **하이브리드 계층 구조(Hierarchical Hybrid Architecture)**가 가장 실용적인 해법이다.</li>
+</ol>
+<h2>8.  결론 및 향후 전망</h2>
+<p>NeRF와 3DGS를 활용한 불확실성 기반 경로 계획 기술은 로봇이 환경을 단순히 “보는(Seeing)” 차원을 넘어, 자신의 인식이 얼마나 “정확한지(Understanding Confidence)“를 메타인지적으로 판단하고 행동하게 만든다는 점에서 로봇 지능의 중요한 도약을 의미한다. 이는 미지의 환경에서의 자율 탐사, 정밀한 3D 재구성, 그리고 고도의 안전성이 요구되는 인간-로봇 협업 환경에서 필수적인 핵심 기술이다.</p>
+<p>특히 <strong>CATNIPS</strong>에서 제안된 확률론적 충돌 모델링 이론과 <strong>FisherRF/ActiveGS</strong>에서 제시된 정보 이론적 뷰 계획 방법론은 이 분야의 이론적, 실용적 성숙도를 크게 높였다. 향후 연구는 동적 환경(Dynamic Environments)에서의 실시간 불확실성 추정 및 갱신, 대규모 환경에서의 평생 학습(Lifelong Learning)과 맵 관리(Map Maintenance), 그리고 대규모 언어 모델(LLM)과 결합하여 “의미론적 불확실성(Semantic Uncertainty)“까지 고려하는 내비게이션으로 확장될 것으로 전망된다. 예를 들어, 로봇이 “주방이 확실하지 않으니 더 확인해보자“와 같은 고차원적인 추론을 수행하며 경로를 계획하는 미래가 다가오고 있다.</p>
+<h2>9. 참고 자료</h2>
+<ol>
+<li>Path Planning for Virtual Tours with Neural Radiance Fields, https://upcommons.upc.edu/bitstreams/23a4323d-fdfd-463d-8a0a-22feb86ebc62/download</li>
+<li>Vision-Only Robot Navigation in a Neural Radiance World, https://pculbertson.github.io/assets/pdf/adamkiewicz2021.pdf</li>
+<li>Neural Visibility Field for Uncertainty-Driven Active Mapping, https://openaccess.thecvf.com/content/CVPR2024/papers/Xue_Neural_Visibility_Field_for_Uncertainty-Driven_Active_Mapping_CVPR_2024_paper.pdf</li>
+<li>ActiveNeRF: Learning where to See with Uncertainty Estimation, https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136930225.pdf</li>
+<li>Uncertainty-Aware Path Planning for Navigation on Road Networks …, http://www.ipb.uni-bonn.de/pdfs/nardi2019icra-uapp.pdf</li>
+<li>Uncertainty-Informed Active Perception for Open Vocabulary Object …, https://www.ipb.uni-bonn.de/wp-content/papercite-data/pdf/bajpaio2025ecmr.pdf</li>
+<li>Leveraging Neural Radiance Fields for Uncertainty-Aware Visual …, https://www.microsoft.com/en-us/research/wp-content/uploads/2024/04/2310.06984.pdf</li>
+<li>Accurate Uncertainty Estimation and Decomposition in Ensemble …, http://papers.neurips.cc/paper/9097-accurate-uncertainty-estimation-and-decomposition-in-ensemble-learning.pdf</li>
+<li>Hierarchical Active Exploration of Radiance Field with Epistemic …, https://arxiv.org/html/2601.07242v1</li>
+<li>Leveraging Neural Radiance Fields for Uncertainty-Aware Visual …, https://www.researchgate.net/publication/382976528_Leveraging_Neural_Radiance_Fields_for_Uncertainty-Aware_Visual_Localization</li>
+<li>Volume Rendering Digest (for NeRF), https://www.cs.unc.edu/~ronisen/teaching/fall_2022/pdf_lectures/volume_rendering_nerf.pdf</li>
+<li>Incremental Optimal View Selection for Large-Scale NeRFs - arXiv, https://arxiv.org/html/2407.18611v2</li>
+<li>Active 3D Reconstruction using Neural Implicit Surface Uncertainty, https://arxiv.org/html/2405.02568v1</li>
+<li>Vision-Only Robot Navigation in a Neural Radiance World, https://ieeexplore.ieee.org/ielaam/7083369/9647862/9712211-aam.pdf</li>
+<li>CATNIPS: Collision Avoidance Through Neural Implicit Probabilistic …, https://msl.stanford.edu/papers/chen_catnips_2023.pdf</li>
+<li>Collision Avoidance Through Neural Implicit Probabilistic Scenes, https://www.researchgate.net/publication/368842661_CATNIPS_Collision_Avoidance_Through_Neural_Implicit_Probabilistic_Scenes</li>
+<li>Collision Avoidance Through Neural Implicit Probabilistic Scenes, https://arxiv.org/pdf/2302.12931</li>
+<li>Collision Avoidance Through Neural Implicit Probabilistic Scenes, https://arxiv.org/html/2302.12931v3</li>
+<li>View-Dependent Uncertainty Estimation of 3D Gaussian Splatting, https://arxiv.org/html/2504.07370v1</li>
+<li>Bayes’ Rays: Uncertainty Quantification for Neural Radiance Fields, https://openaccess.thecvf.com/content/CVPR2024/papers/Goli_Bayes_Rays_Uncertainty_Quantification_for_Neural_Radiance_Fields_CVPR_2024_paper.pdf</li>
+<li>FisherRF: Active View Selection and Mapping with Radiance Fields …, https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/02130.pdf</li>
+<li>FisherRF: Active View Selection and Mapping with Radiance Fields …, https://www.researchgate.net/publication/385274812_FisherRF_Active_View_Selection_and_Mapping_with_Radiance_Fields_Using_Fisher_Information</li>
+<li>GauSS-MI: Gaussian Splatting Shannon Mutual Information for …, https://www.roboticsproceedings.org/rss21/p030.pdf</li>
+<li>ActiveGS: Active Scene Reconstruction Using Gaussian Splatting, https://www.ipb.uni-bonn.de/wp-content/papercite-data/pdf/jin2025ral.pdf</li>
+<li>ActiveGAMER: Active GAussian Mapping through Efficient Rendering, https://openaccess.thecvf.com/content/CVPR2025/papers/Chen_ActiveGAMER_Active_GAussian_Mapping_through_Efficient_Rendering_CVPR_2025_paper.pdf</li>
+<li>POp-GS: Next Best View in 3D-Gaussian Splatting with P-Optimality, https://www.researchgate.net/publication/389749152_POp-GS_Next_Best_View_in_3D-Gaussian_Splatting_with_P-Optimality</li>
+<li>POp-GS: Next Best View in 3D-Gaussian Splatting with P-Optimality, https://openaccess.thecvf.com/content/CVPR2025/papers/Wilson_POp-GS_Next_Best_View_in_3D-Gaussian_Splatting_with_P-Optimality_CVPR_2025_paper.pdf</li>
+<li>Active View Selection via Object-aware Uncertainty Estimation in …, https://arxiv.org/html/2511.09397v1</li>
+<li>Modeling Uncertainty in 3D Gaussian Splatting through Continuous …, https://assets.amazon.science/6d/68/261793724784bdd8dc9629dd6a07/modeling-uncertainty-in-3d-gaussian-splatting-through-continuous-semantic-splatting.pdf</li>
+<li>Renderable Neural Radiance Map for Visual Navigation, https://openaccess.thecvf.com/content/CVPR2023/papers/Kwon_Renderable_Neural_Radiance_Map_for_Visual_Navigation_CVPR_2023_paper.pdf</li>
+<li>Uncertainty-aware Active Learning of NeRF-based Object Models …, https://www.researchgate.net/publication/387423304_ActNeRF_Uncertainty-aware_Active_Learning_of_NeRF-based_Object_Models_for_Robot_Manipulators_using_Visual_and_Re-orientation_Actions</li>
+<li>NaviNeRF++: Towards Interpretable 3D Reconstruction via …, https://ieeexplore.ieee.org/iel8/34/4359286/11144453.pdf</li>
+</ol>
 
             </article>
             <footer>

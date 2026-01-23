@@ -140,6 +140,188 @@
             </header>
             <article>
                 <h1>5.5.1 희소(Sparse) 특징점 SLAM에서 밀도(Dense) 뉴럴 SLAM으로</h1>
+<h2>1.  서론: 로봇 인지와 공간 표현의 패러다임 전환</h2>
+<p>지난 수십 년간 로봇 공학(Robotics)과 컴퓨터 비전(Computer Vision) 분야에서 시각적 동시적 위치 추정 및 지도 작성(Visual SLAM: Simultaneous Localization and Mapping) 기술은 자율 주행 자동차, 무인 항공기(UAV), 그리고 가정용 로봇 청소기에 이르기까지 다양한 플랫폼의 자율성을 뒷받침하는 핵심 기술로 자리 잡았다. 초기의 SLAM 시스템은 제한된 하드웨어 자원 내에서 실시간성을 확보해야 한다는 절대적인 제약 조건 아래 발전해왔으며, 이는 필연적으로 환경 정보를 선별적으로 취득하고 저장하는 ‘희소성(Sparsity)’ 중심의 접근 방식을 낳았다.</p>
+<p>희소 특징점 SLAM(Sparse Feature-based SLAM)은 이미지 내에서 코너(Corner)나 엣지(Edge)와 같이 기하학적으로 뚜렷하고 반복적으로 검출 가능한 소수의 특징점만을 추출하여 3차원 공간상의 점(Point)으로 표현하는 방식이다. ORB-SLAM 1과 같은 알고리즘은 이러한 희소한 정보만으로도 놀라운 수준의 위치 추정 정확도와 루프 클로징(Loop Closing) 성능을 보여주며, 로봇이 “내가 지도상 어디에 위치하는가?“라는 자기 위치화(Self-Localization) 문제를 해결하는 데 있어 사실상의 표준(De facto standard)으로 군림해왔다.</p>
+<p>그러나 로봇 기술의 적용 범위가 단순한 주행(Navigation)을 넘어, 환경과 직접 상호작용하고 물체를 조작(Manipulation)하는 ’Embodied AI(신체화된 인공지능)’의 영역으로 확장됨에 따라, 희소 지도가 가진 구조적 한계는 명확해졌다.3 희소 지도는 로봇에게 ’갈 수 있는 길’을 알려줄 수는 있었지만, ’피해야 할 장애물의 구체적인 형상’이나 ’잡아야 할 물체의 표면 정보’는 제공하지 못했다. 점들의 구름(Sparse Point Cloud) 사이에는 거대한 정보의 공백이 존재했고, 이는 로봇이 물리적 세계와 온전히 접속하는 것을 방해하는 장벽이었다.1</p>
+<p>최근 딥러닝 기술의 비약적인 발전, 특히 신경망을 이용한 암시적 표현(Implicit Neural Representation)과 Neural Radiance Fields (NeRF)의 등장은 SLAM 분야에 ’밀도(Dense)’라는 새로운 화두를 던졌다. 이는 환경을 이산적인 점들의 집합이 아닌, 신경망이 학습한 연속적인 함수(Continuous Function)로 재정의하는 혁명적인 변화이다.7 이제 지도는 단순히 데이터를 저장하는 데이터베이스가 아니라, 공간의 임의 좌표에 대해 색상(Color), 밀도(Density), 거리(Distance), 그리고 의미(Semantics)를 질의(Query)하고 응답할 수 있는 지능형 함수로 진화하고 있다.</p>
+<p>본 장에서는 희소 특징점 SLAM이 지배하던 과거의 기술적 토대와 그 한계를 심층적으로 분석하고, 이를 극복하기 위해 등장한 초기 밀도 SLAM(DTAM 등)의 시도와 좌절을 거쳐, 현재의 뉴럴 SLAM으로 이어지는 기술적 여정을 상세히 기술한다. 특히, 로봇이 환경을 ‘보는’ 것에서 ‘이해하고 만지는’ 단계로 나아가는 과정에서 왜 밀도 높은 표현이 필수적인지, 그리고 최신 알고리즘들이 메모리 효율성과 실시간성이라는 두 마리 토끼를 잡기 위해 어떠한 수학적, 공학적 기법을 도입하고 있는지 논의한다.</p>
+<hr />
+<h2>2.  희소 특징점 SLAM의 시대: 효율성의 미학과 그 그림자</h2>
+<h3>2.1  희소성(Sparsity)의 철학: ORB-SLAM의 성공 요인</h3>
+<p>2000년대 초반부터 2010년대 중반까지 SLAM 연구의 주류는 단연코 특징점 기반의 방법론이었다. 당시의 모바일 프로세서는 현재와 비교할 수 없을 정도로 연산 능력이 낮았으며, 메모리 용량 또한 제한적이었다. 이러한 환경에서 초당 30프레임(30fps)으로 쏟아지는 영상 데이터를 실시간으로 처리하기 위해서는 이미지의 모든 픽셀을 다루는 것이 불가능했다. 따라서 ’정보의 압축’은 선택이 아닌 필수였으며, 그 정점에 있는 것이 바로 ORB-SLAM 시리즈(v1, v2, v3)이다.2</p>
+<p>ORB-SLAM의 핵심 철학은 “가장 중요한 정보만 남기고 나머지는 버린다“는 것이다. 구체적으로 다음과 같은 기술적 요소들이 유기적으로 결합하여 작동한다.</p>
+<ol>
+<li><strong>ORB 특징점 추출 (ORB Feature Extraction):</strong> ORB-SLAM은 이미지 전체 픽셀을 사용하는 대신, FAST(Features from Accelerated Segment Test) 코너 검출기와 BRIEF(Binary Robust Independent Elementary Features) 기술자를 결합한 ORB(Oriented FAST and Rotated BRIEF) 특징점을 사용한다.10 FAST는 픽셀 주변의 밝기 차이를 이용하여 매우 빠른 속도로 코너를 검출하며, BRIEF는 이 코너의 주변 패턴을 이진 벡터(Binary Vector)로 기술하여 매칭 속도를 극대화한다. 무엇보다 ORB는 회전 불변성(Rotation Invariance)과 스케일 불변성(Scale Invariance)을 갖추고 있어, 로봇이 회전하거나 물체에 가까이 다가가더라도 안정적인 추적을 가능하게 했다.</li>
+<li><strong>공변성 그래프와 번들 조정 (Covisibility Graph &amp; Bundle Adjustment):</strong> 추출된 특징점들은 단순한 점으로 남지 않고, 서로 다른 키프레임(Keyframe) 간의 관계를 정의하는 공변성 그래프로 연결된다. 그리고 <strong>번들 조정(Bundle Adjustment)</strong> 이라는 비선형 최적화 과정을 거치게 된다. 번들 조정은 카메라의 포즈(Extrinsics)와 3차원 랜드마크(Map Points)의 위치를 미지수로 놓고, 3차원 점이 영상 평면에 재투영(Reprojection)되었을 때 실제 관측된 픽셀 좌표와의 오차(Reprojection Error)를 최소화하는 과정이다.11 희소한 점들만을 다루기 때문에 최적화 문제의 크기(Jacobian Matrix의 크기)가 작게 유지되어 실시간 수행이 가능했다.</li>
+<li><strong>루프 클로징과 장소 인식 (Loop Closing &amp; Place Recognition):</strong> 로봇이 이전에 방문했던 장소를 다시 방문했을 때, 누적된 위치 오차(Drift)를 한 번에 보정하는 루프 클로징 기능은 SLAM 시스템의 장기적 안정성을 보장하는 핵심이다. ORB-SLAM은 Bag-of-Words(BoW) 방식을 통해 이미지를 시각적 단어들의 히스토그램으로 변환하여 효율적으로 장소를 검색한다.1 이는 거대한 지도를 생성할 때 발생하는 드리프트 문제를 해결하며, 전역적인 지도 일관성(Global Consistency)을 유지하는 데 결정적인 역할을 했다.</li>
+</ol>
+<h3>2.2  희소 지도의 구조적 한계: 상호작용의 부재</h3>
+<p>희소 특징점 SLAM은 로봇의 <strong>자기 위치 추정(Self-Localization)</strong> 문제에 대해서는 탁월한 성과를 보였다. 로봇은 자신이 출발지로부터 얼마나 이동했는지, 현재 방의 어느 지점에 있는지를 정확히 파악할 수 있었다. 그러나 로봇이 환경과 물리적으로 상호작용해야 하는 <strong>조작(Manipulation)</strong> 및 <strong>계획(Planning)</strong> 단계에서는 치명적인 한계를 드러냈다.1</p>
+<p>첫째, 물리적 정보의 부재와 충돌 위험이다.</p>
+<p>희소 지도는 공간을 이산적인 ’점’들의 집합으로 표현한다. 예를 들어, 로봇 앞에 있는 평평한 책상을 ORB-SLAM으로 바라보면, 책상의 표면은 텅 비어 있고 오직 책상 모서리나 텍스처가 있는 부분에만 몇 개의 점이 허공에 떠 있는 형태로 나타난다. 로봇의 경로 계획 알고리즘 입장에서 점과 점 사이의 공간은 ’비어 있는 공간(Free Space)’으로 해석될 수밖에 없다. 따라서 로봇 팔이 물체를 잡으려(Grasping) 이동할 때, 실제로는 존재하는 책상 표면이나 물체의 몸통을 인식하지 못하고 충돌하는 사고가 발생할 수 있다.12 충돌 회피(Collision Avoidance)를 위해서는 물체의 경계면(Boundary)에 대한 명확한 정보가 필수적이지만, 희소 지도는 이를 제공하지 않는다.</p>
+<p>둘째, 텍스처 의존성(Texture Dependency)에 의한 불안정성이다.</p>
+<p>특징점 기반 방식은 기본적으로 이미지 내의 밝기 변화가 급격한 지점(Gradient)을 찾는다. 따라서 카펫, 복잡한 무늬의 포스터, 식물과 같이 텍스처가 풍부한 환경에서는 매우 잘 동작한다. 그러나 현대적인 건축물의 복도, 흰 벽, 유리창, 또는 금속 표면과 같이 텍스처가 없거나(Texture-less) 반복적인 패턴이 있는 영역에서는 특징점을 추출하지 못해 추적 실패(Tracking Lost)가 빈번하게 발생한다.6 이는 로봇이 매끄러운 표면의 가전제품을 조작하거나, 텍스처가 없는 클린룸(Clean Room) 환경에서 작업해야 할 때 치명적인 약점이 된다.</p>
+<p>셋째, 내비게이션과 의미론적 이해의 제약이다.</p>
+<p>로봇의 경로 계획(Path Planning)을 위해서는 장애물이 있는 곳(Occupied)과 없는 곳(Free Space)을 명확히 구분하는 점유 격자 지도(Occupancy Grid Map)가 필요하다. 희소 특징점 지도는 장애물의 존재 여부를 확률적으로 표현하기 어렵고, 장애물의 형상을 온전히 채우지 못하므로 안전한 경로 생성을 위해서는 별도의 2D 레이저 스캐너(LiDAR)를 장착하거나, 희소 점들을 억지로 팽창(Inflation)시키는 후처리 과정을 거쳐야 하는 이중 부담이 존재한다.1 또한, 점 하나하나에 의미론적 라벨(예: “이 점은 컵의 일부이다”)을 부여하는 것은 가능하지만, 점들 사이의 연결성이 없기 때문에 “컵“이라는 객체 전체의 형상을 인식하거나 분할(Segmentation)하는 데에는 한계가 있다.</p>
+<p>결국, 희소 SLAM은 “로봇이 어디에 있는가“는 해결했지만, “로봇 주변이 어떻게 생겼으며 어떻게 상호작용해야 하는가“에 대한 답은 불완전하게 남겨두었다. 이는 로봇이 단순히 이동하는 기계(Mobile Robot)에서 작업을 수행하는 에이전트(Manipulator/Humanoid)로 진화함에 따라 반드시 해결해야 할 과제가 되었다.</p>
+<h2>3.  고전적 밀도 SLAM의 도전: DTAM과 픽셀 단위의 혁명</h2>
+<p>희소 정보의 한계를 극복하기 위해 컴퓨터 비전 연구자들은 이미지의 특징점이 아닌, 모든 픽셀을 사용하여 지도를 생성하는 <strong>밀도(Dense) SLAM</strong>으로 눈을 돌렸다. 이 과정에서 등장한 기념비적인 시스템이 바로 2011년 발표된 <strong>DTAM (Dense Tracking and Mapping)</strong> 17이다. DTAM은 희소 SLAM이 간과했던 픽셀의 광도 정보를 직접 활용함으로써, 밀도 높은 3D 재구성의 가능성을 처음으로 입증했다.</p>
+<h3>3.1  직접법(Direct Method)과 광도 오차 최소화</h3>
+<p>DTAM의 가장 큰 특징은 특징점 추출 및 매칭 단계를 완전히 배제했다는 점이다. 대신, <strong>직접법(Direct Method)</strong> 이라는 접근 방식을 통해 연속된 프레임 간의 픽셀 밝기 차이(Photometric Error)를 최소화하는 방식으로 카메라의 위치를 추적하고 지도를 생성한다.18</p>
+<p>DTAM의 에너지 함수(Energy Function)는 다음과 같이 데이터 항(Data Term)과 정규화 항(Regularization Term)으로 구성된다.<br />
+<span class="math math-display">
+E(\mathbf{d}) = \int_{\Omega} \rho(\mathbf{I}_r(\mathbf{u}) - \mathbf{I}_k(\pi(\mathbf{K} \mathbf{T} \pi^{-1}(\mathbf{u}, d(\mathbf{u}))))) d\mathbf{u} + \lambda \int_{\Omega} \|\nabla d(\mathbf{u})\| d\mathbf{u}
+</span></p>
+<ul>
+<li><strong>데이터 항 (첫 번째 항):</strong> 참조 키프레임(<span class="math math-inline">\mathbf{I}_r</span>)의 픽셀 <span class="math math-inline">\mathbf{u}</span>를 역투영하고, 현재 추정된 깊이 <span class="math math-inline">d(\mathbf{u})</span>와 카메라 포즈 <span class="math math-inline">\mathbf{T}</span>를 이용해 현재 프레임(<span class="math math-inline">\mathbf{I}_k</span>)에 재투영했을 때, 두 픽셀 간의 밝기 차이를 계산한다. 이는 특징점이 없는 픽셀, 즉 엣지가 없는 부드러운 표면이나 곡면에서도 그라디언트(Gradient) 정보를 활용하여 정보를 추출할 수 있게 해 준다. 텍스처가 부족한 영역에서도 밀도 있는 깊이 추정이 가능한 이유가 바로 여기에 있다.</li>
+<li><strong>정규화 항 (두 번째 항):</strong> <strong>총 변분(Total Variation)</strong> 정규화를 사용하여 깊이 지도(Depth Map)의 급격한 변화를 억제하면서도 물체의 경계(Edge)는 보존한다. 이를 통해 노이즈가 제거된 매끄러운 표면(Smooth Surface)을 생성할 수 있다.</li>
+</ul>
+<h3>3.2  비용 볼륨(Cost Volume)과 메모리의 딜레마</h3>
+<p>DTAM은 각 픽셀에 대해 가능한 모든 깊이(Depth) 값(역 깊이, Inverse Depth)에 대한 비용을 계산하여 3차원 <strong>비용 볼륨(Cost Volume)</strong> 을 구성했다. 이 비용 볼륨 내에서 전역 최적화(Global Optimization)를 수행하여 가장 적합한 깊이 값을 찾아낸다. 그 결과, 당시로서는 놀라울 정도로 정밀한 3D 표면 재구성이 가능해졌으며, 증강 현실(AR) 등에서 가상 물체가 실제 책상 위에서 튀는 물리적 상호작용이 가능한 수준의 지도를 보여주었다.17</p>
+<p>그러나 DTAM은 밀도 SLAM의 가능성을 보여줌과 동시에, 고전적인 방식이 왜 확장에 실패했는지를 명확히 보여주었다. 가장 큰 문제는 <strong>메모리 효율성</strong>과 <strong>연산 비용</strong>의 장벽이었다.8</p>
+<ul>
+<li><strong>입방체적 메모리 증가 (Cubic Memory Growth):</strong> DTAM이나 이후 등장한 KinectFusion 20과 같은 TSDF(Truncated Signed Distance Function) 기반 방식은 공간을 <strong>복셀(Voxel)</strong> 그리드로 분할하여 저장했다. 공간의 해상도를 2배 높이려 하면(<span class="math math-inline">N \to 2N</span>), 필요한 메모리 사용량은 <span class="math math-inline">2^3=8</span>배로 증가한다. 넓은 환경을 정밀하게 표현하기 위해서는 기하급수적인 메모리가 필요하여, 방 하나 크기 이상의 공간을 실시간으로 처리하기에는 하드웨어적 한계가 뚜렷했다.7 당시의 고급 GPU로도 책상 위나 작은 방 정도를 복원하는 것이 한계였다.</li>
+<li><strong>실시간성의 한계와 하드웨어 의존성:</strong> 모든 픽셀에 대해 밀도 있는 최적화를 수행하는 것은 막대한 병렬 연산 능력을 요구했다. DTAM은 당시 최신 GPU(NVIDIA GTX 등)를 100% 활용해야만 실시간 성능을 낼 수 있었다. 이는 배터리로 구동되는 모바일 로봇이나 드론, AR 글래스와 같은 엣지 디바이스(Edge Device)에 적용하기에는 전력 소모와 발열 면에서 치명적인 제약이었다.22</li>
+</ul>
+<p>이러한 한계로 인해 로봇 공학계는 다시금 “희소 SLAM의 효율성“과 “밀도 SLAM의 표현력” 사이에서 타협점을 찾아야 했다. <strong>LSD-SLAM (Large-Scale Direct SLAM)</strong> 6과 같은 <strong>준-밀도(Semi-Dense)</strong> 방식이 제안되었는데, 이는 이미지의 그라디언트가 높은 픽셀들(엣지 주변)에 대해서만 깊이를 추정하는 방식이었다. 하지만 이 역시 완전한 밀도 정보를 제공하지 못한다는 점에서 과도기적인 기술에 머물렀다. 진정한 해결책은 기하학적 계산이 아닌, <strong>신경망(Neural Network)</strong> 이라는 새로운 도구를 통해 찾아왔다.</p>
+<h2>4.  뉴럴 임플리시트 표현: 지도를 함수로 정의하다</h2>
+<p>2020년, 컴퓨터 비전 학회(ECCV)에 발표된 <strong>NeRF (Neural Radiance Fields)</strong> 7는 3D 비전 및 SLAM 분야에 패러다임의 전환을 가져왔다. NeRF는 3차원 공간을 복셀이나 점들의 집합과 같은 <strong>명시적(Explicit) 표현</strong>으로 저장하는 대신, <strong>좌표 기반 신경망(Coordinate-based Neural Network)</strong> 이라는 <strong>암시적(Implicit) 표현</strong>으로 대체할 것을 제안했다.</p>
+<h3>4.1  좌표 기반 신경망 (Coordinate-based Neural Network)의 원리</h3>
+<p>전통적인 지도가 “데이터의 저장소(Container of Data)“였다면, 뉴럴 임플리시트 지도는 “공간에 대한 질문에 답하는 함수(Function answering queries)“이다. 수학적으로 이는 다음과 같이 정의된다.<br />
+<span class="math math-display">
+F_\theta(\mathbf{x}, \mathbf{d}) \rightarrow (\mathbf{c}, \sigma)
+</span><br />
+여기서 다층 퍼셉트론(MLP)으로 구성된 신경망 <span class="math math-inline">F</span>는 공간상의 3차원 좌표 <span class="math math-inline">\mathbf{x}=(x, y, z)</span>와 바라보는 방향 <span class="math math-inline">\mathbf{d}=(\theta, \phi)</span>를 입력으로 받아, 해당 지점의 색상 <span class="math math-inline">\mathbf{c}=(r, g, b)</span>와 부피 밀도(Volume Density) <span class="math math-inline">\sigma</span>를 출력한다.9</p>
+<p>이러한 함수적 접근이 SLAM에 가져온 혁신적인 이점은 다음과 같다.</p>
+<ol>
+<li><strong>연속적 표현 (Continuous Representation)과 무한한 해상도:</strong> 신경망은 이산적인 데이터가 아닌 연속 함수를 근사(Approximate)한다. 따라서 이론상 <strong>무한한 해상도</strong>를 가진다. 이산적인 복셀 그리드(Voxel Grid)는 줌인(Zoom-in)을 하면 계단 현상(Aliasing)이 발생하고 정보가 깨지는 반면, 뉴럴 필드는 아무리 가까이 다가가더라도 부드러운 표면과 디테일을 쿼리할 수 있다.8 이는 <strong>보편 근사 정리(Universal Approximation Theorem)</strong> 29에 기반하여, 충분한 용량의 신경망은 어떠한 연속 함수도 근사할 수 있다는 이론적 배경을 가진다.</li>
+<li><strong>메모리 압축 (Memory Efficiency):</strong> 복잡한 3D 구조를 수백만, 수천만 개의 점이나 복셀로 저장하는 대신, 신경망의 가중치(Weights) 몇 MB 만으로 압축하여 저장할 수 있다. 예를 들어, 수 기가바이트(GB)에 달하는 TSDF 볼륨 데이터를 수 메가바이트(MB) 크기의 MLP 가중치로 대체할 수 있게 되었다. 이는 DTAM이 겪었던 메모리 폭증 문제를 근본적으로 해결할 수 있는 잠재력을 제공했다.31</li>
+<li><strong>전체 파이프라인의 미분 가능성 (Differentiability):</strong> 뉴럴 필드는 렌더링 과정(Volume Rendering)까지 포함하여 전체가 미분 가능(Differentiable)하다. 이는 관측된 이미지의 픽셀 오차로부터 역전파(Backpropagation)를 통해 지도(신경망 가중치)와 카메라 포즈를 동시에, 그리고 유기적으로 최적화할 수 있음을 의미한다.33</li>
+</ol>
+<h3>4.2  SLAM을 위한 암시적 표현의 진화</h3>
+<p>초기 NeRF는 정적인 장면을 학습하는 데 수 시간의 오프라인 학습 시간이 소요되어 SLAM에 직접 적용하기 어려웠다. 하지만 연구자들은 이를 실시간 시스템으로 변환하기 위해 끊임없이 노력했다. 이제 SLAM의 문제는 “점들을 어디에 배치할 것인가(Triangulation)“에서 “신경망을 어떻게 실시간으로 학습시켜 이 공간을 기억하게 할 것인가(Online Training)“로 재정의되었다. 이 과정에서 <strong>iMAP</strong>과 <strong>NICE-SLAM</strong>과 같은 선구적인 연구들이 등장했다.</p>
+<h2>5.  1세대 뉴럴 SLAM: iMAP과 NICE-SLAM의 시도</h2>
+<p>뉴럴 임플리시트 표현을 실시간 SLAM에 적용하려는 첫 번째 시도들은 뉴럴 SLAM의 강력한 잠재력과 동시에 초기 단계의 한계를 명확히 보여주었다.</p>
+<h3>5.1  iMAP: 단일 MLP의 가능성과 한계</h3>
+<p><strong>iMAP (Implicit Mapping and Positioning in Real-Time)</strong> 35은 단일 다층 퍼셉트론(MLP) 하나로 방(Room) 전체의 형상을 표현하려는 대담한 시도였다. iMAP은 RGB-D 카메라로부터 들어오는 깊이(Depth) 및 색상 정보를 사용하여, 렌더링 된 이미지와 실제 이미지 간의 차이를 줄이는 방향으로 단일 MLP를 실시간으로 학습시킨다. 동시에 카메라의 6자유도(6-DoF) 포즈도 함께 최적화한다.</p>
+<ul>
+<li><strong>능동적 샘플링 (Active Sampling):</strong> 전체 이미지를 렌더링하고 학습하는 것은 실시간으로 불가능하므로, iMAP은 정보량이 많은 픽셀(오차가 큰 픽셀)을 선별적으로 샘플링하여 학습 효율을 극대화했다. 이는 인간의 시각 시스템이 정보가 풍부한 곳을 주시하는 것과 유사한 원리이다.36</li>
+<li><strong>성과 - 메모리 효율과 홀 필링(Hole Filling):</strong> iMAP은 매우 적은 메모리(약 1MB 이하의 가중치)만으로 방 전체의 형상을 합리적으로 복원했다. 특히 주목할 점은 관측되지 않은 영역(예: 물체의 뒷면이나 가려진 바닥)을 신경망의 연속성(Continuity)과 보간(Interpolation) 능력으로 자연스럽게 채우는(Hole Filling) 능력을 보여주었다는 점이다. 이는 희소 SLAM이나 기존 밀도 SLAM에서는 보기 힘든 특성으로, 로봇의 경로 계획에 큰 이점을 제공한다.36</li>
+<li><strong>한계 - 파국적 망각 (Catastrophic Forgetting):</strong> 그러나 단일 신경망이 전체 공간을 책임지다 보니 치명적인 문제가 발생했다. 새로운 공간(예: 주방)을 학습할 때 기존에 학습한 공간(예: 거실)의 정보를 잊어버리는 <strong>파국적 망각</strong> 현상이 나타났다.8 또한, 공간이 넓어질수록 단일 MLP의 표현 용량(Capacity) 부족으로 인해 고주파수(High-frequency) 디테일(예: 벽의 텍스처, 책의 글씨)이 뭉개지는(Over-smoothing) 현상이 필연적으로 발생했다.</li>
+</ul>
+<h3>5.2  NICE-SLAM: 계층적 그리드로의 확장</h3>
+<p><strong>NICE-SLAM (Neural Implicit Scalable Encoding for SLAM)</strong> 39은 iMAP의 ‘망각’ 문제와 ‘디테일 부족’ 문제를 해결하기 위해 <strong>계층적 특징 그리드(Hierarchical Feature Grid)</strong> 를 도입했다. 이는 순수한 암시적 표현(MLP only)과 명시적 표현(Grid)을 결합한 하이브리드 접근 방식이다.</p>
+<ul>
+<li><strong>하이브리드 구조의 원리:</strong> NICE-SLAM은 공간을 단일 MLP에 모두 욱여넣는 대신, 3차원 공간을 바둑판처럼 나누어 각 격자점(Voxel corner)에 학습 가능한 <strong>특징 벡터(Feature Vector)</strong> 를 저장했다. MLP는 좌표 값 자체를 입력받는 것이 아니라, 해당 좌표 주변의 격자점에서 보간(Interpolation)된 특징 벡터를 입력받아 색상과 밀도를 출력하는 작은 디코더(Decoder) 역할만 수행한다.39</li>
+<li><strong>지역적 갱신(Local Update)을 통한 망각 방지:</strong> 새로운 공간을 관측할 때 전체 신경망(MLP)을 업데이트하는 것이 아니라, 해당 공간에 해당하는 그리드의 특징 벡터만 수정하면 된다. 이는 서로 다른 공간 간의 간섭을 원천적으로 차단하여 파국적 망각 문제를 해결했다.</li>
+<li><strong>확장성(Scalability)과 디테일:</strong> Coarse, Mid, Fine 레벨의 계층적 그리드를 사용하여 큰 구조와 미세한 디테일을 모두 효율적으로 포착할 수 있었다. 그 결과, NICE-SLAM은 iMAP보다 훨씬 넓은 아파트 규모의 공간에서도 선명한 텍스처와 기하학적 구조를 복원할 수 있었으며, 기존 SLAM 시스템 대비 우수한 추적 성능을 입증했다.39</li>
+<li><strong>남겨진 과제:</strong> 하지만 여전히 3차원 그리드를 사용하므로, 공간이 매우 커지면 메모리 사용량이 입방체(Cubic)로 증가하는 DTAM의 유산이 일부 남아있었다. 비록 순수 밀도 값 대신 특징 벡터를 저장하여 효율을 높였지만, 거대한 실외 환경으로 확장하기에는 여전히 메모리 최적화가 필요했다.7</li>
+</ul>
+<h2>6.  효율성과 정확도의 균형: 차세대 뉴럴 SLAM과 하이브리드 표현</h2>
+<p>NICE-SLAM 이후, 연구의 초점은 “어떻게 하면 메모리를 덜 쓰면서(Sparse), 표현력은 높이고(Dense), 속도는 빠르게(Real-time) 할 것인가?“로 모아졌다. 이를 위해 컴퓨터 그래픽스와 딥러닝의 최신 기법들이 총동원되었으며, 다양한 자료구조와 인코딩 방식이 도입되었다.</p>
+<h3>6.1  해시 그리드(Hash Grid)와 Co-SLAM</h3>
+<p>NVIDIA의 Instant-NGP(Neural Graphics Primitives)에서 영감을 받은 Co-SLAM 35은 해시 테이블(Hash Table) 을 사용하여 3D 그리드를 관리한다.</p>
+<p>대부분의 3차원 공간은 공기(Empty Space)로 채워져 있다는 점에 착안하여, 실제 표면이 존재하는 유의미한 공간에만 메모리를 할당하고, 빈 공간은 무시함으로써 메모리 효율성을 극대화했다. 해시 함수를 통해 3차원 좌표를 1차원 배열로 매핑하여 저장하므로, 거대한 공간에서도 O(1)의 접근 속도를 보장한다. Co-SLAM은 좌표 기반 인코딩(Coordinate Encoding)과 파라메트릭 인코딩(Parametric Encoding)을 결합(Joint Encoding)하여, 실시간 성능(Tracking)과 고정밀 재구성(Mapping)을 동시에 달성했다. 그러나 해시 충돌(Hash Collision)로 인해 서로 다른 위치가 같은 메모리 슬롯을 공유하게 되어 미세한 디테일에서 노이즈(Aliasing)가 발생할 수 있는 단점이 있다.44</p>
+<h3>6.2  평면 분해(Plane Factorization)와 ESLAM</h3>
+<p>ESLAM 44은 3D 공간을 3개의 직교하는 2D 평면(XY, YZ, XZ)으로 투영하여 분해(Factorization)하는 Tri-plane 방식을 택했다. <span class="math math-inline">N \times N \times N</span> 크기의 3차원 복셀을 저장하는 대신, <span class="math math-inline">3 \times N \times N</span> 크기의 2차원 평면 픽셀(feature map)로 압축함으로써, 메모리 증가율을 입방체(<span class="math math-inline">O(N^3)</span>)에서 이차식(<span class="math math-inline">O(N^2)</span>) 으로 획기적으로 낮추었다.</p>
+<p>어떤 3차원 점의 정보를 얻기 위해서는 해당 점을 3개의 평면에 투영하여 얻은 특징들을 합치고(Aggregation), 이를 작은 MLP에 통과시킨다. ESLAM은 대규모 환경에서 메모리 효율성을 크게 개선했으나, 축(Axis)에 정렬되지 않은 복잡한 구조물에서는 렌더링 품질이 다소 떨어지는 ’축 정렬 편향(Axis-aligned bias)’이 발생할 수 있다.8</p>
+<h3>6.3  뉴럴 포인트 클라우드와 Point-SLAM</h3>
+<p>Point-SLAM 46은 다시 ’점(Point)’이라는 기본 단위로 돌아가되, 각 점에 단순한 색상 정보가 아닌 고차원의 신경망 특징(Neural Feature) 을 부여했다.</p>
+<p>입력 이미지의 정보량(Texture, Geometry complexity)에 따라 점의 밀도를 동적으로 조절(Adaptive Densification)하는 전략을 사용한다. 즉, 텍스처가 복잡하고 디테일한 곳에는 많은 점을 배치하고, 단순한 흰 벽이나 바닥에는 적은 점을 배치한다. 이는 희소 특징점 SLAM의 효율성과 뉴럴 SLAM의 연속성을 결합한 시도로, 주어진 메모리 예산 내에서 가장 높은 디테일을 표현하는 데 성공했다.20 점 기반 표현은 표면의 변형이나 동적 객체 처리에 유연하다는 장점도 있다.</p>
+<table><thead><tr><th><strong>시스템</strong></th><th><strong>기반 구조</strong></th><th><strong>메모리 효율성</strong></th><th><strong>대규모 확장성</strong></th><th><strong>디테일 표현</strong></th><th><strong>주요 특징 및 한계</strong></th></tr></thead><tbody>
+<tr><td><strong>iMAP</strong></td><td>단일 MLP</td><td>매우 높음 (가중치만 저장)</td><td>불가능 (망각 현상)</td><td>낮음 (Over-smoothing)</td><td>최초의 실시간 뉴럴 SLAM, 작은 방 규모에 적합</td></tr>
+<tr><td><strong>NICE-SLAM</strong></td><td>계층적 3D 그리드</td><td>낮음 (그리드 크기에 비례)</td><td>가능 (메모리 제한)</td><td>중간</td><td>지역적 갱신으로 망각 해결, 메모리 사용량 많음</td></tr>
+<tr><td><strong>Co-SLAM</strong></td><td>해시 그리드 (Hash Grid)</td><td>높음 (표면만 저장)</td><td>우수</td><td>높음</td><td>빠른 속도, 해시 충돌로 인한 노이즈 가능성</td></tr>
+<tr><td><strong>ESLAM</strong></td><td>2D 평면 분해 (Tri-plane)</td><td>높음 (이차원 압축)</td><td>우수</td><td>높음</td><td>메모리 효율 극대화, 축 정렬 편향 존재</td></tr>
+<tr><td><strong>Point-SLAM</strong></td><td>뉴럴 포인트 클라우드</td><td>매우 높음 (동적 할당)</td><td>우수</td><td>매우 높음</td><td>적응형 밀도 조절, 점 관리 오버헤드 발생</td></tr>
+</tbody></table>
+<hr />
+<h2>7.  행동을 위한 밀도: Embodied AI와 어포던스</h2>
+<p>우리는 왜 기어코 희소 지도를 넘어 밀도 뉴럴 지도로 가려 하는가? 단순히 더 예쁜 지도를 만들기 위함이 아니다. 그 궁극적인 목적은 로봇이 단순히 세상을 ’구경(Observing)’하는 것을 넘어, 세상 속에서 ’행동(Acting)’하게 만들기 위함이다. <strong>Embodied AI (신체화된 인공지능)</strong> 관점에서 밀도 뉴럴 SLAM은 로봇의 <strong>어포던스(Affordance)</strong> 인지를 위한 필수적인 인프라이다.</p>
+<h3>7.1  충돌 회피와 미분 가능한 계획 (Differentiable Planning)</h3>
+<p>희소 지도에서는 로봇 팔이 컵을 잡으려 할 때, 컵의 손잡이와 컵 본체 사이의 공간을 구분하기 어렵다. 점과 점 사이는 비어 있는 것으로 간주되기 때문이다. 반면, 밀도 뉴럴 맵, 특히 <strong>SDF(Signed Distance Function)</strong> 기반의 맵은 공간상의 모든 점에 대해 “물체 표면까지의 최단 거리“를 연속적으로 제공한다.31</p>
+<p>이는 로봇의 모션 계획(Motion Planning)에 혁명을 가져온다. SDF 값은 미분 가능하므로, 로봇의 관절 각도(Joint Angles) 변화에 따른 로봇 팔 표면과 환경 장애물 간의 거리 변화율(Gradient)을 계산할 수 있다. 이를 이용해 충돌 비용 함수(Collision Cost Function)를 정의하고, 역전파(Backpropagation)를 통해 충돌을 회피하는 경로를 실시간으로 최적화(Optimization-based Planning)할 수 있다. 이는 샘플링 기반의 기존 계획 알고리즘(RRT, PRM 등)보다 훨씬 부드럽고 반응성이 뛰어난 동작을 생성한다.33</p>
+<h3>7.2  조작(Manipulation)과 GraspNeRF</h3>
+<p>물체를 잡는 조작(Grasping) 작업에서 밀도 높은 기하학 정보는 필수적이다. 특히 투명한 유리컵이나 반사되는 금속 물체는 기존의 깊이 센서(LiDAR, RGB-D)로는 인식이 불가능하여 ’투명한 구멍’으로 나타나곤 했다.</p>
+<p>GraspNeRF 48와 같은 최신 연구는 NeRF가 반사(Reflection)와 투굴절(Refraction) 특성까지 학습할 수 있다는 점을 이용하여, 투명하거나 반사되는 물체의 형상을 복원하고 6자유도(6-DoF) 파지 포즈(Grasp Pose)를 직접 추론한다. 뉴럴 필드는 물체 표면의 곡률(Curvature)과 법선 벡터(Normal Vector)를 연속적으로 제공하므로, 로봇 그리퍼(Gripper)가 미끄러지지 않고 안정적으로 접촉할 수 있는 최적의 지점을 계산하는 데 강력한 도구가 된다.13</p>
+<h3>7.3  의미론적 이해와 개방형 어휘 내비게이션</h3>
+<p>밀도 뉴럴 SLAM은 기하학적 정보뿐만 아니라 의미론적 정보(Semantics) 를 지도에 함께 ’베이킹(Baking)’할 수 있다.</p>
+<p>CLIP-Fields 47나 SplatMap 6과 같은 접근 방식은 대규모 시각-언어 모델(Vision-Language Model, VLM)인 CLIP이나 DINO의 임베딩 벡터를 3D 공간의 각 좌표에 매핑한다. 이렇게 구축된 지도 위에서 로봇은 “내 빨간색 머그컵 어디 있어?” 또는 “앉을 수 있는 곳으로 가줘“와 같은 자연어 명령을 이해하고 수행할 수 있다. 희소 지도에서는 점 하나하나에 라벨을 붙이더라도 “앉을 수 있는 평평한 표면“과 같은 추상적인 개념(Affordance)을 추론하기 어려웠지만, 밀도 있고 의미론적으로 풍부한 뉴럴 필드에서는 텍스트 쿼리와 공간 정보를 직접 연결하는(Grounding) 것이 가능해진다.3</p>
+<h2>8.  결론: 연속적이고 의미 있는 공간으로의 항해</h2>
+<p>우리는 지금 SLAM 기술의 거대한 전환점에 서 있다. <strong>희소 특징점 SLAM (ORB-SLAM 등)</strong> 은 지난 10년간 제한된 자원 내에서 로봇이 자신의 위치를 파악하는 문제를 효율적으로 해결해주었으며, 로봇 공학 발전의 든든한 초석이 되었다. 그러나 로봇이 인간의 생활 공간 깊숙이 들어와 환경과 물리적으로 접촉하고, 인간의 언어를 이해하며 복잡한 작업을 수행해야 하는 <strong>Embodied AI</strong> 시대로 진입함에 따라, 점(Point)으로 이루어진 지도는 더 이상 충분하지 않게 되었다.</p>
+<p><strong>밀도 뉴럴 SLAM</strong>은 공간을 연속적인 함수로 재정의함으로써 이러한 시대적 요구에 응답하고 있다.</p>
+<ol>
+<li><strong>DTAM</strong>이 쏘아 올린 밀도 지도의 꿈은 <strong>NeRF</strong>와 <strong>Implicit Representation</strong>이라는 강력한 도구를 만나 메모리 효율성과 표현력의 딜레마를 해결해 나가고 있다.</li>
+<li><strong>iMAP</strong>에서 시작된 뉴럴 SLAM은 <strong>NICE-SLAM</strong>, <strong>Co-SLAM</strong>, <strong>ESLAM</strong>, <strong>Point-SLAM</strong>을 거치며 실시간성과 대규모 환경 적응력을 확보했으며, 끊임없이 진화하고 있다.</li>
+<li>이제 지도는 단순한 기하학적 형상을 넘어, 물체의 <strong>의미(Semantics)</strong> 와 <strong>행동 가능성(Affordance)</strong> 을 포함하는 <strong>디지털 트윈(Digital Twin)</strong> 으로 진화하고 있다. 이는 로봇에게 ’눈’을 넘어 ’이해력’을 부여하는 과정이다.</li>
+</ol>
+<p>물론 여전히 해결해야 할 과제들은 남아 있다. 사람이나 반려동물과 같이 동적 객체(Dynamic Objects)가 끊임없이 움직이는 환경에서의 강인함(Robustness) 확보 50, 모바일 기기에서의 전력 소모 최적화, 그리고 한 번도 본 적 없는 환경에 대한 일반화(Generalization) 성능 등은 앞으로 연구되어야 할 핵심 주제들이다. 하지만 분명한 것은, 로봇이 바라보는 세상이 ’희소한 점들의 구름’에서 ’연속적이고 의미 있는 실체’로 변화하고 있다는 사실이다. 이 변화는 로봇이 우리 삶의 공간으로 더 깊숙이, 그리고 더 안전하게 들어오게 하는 핵심 열쇠가 될 것이다.</p>
+<hr />
+<p><strong>표 5.5.1-1: 주요 SLAM 패러다임 비교 요약</strong></p>
+<table><thead><tr><th><strong>구분</strong></th><th><strong>희소 특징점 SLAM (예: ORB-SLAM3)</strong></th><th><strong>고전적 밀도 SLAM (예: DTAM, KinectFusion)</strong></th><th><strong>뉴럴 밀도 SLAM (예: Co-SLAM, Point-SLAM)</strong></th></tr></thead><tbody>
+<tr><td><strong>기본 단위</strong></td><td>특징점 (Keypoints)</td><td>픽셀/복셀 (Pixels/Voxels)</td><td>신경망/하이브리드 그리드 (Neural Implicit)</td></tr>
+<tr><td><strong>장점</strong></td><td>극도로 빠른 속도, 낮은 메모리, 높은 위치 추정 정확도</td><td>정밀한 표면 복원, 물리적 상호작용 가능</td><td>연속적 표현, 메모리 효율적 밀도 지도, 미분 가능성</td></tr>
+<tr><td><strong>단점</strong></td><td>물리적 정보 부족, 텍스처 없는 곳에서 실패</td><td>막대한 메모리 소모 (Cubic Growth), 연산량 과다</td><td>학습 시간(실시간성 도전), 파국적 망각(초기 모델)</td></tr>
+<tr><td><strong>지도 형태</strong></td><td>Sparse Point Cloud</td><td>Dense Mesh / TSDF Volume</td><td>Continuous Function / Neural Field</td></tr>
+<tr><td><strong>주요 응용</strong></td><td>자율 주행, 단순 위치 추적, 드론 비행</td><td>3D 스캐닝, 제한된 공간의 AR</td><td>Embodied AI, 로봇 조작(Manipulation), 의미론적 내비게이션</td></tr>
+<tr><td><strong>Embodied AI 적합성</strong></td><td>낮음 (충돌 회피 및 파지 어려움)</td><td>중간 (형상은 있으나 의미 정보 부족)</td><td>높음 (형상+의미+어포던스 통합 가능)</td></tr>
+</tbody></table>
+<h2>9. 참고 자료</h2>
+<ol>
+<li>Development of a navigation system using Visual SLAM - RUA, https://rua.ua.es/dspace/bitstream/10045/136349/1/Development_of_a_navigation_system_for_underwater_ph_Navarro_Martinez_Javier.pdf</li>
+<li>A review of visual SLAM for robotics: evolution, properties, and future applications - PMC, https://pmc.ncbi.nlm.nih.gov/articles/PMC11056647/</li>
+<li>Semantic Mapping in Indoor Embodied AI - A Survey on Advances, Challenges, and Future Directions | OpenReview, https://openreview.net/forum?id=USgQ38RG6G</li>
+<li>Learning Precise Affordances from Egocentric Videos for Robotic Manipulation - CVF Open Access, https://openaccess.thecvf.com/content/ICCV2025/papers/Li_Learning_Precise_Affordances_from_Egocentric_Videos_for_Robotic_Manipulation_ICCV_2025_paper.pdf</li>
+<li>Questions for SLAM/SfM for Dense 3D Reconstruction (DSO vs ORB, Monofusion etc.) : r/computervision - Reddit, https://www.reddit.com/r/computervision/comments/tb3djw/questions_for_slamsfm_for_dense_3d_reconstruction/</li>
+<li>SplatMAP: Online Dense Monocular SLAM with 3D Gaussian Splatting - arXiv, https://arxiv.org/html/2501.07015v1</li>
+<li>Multi-MLPs Neural Implicit Representation SLAM for Dynamic Environments - IEEE Xplore, https://ieeexplore.ieee.org/iel8/6287639/10820123/10879339.pdf</li>
+<li>Real-Time Dense Visual SLAM with Neural Factor Representation, https://www.mdpi.com/2079-9292/13/16/3332</li>
+<li>Neural implicit representations — The Dan MacKinlay stable of variably-well-consider’d enterprises, https://danmackinlay.name/notebook/nn_implicit_rep.html</li>
+<li>A review of visual SLAM for robotics: evolution, properties, and future applications - Frontiers, https://www.frontiersin.org/journals/robotics-and-ai/articles/10.3389/frobt.2024.1347985/full</li>
+<li>360° Map Establishment and Real-Time Simultaneous Localization and Mapping Based on Equirectangular Projection for Autonomous Driving Vehicles - PMC - PubMed Central, https://pmc.ncbi.nlm.nih.gov/articles/PMC10304965/</li>
+<li>Edinburgh Research Explorer - Sparse-Dense Motion Modelling and Tracking for Manipulation without Prior Object Models, https://www.research.ed.ac.uk/files/263402272/Sparse_Dense_RAUCH_DOA11042022_AFV.pdf</li>
+<li>Detection, Tracking and 3D Modeling of Objects with Sparse RGB-D SLAM and Interactive Perception, https://www.merl.com/publications/docs/TR2019-119.pdf</li>
+<li>SLAM for Visually Impaired People: a Survey - arXiv, https://arxiv.org/html/2212.04745v5</li>
+<li>A Review of Simultaneous Localization and Mapping for the Robotic-Based Nondestructive Evaluation of Infrastructures - MDPI, https://www.mdpi.com/1424-8220/25/3/712</li>
+<li>SLAM navigation and how it impacts robotics - Interlake Mecalux Inc., https://www.interlakemecalux.com/blog/slam-navigation-robotics</li>
+<li>DTAM: Dense tracking and mapping in real-time - ResearchGate, https://www.researchgate.net/publication/221111724_DTAM_Dense_tracking_and_mapping_in_real-time</li>
+<li>[PDF] DTAM: Dense tracking and mapping in real-time | Semantic Scholar, https://www.semanticscholar.org/paper/DTAM%3A-Dense-tracking-and-mapping-in-real-time-Newcombe-Lovegrove/7633c7470819061477433fdae15c64c8b49a758b</li>
+<li>Monocular visual SLAM, visual odometry, and structure from motion methods applied to 3D reconstruction: A comprehensive survey - NIH, https://pmc.ncbi.nlm.nih.gov/articles/PMC11415689/</li>
+<li>RD-SLAM: Real-Time Dense SLAM Using Gaussian Splatting - MDPI, https://www.mdpi.com/2076-3417/14/17/7767</li>
+<li>A Comprehensive Survey of Visual SLAM Algorithms - MDPI, https://www.mdpi.com/2218-6581/11/1/24</li>
+<li>TANDEM: Tracking and Dense Mapping in Real-time using Deep Multi-view Stereo - Proceedings of Machine Learning Research, https://proceedings.mlr.press/v164/koestler22a/koestler22a.pdf</li>
+<li>TANDEM: Tracking and Dense Mapping in Real-time using Deep Multi-view Stereo - arXiv, https://arxiv.org/pdf/2111.07418</li>
+<li>Comparison of Various SLAM Systems for Mobile Robot in an Indoor Environment - arXiv, https://arxiv.org/html/2501.09490v1</li>
+<li>Neural Density-Distance Fields - European Computer Vision Association, https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136920053.pdf</li>
+<li>Papers summary: Neural Fields in Visual Computing and Beyond - Flyps, https://flyps.io/blog/papers-summary-neural-fields-in-visual-computing-and-beyond/</li>
+<li>Coordinate-Based Neural Networks - Emergent Mind, https://www.emergentmind.com/topics/coordinate-based-neural-networks</li>
+<li>Neural Implicit Depth Representation - Emergent Mind, https://www.emergentmind.com/topics/neural-implicit-depth-representation</li>
+<li>Universal approximation theorem - Wikipedia, https://en.wikipedia.org/wiki/Universal_approximation_theorem</li>
+<li>Approximation by neural networks - Stephan Wojtowytsch, https://www.swojtowytsch.com/teaching/689-deep-learning/approximation-by-neural-networks</li>
+<li>PIN-SLAM: LiDAR SLAM Using a Point-Based Implicit Neural Representation for Achieving Global Map Consistency, https://www.ipb.uni-bonn.de/pdfs/pan2024tro.pdf</li>
+<li>SNI-SLAM: Semantic Neural Implicit SLAM - arXiv, https://arxiv.org/html/2311.11016v3</li>
+<li>Neural Joint Space Implicit Signed Distance Functions for Reactive Robot Manipulator Control - IEEE Xplore, https://ieeexplore.ieee.org/document/9976191/</li>
+<li>Neural Grasp Distance Fields for Robot Manipulation - arXiv, https://arxiv.org/pdf/2211.02647</li>
+<li>[PDF] iMAP: Implicit Mapping and Positioning in Real-Time | Semantic Scholar, https://www.semanticscholar.org/paper/iMAP%3A-Implicit-Mapping-and-Positioning-in-Real-Time-Sucar-Liu/3629e0ba2ffb8406d8aba880685f06aa35e3cd7f</li>
+<li>iMAP: Implicit Mapping and Positioning in Real-Time - Edgar Sucar, https://edgarsucar.github.io/iMAP/</li>
+<li>iMAP: Implicit Mapping and Positioning in Real-Time - Neural Fields, https://neuralfields.cs.brown.edu/paper_126.html</li>
+<li>Structerf-SLAM: Neural Implicit Representation SLAM for Structural Environments - University of Huddersfield Research Portal, https://pure.hud.ac.uk/ws/files/81258831/Structerf_SLAM_Neural_Implicit_Representation_SLAM_for_Structural_Environments.pdf</li>
+<li>NICE-SLAM: Neural Implicit Scalable Encoding for … - Songyou Peng, https://pengsongyou.github.io/media/nice-slam/NICE-SLAM.pdf</li>
+<li>NICE-SLAM: Neural Implicit Scalable Encoding for SLAM - Lund University Research Portal, https://portal.research.lu.se/en/publications/nice-slam-neural-implicit-scalable-encoding-for-slam/</li>
+<li>cvg/nice-slam: [CVPR’22] NICE-SLAM: Neural Implicit Scalable Encoding for SLAM - GitHub, https://github.com/cvg/nice-slam</li>
+<li>NICE-SLAM - Songyou Peng, https://pengsongyou.github.io/nice-slam</li>
+<li>Learn to Memorize and to Forget: A Continual Learning Perspective of Dynamic SLAM, https://arxiv.org/html/2407.13338v1</li>
+<li>DVN-SLAM: Dynamic Visual Neural SLAM Based on Local-Global Encoding - arXiv, https://arxiv.org/html/2403.11776v1</li>
+<li>DDN-SLAM: Real-time Dense Dynamic Neural Implicit SLAM - arXiv, https://arxiv.org/html/2401.01545v2</li>
+<li>Dense Neural Point Cloud-based SLAM - CVF Open Access, https://openaccess.thecvf.com/content/ICCV2023/papers/Sandstrom_Point-SLAM_Dense_Neural_Point_Cloud-based_SLAM_ICCV_2023_paper.pdf</li>
+<li>zubair-irshad/Awesome-Implicit-NeRF-Robotics: A comprehensive list of Implicit Representations and NeRF papers relating to Robotics/RL domain, including papers, codes, and related websites - GitHub, https://github.com/zubair-irshad/Awesome-Implicit-NeRF-Robotics</li>
+<li>GraspNeRF: Multiview-based 6-DoF Grasp Detection for Transparent and Specular Objects Using Generalizable NeRF (ICRA 2023) - GitHub, https://github.com/PKU-EPIC/GraspNeRF</li>
+<li>GraspNeRF: Multiview-based 6-DoF Grasp Detection for Transparent and Specular Objects Using Generalizable NeRF - He Wang, https://pku-epic.github.io/GraspNeRF/</li>
+<li>DN-SLAM: A Visual SLAM With ORB Features and NeRF Mapping in Dynamic Environments - IEEE Xplore, https://ieeexplore.ieee.org/document/10376402/</li>
+<li>Real-time comparison of ORB_SLAM3, our system, and Dyna SLAM. - ResearchGate, https://www.researchgate.net/figure/Real-time-comparison-of-ORB-SLAM3-our-system-and-Dyna-SLAM_tbl4_367440712</li>
+<li>DVN-SLAM: Dynamic Visual Neural Slam Based on Local-Global …, https://www.researchgate.net/publication/395221696_DVN-SLAM_Dynamic_Visual_Neural_Slam_Based_on_Local-Global_Encoding</li>
+</ol>
 
             </article>
             <footer>
