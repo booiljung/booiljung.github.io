@@ -140,6 +140,163 @@
             </header>
             <article>
                 <h1>6.5.1 프레임 간 추적과 의미 유지: 로봇이 이동할 때 인식된 객체의 ID와 의미를 유지하는 기술 (Video Object Segmentation).</h1>
+<h3>0.1  서론: 모바일 로봇의 동적 시지각과 연속성</h3>
+<p>모바일 로봇이나 매니퓰레이터가 탑재된 로봇이 복잡한 비정형 환경에서 임무를 수행하기 위해서는 단순히 정지된 장면을 인식하는 것을 넘어, 시간의 흐름에 따라 변화하는 시각 정보 속에서 객체의 정체성(Identity)을 유지하고 그 의미(Semantics)를 지속적으로 추적하는 능력이 필수적이다. 비디오 객체 분할(Video Object Segmentation, VOS)은 이러한 연속적인 시각 인지 과정의 핵심 기술로, 비디오 시퀀스 내의 각 프레임에서 관심 객체를 픽셀 단위로 분리하고, 이를 시간 축을 따라 연결하여 동일한 객체임을 보장하는 기술이다.</p>
+<p>로봇 공학적 관점에서 VOS는 고정된 CCTV에서의 감시 시스템과는 근본적으로 다른 난이도를 가진다. 로봇 자체의 이동(Ego-motion)으로 인해 배경이 지속적으로 변화하며, 급격한 회전이나 가속은 모션 블러(Motion Blur)를 유발하여 객체의 경계를 모호하게 만든다. 또한, 로봇이 물체에 접근하거나 조작하는 과정에서 물체가 로봇 팔이나 다른 장애물에 의해 완전히 가려지는 폐색(Occlusion) 현상이 빈번하게 발생하며, 가려졌던 물체가 다시 나타났을 때(Reappearance) 이를 새로운 물체가 아닌 기존에 추적하던 물체로 재인식(Re-identification)해야 하는 재식별 문제가 수반된다.</p>
+<p>최근 딥러닝 기술의 비약적인 발전, 특히 트랜스포머(Transformer) 아키텍처와 대규모 파운데이션 모델(Foundation Model)의 등장은 VOS 기술의 패러다임을 완전히 변화시켰다. 과거의 광학 흐름(Optical Flow)이나 순환 신경망(RNN) 기반의 접근법은 장기적인 문맥(Long-term context)을 유지하는 데 한계를 보였으나, 최근 등장한 메모리 네트워크(Memory Network) 기반의 모델들은 과거의 정보를 외부 메모리에 저장하고 이를 쿼리(Query)하여 불러오는 방식으로 인간의 기억 메커니즘을 모방하고 있다. 더 나아가 2024년 발표된 **SAM 2 (Segment Anything Model 2)**와 같은 모델은 이미지와 비디오를 통합적으로 처리하며, 제로샷(Zero-shot) 일반화 성능을 통해 사전 학습되지 않은 객체조차도 즉각적으로 분할하고 추적할 수 있는 가능성을 열었다.</p>
+<p>본 장에서는 로봇의 시각적 연속성을 보장하기 위한 최신 VOS 기술들을 심층적으로 분석한다. 시공간 메모리 네트워크(STM)의 기본 원리에서 시작하여, 장기 기억을 위한 XMem, 객체 수준의 추론을 수행하는 Cutie, 그리고 최신 파운데이션 모델인 SAM 2의 아키텍처와 작동 원리를 수식과 함께 상세히 기술한다. 또한, 단순한 시각적 추적을 넘어 언어적 명령을 이해하고 추적하는 참조 비디오 객체 분할(Referring VOS) 기술과, 로봇 환경 특유의 문제인 모션 블러 및 폐색을 극복하기 위한 최신 연구 동향을 포괄적으로 다룬다.</p>
+<h3>0.2  시공간 메모리 네트워크 (Space-Time Memory Networks)의 이론적 토대</h3>
+<p>VOS 기술의 발전사에서 가장 중요한 분기점은 메모리 네트워크의 도입이다. 초기 딥러닝 기반 VOS 모델들은 주로 두 프레임 간의 마스크 전파(Mask Propagation)에 집중하거나, RNN을 사용하여 시간적 정보를 은닉 상태(Hidden State)로 압축하여 전달했다. 그러나 이러한 방식은 시간이 지날수록 정보가 희석되거나 오차(Drift)가 누적되는 문제가 있었으며, 특히 객체가 화면에서 사라졌다가 한참 뒤에 다시 나타나는 장기적인 의존성(Long-term Dependency) 문제를 해결하기 어려웠다.</p>
+<p>이를 해결하기 위해 제안된 **시공간 메모리 네트워크(Space-Time Memory Networks, STM)**는 비디오의 과거 프레임들을 압축하여 은닉 상태로 넘기는 대신, 필요한 정보를 키(Key)와 값(Value)의 형태로 외부 메모리에 저장하고, 현재 프레임에서 필요한 정보를 어텐션(Attention) 메커니즘을 통해 직접 검색(Retrieval)하는 방식을 채택했다.</p>
+<h4>0.2.1  키-값 임베딩 (Key-Value Embedding)</h4>
+<p>STM 및 이를 계승하는 대부분의 최신 VOS 모델(STCN, XMem, Cutie, SAM 2)은 공통적으로 키-값 조회 방식을 사용한다. 입력된 비디오 프레임은 인코더(Encoder)를 거쳐 특징 맵(Feature Map)으로 변환된다. 이때 메모리에 저장될 과거 프레임들은 ’메모리 인코더’를 통과하고, 현재 처리해야 할 프레임은 ’쿼리 인코더’를 통과한다.</p>
+<ul>
+<li><strong>메모리(Memory):</strong> 과거 프레임의 이미지와 해당 프레임에서의 객체 마스크를 함께 인코딩하여 생성된다. 이는 객체의 외형 정보뿐만 아니라 ’어디에 객체가 있었는지’에 대한 공간적 정보를 포함한다. 이를 키 <span class="math math-inline">K^M</span>와 값 <span class="math math-inline">V^M</span> 쌍으로 정의한다.</li>
+<li><strong>쿼리(Query):</strong> 현재 프레임의 이미지만을 인코딩하여 생성된다. 마스크 정보가 없으므로 객체의 위치를 알 수 없으며, 메모리와의 매칭을 통해 이를 찾아내야 한다. 이를 키 <span class="math math-inline">K^Q</span>와 값 <span class="math math-inline">V^Q</span> 쌍으로 정의한다.</li>
+</ul>
+<h4>0.2.2  시공간 어텐션 메커니즘 (Space-Time Attention Mechanism)</h4>
+<p>STM의 핵심은 쿼리 프레임의 각 픽셀이 메모리에 저장된 모든 시공간적 위치의 픽셀과 얼마나 유사한지를 계산하는 ‘메모리 읽기(Memory Read)’ 연산이다. 이는 근본적으로 비국소적(Non-local) 연산이며, 쿼리 픽셀 <span class="math math-inline">i</span>와 메모리 픽셀 <span class="math math-inline">j</span> 사이의 유사도 <span class="math math-inline">f(k_i^Q, k_j^M)</span>는 내적(Dot-product) 또는 L2 거리 등을 통해 계산된다. 일반적으로 내적 유사도를 사용한 수식은 다음과 같다.<br />
+<span class="math math-display">
+f(k_i^Q, k_j^M) = \exp(k_i^Q \circ k_j^M)
+</span><br />
+여기서 <span class="math math-inline">\circ</span>는 채널 차원에서의 내적을 의미한다. 이렇게 계산된 유사도는 소프트맥스(Softmax) 함수를 통해 정규화되어 가중치로 변환되며, 이 가중치를 이용해 메모리의 값 <span class="math math-inline">V^M</span>을 가중 합산(Weighted Sum)함으로써 쿼리 프레임에 필요한 특징을 재구성한다.<br />
+<span class="math math-display">
+y_i = \left[ v_i^Q, \frac{1}{Z} \sum_{\forall j} f(k_i^Q, k_j^M) v_j^M \right]
+</span><br />
+여기서 <span class="math math-inline">Z = \sum_{\forall j} f(k_i^Q, k_j^M)</span>는 정규화 상수이다. <span class="math math-inline">y_i</span>는 쿼리 프레임의 <span class="math math-inline">i</span>번째 픽셀에 대한 최종 특징 벡터가 되며, 이는 디코더(Decoder)로 전달되어 현재 프레임의 객체 마스크를 생성하는 데 사용된다.</p>
+<p>이러한 방식의 장점은 시간적 거리에 상관없이 외형적으로 유사한 정보를 즉시 참조할 수 있다는 점이다. 로봇이 방을 한 바퀴 돌고 다시 제자리로 돌아와서 이전에 보았던 물체를 다시 보게 되었을 때, STM 구조는 수백 프레임 전의 메모리를 직접 참조하여 해당 물체의 ID를 정확하게 복원할 수 있다.</p>
+<h3>0.3  장기 추적을 위한 계층적 메모리 아키텍처: XMem</h3>
+<p>STM은 강력한 성능을 보여주었으나, 처리하는 비디오의 길이가 길어질수록 메모리에 저장되는 프레임 수가 선형적으로 증가하여 GPU 메모리를 빠르게 고갈시키는 문제가 있었다. 이는 제한된 연산 자원을 가진 모바일 로봇에게 치명적인 단점이다. 이를 극복하기 위해 인간의 기억 모델인 앳킨슨-쉬프린(Atkinson-Shiffrin) 모델에서 영감을 받아, 메모리를 계층적으로 관리하는 <strong>XMem</strong> 아키텍처가 제안되었다.</p>
+<h4>0.3.1  다중 저장소 모델 (Multi-Store Model)</h4>
+<p>XMem은 메모리를 기능과 지속 시간에 따라 세 가지 저장소로 분리하여 운영한다.</p>
+<table><thead><tr><th style="text-align: left">메모리 유형</th><th style="text-align: left">역할 및 특징</th><th style="text-align: left">업데이트 주기</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>감각 메모리 (Sensory Memory)</strong></td><td style="text-align: left">가장 최근의 연속적인 프레임 정보를 저장. 국소적인 시간적 변화(매끄러운 움직임 등)를 포착.</td><td style="text-align: left">매 프레임 업데이트 (가장 빠름)</td></tr>
+<tr><td style="text-align: left"><strong>작업 메모리 (Working Memory)</strong></td><td style="text-align: left">STM과 유사하게 고해상도 특징을 저장하지만, 제한된 용량(Buffer)을 가짐. 단기적인 문맥 유지.</td><td style="text-align: left">일정 간격(예: 5프레임)마다 업데이트</td></tr>
+<tr><td style="text-align: left"><strong>장기 메모리 (Long-term Memory)</strong></td><td style="text-align: left">시간이 지나도 잊지 말아야 할 핵심 특징들을 압축된 형태로 저장. 메모리 폭발을 방지하며 전역적 문맥 유지.</td><td style="text-align: left">작업 메모리가 꽉 찰 때 트리거됨</td></tr>
+</tbody></table>
+<h4>0.3.2  메모리 강화 (Memory Potentiation)와 통합</h4>
+<p>XMem의 핵심 기여 중 하나는 작업 메모리가 가득 찼을 때, 이를 단순히 버리는 것이 아니라 장기 메모리로 압축하여 이관하는 ‘메모리 강화’ 알고리즘이다. 작업 메모리에 있는 다수의 프레임 특징(Key-Value) 중에서 객체를 대표할 수 있는 프로토타입(Prototype)만을 선별(Sampling)하고, 이를 장기 메모리에 병합한다.</p>
+<p>이 과정에서 중요하지 않은 정보(중복되거나 배경에 가까운 정보)는 소거되고, 객체의 핵심적인 외형 특징만이 남게 된다. 따라서 로봇이 수만 프레임 이상의 긴 영상을 처리하더라도 장기 메모리의 크기는 매우 느리게 증가하거나 일정 수준으로 유지될 수 있다. 수식적으로, 장기 메모리의 키 <span class="math math-inline">k^{lt}</span>와 값 <span class="math math-inline">v^{lt}</span>는 작업 메모리의 다수 요소들의 가중 평균으로 계산되어 업데이트된다.<br />
+<span class="math math-display">
+k^{lt} \leftarrow \text{Normalize}(\sum w_i k_i^{work}), \quad v^{lt} \leftarrow \sum w_i v_i^{work}
+</span><br />
+이러한 구조 덕분에 XMem은 수천 프레임 이상의 긴 비디오에서도 GPU 메모리 오버플로우 없이 안정적인 성능을 유지하며, 로봇의 장시간 자율 주행 시나리오에 적합한 특성을 가진다.</p>
+<h3>0.4  객체 수준의 의미론적 추적 및 정제: Cutie</h3>
+<p>STM과 XMem은 픽셀 단위(Pixel-level)의 매칭에 의존한다. 이는 정밀한 경계선 추출에는 유리하지만, ’의미적(Semantic)’인 구분이 모호해질 때 취약점을 드러낸다. 예를 들어, 로봇 주변에 동일한 색상과 형태를 가진 여러 개의 박스가 놓여 있을 때(Distractors), 픽셀 단위 매칭은 현재 추적 중인 박스와 옆에 있는 박스를 혼동하여 ID 스위칭(ID Switching)을 일으킬 수 있다. <strong>Cutie</strong>는 이러한 문제를 해결하기 위해 ’객체 수준(Object-level)’의 메모리 읽기 방식을 도입한 모델이다.</p>
+<h4>0.4.1  객체 트랜스포머 (Object Transformer)와 쿼리</h4>
+<p>Cutie는 전체 이미지를 픽셀 그리드로만 보는 것이 아니라, 각 객체를 대표하는 고차원 벡터인 ’객체 쿼리(Object Queries, <span class="math math-inline">X</span>)’를 도입했다. 이는 트랜스포머 디코더(Transformer Decoder)의 구조를 차용하여, 픽셀 메모리에서 정보를 읽어올 때 객체 쿼리가 주도적인 역할을 하도록 설계되었다.</p>
+<p>객체 트랜스포머 블록 내에서 픽셀 특징(Pixel Readout, <span class="math math-inline">R</span>)과 객체 쿼리(<span class="math math-inline">X</span>)는 양방향으로 정보를 교환한다.</p>
+<ol>
+<li><strong>객체 쿼리 업데이트:</strong> 객체 쿼리는 픽셀 특징 전체를 훑어보며(Attention), 자신에게 해당하는(즉, 자신이 추적하는 객체에 속하는) 픽셀 정보만을 수집하여 자신의 상태를 업데이트한다.</li>
+<li><strong>픽셀 특징 정제:</strong> 업데이트된 객체 쿼리는 다시 픽셀 특징 맵에 정보를 뿌려주어(Broadcast), 픽셀들이 어떤 객체에 속할 확률이 높은지 의미론적 정보를 강화한다.</li>
+</ol>
+<h4>0.4.2  마스크 어텐션 (Masked Attention)을 통한 배경 분리</h4>
+<p>유사 객체(Distractor) 문제를 근본적으로 해결하기 위해 Cutie는 어텐션 연산 시 **마스크 어텐션(Masked Attention)**을 적용한다. 이는 특정 객체 쿼리가 자신과 공간적으로 관련 없는 영역(다른 객체가 점유한 영역이나 배경)을 참조하지 못하도록 강제하는 기법이다.<br />
+<span class="math math-display">
+X_l = \text{softmax}(M_l + Q_l K_l^T) V_l + X_l
+</span><br />
+여기서 <span class="math math-inline">M_l</span>은 어텐션 마스크로, 쿼리 <span class="math math-inline">q</span>가 픽셀 <span class="math math-inline">i</span>와 관련이 없다고 판단되면(이전 예측 마스크 등을 기반으로), 해당 위치의 값을 <span class="math math-inline">-\infty</span>로 설정하여 어텐션 가중치를 0으로 만든다.<br />
+<span class="math math-display">
+M_l(q, i) = \begin{cases} 0, &amp; \text{if query } q \text{ corresponds to pixel } i \\ -\infty, &amp; \text{otherwise} \end{cases}
+</span><br />
+이러한 상향식(Bottom-up, 픽셀<span class="math math-inline">\rightarrow</span>객체) 정보 처리와 하향식(Top-down, 객체<span class="math math-inline">\rightarrow</span>픽셀) 정보 처리의 결합은 복잡한 군중 속이나 겹쳐진 물체들 사이에서도 로봇이 목표 객체를 놓치지 않고 추적할 수 있는 강력한 성능을 제공한다. 실험 결과 Cutie는 MOSE(Complex Video Object Segmentation) 데이터셋과 같은 고난이도 벤치마크에서 기존 모델들을 큰 차이로 압도하였다.</p>
+<h3>0.5  파운데이션 모델 기반의 통합 아키텍처: SAM 2</h3>
+<p>2024년 8월, 메타(Meta)는 이미지 분할의 표준이 된 SAM(Segment Anything Model)을 비디오 영역으로 확장한 <strong>SAM 2</strong>를 공개하였다. SAM 2는 VOS 기술의 정점(State-of-the-Art)에 위치하며, 로봇 시각 인지 시스템에 전례 없는 유연성과 성능을 제공한다. 기존 모델들이 특정 데이터셋(DAVIS, YouTube-VOS)에 과적합되는 경향이 있었다면, SAM 2는 대규모 데이터셋(SA-V)을 통해 학습되어 제로샷(Zero-shot) 일반화 능력을 갖추었다.</p>
+<h4>0.5.1  통일된 모델 아키텍처 (Unified Architecture)</h4>
+<p>SAM 2는 이미지를 ’길이가 1인 비디오’로 간주하여, 이미지 분할과 비디오 객체 분할을 하나의 아키텍처로 통합하였다. 이는 로봇이 정지 상태에서 물체를 인식하고(이미지 분할), 이동을 시작하면 즉시 추적 모드(비디오 분할)로 전환하는 과정을 매끄럽게 만든다.</p>
+<p>SAM 2의 핵심 구성 요소는 다음과 같다:</p>
+<ul>
+<li><strong>이미지 인코더 (Image Encoder):</strong> Hiera(Hierarchical Vision Transformer)와 같은 효율적인 트랜스포머 백본을 사용하여, 고해상도 이미지에서 계층적인 특징을 추출한다. 이는 메모리 어텐션을 우회하여 마스크 디코더로 직접 연결되는 스킵 연결(Skip Connection)을 포함하여, 디테일한 경계선 복원을 가능하게 한다.</li>
+<li><strong>메모리 어텐션 (Memory Attention):</strong> 트랜스포머의 셀프 어텐션(Self-attention)과 크로스 어텐션(Cross-attention)을 활용하여, 현재 프레임의 특징을 과거 메모리 뱅크의 내용과 조율한다.</li>
+<li><strong>프롬프트 인코더 (Prompt Encoder):</strong> 사용자의 클릭, 박스, 또는 마스크 입력을 인코딩한다. 로봇 조작자가 화면상의 물체를 클릭하면 즉시 추적 대상이 설정된다.</li>
+<li><strong>마스크 디코더 (Mask Decoder):</strong> 인코딩된 이미지 특징과 프롬프트, 메모리 정보를 종합하여 최종 분할 마스크를 생성한다.</li>
+</ul>
+<h4>0.5.2  스트리밍 메모리 (Streaming Memory) 메커니즘</h4>
+<p>SAM 2는 전체 비디오를 한 번에 처리하지 않고, 실시간 처리에 적합한 스트리밍 방식을 채택했다.</p>
+<ul>
+<li><strong>메모리 뱅크 (Memory Bank):</strong> 최근 <span class="math math-inline">N</span>개의 프레임에 대한 공간적 특징 맵(Spatial Feature Maps)과, 전체 비디오에서 프롬프트가 제공된 프레임들의 객체 포인터(Object Pointers)를 저장한다. FIFO(First-In-First-Out) 큐 방식으로 최근 정보를 유지하며, 중요한 힌트가 있는 프레임은 장기적으로 보존한다.</li>
+<li><strong>가려짐 헤드 (Occlusion Head):</strong> VOS의 고질적인 문제인 가려짐을 해결하기 위해, SAM 2는 각 객체가 현재 프레임에서 가려졌는지 여부를 예측하는 별도의 헤드를 가지고 있다. 객체가 가려졌다고 판단되면 해당 프레임의 정보는 메모리에 저장되지 않아, 잘못된 정보(가려진 장애물의 특징 등)가 메모리를 오염시키는 것을 방지한다.</li>
+</ul>
+<h4>0.5.3  SA-V 데이터셋과 데이터 엔진</h4>
+<p>SAM 2의 성능은 방대한 학습 데이터에서 기인한다. 메타는 <strong>SA-V</strong>라는 세계 최대 규모의 비디오 분할 데이터셋을 구축했다. 이 데이터셋은 5만 개 이상의 비디오와 60만 개 이상의 마스크 주석(Masklets)을 포함한다. 특히 ’데이터 엔진(Data Engine)’이라 불리는 반복적인 과정을 통해, 모델이 생성한 결과를 사람이 수정하고, 이를 다시 모델 학습에 사용하는 루프를 돌려 데이터의 양과 질을 동시에 확보했다. 이 과정에서 SAM 2는 기존 방식 대비 51배 빠른 주석 속도를 기록했다.</p>
+<h4>0.5.4  성능 및 로봇 적용성</h4>
+<p>SAM 2는 17개의 비디오 분할 벤치마크에서 기존 SOTA 모델인 Cutie와 XMem++를 큰 차이로 따돌렸다. 특히 제로샷 설정에서 탁월한 성능을 보여, 로봇이 이전에 본 적 없는 물체나 환경에서도 추가 학습(Fine-tuning) 없이 높은 수준의 분할 및 추적을 수행할 수 있음을 입증했다. 추론 속도 또한 Hiera-B+ 백본 기준 약 44 FPS(Frames Per Second)를 달성하여 실시간 로봇 제어 루프에 통합되기에 충분한 성능을 보인다.</p>
+<table><thead><tr><th style="text-align: left">모델 (Model)</th><th style="text-align: left">백본 (Backbone)</th><th style="text-align: left">FPS</th><th style="text-align: left">J&amp;F (DAVIS 2017)</th><th style="text-align: left">J&amp;F (MOSE)</th><th style="text-align: left">비고</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>XMem</strong></td><td style="text-align: left">ResNet-50</td><td style="text-align: left">~20</td><td style="text-align: left">81.0</td><td style="text-align: left">57.6</td><td style="text-align: left">장기 메모리 효율성 우수</td></tr>
+<tr><td style="text-align: left"><strong>Cutie</strong></td><td style="text-align: left">ResNet-50</td><td style="text-align: left">~30</td><td style="text-align: left">83.3</td><td style="text-align: left">71.9</td><td style="text-align: left">객체 수준 추론, Distractor 강인성</td></tr>
+<tr><td style="text-align: left"><strong>SAM 2</strong></td><td style="text-align: left">Hiera-L</td><td style="text-align: left">~30</td><td style="text-align: left"><strong>90.7</strong></td><td style="text-align: left"><strong>77.9</strong></td><td style="text-align: left">파운데이션 모델, 제로샷 최강</td></tr>
+<tr><td style="text-align: left"><strong>SAM 2</strong></td><td style="text-align: left">Hiera-B+</td><td style="text-align: left"><strong>43.8</strong></td><td style="text-align: left">87.1</td><td style="text-align: left">75.0</td><td style="text-align: left">실시간성 강화 버전</td></tr>
+</tbody></table>
+<h3>0.6  개방형 어휘 및 의미론적 연결: DEVA와 RVOS</h3>
+<p>로봇이 인간과 소통하며 작업을 수행하려면 “파란색 모자를 쓴 사람을 따라가라“와 같이 시각 정보와 언어 정보를 결합한 명령을 이해해야 한다. 이를 위해서는 단순한 픽셀 추적을 넘어, 객체의 의미(Semantic Class)를 이해하고 이를 언어 모델과 연결하는 기술이 필요하다.</p>
+<h4>0.6.1  DEVA: 분리된 비디오 분할 (Decoupled Video Segmentation)</h4>
+<p><strong>DEVA</strong>는 “Tracking Anything“이라는 목표를 달성하기 위해, 강력한 이미지 분할 모델(SAM 등)과 시간적 전파 모델(XMem)을 구조적으로 분리(Decoupling)한 아키텍처이다.</p>
+<ul>
+<li><strong>작동 원리:</strong> 매 프레임마다 이미지 분할 모델이 잠재적인 객체 후보들을 제안한다. 동시에 XMem 기반의 양방향 전파 모듈이 이전 프레임의 객체 ID를 현재 프레임으로 전파한다. DEVA는 이 두 정보 소스를 ‘클립 내 합의(In-clip Consensus)’ 알고리즘을 통해 병합한다.</li>
+<li><strong>개방형 어휘(Open-Vocabulary) 확장:</strong> DEVA는 CLIP(Contrastive Language-Image Pre-training)과 같은 시각-언어 모델(VLM)을 분할된 마스크에 적용하여, 사전에 정의되지 않은 클래스(Open-vocabulary)에 대해서도 텍스트 레이블을 할당할 수 있다. 이는 로봇이 학습 데이터에 없는 새로운 물체를 만났을 때, 이를 “미확인 물체 1“이 아닌 “전동 드릴“과 같이 구체적인 명칭으로 인식하고 추적할 수 있게 해 준다.</li>
+</ul>
+<h4>0.6.2  참조 비디오 객체 분할 (Referring Video Object Segmentation, RVOS)</h4>
+<p>RVOS는 자연어 표현(Referring Expression)을 쿼리로 사용하여 비디오 내의 특정 객체를 분할하고 추적하는 기술이다.</p>
+<ul>
+<li><strong>동작 표현 기반 분할 (MeViS):</strong> 기존의 RVOS는 주로 “빨간 옷을 입은 사람“과 같이 정적인 외형 묘사에 집중했다. 그러나 <strong>MeViS (Motion Expression Video Segmentation)</strong> 데이터셋과 벤치마크는 “날아가는 새”, “걷다가 멈추는 사람“과 같이 동작(Motion)을 설명하는 언어 표현을 다룬다. 로봇은 이를 통해 객체의 행동 패턴을 이해하고, 시간에 따른 동작의 변화를 추적의 단서로 활용해야 한다.</li>
+<li><strong>SSA (Semantic and Sequential Alignment):</strong> VLM의 텍스트 임베딩과 비디오 프레임의 시각적 특징을 의미적으로 정렬(Semantic Alignment)하고, 시간 축을 따라 객체의 궤적(Trajectory)을 순차적으로 정렬(Sequential Alignment)하는 기법이다. 이는 언어적 설명이 비디오 전체의 맥락과 일치하도록 유도하여 추적의 정확도를 높인다.</li>
+<li><strong>MPG-SAM 2:</strong> 최근 연구에서는 SAM 2를 RVOS 작업에 특화시키기 위해 <strong>MPG-SAM 2</strong>가 제안되었다. 이 모델은 텍스트 쿼리로부터 생성된 대략적인 마스크를 ’마스크 사전 정보(Mask Priors)’로 변환하여 SAM 2의 프롬프트로 입력한다. 또한 ’계층적 글로벌-히스토리 어그리게이터(Hierarchical Global-Historical Aggregator)’를 통해 SAM 2가 현재 프레임뿐만 아니라 비디오 전체의 전역적 문맥과 텍스트 의미를 동시에 고려하도록 개량되었다.</li>
+</ul>
+<h3>0.7  로봇 환경에서의 강건성 확보: 모션 블러와 극한 가려짐</h3>
+<p>실험실 환경의 데이터셋과 달리, 실제 로봇 주행 환경은 거칠고 예측 불가능하다. 로봇의 급격한 기동이나 열악한 조명 조건은 VOS 알고리즘의 실패를 유발하는 주된 원인이다.</p>
+<h4>0.7.1  모션 블러(Motion Blur) 대응 전략</h4>
+<p>로봇이 빠르게 회전하거나 험한 지형을 이동할 때 발생하는 모션 블러는 고주파 성분(High-frequency components)인 경계선을 뭉개뜨려 픽셀 매칭을 불가능하게 만든다.</p>
+<ul>
+<li><strong>IMU 센서 융합:</strong> 관성 측정 장치(IMU) 데이터를 VOS와 결합하여, 로봇의 움직임에 따른 블러 커널(Blur Kernel)을 추정하고 이를 역으로 보정하거나, 특징 매칭 시 검색 범위를 동적으로 조절하는 연구가 진행되고 있다.</li>
+<li><strong>기하학적 제약 조건 활용 (RoMo):</strong> **RoMo (Robust Motion Segmentation)**는 광학 흐름(Optical Flow)과 에피폴라 기하학(Epipolar Geometry)을 결합하여, 카메라의 움직임(Background Motion)과 객체의 움직임(Object Motion)을 분리한다. 모션 블러가 심한 상황에서도 기하학적 정합성(Geometric Consistency)은 비교적 유지되므로, 이를 단서로 하여 움직이는 객체만을 정밀하게 분할해 낼 수 있다. 이는 특히 SLAM(Simultaneous Localization and Mapping) 시스템의 전처리 단계에서 동적 객체를 제거하여 맵의 정확도를 높이는 데 기여한다.</li>
+</ul>
+<h4>0.7.2  극한 가려짐(Severe Occlusion)과 아모달 지각</h4>
+<p>매니퓰레이터가 물체를 조작할 때 로봇 팔이 물체를 가리거나(Self-occlusion), 물체가 다른 물체 뒤로 들어가는 상황은 피할 수 없다.</p>
+<ul>
+<li><strong>아모달 분할 (Amodal Segmentation):</strong> 보이는 부분(Visible Mask)만 분할하는 것이 아니라, 가려져서 보이지 않는 부분까지 추론하여 전체 형상(Full Mask)을 복원하는 기술이다. 생성형 모델(Generative Models)이나 GAN을 활용하여 가려진 영역의 픽셀을 복원(Inpainting)하고, 이를 바탕으로 추적을 지속하는 연구가 활발하다.</li>
+<li><strong>메모리 기반 존속성 (Persistence):</strong> XMem이나 Cutie의 장기 메모리는 객체가 수 분간 시야에서 사라져도 그 ID 정보를 유지한다. 로봇이 “냉장고에 맥주를 넣고 문을 닫았다가 다시 여는” 시나리오에서, 맥주가 시야에서 완전히 사라졌음에도 불구하고 메모리 상에서는 그 존재가 유지되다가, 문을 열어 다시 보였을 때 즉시 재식별이 가능하다.</li>
+</ul>
+<h3>0.8 요약 및 결론</h3>
+<p>로봇의 시각적 인지 시스템에서 비디오 객체 분할(VOS)은 단순한 이미지 처리를 넘어, 로봇이 환경과 상호작용하고 세계를 이해하는 연속적인 과정의 핵심이다. 시공간 메모리 네트워크(STM)의 등장은 과거 정보를 효율적으로 활용하는 길을 열었고, XMem과 Cutie는 장기 기억과 객체 수준의 추론을 통해 복잡한 환경에서의 강건성을 확보했다. 특히 SAM 2의 등장은 VOS 기술을 파운데이션 모델의 시대로 이끌었으며, 제로샷 일반화와 실시간 처리 능력을 통해 로봇의 적용 범위를 비약적으로 확장시켰다.</p>
+<p>앞으로의 연구는 시각 정보뿐만 아니라 언어(Language), 깊이(Depth), 열화상 등 멀티모달 정보를 유기적으로 통합하여, 로봇이 “내가 어제 봤던 그 빨간 컵“과 같은 고차원적인 의미론적 추론을 수행할 수 있는 방향으로 발전할 것이다. 또한, MeViS와 같이 동작과 의도를 이해하는 벤치마크의 발전은 인간과 협업하는 소셜 로봇이나 복잡한 가사 노동을 수행하는 서비스 로봇의 지능을 한 단계 높이는 데 기여할 것이다.</p>
+<h2>1. 참고 자료</h2>
+<ol>
+<li>SAM 2: Segment Anything Model 2 - Ultralytics YOLO Docs, https://docs.ultralytics.com/models/sam-2/</li>
+<li>facebookresearch/sam2 - GitHub, https://github.com/facebookresearch/sam2</li>
+<li>RoMo: Robust Motion Segmentation Improves Structure from … - arXiv, https://arxiv.org/html/2411.18650v1</li>
+<li>A visual odometry framework robust to motion blur - SciSpace, https://scispace.com/pdf/a-visual-odometry-framework-robust-to-motion-blur-dmjohvcsxt.pdf</li>
+<li>Putting the Object Back into Video Object Segmentation, https://openaccess.thecvf.com/content/CVPR2024/papers/Cheng_Putting_the_Object_Back_into_Video_Object_Segmentation_CVPR_2024_paper.pdf</li>
+<li>XMem: Long-Term Video Object Segmentation with an Atkinson …, https://computer-vision-in-the-wild.github.io/eccv-2022/static/eccv2022/camera_ready/xmem_cvinw_eccv22.pdf</li>
+<li>Video Object Segmentation Using Space-Time Memory Networks, https://openaccess.thecvf.com/content_ICCV_2019/papers/Oh_Video_Object_Segmentation_Using_Space-Time_Memory_Networks_ICCV_2019_paper.pdf</li>
+<li>Papers Explained 239: SAM 2 - Ritvik Rastogi, https://ritvik19.medium.com/papers-explained-239-sam-2-6ffb7f187281</li>
+<li>Learning Video Object Segmentation With Visual Memory, https://openaccess.thecvf.com/content_ICCV_2017/papers/Tokmakov_Learning_Video_Object_ICCV_2017_paper.pdf</li>
+<li>Space-Time Memory Networks for Video Object Segmentation with …, https://joonyoung-cv.github.io/assets/paper/20_tpami_space_time.pdf</li>
+<li>A Lightweight Framework for Audio-Visual Segmentation with an …, https://www.mdpi.com/2076-3417/15/12/6585</li>
+<li>Video Object Segmentation using Space-Time Memory Networks, https://arxiv.org/abs/1904.00607</li>
+<li>Space-Time Memory Networks for Video Object Segmentation With …, https://pubmed.ncbi.nlm.nih.gov/32750815/</li>
+<li>XMem: Long-Term Video Object Segmentation with an Atkinson …, https://arxiv.org/abs/2207.07115</li>
+<li>XMem: Long-Term Video Object Segmentation with an Atkinson …, https://www.ecva.net/papers/eccv_2022/papers_ECCV/papers/136880633-supp.pdf</li>
+<li>Video Object Segmentation via SAM 2: The 4th Solution for LSVOS …, https://arxiv.org/html/2408.10125v1</li>
+<li>Putting the Object Back into Video Object Segmentation - arXiv, https://arxiv.org/abs/2310.12982</li>
+<li>SAM 2: Segment Anything in Images and Videos - ResearchGate, https://www.researchgate.net/publication/382797270_SAM_2_Segment_Anything_in_Images_and_Videos</li>
+<li>SAM 2: Segment Anything in Images and Videos - arXiv, https://arxiv.org/html/2408.00714v1</li>
+<li>Deep-diving into SAM 2: How Quality Data Propelled Their Visual …, https://kili-technology.com/blog/deep-diving-into-sam2-how-quality-data-propelled-meta-s-visual-segmentation-model</li>
+<li>Segment Anything Model 2 (SAM 2) &amp; SA-V Dataset from Meta AI, https://encord.com/blog/segment-anything-model-2-sam-2/</li>
+<li>Tracking Anything with Decoupled Video Segmentation, https://helios2.mi.parisdescartes.fr/~lomn/Cours/CV/SeqVideo/CollaborativeWork/SOTA/Cheng_Tracking_Anything_with_Decoupled_Video_Segmentation_ICCV_2023_paper.pdf</li>
+<li>Tracking Anything with Decoupled Video Segmentation - Liner, https://liner.com/review/tracking-anything-with-decoupled-video-segmentation</li>
+<li>Tracking Anything with Decoupled Video Segmentation - arXiv, https://arxiv.org/abs/2309.03903</li>
+<li>MeViS: A Large-scale Benchmark for Video Segmentation with …, https://helios2.mi.parisdescartes.fr/~lomn/Cours/CV/SeqVideo/CollaborativeWork/SOTA/Ding_MeViS_A_Large-scale_Benchmark_for_Video_Segmentation_with_Motion_Expressions_ICCV_2023_paper.pdf</li>
+<li>Semantic and Sequential Alignment for Referring Video Object …, https://openaccess.thecvf.com/content/CVPR2025/papers/Pan_Semantic_and_Sequential_Alignment_for_Referring_Video_Object_Segmentation_CVPR_2025_paper.pdf</li>
+<li>Adapting SAM 2 with Mask Priors and Global Context for Referring …, https://openaccess.thecvf.com/content/ICCV2025/supplemental/Rong_MPG-SAM_2_Adapting_ICCV_2025_supplemental.pdf</li>
+<li>Adapting SAM 2 with Mask Priors and Global Context for Referring …, https://openaccess.thecvf.com/content/ICCV2025/papers/Rong_MPG-SAM_2_Adapting_SAM_2_with_Mask_Priors_and_Global_ICCV_2025_paper.pdf</li>
+<li>Towards robust visual odometry by motion blur recovery - Frontiers, https://www.frontiersin.org/journals/signal-processing/articles/10.3389/frsip.2024.1417363/full</li>
+<li>Segment Any Motion in Videos - arXiv, https://arxiv.org/html/2503.22268v1</li>
+<li>A Survey of Occlusion-Handling Approaches - ORBi UMONS, https://orbi.umons.ac.be/bitstream/20.500.12907/49734/1/electronics-13-00541.pdf</li>
+<li>XMem: Long-Term Video Object Segmentation with an Atkinson …, https://github.com/hkchengrex/XMem</li>
+<li>Failure Handling of Robotic Pick and Place Tasks With Multimodal …, https://www.frontiersin.org/journals/neurorobotics/articles/10.3389/fnbot.2021.570507/full</li>
+<li>MeViS: A Multi-Modal Dataset for Referring Motion Expression …, https://www.arxiv.org/abs/2512.10945</li>
+<li>Video Segmentation Datasets in Complex Scenes, https://blog.csjihwanh.com/posts/computer-vision/segmentation/vidseg_complex/</li>
+</ol>
 
             </article>
             <footer>
