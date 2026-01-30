@@ -140,6 +140,174 @@
             </header>
             <article>
                 <h1>7.3 범주 수준의 일반화와 NOCS (Category-Level Generalization &amp; NOCS)</h1>
+<h2>1.  서론: 인스턴스 중심에서 범주 수준의 지각으로</h2>
+<p>로봇 공학, 특히 엠바디드 AI(Embodied AI) 분야에서 지각(Perception) 시스템의 궁극적인 목표는 통제되지 않은 비정형 환경(Unstructured Environment)에서 로봇이 자율적으로 환경을 이해하고 상호작용하는 것이다. 과거의 로봇 비전 기술은 주로 **인스턴스 수준(Instance-Level)**의 6D 포즈 추정에 집중해 왔다. 인스턴스 수준의 접근법은 로봇이 다루어야 할 대상의 정확한 3D CAD 모델과 텍스처 정보를 사전에 완벽하게 알고 있다고 가정한다. 예를 들어, 특정 브랜드의 드릴이나 시리얼 넘버가 지정된 부품을 인식하고 잡는 작업에서는 이러한 접근이 유효하며, 텍스처가 없는(Texture-less) 물체에 대해서도 모델 기반 매칭을 통해 높은 정확도를 달성할 수 있다.</p>
+<p>그러나 로봇이 공장을 벗어나 가정, 사무실, 상업 공간과 같은 개방형 세계(Open World)로 진입함에 따라 인스턴스 수준의 가정은 더 이상 유효하지 않게 되었다. 세상에 존재하는 모든 컵, 의자, 노트북의 3D 모델을 데이터베이스화하여 로봇에 탑재하는 것은 불가능하기 때문이다. 로봇은 이전에 본 적 없는 새로운 컵을 마주하더라도, 그것이 ’컵’이라는 범주(Category)에 속함을 인지하고, 액체를 담는 기능을 수행할 수 있도록 컵의 주둥이와 손잡이의 3차원 위치 및 자세(Pose)를 추론해야 한다. 이것이 바로 **범주 수준 6D 물체 포즈 추정(Category-Level 6D Object Pose Estimation)**의 핵심 과제이다.</p>
+<p>범주 수준의 포즈 추정은 훈련 단계에서 보지 못한(Unseen) 객체 인스턴스라 할지라도, 기지(Known)의 범주에 속한다면 그 6D 포즈(3차원 회전 <span class="math math-inline">R \in SO(3)</span> 및 3차원 이동 <span class="math math-inline">t \in \mathbb{R}^3</span>)와 물리적 크기(<span class="math math-inline">s \in \mathbb{R}^3</span>)를 추정하는 것을 목표로 한다. 이 문제가 인스턴스 수준보다 기하급수적으로 어려운 이유는 <strong>범주 내 변형(Intra-Class Variation)</strong> 때문이다. 같은 ‘의자’ 범주에 속하더라도 사무용 의자, 식탁 의자, 안락의자는 그 위상(Topology), 기하학적 형상(Shape), 비율(Ratio), 텍스처가 극단적으로 다를 수 있다. 따라서 인공지능 모델은 개별 객체의 고유한 텍스처나 세밀한 형상에 과도하게 적합(Overfitting)되지 않으면서, 해당 범주를 관통하는 기하학적 본질과 표준 좌표계를 학습해야 하는 이중적인 과제를 안게 된다.</p>
+<p>최근 딥러닝과 3D 비전 기술의 비약적인 발전은 이러한 범주 수준 일반화의 가능성을 열었다. 특히 **NOCS (Normalized Object Coordinate Space)**의 제안은 다양한 크기와 모양을 가진 객체들을 통일된 3D 공간으로 정규화(Normalization)하여 매핑함으로써, 형상의 다양성 문제를 표준 좌표계 회귀 문제로 치환하는 패러다임의 전환을 가져왔다. 또한, 그래프 신경망(GNN), 구면 컨볼루션(Spherical CNN), 트랜스포머(Transformer)와 같은 최신 아키텍처들이 도입되면서 형상 특징의 추출과 회전 추정의 정밀도가 획기적으로 향상되고 있다.</p>
+<p>본 절에서는 NOCS의 이론적 토대와 이를 기반으로 발전한 최신 SOTA(State-of-the-Art) 기술들을 심층적으로 분석한다. FS-Net, DualPoseNet, GIVEPose, CatFormer 등 핵심적인 아키텍처들의 작동 원리와 기여점을 상세히 기술하고, REAL275와 같은 벤치마크 데이터셋에서의 성능 비교 및 실제 로봇 파지(Grasping) 실험을 통한 검증 결과를 통해 범주 수준 포즈 추정 기술의 현재와 미래를 조망한다.</p>
+<h2>2.  정규화된 객체 좌표 공간 (NOCS): 이론적 토대와 파이프라인</h2>
+<p>**Normalized Object Coordinate Space (NOCS)**는 2019년 CVPR에서 Wang 등에 의해 제안된 개념으로, 범주 수준 6D 포즈 추정의 표준적인 표현(Representation) 방식(Canonical Representation)으로 자리 잡았다. NOCS는 인스턴스마다 제각각인 크기와 방향을 가진 객체들을 통일된 3차원 공간 내에 정렬시킴으로써, 딥러닝 모델이 범주 내의 공통된 구조를 효과적으로 학습할 수 있도록 유도한다.</p>
+<h3>2.1  NOCS의 정의와 기하학적 정규화</h3>
+<p>NOCS는 3차원 공간상의 <strong>단위 큐브(Unit Cube)</strong>, 즉 <span class="math math-inline">\{x, y, z\} \in ^3</span> 로 정의된다. 이 공간은 모든 객체 인스턴스가 공유하는 참조 좌표계 역할을 한다. 구체적인 정규화 과정은 다음과 같다:</p>
+<ol>
+<li><strong>중심 정렬(Centering):</strong> 객체의 기하학적 중심이 NOCS 큐브의 중심인 <span class="math math-inline">(0.5, 0.5, 0.5)</span>에 위치하도록 이동시킨다.</li>
+<li><strong>축 정렬(Axis Alignment):</strong> 객체의 주요 축(Main Axis)이 큐브의 <span class="math math-inline">x, y, z</span> 축과 일치하도록 회전시킨다. 예를 들어, 병이나 캔의 경우 높이 방향이 <span class="math math-inline">y</span>축(또는 <span class="math math-inline">z</span>축, 정의에 따라 다름)과 평행하도록 정렬한다. 이는 범주 내 객체들이 동일한 방향성을 갖게 하여 회전 추정의 일관성을 보장한다.</li>
+<li><strong>스케일 정규화(Scale Normalization):</strong> 객체의 3D 바운딩 박스(Bounding Box)의 대각선 길이(Diagonal Length)가 1이 되도록 크기를 조절한다. 이를 통해 모델은 객체의 절대적인 크기 변화에 영향을 받지 않고 형상 그 자체의 특징을 학습할 수 있게 된다.</li>
+</ol>
+<p>이러한 정규화를 통해, 현실 세계(Camera Coordinate System)에서 관측된 객체의 3D 점 <span class="math math-inline">P_{cam}</span>과 NOCS 공간상의 대응점 <span class="math math-inline">P_{nocs}</span> 사이에는 다음과 같은 7차원 유사 변환(Similarity Transformation) 관계가 성립한다:<br />
+<span class="math math-display">
+P_{cam} = s \cdot R \cdot P_{nocs} + t
+</span><br />
+여기서 <span class="math math-inline">R \in SO(3)</span>는 3차원 회전 행렬, <span class="math math-inline">t \in \mathbb{R}^3</span>는 3차원 이동 벡터, <span class="math math-inline">s \in \mathbb{R}</span>는 스케일 인자이다. 모델이 <span class="math math-inline">P_{nocs}</span>를 정확하게 예측할 수 있다면, 관측된 <span class="math math-inline">P_{cam}</span>과의 대응 관계를 통해 <span class="math math-inline">s, R, t</span>를 역산할 수 있다.</p>
+<h3>2.2  NOCS 맵(Map)과 색상 코딩</h3>
+<p>NOCS 방법론의 핵심은 3차원 좌표 정보를 2차원 이미지 형태로 표현하는 <strong>NOCS 맵</strong>에 있다. NOCS 맵은 RGB 이미지와 동일한 해상도를 가지는 3채널 이미지로, 객체 영역(Mask) 내의 각 픽셀 위치 <span class="math math-inline">(u, v)</span>에 대응되는 객체 표면의 3차원 NOCS 좌표 <span class="math math-inline">(x, y, z)</span>를 색상 값으로 인코딩한다. 통상적으로 <span class="math math-inline">x</span> 좌표는 Red 채널, <span class="math math-inline">y</span> 좌표는 Green 채널, <span class="math math-inline">z</span> 좌표는 Blue 채널에 매핑된다. 따라서 시각적으로 NOCS 맵은 객체의 방향과 형상에 따라 다채로운 색상으로 표현되며, 이를 ’좌표 맵(Coordinate Map)’이라고도 부른다.</p>
+<h3>2.3  추론 파이프라인과 포즈 최적화</h3>
+<p>NOCS 기반의 포즈 추정은 일반적으로 다음과 같은 다단계 파이프라인을 따른다 :</p>
+<ol>
+<li><strong>객체 검출 및 분할(Instance Segmentation):</strong> Mask R-CNN과 같은 2D 인스턴스 분할 네트워크를 사용하여 입력 RGB 이미지에서 객체의 관심 영역(RoI)과 이진 마스크(Binary Mask)를 추출한다. 이 단계는 배경 잡음을 제거하고 특정 객체에 집중할 수 있게 한다.</li>
+<li><strong>NOCS 맵 예측(NOCS Map Prediction):</strong> 추출된 RoI 내의 각 픽셀에 대해, 해당 픽셀이 NOCS 공간상의 어느 위치에 해당하는지를 예측한다. 초기 연구에서는 NOCS 좌표를 연속적인 실수값으로 직접 회귀(Regression)하는 대신, 좌표 공간을 여러 개의 빈(Bin)으로 이산화하여 분류(Classification) 문제로 푼 후 오차를 미세 조정(Refinement)하는 방식이 더 높은 성능을 보였다. 이는 특히 대칭성(Symmetry)이 있는 물체에서 발생하는 모호성을 완화하는 데 도움을 준다.</li>
+<li><strong>6D 포즈 및 크기 복원(Pose &amp; Size Recovery):</strong> 예측된 NOCS 좌표(<span class="math math-inline">P_{nocs}</span>)와 깊이(Depth) 카메라로부터 얻은 실제 3D 점군(<span class="math math-inline">P_{cam}</span>) 간의 2D-3D 또는 3D-3D 대응 관계(Correspondence)를 이용하여 최적의 포즈 파라미터를 계산한다.</li>
+<li><strong>Umeyama 알고리즘과 RANSAC:</strong> 대응점들 사이의 강체 변환(Rigid Transformation)과 스케일을 구하기 위해 <strong>Umeyama 알고리즘</strong>이 널리 사용된다. 이 알고리즘은 최소 자승법(Least Squares)을 기반으로 회전, 이동, 스케일을 닫힌 형태(Closed-form) 해로 구한다. 이때, 예측된 NOCS 맵의 노이즈나 아웃라이어(Outlier)를 제거하기 위해 RANSAC(Random Sample Consensus) 기법이 결합되어 포즈 추정의 강건성을 높인다.</li>
+</ol>
+<h3>2.4  한계점과 기술적 도전</h3>
+<p>NOCS의 도입은 범주 수준 포즈 추정의 새로운 지평을 열었으나, 초기 방법론은 몇 가지 명확한 한계를 드러냈다. 첫째, <strong>깊이 정보 의존성</strong>이다. NOCS 좌표와 매칭할 실제 3D 좌표를 얻기 위해 고품질의 깊이 맵이 필수적이다. 그러나 투명하거나 반사가 심한 물체(유리, 금속 등)는 깊이 센서에서 데이터 결손(Missing Depth)이 발생하여 NOCS 파이프라인이 붕괴될 수 있다. 둘째, <strong>범주 내 형상 변이의 단순화</strong> 문제이다. NOCS 맵은 본질적으로 모든 인스턴스를 단위 큐브에 억지로 끼워 맞추는 방식이다. 따라서 형상이 기형적이거나 극단적인 비율을 가진 객체의 경우(예: 매우 긴 등받이를 가진 의자), NOCS 맵으로의 회귀가 어렵고 정보의 왜곡이 발생한다. 셋째, <strong>회전 대칭성(Rotational Symmetry)의 모호성</strong>이다. 회전 대칭을 가진 물체(병, 캔 등)는 특정 축으로 회전해도 외관이나 깊이 정보가 변하지 않아, 네트워크가 유일한 해를 찾지 못하고 수렴하지 않거나 잘못된 포즈를 학습할 위험이 있다.</p>
+<p>이러한 문제들을 해결하기 위해 후속 연구들은 기하학적 특징 추출을 위한 새로운 연산자(Operator), 회전 표현의 분리, 그리고 생성형 모델의 도입 등으로 발전하게 된다.</p>
+<h2>3.  형상 기반 표현과 회전의 분리: FS-Net</h2>
+<p>2021년 CVPR에서 Chen 등에 의해 제안된 **FS-Net (Fast Shape-based Network)**은 NOCS의 한계를 극복하고 실시간 처리가 가능하도록 설계된 혁신적인 아키텍처이다. FS-Net은 기존 방법들이 2D 이미지 특징(Appearance)에 과도하게 의존하거나 포인트 클라우드의 지역적(Local) 특징만을 사용하는 것과 달리, **3D 그래프 컨볼루션(3D Graph Convolution)**을 도입하여 범주 수준의 형상 특징을 효율적으로 추출하는 데 중점을 두었다.</p>
+<h3>3.1  방향 인식 오토인코더와 3D 그래프 컨볼루션</h3>
+<p>FS-Net의 백본(Backbone)은 **방향 인식 오토인코더(Orientation-Aware Autoencoder)**로 구성된다. 이 모듈은 입력된 포인트 클라우드에서 잠재 특징(Latent Feature)을 인코딩하고, 이를 다시 원래의 포인트 클라우드로 복원(Reconstruction)하는 과정에서 객체의 기하학적 정보를 학습한다.</p>
+<p>여기서 핵심적인 역할을 하는 **3D 그래프 컨볼루션(3D-GC)**은 포인트 클라우드를 그래프 구조로 모델링하여 점들 간의 위상적 연결성을 학습한다. 3D-GC는 포인트 클라우드의 이동(Shift)과 크기(Scale)에 불변(Invariant)하는 특성을 갖도록 설계되었다. 즉, 객체가 카메라의 어느 위치에 있든, 어떤 크기이든 상관없이 동일한 형상이라면 유사한 잠재 특징 벡터를 추출할 수 있다. 실험 결과, 관측된 포인트 클라우드를 재구성하도록 훈련된 인코더(Med5 설정)가 그렇지 않은 경우(Med3 설정)보다 훨씬 더 강력한 포즈 민감 특징(Pose-Sensitive Feature)을 학습함이 입증되었다. 이는 형상의 재구성 과정이 네트워크로 하여금 객체의 3차원 구조를 명시적으로 이해하도록 강제하기 때문이다.</p>
+<h3>3.2  회전 분리 메커니즘 (Decoupled Rotation Mechanism)</h3>
+<p>범주 수준 포즈 추정에서 가장 난이도가 높은 부분은 회전(<span class="math math-inline">R</span>)의 추정이다. 특히 컵이나 병과 같은 회전 대칭 물체는 특정 축에 대한 회전각이 정의되지 않거나 무수히 많은 해를 가질 수 있어 학습을 불안정하게 만든다. FS-Net은 이를 해결하기 위해 **회전 분리 메커니즘(Decoupled Rotation Mechanism)**을 제안한다.</p>
+<p>FS-Net은 <span class="math math-inline">3 \times 3</span> 회전 행렬을 한 번에 직접 회귀하는 대신, 회전을 두 개의 서로 다른 벡터 <span class="math math-inline">v_1, v_2</span>로 분리하여 접근한다.</p>
+<ul>
+<li><strong><span class="math math-inline">v_1</span> (Green Vector):</strong> 객체의 주요 축(예: 병의 높이 방향, 컵의 위쪽 방향)을 나타내는 벡터이다.</li>
+<li><strong><span class="math math-inline">v_2</span> (Red Vector):</strong> 주요 축에 수직인 부차적인 축(예: 컵의 손잡이 방향)을 나타내는 벡터이다.</li>
+</ul>
+<p>네트워크는 이 두 벡터를 각각 전담하는 별도의 디코더(Decoder)를 통해 예측한다. 예측된 두 벡터로부터 나머지 축인 <span class="math math-inline">v_3</span>는 외적(Cross Product, <span class="math math-inline">v_1 \times v_2</span>)을 통해 구하고, 그람-슈미트(Gram-Schmidt) 직교화 과정을 거쳐 최종적인 회전 행렬 <span class="math math-inline">R</span>을 구성한다. 이 방식의 장점은 명확하다. 회전 대칭 물체의 경우, <span class="math math-inline">v_1</span> 벡터만 정확히 예측되면 <span class="math math-inline">v_2</span> 벡터는 무시하거나 임의의 값으로 설정해도 전체 포즈의 정확도(대칭성을 고려한 메트릭 기준)에 영향을 주지 않는다. 즉, 대칭성으로 인한 모호성을 구조적으로 분리하여 학습의 안정성을 확보한 것이다. 이 메커니즘을 통해 FS-Net은 NOCS-REAL 데이터셋에서 기존 방법 대비 6.3% 이상의 성능 향상을 달성하였다.</p>
+<h3>3.3  온라인 박스-케이지(Box-Cage) 기반 데이터 증강</h3>
+<p>범주 수준 학습의 고질적인 문제는 학습 데이터, 특히 완전히 주석(Annotation)이 달린 3D 모델과 실제 데이터의 부족이다. FS-Net은 이를 해결하기 위해 <strong>온라인 박스-케이지 기반 3D 변형(Online Box-Cage based 3D Deformation)</strong> 메커니즘을 도입했다. 훈련 중에 객체를 둘러싼 3D 바운딩 박스(Cage)의 꼭짓점을 임의로 이동시키면, 내부의 포인트 클라우드도 그에 따라 비선형적으로 변형된다. 예를 들어, 의자의 다리 길이를 늘리거나 등받이를 넓히는 등의 변형을 실시간으로 생성할 수 있다. 이를 통해 네트워크는 보지 못한 다양한 비율(Aspect Ratio)과 크기의 객체에 대해 강건해지도록 훈련되며, 제한된 수의 CAD 모델만으로도 방대한 범주 내 변형을 커버할 수 있는 일반화 능력을 획득한다.</p>
+<h2>4.  이중 포즈 네트워크와 구면 합성: DualPoseNet</h2>
+<p>2021년 ICCV에서 발표된 **DualPoseNet (Dual Pose Network)**은 포즈 추정의 일관성(Consistency)과 정밀도(Precision)를 극대화하기 위해 두 개의 병렬 디코더를 사용하는 독창적인 구조를 제안했다. DualPoseNet은 특히 테스트 단계에서 CAD 모델이 없는 상황에서도 자체적인 정제(Refinement) 과정을 통해 높은 정확도를 달성하는 데 초점을 맞추었다.</p>
+<h3>4.1  구면 컨볼루션과 <span class="math math-inline">SO(3)</span> 등변성</h3>
+<p>DualPoseNet의 인코더는 일반적인 2D CNN이나 PointNet 대신 **구면 컨볼루션(Spherical Convolution)**을 핵심 연산자로 채택했다. 입력된 RGB 이미지와 포인트 클라우드는 구면 신호(Spherical Signal)로 변환되어 처리된다. 구면 컨볼루션은 수학적으로 **<span class="math math-inline">SO(3)</span> 회전 등변성(Equivariance)**을 보장한다는 강력한 특징이 있다. 일반적인 CNN은 이미지가 회전하면 특징 맵이 완전히 달라져 버리지만, 등변성을 가진 네트워크는 입력이 회전하면 특징 맵도 그에 대응하여 예측 가능한 방식으로 회전한다. 이는 네트워크가 3차원 회전 패턴을 암기하는 대신, 회전의 구조 자체를 이해하도록 돕는다.</p>
+<p>또한, <strong>구면 합성(Spherical Fusion)</strong> 모듈은 RGB(외관) 특징과 포인트 클라우드(형상) 특징을 네트워크의 중간 레이어에서 효과적으로 결합한다. 이는 초기 융합(Early Fusion)이나 후기 융합(Late Fusion) 방식보다 더 풍부한 포즈 민감 특징(Pose-Sensitive Features)을 생성하여, 조명 변화나 텍스처가 부족한 상황에서도 강건한 성능을 발휘한다.</p>
+<h3>4.2  명시적 디코더와 암시적 디코더의 상호 보완</h3>
+<p>DualPoseNet의 가장 큰 특징은 공유된 인코더 위에 두 개의 서로 다른 역할을 하는 디코더를 병렬로 배치한 것이다:</p>
+<ol>
+<li><strong>명시적 디코더(Explicit Decoder, <span class="math math-inline">\Psi_{exp}</span>):</strong> 포즈 파라미터(<span class="math math-inline">R, t, s</span>)를 직접적으로 회귀한다. 즉, “이 물체는 <span class="math math-inline">x</span>축으로 30도 회전해 있다“는 값을 바로 출력한다.</li>
+<li><strong>암시적 디코더(Implicit Decoder, <span class="math math-inline">\Psi_{im}</span>):</strong> 입력된 부분 포인트 클라우드(Partial Point Cloud)를 <strong>표준 포즈(Canonical Pose)</strong> 상태로 재구성(Reconstruction)한다. 즉, “이 물체를 똑바로 세우면 이런 모양이 된다“는 3D 형상을 출력한다.</li>
+</ol>
+<p>학습 시, 이 두 디코더는 서로에게 <strong>보조적인 감독(Auxiliary Supervision)</strong> 신호를 제공한다. 명시적 디코더가 예측한 포즈로 입력 포인트 클라우드를 역변환하면, 암시적 디코더가 생성한 표준 형상과 일치해야 한다는 기하학적 제약 조건(Constraint)이 성립해야 한다. DualPoseNet은 이 제약 조건을 이용해 **포즈 일관성(Pose Consistency)**을 학습한다. 테스트 시에는 정답(Ground Truth)이 없더라도, 두 디코더의 출력 간 불일치를 최소화하는 방향으로 인코더의 특징을 미세 조정(Refine)하는 **자가 적응형 손실(Self-Adaptive Loss)**을 적용할 수 있다. 이를 통해 DualPoseNet은 REAL275 데이터셋의 가장 엄격한 지표인 <span class="math math-inline">5^{\circ} 5 \text{ cm}</span> 정확도에서 기존 방법들을 압도하는 성능(35.9% vs NOCS 10.0%)을 기록하며 초정밀 포즈 추정의 가능성을 입증했다.</p>
+<h2>5.  트랜스포머와 위상학적 통찰: CatFormer와 TG-Pose</h2>
+<p>최근 컴퓨터 비전 분야를 혁신한 트랜스포머(Transformer) 아키텍처는 범주 수준 포즈 추정에도 도입되어 전역적 문맥(Global Context) 이해 능력을 획기적으로 개선했다. 또한, 단순한 기하학적 거리(Distance)를 넘어 위상학적(Topological) 구조를 고려하는 연구들도 등장하고 있다.</p>
+<h3>5.1  CatFormer: 변형 가능한 트랜스포머와 반복적 정제</h3>
+<p><strong>CatFormer</strong>는 포인트 클라우드 처리에서 CNN이 가진 지역적(Local) 수용 영역(Receptive Field)의 한계를 극복하기 위해 트랜스포머의 어텐션(Attention) 메커니즘을 활용한다. 포인트 클라우드 내의 두 점이 3차원 공간상에서는 멀리 떨어져 있더라도(예: 주전자의 주둥이와 손잡이), 구조적으로는 밀접한 관련이 있을 수 있다. CatFormer는 이러한 **장거리 의존성(Long-range Dependency)**을 모델링하여 전체적인 형상의 맥락을 파악한다.</p>
+<p>CatFormer의 아키텍처는 거친 변형(Coarse Deformation), 미세 변형(Fine Deformation), 그리고 반복적 정제(Recurrent Refinement)의 3단계로 구성된다. 특히 반복적 정제 모듈은 이전 단계에서 추정된 형상을 바탕으로, 실제 관측된 장면 특징(Scene Feature)과 더 잘 일치하도록 포인트 클라우드를 반복적으로 변형시킨다. 또한, 변형 단계마다 트랜스포머 기반의 그래프 모듈을 배치하여 기하학적 특징과 위상학적 관계를 조정함으로써, REAL275 데이터셋에서 SOTA 성능을 갱신하였다.</p>
+<h3>5.2  TG-Pose: 위상학과 기하학의 융합</h3>
+<p><strong>TG-Pose</strong>는 기하학(Geometry)뿐만 아니라 위상학(Topology)을 명시적으로 고려하여 형상 변이가 심하거나 가려짐(Occlusion)이 발생한 상황에 대응한다. TG-Pose는 <strong>지속성 호몰로지(Persistent Homology)</strong> 기법을 사용하여 데이터의 위상학적 특징(예: 구멍의 개수, 연결 성분 등)을 추출한다. 이 위상학적 특징은 기하학적 특징과 융합되어 대칭성을 복원하거나 누락된 부분을 보완하는 데 사용된다. 예를 들어, 머그컵의 손잡이가 가려져 보이지 않더라도, 위상학적 추론을 통해 “이 물체는 구멍(손잡이)을 가져야 하는 위상적 구조(컵)이다“라는 정보를 바탕으로 손잡이의 위치와 형상을 유추해 낼 수 있다. 이는 단순한 좌표 회귀를 넘어 객체의 구조적 본질을 이해하려는 시도로 해석되며, 복잡한 실제 환경에서의 강건성을 높이는 데 기여한다.</p>
+<h2>6.  범주 내 변형의 제거와 합의 모델: GIVEPose</h2>
+<p>NOCS 맵을 이용한 방식은 근본적으로 <strong>다대일(Many-to-One)</strong> 매핑 문제를 안고 있다. 서로 다른 인스턴스(다양한 모양의 의자들)가 모두 동일한 NOCS 맵(단위 큐브)으로 매핑되어야 하는데, 이 과정에서 인스턴스 고유의 기하학적 정보가 NOCS 맵에 잔존(Leakage)하여 회귀 성능을 저하시키는 원인이 된다. 이를 해결하기 위해 2025년 CVPR에서 발표된 <strong>GIVEPose</strong>는 <strong>IVFC (Intra-class Variation-Free Consensus)</strong> 맵이라는 새로운 개념을 도입했다.</p>
+<h3>6.1  NOCS 맵의 한계와 IVFC 맵</h3>
+<p>기존의 NOCS 맵이 ’개별 인스턴스’의 표면 좌표를 나타낸다면, IVFC 맵은 해당 범주를 대표하는 **합의 모델(Consensus Model)**의 좌표를 나타낸다. 모든 컵은 ’본체’와 ’손잡이’라는 공통된 위상적 구조를 가진다. IVFC 맵은 개별 컵의 손잡이 모양이 둥글든 각지든 상관없이, 모든 컵의 손잡이를 ‘표준 손잡이’ 위치로 매핑하도록 설계된다.</p>
+<h3>6.2  점진적 변형 제거와 DCAE</h3>
+<p>GIVEPose는 입력된 NOCS 맵(인스턴스 정보 포함)에서 점진적으로 인스턴스 특유의 변형을 제거하여, 순수한 범주 수준의 표준 형상(IVFC 맵)을 생성하는 <strong>DCAE(Deformable Convolutional Auto-Encoder)</strong> 모듈을 사용한다. DCAE는 변형 가능한 컨볼루션(Deformable Convolution)을 통해 입력 특징 맵을 공간적으로 워핑(Warping)하여 표준 형상에 맞춘다. 이 접근법은 NOCS 맵이 가진 중복적이고 불필요한 인스턴스 정보를 제거함으로써, 포즈 추정기(Pose Predictor)가 오로지 포즈와 관련된 기하학적 정보에만 집중할 수 있게 한다. 결과적으로 GIVEPose는 깊이 정보 없이 RGB 정보만을 사용함에도 불구하고, 깊이 정보를 사용하는 기존 모델들과 대등하거나 더 우수한 성능을 보여주며, 특히 범주 내 형상 차이가 큰 경우에 탁월한 강건함을 입증했다.</p>
+<h2>7.  벤치마크 데이터셋과 성능 평가</h2>
+<p>범주 수준 포즈 추정 알고리즘의 성능을 객관적으로 검증하기 위해 주로 <strong>CAMERA25</strong>와 <strong>REAL275</strong> 데이터셋이 사용된다. 이들은 NOCS 논문에서 처음 제안된 이후 표준 벤치마크로 자리 잡았다.</p>
+<h3>7.1  데이터셋 구성 및 도메인 차이</h3>
+<ul>
+<li><strong>CAMERA25 (Synthetic Dataset):</strong></li>
+<li><strong>구성:</strong> 30만 장의 합성 이미지로 구성된다. ShapeNet의 고품질 3D 모델을 실제 배경 이미지 위에 물리 기반 렌더링(PBR) 기법으로 합성하여 생성되었다.</li>
+<li><strong>범주:</strong> 6개 범주(병, 그릇, 카메라, 캔, 노트북, 머그컵)를 포함하며, 각 범주별로 다양한 인스턴스를 제공한다.</li>
+<li><strong>특징:</strong> 완벽한 정답(Ground Truth) 포즈와 마스크를 제공하므로 네트워크의 사전 학습(Pre-training)에 필수적이다. 그러나 합성 데이터 특유의 비현실감으로 인해 실제 환경과의 도메인 갭(Domain Gap)이 존재한다.</li>
+<li><strong>REAL275 (Real-World Dataset):</strong></li>
+<li><strong>구성:</strong> 7개의 실제 장면(Scene)에서 촬영된 4,300장의 훈련 이미지와 2,750장의 테스트 이미지로 구성된다.</li>
+<li><strong>특징:</strong> 6개 범주의 42개 고유 인스턴스를 포함한다. 실제 RGB-D 센서(Kinect 등)로 촬영되어 센서 노이즈, 모션 블러, 다양한 조명 조건, 복잡한 배경 클러터(Clutter)를 포함한다.</li>
+<li><strong>중요성:</strong> 알고리즘의 실용성을 검증하는 가장 중요한 척도이다. 최근 연구들은 CAMERA25에서의 성능보다 REAL275, 특히 테스트 셋에 포함된 ‘보지 못한(Unseen)’ 인스턴스에 대한 성능 향상을 강조한다.</li>
+</ul>
+<h3>7.2  평가 지표 (Evaluation Metrics)</h3>
+<p>성능 평가는 주로 3D IoU와 포즈 에러(<span class="math math-inline">n^{\circ}, n \text{ cm}</span>)를 사용한다.</p>
+<ul>
+<li><strong>3D IoU (<span class="math math-inline">IoU_{25}, IoU_{50}, IoU_{75}</span>):</strong> 예측된 3D 바운딩 박스와 실제(Ground Truth) 바운딩 박스의 겹치는 부피 비율이 특정 임계값(25%, 50%, 75%) 이상인 샘플의 비율을 측정한다. <span class="math math-inline">IoU_{75}</span>는 매우 높은 정밀도를 요구하는 지표로, 물체의 크기와 위치, 회전이 모두 정확해야 달성 가능하다.</li>
+<li><strong><span class="math math-inline">n^{\circ}, n \text{ cm}</span> Accuracy:</strong> 회전 오차가 <span class="math math-inline">n^{\circ}</span> 이내이고, 중심점 이동 오차가 <span class="math math-inline">n \text{ cm}</span> 이내인 경우를 성공으로 간주한다. 가장 엄격한 기준은 **<span class="math math-inline">5^{\circ} 5 \text{ cm}</span>**이며, 로봇 파지(Grasping)와 같은 정밀 조작을 위해서는 최소 <span class="math math-inline">10^{\circ} 5 \text{ cm}</span> 이상의 정밀도가 권장된다.</li>
+</ul>
+<h3>7.3  SOTA 성능 비교 분석</h3>
+<p>REAL275 데이터셋에서의 최신 연구 결과들을 비교 분석하면 다음 표와 같다. (수치는 논문의 보고에 따라 소폭 상이할 수 있음).</p>
+<table><thead><tr><th><strong>모델 (Method)</strong></th><th><strong>입력 (Input)</strong></th><th><strong>IoU-50 (%)</strong></th><th><strong>IoU-75 (%)</strong></th><th><strong>5∘5 cm (%)</strong></th><th><strong>10∘5 cm (%)</strong></th><th><strong>특징 (Key Features)</strong></th></tr></thead><tbody>
+<tr><td><strong>NOCS</strong></td><td>RGB-D</td><td>78.0</td><td>30.1</td><td>10.0</td><td>25.2</td><td>기준 모델, 정규화 좌표계 제안</td></tr>
+<tr><td><strong>SPD</strong></td><td>RGB-D</td><td>-</td><td>-</td><td>19.3</td><td>53.2</td><td>구조적 불일치(Structural Discrepancy) 활용</td></tr>
+<tr><td><strong>DualPoseNet</strong></td><td>RGB-D</td><td>79.8</td><td>62.2</td><td><strong>35.9</strong></td><td><strong>66.8</strong></td><td>이중 디코더, 구면 합성, 포즈 일관성 최적화</td></tr>
+<tr><td><strong>FS-Net</strong></td><td>RGB-D</td><td><strong>92.2</strong></td><td><strong>63.5</strong></td><td>28.2</td><td>60.8</td><td>3D 그래프 컨볼루션, 회전 분리, 고속 처리</td></tr>
+<tr><td><strong>GIVEPose</strong></td><td>RGB</td><td><em>Comp.</em></td><td><em>Comp.</em></td><td><em>High</em></td><td><em>High</em></td><td>IVFC 맵, RGB 기반 SOTA, 변형 제거</td></tr>
+<tr><td><strong>CatFormer</strong></td><td>RGB-D</td><td><em>SOTA</em></td><td><em>SOTA</em></td><td><em>SOTA</em></td><td><em>SOTA</em></td><td>트랜스포머 기반 전역 문맥, 반복 정제</td></tr>
+</tbody></table>
+<p><strong>분석:</strong></p>
+<ol>
+<li><strong>정밀도의 비약적 상승:</strong> 초기 NOCS 모델과 비교하여, DualPoseNet과 FS-Net은 <span class="math math-inline">IoU_{75}</span>와 같은 고정밀 지표에서 2배 이상의 성능 향상을 이뤘다. 이는 단순한 좌표 회귀에서 기하학적 구조 이해(Structure Understanding)로의 패러다임 전환이 성공했음을 시사한다. 특히 DualPoseNet의 <span class="math math-inline">5^{\circ} 5 \text{ cm}</span> 성능(35.9%)은 로봇이 정밀한 조립 작업을 수행할 수 있는 수준에 근접하고 있다.</li>
+<li><strong>RGB 모델의 가능성:</strong> GIVEPose와 같은 최신 모델들은 깊이 정보 없이 RGB만으로도 상당한 성능을 내고 있다. 이는 고가의 심도 센서 없이 일반 카메라만으로도 범용 로봇 지능을 구현할 수 있는 가능성을 열어주며, 하드웨어 비용 절감 및 시스템 간소화에 기여한다.</li>
+<li><strong>포즈 일관성의 중요성:</strong> DualPoseNet이 보여준 높은 정밀도는 명시적 표현(파라미터)과 암시적 표현(형상) 간의 일관성을 강제하는 것이 정밀 제어에 필수적임을 증명한다.</li>
+</ol>
+<h2>8.  로봇 조작을 위한 심투리얼(Sim-to-Real) 및 파지 응용</h2>
+<p>범주 수준 포즈 추정 기술의 진정한 가치는 시뮬레이션 환경이 아닌, 실제 물리 세계에서 로봇이 물체를 조작(Manipulation)할 때 증명된다. 이론적으로 완벽한 포즈라 해도, 실제 로봇 팔이 물체를 잡지 못하거나 충돌을 일으킨다면 무용지물이기 때문이다.</p>
+<h3>8.1  파지 성공률과 실증 실험</h3>
+<p>다수의 연구가 UR5, Franka Emika Panda와 같은 실제 로봇 팔을 이용한 파지 실험 결과를 보고하고 있다.</p>
+<ul>
+<li><strong>성공률의 향상:</strong> 초기 NOCS 기반 방법들은 약 70~80% 수준의 파지 성공률을 보였으나 , 최신 방법론들은 복잡한 클러터(Clutter) 환경에서도 90% 이상의 성공률을 달성하고 있다. 예를 들어, DualPoseNet이나 FS-Net을 적용한 로봇은 훈련 데이터에 없던 새로운 머그컵의 손잡이 위치를 정확히 파악하여, 손잡이를 잡거나(Mug grasping) 컵의 몸통을 잡고 물을 따르는(Pouring) 복합 동작을 수행할 수 있다.</li>
+<li><strong>보지 못한 물체(Unseen Objects)에 대한 적응:</strong> REAL275 테스트셋에 포함된 물체들은 훈련 시 보지 못한 새로운 인스턴스들이다. 실험 결과, 로봇은 사전 정보 없이도 범주 지식만을 활용하여 적절한 파지 접근 벡터(Approach Vector)를 생성해 냈다. 이는 로봇이 ’기억’에 의존하는 것이 아니라 ’이해’를 바탕으로 행동하고 있음을 시사한다.</li>
+<li><strong>투명 물체 및 반사 재질의 극복:</strong> 유리병이나 금속 캔과 같이 깊이 센서에 노이즈를 유발하거나 데이터가 누락되는(Missing Depth) 물체들에 대해서도, RGB 기반 특징이나 형상 완성(Shape Completion) 기술을 결합하여 성공적인 파지가 가능해지고 있다. 이는 물류 창고나 주방과 같은 실제 환경에서의 적용 가능성을 크게 높인다.</li>
+</ul>
+<h3>8.2  Sim-to-Real 간극의 극복</h3>
+<p>대부분의 딥러닝 모델은 데이터 확보의 용이성 때문에 합성 데이터(CAMERA25 등)를 대량으로 사용하여 사전 학습된다. 따라서 시뮬레이션과 현실 간의 간극(Domain Gap)을 줄이는 것이 핵심 과제이다.</p>
+<ul>
+<li><strong>도메인 무작위화(Domain Randomization):</strong> 배경 텍스처, 조명, 카메라 노이즈 등을 무작위로 변형하여 네트워크가 외관(Appearance)보다는 형상(Geometry) 자체에 집중하도록 유도하는 기법이 필수적으로 사용된다.</li>
+<li><strong>자가 지도 학습(Self-Supervised Learning)과 적응(Adaptation):</strong> 레이블이 없는 실제 비디오 데이터(예: Wild6D 데이터셋)를 활용하여, 프레임 간의 포즈 일관성이나 렌더링-비교(Render-and-Compare) 손실 함수를 통해 모델을 실제 환경에 적응시키는 연구가 활발하다. 이는 별도의 주석 작업 없이도 로봇이 스스로 성능을 개선할 수 있는 길을 열어준다.</li>
+</ul>
+<p>결론적으로, 범주 수준의 일반화와 NOCS 기술은 로봇이 통제된 환경(Closed Set)에서 벗어나 개방형 세계(Open World)로 나아가는 데 필수적인 인지 능력을 제공한다. 단순한 좌표의 정규화를 넘어, 이제는 객체의 위상학적 구조, 의미론적 부분(Part) 정보, 그리고 생성형 AI를 통한 형상 상상력까지 결합되며 <strong>“인스턴스를 몰라도 행동할 수 있는(Action without Identification)”</strong> 신뢰할 수 있는 로봇 지능의 핵심으로 자리 잡고 있다.</p>
+<h2>9. 참고 자료</h2>
+<ol>
+<li>Category-Level 6D Object Pose Estimation in the Wild: A Semi-Supervised Learning Approach and A New Dataset - NeurIPS, https://proceedings.neurips.cc/paper_files/paper/2022/file/afe99e55be23b3523818da1fefa33494-Paper-Conference.pdf</li>
+<li>Instance- and Category-Level 6D Object Pose Estimation, https://pure.kaist.ac.kr/en/publications/instance-and-category-level-6d-object-pose-estimation/</li>
+<li>Structural Discrepancy Aware Category-Level 6D Object Pose Estimation - CVF Open Access, https://openaccess.thecvf.com/content/WACV2023/papers/Li_SD-Pose_Structural_Discrepancy_Aware_Category-Level_6D_Object_Pose_Estimation_WACV_2023_paper.pdf</li>
+<li>Normalized Object Coordinate Space for Category-Level 6D Object Pose and Size Estimation | Request PDF - ResearchGate, https://www.researchgate.net/publication/338509949_Normalized_Object_Coordinate_Space_for_Category-Level_6D_Object_Pose_and_Size_Estimation</li>
+<li>GIVEPose: Gradual Intra-class Variation Elimination for RGB-based Category-Level Object Pose Estimation - arXiv, https://arxiv.org/html/2503.15110v2</li>
+<li>GIVEPose: Gradual Intra-class Variation Elimination for RGB-based Category-Level Object Pose Estimation - ResearchGate, https://www.researchgate.net/publication/389990127_GIVEPose_Gradual_Intra-class_Variation_Elimination_for_RGB-based_Category-Level_Object_Pose_Estimation</li>
+<li>Normalized Object Coordinate Space for … - CVF Open Access, https://openaccess.thecvf.com/content_CVPR_2019/papers/Wang_Normalized_Object_Coordinate_Space_for_Category-Level_6D_Object_Pose_and_CVPR_2019_paper.pdf</li>
+<li>Normalized Object Coordinate Space for Category-Level 6D Object Pose and Size Estimation, https://geometry.stanford.edu/projects/NOCS_CVPR2019/pub/NOCS_CVPR2019.pdf</li>
+<li>FS-Net: Fast Shape-based Network for Category-Level 6D Object Pose Estimation with Decoupled Rotation Mechanism - IEEE Xplore, https://ieeexplore.ieee.org/iel7/9577055/9577056/09578410.pdf</li>
+<li>DualPoseNet: Category-level 6D Object Pose and Size Estimation Using Dual Pose Network with Refined Learning of Pose Consistency - IEEE Xplore, https://ieeexplore.ieee.org/iel7/9709627/9709628/09711092.pdf</li>
+<li>CatFormer: Category-Level 6D Object Pose Estimation with Transformer, https://ojs.aaai.org/index.php/AAAI/article/view/28505/28984</li>
+<li>Category-Level Pose Estimation for Garments via Canonical Space Shape Completion - GarmentNets, https://garmentnets.cs.columbia.edu/garmentnets.pdf</li>
+<li>FS-Net: Fast Shape-Based Network for Category-Level 6D Object Pose Estimation With Decoupled Rotation Mechanism - CVF Open Access, https://openaccess.thecvf.com/content/CVPR2021/papers/Chen_FS-Net_Fast_Shape-Based_Network_for_Category-Level_6D_Object_Pose_Estimation_CVPR_2021_paper.pdf</li>
+<li>[PDF] Normalized Object Coordinate Space for Category-Level 6D Object Pose and Size Estimation | Semantic Scholar, https://www.semanticscholar.org/paper/Normalized-Object-Coordinate-Space-for-6D-Object-Wang-Sridhar/c8844833b24cc60a0fd5622b1eac7c234da58a75</li>
+<li>Pose Estimation for Objects with Rotational Symmetry - IRI-UPC, http://www.iri.upc.edu/files/scidoc/2339-Pose-estimation-for-objects-with-rotational-symmetry.pdf</li>
+<li>FS-Net: Fast Shape-based Network for Category-Level 6D Object Pose Estimation with Decoupled Rotation Mechanism - Liner, https://liner.com/review/fsnet-fast-shapebased-network-for-categorylevel-6d-object-pose-estimation</li>
+<li>[2103.07054] FS-Net: Fast Shape-based Network for Category-Level 6D Object Pose Estimation with Decoupled Rotation Mechanism - arXiv, https://arxiv.org/abs/2103.07054</li>
+<li>Category-Level 6D Object Pose Estimation with Flexible Vector-Based Rotation Representation - Pure, https://pure-oai.bham.ac.uk/ws/portalfiles/portal/244296749/2212.04632v2.pdf</li>
+<li>Category-Level 6D Object Pose and Size Estimation Using Dual Pose Network With Refined Learning of Pose Consistency, https://openaccess.thecvf.com/content/ICCV2021/papers/Lin_DualPoseNet_Category-Level_6D_Object_Pose_and_Size_Estimation_Using_Dual_ICCV_2021_paper.pdf</li>
+<li>[Quick Review] DualPoseNet: Category-level 6D Object Pose and Size Estimation Using Dual Pose Network with Refined Learning of Pose Consistency - Liner, https://liner.com/review/dualposenet-categorylevel-6d-object-pose-and-size-estimation-using-dual</li>
+<li>DualPoseNet: Category-level 6D Object Pose and Size Estimation …, https://arxiv.org/abs/2103.06526</li>
+<li>CatFormer: Category-Level 6D Object Pose Estimation with …, https://ojs.aaai.org/index.php/AAAI/article/view/28505</li>
+<li>CatFormer: Category-Level 6D Object Pose Estimation with Transformer, https://pure.bit.edu.cn/en/publications/catformer-category-level-6d-object-pose-estimation-with-transform/</li>
+<li>TG-Pose: Delving Into Topology and Geometry for Category-Level Object Pose Estimation, https://ieeexplore.ieee.org/document/10539316/</li>
+<li>GIVEPose: Gradual Intra-class Variation Elimination for RGB-based Category-Level Object Pose Estimation - CVF Open Access, https://openaccess.thecvf.com/content/CVPR2025/papers/Huang_GIVEPose_Gradual_Intra-class_Variation_Elimination_for_RGB-based_Category-Level_Object_Pose_CVPR_2025_paper.pdf</li>
+<li>GIVEPose: Gradual Intra-class Variation Elimination for RGB-based Category-Level Object Pose Estimation - Liner, https://liner.com/review/givepose-gradual-intraclass-variation-elimination-for-rgbbased-categorylevel-object-pose</li>
+<li>RCGNet: RGB-based Category-Level 6D Object Pose Estimation with Geometric Guidance, https://arxiv.org/html/2508.13623v1</li>
+<li>Category Level 6D Object Pose Estimation from a Single RGB Image using Diffusion - arXiv, https://arxiv.org/html/2412.11420v1</li>
+<li>Learning Point Cloud Representations with Pose Continuity for Depth-Based Category-Level 6D Object Pose Estimation - arXiv, https://arxiv.org/html/2508.14358v1</li>
+<li>Category Level Object Pose Estimation via Neural Analysis-by- Synthesis, https://www.research-collection.ethz.ch/bitstreams/de09b969-9bf9-480b-bf22-81d724bf99a0/download</li>
+<li>SCOPE: Semantic Conditioning for Sim2Real Category-Level Object Pose Estimation in Robotics - arXiv, https://arxiv.org/html/2509.24572v1</li>
+<li>kerolex/ObjectPoseEstimationNOCS: List of research papers for multi-object pose estimation in 3D and comparative results on NOCS-REAL275 - GitHub, https://github.com/kerolex/ObjectPoseEstimationNOCS</li>
+<li>Category Level Object Pose Estimation via Global High-Order Pooling - MDPI, https://www.mdpi.com/2079-9292/13/9/1720</li>
+<li>KeyPose: Category-Level 6D Object Pose Estimation with Self-Adaptive Keypoints, https://ojs.aaai.org/index.php/AAAI/article/view/33046/35201</li>
+<li>Results of grasping experiment (successful rate [%]). 12 trials for… - ResearchGate, https://www.researchgate.net/figure/Results-of-grasping-experiment-successful-rate-12-trials-for-each-object-in-every_tbl1_365104008</li>
+<li>6IMPOSE: bridging the reality gap in 6D pose estimation for robotic grasping - PMC, https://pmc.ncbi.nlm.nih.gov/articles/PMC10565011/</li>
+<li>PS6D: Point Cloud Based Symmetry-Aware 6D Object Pose Estimation in Robot Bin-Picking, https://arxiv.org/html/2405.11257v1</li>
+<li>A Survey of Embodied Learning for Object-Centric Robotic Manipulation - arXiv, https://arxiv.org/html/2408.11537v1</li>
+<li>You Only Look at One: Category-Level Object Representations for Pose Estimation From a Single Example | OpenReview, https://openreview.net/forum?id=lb7B5Rw7tjw</li>
+<li>Refined Prior Guided Category-Level 6D Pose Estimation and Its Application on Robotic Grasping - MDPI, https://www.mdpi.com/2076-3417/14/17/8009</li>
+<li>Category-Level 6D Object Pose Estimation in the Wild: A Semi-Supervised Learning Approach and A New Dataset - Yang Fu, https://oasisyang.github.io/semi-pose/</li>
+</ol>
 
             </article>
             <footer>
