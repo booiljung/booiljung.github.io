@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:20.8.1 OOM(Out of Memory) 발생 원인 및 프로세스 강제 종료(OOM Killer) 대응</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>20.8.1 OOM(Out of Memory) 발생 원인 및 프로세스 강제 종료(OOM Killer) 대응</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 20. 시스템 트러블슈팅 및 장애 대응</a> / <a href="index.html">20.8 성능 저하 및 리소스 병목 분석</a> / <span>20.8.1 OOM(Out of Memory) 발생 원인 및 프로세스 강제 종료(OOM Killer) 대응</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>20.8.1 OOM(Out of Memory) 발생 원인 및 프로세스 강제 종료(OOM Killer) 대응</h1>
+<p>수 MB(메가바이트)의 메모리만으로도 거뜬하던 라우터(zenohd) 데몬이나 관제 프로세스가, 어느 순간 수 GB(기가바이트)의 RAM을 먹어치우며 리눅스 커널의 OOM(Out of Memory) 킬러에 의해 무참히 암살당한다면 그 주범은 <strong>통신 대기열 버퍼(Queue Buffer)의 범람</strong>에 있다.</p>
+<h3>0.1 단계: 저속 구독자(Slow Subscriber)로 인한 메모리 적체 현상</h3>
+<p>에지의 센서들은 1초에 1,000개의 데이터를 라우터로 무자비하게 퍼블리시한다. 그런데 클라우드의 백엔드나 파이썬 스크립트(구독자) 프로그램이 DB I/O 처리 등에 막혀서 1초에 단 100개만 가져간다.</p>
+<ul>
+<li><code>Reliable</code> 모드: Zenoh 라우터는 가져가지 못한 연약한(?) 구독자를 위해 나머지 900개의 패킷을 언젠가 전달해주기 위해 RAM에 캐싱(Caching)한다. 이런 상황이 단 10분만 누적되어도 라우터의 메모리는 선형적으로 폭발하여 OOM 킬러의 제물 1순위 타겟이 된다.</li>
+<li><strong>아키텍처 조치 방안:</strong> 최하단 센서의 송출 주파수(Hz) 자체를 물리적으로 낮추거나, 백엔드 컨슈머 구독자의 대수를 여러 대로 스케일 아웃(Scale-out) 시키는 수평 확장을 통해 근본적 속도 불균형을 해소하라.</li>
+</ul>
+<h3>0.2 단계: 공유 메모리 큐(Shared Memory Queue) 및 캐시 사이즈 제한(Cap)</h3>
+<p>서버 전체가 죽어 동반 자살(Cascading Crash)하는 비극을 막으려면, 뇌관을 라우터 선에서 물리적으로 폭파시켜야 한다. 라우터 설정 파일(<code>zenohd.json5</code>)에서 특정 세션에 허용된 최대 큐의 한계치 마지노선을 타이트하게 통제하라.</p>
+<pre><code class="language-json5">// zenohd.json5 네트워크 버퍼 제한 레이어
+transport: {
+  shared_memory: {
+    // 버퍼 사이즈를 무한히 두지 말고 50MB 등으로 리미트를 건다.
+    limit: 52428800  
+  },
+  link: {
+    tx_buffer_size: 1048576,
+    rx_buffer_size: 1048576
+  }
+}
+</code></pre>
+<p>설정을 걸면, OOM으로 죽는 대신 큐가 차는 순간 신규 유입 패킷을 비정하게 버려버리고(Drop) <code>Queue Full</code> 에러 로그를 뱉는다. 이 상태가 서버 전체 마비보다는 천 배 나은 아키텍트의 선택결과다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

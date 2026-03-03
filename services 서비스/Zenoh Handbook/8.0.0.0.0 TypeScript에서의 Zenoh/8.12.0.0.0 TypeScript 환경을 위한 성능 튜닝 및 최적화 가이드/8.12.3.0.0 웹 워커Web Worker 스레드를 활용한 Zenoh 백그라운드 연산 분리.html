@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:8.12.3 웹 워커(Web Worker) 스레드를 활용한 Zenoh 백그라운드 연산 분리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>8.12.3 웹 워커(Web Worker) 스레드를 활용한 Zenoh 백그라운드 연산 분리</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 8. TypeScript에서의 Zenoh</a> / <a href="index.html">8.12 TypeScript 환경을 위한 성능 튜닝 및 최적화 가이드</a> / <span>8.12.3 웹 워커(Web Worker) 스레드를 활용한 Zenoh 백그라운드 연산 분리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>8.12.3 웹 워커(Web Worker) 스레드를 활용한 Zenoh 백그라운드 연산 분리</h1>
+<p>마지막 족쇄. 브라우저는 “DOM을 그리는 렌더링 스레드“와 “JS 통신/계산 로직 스레드“가 무조건 1개의 라인에서 엉켜 굴러간다. Zenoh WASM 모듈이 날아오는 패킷을 처리하느라 바쁘면 당연히 화면의 버튼은 눌리지 않는다.</p>
+<h3>0.1 [Runbook] UI - 통신 완전 격리(Isolation) 전술</h3>
+<p>Web Worker를 하나 파서, Zenoh의 모든 기동 파일과 구독 통신망을 그 지하실(Worker Thread)에서 혼자 돌도록 가둬버린다.</p>
+<p><strong>1. 워커 스크립트 작성 (<code>zenoh-worker.js</code>)</strong><br />
+Vite 환겨 등에서는 워커 내부에서 ES 모듈 임포트가 가능하게 세팅된다.</p>
+<pre><code class="language-typescript">// 이 파일은 메인 화면과 독립된 100% 다른 시공간(스레드)에서 실행된다!
+import * as zenoh from "@eclipse-zenoh/zenoh";
+
+let session: zenoh.Session;
+
+// 메인 화면에서 지시(PostMessage)가 내려오면 반응
+self.onmessage = async (e) =&gt; {
+    if (e.data.cmd === "BOOT") {
+        session = await zenoh.open();
+        
+        await session.declareSubscriber("robot/video", (sample) =&gt; {
+            // [핵심] JSON 구역이든 이미지든 여기서 디코딩을 처리한 뒤
+            const resultMsg = new TextDecoder().decode(sample.payload);
+            
+            // 메인 화면(UI)으로 정제된 결과만 핑퐁쳐서 올려보냄!
+            self.postMessage({ type: "DATA", data: resultMsg });
+        });
+    }
+};
+</code></pre>
+<p><strong>2. 메인 화면(React 등)의 통제</strong></p>
+<pre><code class="language-typescript">import { useEffect, useState } from "react";
+
+function DroneApp() {
+    const [msg, setMsg] = useState("");
+
+    useEffect(() =&gt; {
+        // 브라우저 백그라운드 스레드(워커) 소환
+        const worker = new Worker(new URL('./zenoh-worker.js', import.meta.url), { type: 'module' });
+        
+        // 워커에게 부팅하라고 지시
+        worker.postMessage({ cmd: "BOOT" });
+
+        // 워커가 지하실에서 가공을 끝마치고 올려보낸 데이터만 받아서 그린다.
+        worker.onmessage = (e) =&gt; {
+            if (e.data.type === "DATA") setMsg(e.data.data);
+        };
+
+        return () =&gt; worker.terminate(); // 컴포넌트 파괴 시 워커 학살
+    }, []);
+
+    return &lt;div&gt;{msg}&lt;/div&gt;
+}
+</code></pre>
+<p>이 패턴이 프론트엔드 최적화의 “어전 시합 종결자” 다.<br />
+이로써 당신의 웹 앱 메인 스레드는 CPU 1%만 사용하며 매우 쾌적한 화면 전환을 제공하고, 뒤쪽 지하실에서는 워커 스레드가 Zenoh망의 수만 개 데이터들과 혈투를 벌이는 마이크로서비스(Microfrontend) 스펙이 완성된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

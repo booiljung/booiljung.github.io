@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:20.5.2.2 메모리 할당/해제 오류(Valgrind 활용) 및 ABI 호환성 문제</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>20.5.2.2 메모리 할당/해제 오류(Valgrind 활용) 및 ABI 호환성 문제</h1>
+                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> / <a href="../../../../index.html">서비스 (Services)</a> / <a href="../../../index.html">제목: Zenoh 핸드북</a> / <a href="../../index.html">Chapter 20. 시스템 트러블슈팅 및 장애 대응</a> / <a href="../index.html">20.5 프로그래밍 언어별 클라이언트(API) 디버깅 및 최적화</a> / <a href="index.html">20.5.2 C/C++ 기반 Zenoh 애플리케이션 트러블슈팅</a> / <span>20.5.2.2 메모리 할당/해제 오류(Valgrind 활용) 및 ABI 호환성 문제</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>20.5.2.2 메모리 할당/해제 오류(Valgrind 활용) 및 ABI 호환성 문제</h1>
+<p>프로그램이 크래시는 나지 않지만, 로봇을 켜두고 다음 날 와보면 메모리가 99% 꽉 차 있어 시스템 전체가 느려진 채 죽기만을 기다리고 있다. 이것은 할당(Allocation)은 했으나 해제(Free/Drop)를 잊어버린 전형적인 메모리 릭(Leak)이다.</p>
+<h3>0.1  뼈를 깎는 소멸자 검증 - Valgrind 프로파일링</h3>
+<p><code>zenoh-c</code> API를 쓰면서 선언한 모든 세션, 퍼블리셔 선언(<code>z_declare_publisher</code>), 키 익스프레션(<code>z_keyexpr</code>)은 힙(Heap) 메모리를 갉아먹는다. 이 자원은 <code>z_undeclare</code> 나 <code>z_drop</code>을 호출해주지 않으면 무한정 증식한다.</p>
+<p>개발자가 작성한 C 애플리케이션을 리눅스 메모리 프로파일러의 거장인 <code>valgrind</code> 위에서 무자비하게 돌려라.</p>
+<pre><code class="language-bash">valgrind --leak-check=full --show-leak-kinds=all ./my_sensor_app
+</code></pre>
+<p>스크립트 구동 직후 나오는 리포트 중에 <code>definitely lost: 10,204 bytes in 50 blocks</code>라는 무지막지한 붉은 글씨가 보인다면, 그 블록을 생성한 함수 호출 스택 넘버 라인을 따라가 해당 변수에 쌍을 이루는 <code>z_drop()</code> 로직 누락 부위를 땜질하라. 당신의 코드 라인마다 할당과 소멸의 완벽한 1:1 대칭을 이루는 것이 유일한 구원의 길이다.</p>
+<h3>0.2  Shared Library 버전 불일치 및 ABI 호환성 마찰</h3>
+<p><code>libzenohc.so</code> 동적 라이브러리 파일을 시스템 <code>/usr/lib</code> 계층에 둔 채로, 개발팀의 A 모듈은 0.6 버전 헤더(<code>/usr/include/zenoh.h</code>)를, B 모듈은 최근 변경된 0.7 버전의 바이너리 구현체를 물고 링크 컴파일을 진행했다.</p>
+<p>이 C 코드 바이너리를 돌리는 도중, 특정 API 함수(<code>z_put</code>)가 불리는 순간 영문 모를 쓰레기(Garbage)값이 파라미터로 넘어가거나 코어 덤프가 터진다.<br />
+ABI(Application Binary Interface) 구조체 크기나 배열 오프셋 크기가 라이브러리 메이저 버전 업데이트로 달라졌음에도 강제로 결합되어 벌어지는 파국이다.<br />
+이런 재난을 피하기 위해 <code>ldd</code> 파편화 추적을 생활화하고, 컴파일링 호환성이 무너졌다면 시스템상의 C 메이저 헤더 파일을 모조리 클리어하고 완전히 클린 빌드(Clean Build)하는 정공법을 택해라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

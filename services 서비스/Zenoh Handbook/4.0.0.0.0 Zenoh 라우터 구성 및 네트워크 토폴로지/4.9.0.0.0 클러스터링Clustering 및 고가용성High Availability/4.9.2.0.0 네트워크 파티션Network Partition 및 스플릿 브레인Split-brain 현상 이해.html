@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:4.9.2 네트워크 파티션(Network Partition) 및 스플릿 브레인(Split-brain) 현상 이해</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>4.9.2 네트워크 파티션(Network Partition) 및 스플릿 브레인(Split-brain) 현상 이해</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 4. Zenoh 라우터 구성 및 네트워크 토폴로지</a> / <a href="index.html">4.9 클러스터링(Clustering) 및 고가용성(High Availability)</a> / <span>4.9.2 네트워크 파티션(Network Partition) 및 스플릿 브레인(Split-brain) 현상 이해</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>4.9.2 네트워크 파티션(Network Partition) 및 스플릿 브레인(Split-brain) 현상 이해</h1>
+<p>분산 시스템의 영원한 숙제인 CAP 정리(Consistency, Availability, Partition Tolerance)에서 Zenoh는 본질적으로 <strong>A(가용성)와 P(파티션 허용치)</strong> 에 극도로 치우쳐 있는 생존형 프로토콜이다.</p>
+<h3>0.1 스플릿 브레인(Split-Brain) 시나리오</h3>
+<p>클러스터로 묶여있던 공장망 A(라우터 1, 2)와 공장망 B(라우터 3, 4) 사이에 연결된 광케이블이 포크레인에 찍혀 끊어졌다고 가정하자.</p>
+<ul>
+<li><em>RabbitMQ나 Kafka의 경우</em> : 리더 노드(Zookeeper)를 잃었다고 판단하여 망 전체의 쓰기(Publish)가 정지되는(Consistency 방어) 참사가 터진다.</li>
+<li><strong>[Zenoh의 생명 유지 전술]</strong> : “어차피 우린 탈중앙화 잖아?”<br />
+망 A에 있는 로봇들은 자기들끼리 로컬 망으로 Pub/Sub을 계속하며 정상 동작한다. 망 B도 마찬가지다. 즉, 하나의 거대한 뇌가 반으로 갈라져도(Split) 각자의 로컬 생태계 내에서는 <strong>100% 가용성(Availability)</strong> 을 보장한다.</li>
+</ul>
+<h3>0.2 [아키텍트 런북] 파티션 융합(Merge) 마찰 제어</h3>
+<p>광케이블이 3일 뒤에 복구되었다면? 갈라졌던 라우터들의 Gossip 스레드들이 만나 서로 밀려있던 테이블을 맞추기 시작한다.<br />
+이때 과거의 <code>Storage</code> 캐시 데이터들이 충돌할 수 있으므로, Zenoh의 최신 타임스탬프(HLC, Hybrid Logical Clocks) 병합 알고리즘이 자동으로 과거 데이터를 도려내고 미래 데이터를 덮어쓴다. (추후 13.5 ’분산 데이터 동기화’에서 극비리 심화).<br />
+운영 관리자는 망 분리 사태가 발생해도 <code>로봇 시스템 자체는 절대 멈추지 않는다</code>는 사실 하나만 믿고 가면 된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

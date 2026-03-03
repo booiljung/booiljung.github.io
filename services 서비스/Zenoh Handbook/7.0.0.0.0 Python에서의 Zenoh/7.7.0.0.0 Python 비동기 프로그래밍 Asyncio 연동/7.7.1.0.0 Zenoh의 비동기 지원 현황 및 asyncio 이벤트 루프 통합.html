@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:7.7.1 Zenoh의 비동기 지원 현황 및 `asyncio` 이벤트 루프 통합</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>7.7.1 Zenoh의 비동기 지원 현황 및 `asyncio` 이벤트 루프 통합</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 7. Python에서의 Zenoh</a> / <a href="index.html">7.7 Python 비동기 프로그래밍 (Asyncio) 연동</a> / <span>7.7.1 Zenoh의 비동기 지원 현황 및 `asyncio` 이벤트 루프 통합</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>7.7.1 Zenoh의 비동기 지원 현황 및 <code>asyncio</code> 이벤트 루프 통합</h1>
+<p>동기식 스크립트에서는 <code>zenoh.open()</code> 을 썼지만, 비동기 세계에 들어선 이상 당신은 이 함수를 영원히 머릿속에서 지워야 한다. I/O 블로킹(소켓 열기)이 메인 이벤트 루프를 멈추게(Freeze) 하기 때문이다.</p>
+<h3>0.1 [Runbook] 비동기 세션(Session) 개방 전술</h3>
+<p>Zenoh는 비동기 전용 패키지 객체와 비동기 전용 클래스를 철저히 분리해 두었다.</p>
+<pre><code class="language-python">import asyncio
+import zenoh
+
+async def main():
+    print("비동기(Async) Zenoh 라우터 접속 중...")
+    
+    # [핵심 1] open() 이 아니라 aopen() 을 써야 하며, 반드시 await 를 붙인다.
+    # 연결되는 동안 다른 파이썬 태스크(FastAPI 등)가 멈추지 않고 자기 할 일을 한다.
+    session = await zenoh.aopen(zenoh.Config())
+    
+    print(f"세션 획득 완료: {session.info.zid()}")
+    
+    # ... 비동기 작업 로직 (Pub/Sub) ...
+    
+    # [핵심 2] 닫을 때도 코루틴을 태워서 닫아야 커널이 데드락에 빠지지 않는다.
+    await session.aclose()
+    print("비동기 세션 완전 파괴")
+
+if __name__ == "__main__":
+    # 파이썬 메인 이벤트 루프 엔진 가동
+    asyncio.run(main())
+</code></pre>
+<p><strong>[아키텍처 인스펙션]</strong><br />
+내부적으로 <code>aopen</code> 은 파이썬 스레드를 막지 않고, 내부의 Rust 워커 스레드에게 “네트워크 접속을 시도하라“고 명령한 뒤 파이썬의 <code>Future</code> 객체를 반환한다. Rust 코어가 TCP 핸드셰이크를 끝내면 이 <code>Future</code>를 때려서 파이썬 루프를 다시 깨운다. 이것이 컨텍스트 스위칭 낭비 제로(Zero)의 비결이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

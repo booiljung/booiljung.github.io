@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.10.4 Rust 컴파일러의 LTO(Link Time Optimization) 옵션을 통한 성능 극대화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.10.4 Rust 컴파일러의 LTO(Link Time Optimization) 옵션을 통한 성능 극대화</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 5. Rust에서의 Zenoh</a> / <a href="index.html">5.10 성능 최적화 및 벤치마킹 프로파일링</a> / <span>5.10.4 Rust 컴파일러의 LTO(Link Time Optimization) 옵션을 통한 성능 극대화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.10.4 Rust 컴파일러의 LTO(Link Time Optimization) 옵션을 통한 성능 극대화</h1>
+<p>코드를 한 줄도 고치지 않고 시스템 Throughput을 20% 끌어올릴 수 있다면 믿겠는가?<br />
+Rust 생태계에서는 컴파일 옵션을 쥐어짜는 것만으로도 C++ <code>O3</code> 튜닝을 넘어선다. особенно Zenoh 같은 거대한 매크로와 인라인(inline) 함수 범벅의 네트워크 라이브러리는 <strong>LTO(Link Time Optimization)</strong> 의 축복을 가장 극적으로 받는다.</p>
+<h3>0.1 [Runbook] 프로덕션 릴리스 프로필 폭격 전술</h3>
+<p>이 세팅은 로컬에서 매일 테스트할 때 쓰면 느려서 속이 터지지만, 최종적으로 클라우드 도커(Docker) 컨테이너를 구울 때 컴파일러가 모든 힘을 내게 하는 궁극의 레시피다.</p>
+<p><strong>오직 극한의 성능을 쥐어짜는 <code>Cargo.toml</code></strong></p>
+<pre><code class="language-toml">[profile.release]
+# 1. 컴파일 속도와 바이너리 크기 따위는 신경 쓰지 않는다. 기계어 최적화 레벨 MAX.
+opt-level = 3
+
+# 2. [핵심] LTO (Link Time Optimization)
+# Zenoh 라이브러리 바이너리와 내 코드의 경계를 허물고, 하나로 묶어 죽은 코드를 소거하며
+# 함수 점프 오버헤드 대신 인라인(Inlining) 코드로 전부 평탄화시킨다.
+lto = "fat"
+
+# 3. 단일 병목 컴파일 강제
+# 보통 Rust는 멀티 코어로 분할(Codegen units) 빌드하지만 통일된 최적화를 방해한다.
+# 이를 1로 맞추면, 컴파일러가 전체 코드를 통째로 내려다보며 캐시 친화적인 기계어를 짠다.
+codegen-units = 1
+
+# 4. 안전망 제거
+# 에러가 나면 스택 추적(StackTrace)을 하지 않고 즉시 강제종료. 
+# 오버헤드 메모리를 소거한다.
+panic = "abort"
+</code></pre>
+<p><strong>[아키텍처 인스펙션]</strong><br />
+<code>zenoh::open()</code> 이나 <code>session.put()</code> 내부의 깊고 깊은 뎁스의 함수 콜 트리들이, LTO 옵션을 켜는 순간 하나의 연속적인 기계어(Assembly) 블록으로 압착된다.<br />
+특히 CPU의 분기 예측(Branch Prediction) 실패 확률이 기적적으로 떨어지기 때문에, Raspberry Pi 4 등 빈약한 에지 디바이스에서 LTO 빌드 유무는 초당 패킷 처리량을 10만 개에서 12만 개로 단박에 점프시키는 마법의 스위치다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

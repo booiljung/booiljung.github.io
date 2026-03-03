@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.9.3 패닉(Panic) 방지를 위한 안전한 예외 처리 및 복구 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.9.3 패닉(Panic) 방지를 위한 안전한 예외 처리 및 복구 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 5. Rust에서의 Zenoh</a> / <a href="index.html">5.9 에러 처리(Error Handling)와 안전성 보장</a> / <span>5.9.3 패닉(Panic) 방지를 위한 안전한 예외 처리 및 복구 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.9.3 패닉(Panic) 방지를 위한 안전한 예외 처리 및 복구 기법</h1>
+<p>어떻게든 죽지 않게 짜도, 예측 못한 스레드 경합(Race Condition)이나 다른 라이브러리 충돌 때문에 특정 워커 스레드가 <code>panic!()</code>을 내며 폭사하는 경우가 있다.<br />
+Rust의 멀티플렉싱 비동기 생태계(Tokio)에서는 하나의 자식 태스크가 죽는다고 시스템 전체가 다운되지는 않지만, 좀비 포트가 남거나 메모리가 묶이는 상황을 우아하게 복구(Recovery)시켜야 한다.</p>
+<h3>0.1 [Runbook] 비동기 태스크 포획 및 패닉 복구</h3>
+<p><code>tokio::spawn</code>으로 띄운 백그라운드 태스크의 죽음(<code>JoinError</code>)을 잡아채는 그물을 만들어야 한다.</p>
+<pre><code class="language-rust">use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    let session = zenoh::open(Config::default()).res().await.unwrap();
+    let s_clone = session.clone();
+
+    // 심장 역할을 하는 통신 스레드 기동
+    let handle = task::spawn(async move {
+        let publisher = s_clone.declare_publisher("robot/vital").res().await.unwrap();
+        
+        // ... 모종의 이유로 강제 패닉 발생 가정!
+        panic!("카메라 메모리가 터져서 스레드를 강제 종료합니다!");
+    });
+
+    // 메인 관제 스레드에서 자식의 목숨을 모니터링한다
+    match handle.await {
+        Ok(_) =&gt; println!("통신 스레드 정상 종료"),
+        Err(join_err) =&gt; {
+            if join_err.is_panic() {
+                eprintln!("[치명적 재난] 패닉 발생 감지됨! 시스템 리로딩 절차를 밟습니다.");
+                // 1. 여기서 Zenoh 코어 세션을 우아하게 닫고 자원을 즉시 회수한다.
+                let _ = session.close().res().await;
+                // 2. 물리적 서보 모터(Hardware)의 비상 락(Brake)을 건다.
+                trigger_hardware_emergency_brake();
+            } else if join_err.is_cancelled() {
+                println!("태스크가 정상적으로 캔슬되었습니다.");
+            }
+        }
+    }
+}
+</code></pre>
+<p>이처럼 패닉을 두려워하지 않고(Fearless) 그것을 잡아채어 <code>session.close()</code> 로 뒤를 닦아낸 뒤 모터를 정지시키는 그물(Catch) 설계야말로, 당신이 시스템을 엔터프라이즈 레벨로 격상시켰음을 증명하는 금자탑이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

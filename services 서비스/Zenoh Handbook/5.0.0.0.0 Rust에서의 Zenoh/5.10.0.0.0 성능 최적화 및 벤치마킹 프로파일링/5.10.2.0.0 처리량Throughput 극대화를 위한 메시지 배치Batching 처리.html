@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.10.2 처리량(Throughput) 극대화를 위한 메시지 배치(Batching) 처리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.10.2 처리량(Throughput) 극대화를 위한 메시지 배치(Batching) 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 5. Rust에서의 Zenoh</a> / <a href="index.html">5.10 성능 최적화 및 벤치마킹 프로파일링</a> / <span>5.10.2 처리량(Throughput) 극대화를 위한 메시지 배치(Batching) 처리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.10.2 처리량(Throughput) 극대화를 위한 메시지 배치(Batching) 처리</h1>
+<p>비행기에 승객을 한 명씩 태우고 이륙-착륙을 반복하는 악덕 항공사는 없다.<br />
+초당 10만 개의 작은 센서 값을 날릴 때 매번 <code>session.put()</code>을 치는 행위는, TCP/IP의 거대한 프로토콜 헤더를 10만 번 붙였다 뗐다 하는 미친 짓이다. 이것은 CPU와 네트워크를 동시에 죽인다.</p>
+<h3>0.1 [Runbook] 로보틱스 데이터 배치(Batch) 융합 전술</h3>
+<p>데이터의 전송 레이턴시가 좀 희생되더라도(약 10ms 모았다 쏘기), 대역폭(Throughput)을 수백 배로 폭발시키는 전략이다.</p>
+<p><strong>1. 송신부: Nagle 알고리즘과 수동 버퍼 큐잉</strong><br />
+로직 스레드에서 직접 <code>put()</code>을 치지 말고 로컬 큐(Vector)에 우겨넣은 뒤, 타이머가 차면 한꺼번에 배열로 묶어(<code>Batch</code>) 발사한다.</p>
+<pre><code class="language-rust">use tokio::time::{interval, Duration};
+
+let mut batch_buffer = Vec::new();
+let mut tick = interval(Duration::from_millis(10)); // 10ms마다 강제 발송
+
+loop {
+    tokio::select! {
+        // 로컬 센서가 잰 값을 버퍼에 우겨넣는다.
+        sensor_data = read_sensor_async() =&gt; {
+            batch_buffer.push(sensor_data);
+            
+            // 만약 강제 버퍼 사이즈(1,000개)가 넘치면 타이머를 어기고 쏜다! (Backpressure 방어)
+            if batch_buffer.len() &gt;= 1000 {
+                let serialized = bincode::serialize(&amp;batch_buffer).unwrap();
+                publisher.put(serialized).res().await.unwrap();
+                batch_buffer.clear();
+            }
+        }
+        // 10ms 타이머가 터지면 버퍼가 1개든 999개든 무조건 모아서 쏜다.
+        _ = tick.tick() =&gt; {
+            if !batch_buffer.is_empty() {
+                let serialized = bincode::serialize(&amp;batch_buffer).unwrap();
+                publisher.put(serialized).res().await.unwrap();
+                batch_buffer.clear();
+            }
+        }
+    }
+}
+</code></pre>
+<p>이 배치 전술은 초당 수십만 개의 데이터 포인트를 생산하는 라이다(LiDAR) 포인트 클라우드나 고주파 진동(Vibration) 센서 텔레메트리를 클라우드로 올릴 때 반드시 탑재되어야 하는 필수 모터 엔진이다. 한 번의 TCP Frame 안에 수백 개의 데이터를 조밀하게 구겨 넣어라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

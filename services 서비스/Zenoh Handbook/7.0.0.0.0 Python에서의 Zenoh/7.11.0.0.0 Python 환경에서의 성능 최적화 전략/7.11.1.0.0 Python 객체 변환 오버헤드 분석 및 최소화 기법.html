@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:7.11.1 Python 객체 변환 오버헤드 분석 및 최소화 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>7.11.1 Python 객체 변환 오버헤드 분석 및 최소화 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 7. Python에서의 Zenoh</a> / <a href="index.html">7.11 Python 환경에서의 성능 최적화 전략</a> / <span>7.11.1 Python 객체 변환 오버헤드 분석 및 최소화 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>7.11.1 Python 객체 변환 오버헤드 분석 및 최소화 기법</h1>
+<p>Zenoh 네트워크에서 아무리 제로 카피(Zero-Copy)로 데이터가 날아와도, 그것을 파이썬 스크립트가 <code>json.loads</code> 나 <code>int()</code> 로 캐스팅하는 순간 무거운 <code>PyObject</code> 가 메모리 힙(Heap)에 튀어나온다. 이 행위가 초당 10만 번 일어난다면 파이썬 인터프리터는 문자열 파싱만 하다가 압살당한다.</p>
+<h3>0.1 [Runbook] 데이터 변환 딜레이 타파 전술</h3>
+<p><strong>안티 패턴: 무지성 형 변환</strong></p>
+<pre><code class="language-python"># 10만번 반복되는 루프 안
+def bad_callback(sample: zenoh.Sample):
+    # 1. 바이트를 파이썬 String 클래스로 복사 변환
+    raw_str = sample.payload.decode('utf-8')
+    # 2. String 클래스를 파싱해 거대한 파이썬 Dict 객체 트리 생성
+    data = json.loads(raw_str) 
+    # 3. 객체 안에서 Key 검색
+    value = data["sensor_val"] 
+</code></pre>
+<p>이 3단계 변환은 초당 TPS(Transactions Per Second)를 1,000 이하로 수직 하락시키는 주범이다.</p>
+<p><strong>전술 1. 바이너리 뷰(Binary View) 구조체 캐스팅</strong><br />
+데이터를 <code>JSON</code> 대신 정적 구조체(<code>struct</code>) 패킹으로 바꾸고, 수신부에서는 파이썬 객체를 “생성“하는 대신 C 메모리 주소값만 “읽어(View)“낸다.</p>
+<pre><code class="language-python">import struct
+
+def good_callback(sample: zenoh.Sample):
+    # payload 자체를 복사(decode) 하지 않고 메모리 번지에 struct 칼을 넣고 자름
+    # "i f" = 정수(4byte) 1개, 실수(4byte) 1개 등 총 8바이트 메모리 공간으로 매핑
+    sensor_id, sensor_val = struct.unpack("i f", sample.payload)
+    
+    # 단 한 번의 바이트-&gt;객체 변환만 일어남. (JSON 대비 약 40배 빠름)
+    print(sensor_val)
+</code></pre>
+<p><strong>전술 2. 식별자(KeyExpr) 캐싱 처리</strong><br />
+앞서 7.4.1장에서도 강조했듯, 루프 안에서 파이썬 String <code>sensor/temperature</code> 을 반복적으로 Zenoh API 에 넣으면 매번 파싱 검증이 일어난다. 반드시 부팅 시점에 만들어 둔 <code>zenoh.KeyExpr("sensor/temperature")</code> 객체를 재활용하라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

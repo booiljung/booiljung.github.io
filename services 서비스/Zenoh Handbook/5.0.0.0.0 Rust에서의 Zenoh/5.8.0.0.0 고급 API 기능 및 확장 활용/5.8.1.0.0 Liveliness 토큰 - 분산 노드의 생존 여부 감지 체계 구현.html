@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.8.1 Liveliness 토큰 - 분산 노드의 생존 여부 감지 체계 구현</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.8.1 Liveliness 토큰 - 분산 노드의 생존 여부 감지 체계 구현</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 5. Rust에서의 Zenoh</a> / <a href="index.html">5.8 고급 API 기능 및 확장 활용</a> / <span>5.8.1 Liveliness 토큰 - 분산 노드의 생존 여부 감지 체계 구현</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.8.1 Liveliness 토큰 - 분산 노드의 생존 여부 감지 체계 구현</h1>
+<p>수천 대의 로봇을 모니터링할 때 “데이터가 들어오고 있다“는 사실만으로는 부족하다. 로봇이 터널 밑으로 들어가서 통신이 끊어졌을 때(Silent Drop), 그 침묵을 즉각적으로 인지하고 관제 화면의 아이콘을 빨간색으로 바꿔야 한다.</p>
+<h3>0.1 [Runbook] 심장 박동(Heartbeat) 감시 체계 자동화</h3>
+<p>Zenoh의 <strong>Liveliness Token</strong>은 응용 프로그램에서 <code>while(ping)</code>을 무한으로 날릴 필요 없이, 라우터 망 자체가 각 노드의 심장 박동을 모니터링해 주는 하드코어 기능이다.</p>
+<p><strong>1. 로봇(에지) 측: 생존 토큰 발급</strong><br />
+로봇은 켜지자마자 자신의 목숨줄(Token)을 쥐고 있어야 한다.</p>
+<pre><code class="language-rust">use zenoh::key_expr::keyexpr;
+
+#[tokio::main]
+async fn main() {
+    let session = zenoh::open(Config::default()).res().await.unwrap();
+
+    // 내가 살아있음을 "robot/1/alive" 라는 공간에 등록 선언한다.
+    let _liveliness = session
+        .declare_liveliness(keyexpr!("robot/1/alive"))
+        .res()
+        .await
+        .unwrap();
+
+    // 로봇이 정상 작동하는 동안 이 변수(_liveliness)는 스코프 안에 살아있다.
+    // 프로그램이 크러시 나거나 랜선이 뽑히면 라우터는 이 토큰을 '소멸' 처리한다.
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+}
+</code></pre>
+<p><strong>2. 브레인(클라우드 관제) 측: 부고 및 탄생 알림 감지</strong><br />
+관제 시스템은 <code>LivelinessSubscriber</code>를 띄워, 전 세계 로봇들의 토큰이 살아서 켜지고(Alive), 죽어서 꺼지는(Dropped) 즉각(Interrupt) 이벤트만 통보받는다.</p>
+<pre><code class="language-rust">let mut lively_sub = session
+    .declare_liveliness_subscriber("robot/*/alive")
+    .res()
+    .await
+    .unwrap();
+
+// 토큰 변화 감지 무한 루프
+while let Ok(event) = lively_sub.recv_async().await {
+    use zenoh::liveliness::LivelinessEvent::*;
+    match event {
+        Alive(token) =&gt; println!("[로그인] {} 로봇이 통신망에 접속했습니다.", token.key_expr.as_str()),
+        Dropped(token) =&gt; eprintln!("[비상] {} 로봇 통신 두절!", token.key_expr.as_str()),
+    }
+}
+</code></pre>
+<p>개발자는 타임아웃 계산, Ping/Pong 스레드를 단 한 줄도 짤 필요가 없다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

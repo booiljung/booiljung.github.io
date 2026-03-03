@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:7.3.1 기본 세션 초기화 및 리소스 종료 전략 (Context Manager 활용)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>7.3.1 기본 세션 초기화 및 리소스 종료 전략 (Context Manager 활용)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 7. Python에서의 Zenoh</a> / <a href="index.html">7.3 세션(Session) 관리 및 환경 설정(Config)</a> / <span>7.3.1 기본 세션 초기화 및 리소스 종료 전략 (Context Manager 활용)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>7.3.1 기본 세션 초기화 및 리소스 종료 전략 (Context Manager 활용)</h1>
+<p>파이썬 환경에서는 <code>zenoh.open()</code> 을 치면 즉시 연결되지만, 스크립트가 끝났거나 에러가 났을 때 이 세션(<code>session.close()</code>)을 닫아주지 않으면 백엔드의 Rust 스레드들이 파이썬 프로세스를 붙잡고 메모리 좀비(Zombie)로 남아버린다.<br />
+따라서 Python Zenoh 개발 시에는 C++의 RAII 패턴에 해당하는 <code>with</code> 구문 도입이 생명선이다.</p>
+<h3>0.1 [Runbook] 프로덕션 세션 록인(Lock-in) 전술</h3>
+<pre><code class="language-python">import zenoh
+import time
+
+def run_main_loop():
+    print("Zenoh 라우터 접속 시도...")
+    
+    # [핵심] with 문을 사용하면, 블록을 빠져나오거나 에러로 인해 크래시가 발생하더라도
+    # 파이썬 인터프리터가 __exit__ 매직 메서드를 통해 세션을 완벽하게 z_close() 해준다.
+    with zenoh.open() as session:
+        print(f"세션 획득 성공. ID: {session.info.zid()}")
+        
+        # 비즈니스 로직 구동 (무한 루프 혹은 퍼블리싱 로직)
+        pub = session.declare_publisher("robot/logs")
+        pub.put("시스템 부팅 완료")
+        
+        # 일부러 에러를 발생시켜 본다
+        # 1 / 0
+        
+        time.sleep(2)
+
+    print("이 줄에 도달할 때쯤이면, TCP 소켓은 100% 끊어져 있다.")
+
+if __name__ == "__main__":
+    try:
+        run_main_loop()
+    except Exception as e:
+        print(f"치명적 버그 발생: {e}")
+</code></pre>
+<p>만약 부득이하게 전역(Global) 변수나 싱글톤으로 세션을 선언했다면, <code>atexit</code> 모듈을 쓰거나 스크립트 종료 이벤트 핸들러(Signal <code>SIGINT</code>)를 낚아채어 명시적으로 <code>session.close()</code>를 파괴해야만 클라우드 라우터 단에서 “Disconnected” 에러 타임아웃을 온전히 줄일 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

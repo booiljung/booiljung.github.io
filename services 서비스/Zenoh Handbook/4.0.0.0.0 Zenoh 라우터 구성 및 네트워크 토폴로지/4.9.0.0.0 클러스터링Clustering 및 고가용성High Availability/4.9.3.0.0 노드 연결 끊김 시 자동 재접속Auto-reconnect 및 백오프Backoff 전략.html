@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:4.9.3 노드 연결 끊김 시 자동 재접속(Auto-reconnect) 및 백오프(Backoff) 전략</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>4.9.3 노드 연결 끊김 시 자동 재접속(Auto-reconnect) 및 백오프(Backoff) 전략</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 4. Zenoh 라우터 구성 및 네트워크 토폴로지</a> / <a href="index.html">4.9 클러스터링(Clustering) 및 고가용성(High Availability)</a> / <span>4.9.3 노드 연결 끊김 시 자동 재접속(Auto-reconnect) 및 백오프(Backoff) 전략</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>4.9.3 노드 연결 끊김 시 자동 재접속(Auto-reconnect) 및 백오프(Backoff) 전략</h1>
+<p>엘리베이터를 탄 배달 로봇이 LTE 망 음영 지대에 들어가서 AWS 클라우드 라우터와의 소켓이 터져버렸다.<br />
+엘리베이터에서 내렸을 때 로봇(클라이언트)이 한 행동은 무엇이어야 할까? 수동으로 프로세스를 껐다 켜줘야(Restart) 하는가?</p>
+<h3>0.1 [Runbook] 백오프(Background Backoff) 재연결 튜닝</h3>
+<p>Zenoh가 찬양받는 또 다른 이유는, 네트워크 장애 시 클라이언트 엔진 단벽 내부에서 미친 듯이 살기 위해 발버둥 치는 <strong>Exponential Backoff 재연결 로직</strong>이 하드코딩 되어 있기 때문이다.</p>
+<p><strong>[연결 시도 주기(Interval) 통제]</strong><br />
+<code>1초 - 2초 - 4초 - 8초</code> 식으로 재접속 시도 간격을 기하급수적으로 늘려나감으로써 통신사의 기지국 트래픽을 배려하고 과부하를 막는 설정이다.</p>
+<p>어그레시브(Aggressive)하게 당장 붙어야 하는 환경이라면 클라이언트/라우터 <code>json5</code>의 이 부분을 손보아라.</p>
+<pre><code class="language-json5">{
+  connect: {
+    endpoints: ["tcp/cloud.com:7447"],
+    // 기본 백오프 주기(최초 100ms 다이렉트 핑, 최대 10초 대기)
+    backoff: {
+      initial_delay: 200,   // 끊기자마자 0.2초만에 1차 시도
+      max_delay: 5000,      // 아무리 포기 상태여도 5초마다 무한으로 살리려 시도
+      multiplier: 1.5       // 시도 주기가 1.5배씩 증가
+    }
+  }
+}
+</code></pre>
+<p><strong>주의:</strong> 엘리베이터에 낀 로봇 1만 대가 동시에 <code>initial_delay: 1ms</code> 로 클라우드를 치게 만들면 스스로 서버를 폭파하는 DDOS 공격이 된다. 망의 대수를 고려하여 Backoff에 지터(Jitter, 난수 시간)를 섞을 수 있게 최소 1000ms 이상으로 이완시켜라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

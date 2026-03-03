@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:10.2.4 상태 머신(State Machine)과 프로토콜 스택 경량화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>10.2.4 상태 머신(State Machine)과 프로토콜 스택 경량화</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 10. 마이크로컨트롤러를 위한 Zenoh-Pico</a> / <a href="index.html">10.2 Zenoh-Pico 아키텍처 및 내부 구조</a> / <span>10.2.4 상태 머신(State Machine)과 프로토콜 스택 경량화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>10.2.4 상태 머신(State Machine)과 프로토콜 스택 경량화</h1>
+<p>패킷이 1바이트 1바이트씩 더럽게 찢어져서 날아오는 시리얼 통신(UART) 환경을 상상해 보라.<br />
+이 찢어진 데이터를 “하나의 멀쩡한 JSON“이나 “명령어 덩어리“로 조립하는 것은 악몽이다.</p>
+<p>그래서 Zenoh-Pico는 내부에 파괴적인 <strong>디코더 상태 머신(Decoder State Machine)</strong> 을 갈아 넣었다.</p>
+<h3>0.1 [아키텍처 인스펙션] 바이트 집적(Accumulation) 사이클</h3>
+<p>Pico 의 코어는 들어오는 바이트(Byte) 조각들을 버퍼(<code>rx_buffer</code>)에 밀어 넣다가, 완벽한 “Zenoh 규격 패킷 1개” 가 완성되는 찰나(State Shift) 에만 당신의 콜백 함수를 우아하게 깨워준다.</p>
+<p><strong>1. 상태 A (대기 및 헤더 스캐닝)</strong></p>
+<ul>
+<li>네트워크 케이블(또는 안테나)로부터 1바이트가 떨어지길 개처럼 기다린다.</li>
+<li>매직 코드(Zenoh 프로토콜의 시작을 알리는 특수 문자열)인지 확인한다.</li>
+</ul>
+<p><strong>2. 상태 B (페이로드 조립)</strong></p>
+<ul>
+<li>헤더를 통해 이 메시지가 사이즈 50바이트 짜리 PUT 명령임을 획득했다.</li>
+<li>앞으로 튈 50바이트를 <code>rx_buffer</code> 의 특정 틈새로 착착 끼워 맞춘다(Pointer Offset ++).</li>
+</ul>
+<p><strong>3. 상태 C (격발 및 대리 처리)</strong></p>
+<ul>
+<li>50개가 다 모였다!</li>
+<li>드디어 <code>z_session_yield</code> 가 막고 있던 루프를 풀고 당신이 선언해둔 <code>Subscriber Callback</code> 에 모아둔 버퍼의 포인터 주소만 넘겨버린다. (Zero Copy)</li>
+<li>처리가 끝나는 순간, 상태는 귀신같이 다시 A로 회귀한다.</li>
+</ul>
+<p>이 피말리는 바이트 머신(Byte Machine) 메커니즘이, 단 3KB 의 빈 공간만으로도 초당 수백 개의 불규칙한 네트워크 패킷을 무결성 테스트(CRC 검증)까지 완벽하게 소화해 내는 Zenoh-Pico 의 진정한 흑마술이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

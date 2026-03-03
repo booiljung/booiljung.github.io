@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:10.5.4 베어메탈용 커스텀 메모리 할당자 구현</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>10.5.4 베어메탈용 커스텀 메모리 할당자 구현</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 10. 마이크로컨트롤러를 위한 Zenoh-Pico</a> / <a href="index.html">10.5 베어메탈(Bare-metal) 환경에서의 Zenoh-Pico</a> / <span>10.5.4 베어메탈용 커스텀 메모리 할당자 구현</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>10.5.4 베어메탈용 커스텀 메모리 할당자 구현</h1>
+<p>Pico 는 100% 정적 버퍼망으로 돌릴 수도 있지만 아주 복잡한 기능(동적 토픽 관리 등)을 위해선 약간의 <code>malloc</code> 이 필요할 때도 있다.<br />
+OS가 없다면, 당신이 직접 램의 작은 파티션 하나를 <code>malloc</code> 인 것처럼 속여 Pico 에게 갖다 바쳐야 한다.</p>
+<h3>0.1 [Runbook] 슬랩 할당자(Slab Allocator) 위장 전술</h3>
+<p>기본 <code>malloc/free</code> 는 메모리의 중앙 아무 데나 구멍을 꿇고 할당하지만, 메모리 풀(Pool) 패턴을 적용하면 안전한 자물쇠 버퍼를 얻을 수 있다.</p>
+<pre><code class="language-c">#include &lt;stddef.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;string.h&gt;
+
+#define MAX_CHUNKS 10
+#define CHUNK_SIZE 128
+
+// [메모리 창고 격리 선언]
+uint8_t memory_pool[MAX_CHUNKS][CHUNK_SIZE];
+uint8_t chunk_used[MAX_CHUNKS] = {0,};
+
+// C 언어 전역 malloc 강제 탈취 방어 로직
+void* custom_malloc(size_t size) {
+    if (size &gt; CHUNK_SIZE) return NULL; // 거부!
+    for (int i=0; i&lt;MAX_CHUNKS; i++) {
+        if (!chunk_used[i]) {
+            chunk_used[i] = 1; // 사용중 마킹 점유
+            return &amp;memory_pool[i][0];
+        }
+    }
+    return NULL; // 메모리 아웃
+}
+
+void custom_free(void* ptr) {
+    // 주소값 범위를 역추적하여 chunk index 를 반납시킨다
+    for (int i=0; i&lt;MAX_CHUNKS; i++) {
+        if (ptr == &amp;memory_pool[i][0]) {
+            chunk_used[i] = 0; // 마킹 해제
+            return;
+        }
+    }
+}
+</code></pre>
+<p>이제 Pico 의 Config 초기화 부근에서 이렇게 이식 선언만 해주면,</p>
+<pre><code class="language-c">zp_config_insert_json(&amp;config, ZP_MALLOC_KEY, (void*)custom_malloc);
+zp_config_insert_json(&amp;config, ZP_FREE_KEY, (void*)custom_free);
+</code></pre>
+<p>이로서 Zenoh-Pico 는 OS 커널인 척하는 당신의 조악한 배열 시스템 안에서, 전혀 파편화를 염려하지 않고 평화롭게 메모리를 생성하고 닫으며 야생(Bare-Metal)의 세계 속을 항해하게 된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

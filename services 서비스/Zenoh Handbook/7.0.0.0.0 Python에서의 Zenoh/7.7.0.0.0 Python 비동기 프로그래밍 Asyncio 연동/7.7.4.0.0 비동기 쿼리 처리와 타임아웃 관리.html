@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:7.7.4 비동기 쿼리 처리와 타임아웃 관리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>7.7.4 비동기 쿼리 처리와 타임아웃 관리</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 7. Python에서의 Zenoh</a> / <a href="index.html">7.7 Python 비동기 프로그래밍 (Asyncio) 연동</a> / <span>7.7.4 비동기 쿼리 처리와 타임아웃 관리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>7.7.4 비동기 쿼리 처리와 타임아웃 관리</h1>
+<p><code>session.get(...)</code> 은 100개의 노드가 답장하면 결과값이 100번 튀어나오는 제너레이터(Generator)였다.<br />
+비동기 통신(Asyncio) 세계에서는 이 제너레이터를 기다리는 동안에도 CPU를 멈춰 세워선(Block) 안 된다. 따라서 파이썬 최상위 문법인 <strong>비동기 이터레이터 (<code>async for</code>)</strong> 를 동원한다.</p>
+<h3>0.1 [Runbook] 데이터 스크래핑-애웨이트(Await) 서치</h3>
+<pre><code class="language-python">import asyncio
+import zenoh
+
+async def query_cluster(session):
+    print("클러스터 대역 스캔 쿼리 발사!")
+    
+    # 1. 쿼리 사격 (블로킹 없음, 제너레이터 객체 즉각 반환)
+    # timeout: 2초 동안 답장이 안 오면 파이썬 루프가 강제로 이 부분을 끊어낸다.
+    replies = session.aget("factory/robot/*/temp", timeout=2.0)
+    
+    # 2. 비동기 루프 전개
+    # 라우터에서 패킷 하나가 뚝 떨어질 때마다 메인 루프가 깨어나서 이 블록을 한 바퀴 실행한다!
+    # (패킷이 안 올 때는 FastAPI 서버가 다른 리퀘스트를 처리하고 돌아온다)
+    async for reply in replies:
+        if reply.is_ok:
+            sample = reply.ok
+            print(f"[응답 도착] 로봇 {sample.key_expr} -&gt; {sample.payload.decode('utf-8')}")
+        else:
+            print(f"[응답 실패] {reply.err.payload.decode('utf-8')}")
+            
+    print("전수 조사 스캔(Query) 종료.")
+
+async def main():
+    async with zenoh.aopen() as session:
+        await query_cluster(session)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+</code></pre>
+<p>이 <code>aget()</code> 과 <code>async for</code> 의 조합은 거대한 MSA(Microservices Architecture) 백엔드 생태계에서 FastAPI 나 Quart 같은 파이썬 웹 프레임워크가 <strong>HTTP REST 요청을 받았을 때 밑단의 1,000대 로봇에게 질의를 날려 취합한 후 JSON으로 응답해 주는(API Gateway 패턴)</strong> 가장 강력하고 효율적인 연결 고리(Binding Factor)다. 당신의 웹 서버는 그 어떤 I/O 대기에서도 자유로워진다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

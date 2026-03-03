@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:8.7.2 비동기 이터레이터(`AsyncIterator`) 기반의 무한 이벤트 스트림 처리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>8.7.2 비동기 이터레이터(`AsyncIterator`) 기반의 무한 이벤트 스트림 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 8. TypeScript에서의 Zenoh</a> / <a href="index.html">8.7 TypeScript 고급 비동기 패턴과 데이터 스트림 제어</a> / <span>8.7.2 비동기 이터레이터(`AsyncIterator`) 기반의 무한 이벤트 스트림 처리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>8.7.2 비동기 이터레이터(<code>AsyncIterator</code>) 기반의 무한 이벤트 스트림 처리</h1>
+<p>8.5장에서 분산 쿼리(<code>session.get</code>)를 처리할 때 잠깐 맛보았던 <code>for await</code> 패턴이다.<br />
+이 패턴이 진정으로 빛을 발하는 곳은 단순한 1회성 쿼리가 아니라, 무한히 밀려오는 구독 스트림(Subscriber Stream)을 핸들링할 때다.</p>
+<h3>0.1 [Runbook] 무한 대기 큐 루핑 전술</h3>
+<p>일반적인 <code>declareSubscriber</code> 를 쓰면 데이터가 올 때마다 콜백 함수가 강제로 발사된다. 메인 스레드는 속수무책으로 당한다. 하지만 만약 <strong>“내가 필요할 때마다 큐(Queue)에서 하나씩 꺼내먹을게”</strong> 형태로 통달한다면?</p>
+<blockquote>
+<p><em>주의: 이 코드는 Zenoh TS Native Queueing 구현체가 포함된 최신 버전에서 동작하거나, JS Array 기반의 비동기 버퍼를 직접 구현하여 우회 응용해야 할 수 있다.</em> (표준 가이드라인)</p>
+</blockquote>
+<pre><code class="language-typescript">import * as zenoh from "@eclipse-zenoh/zenoh";
+
+// 비동기 큐를 임의로 구현한 래퍼 (실무 필수품)
+class AsyncBuffer&lt;T&gt; {
+    private queue: T[] = [];
+    private resolvers: ((value: T) =&gt; void)[] = [];
+
+    push(item: T) {
+        if (this.resolvers.length &gt; 0) {
+            const resolve = this.resolvers.shift();
+            resolve!(item);
+        } else {
+            this.queue.push(item);
+        }
+    }
+
+    // 큐가 비어있으면 데이터가 들어올 때까지 Promise 를 세워두고 '대기(Block)' 한다!
+    async pop(): Promise&lt;T&gt; {
+        if (this.queue.length &gt; 0) return this.queue.shift()!;
+        return new Promise&lt;T&gt;(resolve =&gt; this.resolvers.push(resolve));
+    }
+}
+
+async function streamConsumer(session: zenoh.Session) {
+    const buffer = new AsyncBuffer&lt;zenoh.Sample&gt;();
+
+    // 콜백 함수 지옥(Hell) 지우기: 콜백은 그저 큐에 보관만 한다.
+    await session.declareSubscriber("sensor/ultra/fast", (sample) =&gt; {
+        buffer.push(sample);
+    });
+
+    console.log("스트림 수신 시작...");
+
+    // 내가 원하는 속도, 내가 원하는 타이밍에 데이터를 하나씩 빼서 먹는다!
+    while (true) {
+        // 데이터가 안 오면 CPU 점유율 0% 로 여기서 영원히 잠든다.
+        const sample = await buffer.pop(); 
+        
+        // 1건 처리 수행
+        console.log("&gt;&gt; 데이터 처리:", sample.keyExpr);
+        
+        // 데이터 핑(Hz)이 너무 빠르면, 여기서 강제로 시간을 주어 메인 스레드 혹사를 막는다.
+        await new Promise(r =&gt; setTimeout(r, 10)); // 10ms 쉬어가기
+    }
+}
+</code></pre>
+<p>이 패턴은 메인 스레드 루프의 통제권을 Zenoh 콜백에서 “내 애플리케이션의 루프“로 완전히 되찾아오는 아키텍처적 극의(極意)다. Node.js 백엔드 로직을 방어할 때 무조건 투입해야 하는 기법이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

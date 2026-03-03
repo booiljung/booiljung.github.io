@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:6.8.3 멀티스레드 교착 상태(Deadlock) 분석 및 콜백 지연 해결</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>6.8.3 멀티스레드 교착 상태(Deadlock) 분석 및 콜백 지연 해결</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 6. C++에서의 Zenoh</a> / <a href="index.html">6.8 C++ Zenoh 시스템 로깅, 디버깅 및 트러블슈팅</a> / <span>6.8.3 멀티스레드 교착 상태(Deadlock) 분석 및 콜백 지연 해결</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>6.8.3 멀티스레드 교착 상태(Deadlock) 분석 및 콜백 지연 해결</h1>
+<p>“Subscriber 람다가 갑자기 호출되지 않아요. 프로그램은 켜져 있는데 데이터가 안 들어옵니다.”<br />
+이는 네트워크 단절이 아니라, 당신이 작성한 C++ 람다 블록 안에서 어떤 스레드가 Mutex 자물쇠를 쥐고 놓지 않았거나 무한 루프에 빠져 <strong>Zenoh의 데이터 펌프 스레드 전체가 숨통이 막힌 상황(Deadlock)</strong> 이다.</p>
+<h3>0.1 [Runbook] 데드락 자물쇠 깨기 전술</h3>
+<p>Zenoh는 I/O 성능 극대화를 위해 C++ 콜백 람다를 풀(ThreadPool) 기반으로 동시 호출한다.</p>
+<p><strong>[안티 패턴: Zenoh 스레드의 목을 조르는 짓]</strong></p>
+<pre><code class="language-cpp">std::mutex g_db_lock;
+
+auto sub = session.declare_subscriber("sensor/data", [](const%20zenoh::Sample&amp;%20s) {
+    std::lock_guard&lt;std::mutex&gt; lock(g_db_lock);
+    
+    // [치명적 데드락 유발] DB 접속에 3초가 걸린다. 
+    // 이 3초 동안 Zenoh 백그라운드 스레드 하나가 완전히 멈춘 채로(Blocked) 바보가 된다!
+    write_to_slow_database(s.get_payload().as_string());
+});
+</code></pre>
+<p>이 짓거리를 수십 번 반복하면 Zenoh의 모든 워커 스레드가 DB 락에 걸려 파업하고, 새로운 메시지가 쌓이다가 통신 버퍼가 터져버린다.</p>
+<p><strong>해결 1. TSAN (ThreadSanitizer) 투입</strong><br />
+컴파일 옵션에 <code>-fsanitize=thread</code> 를 걸고 프로그램을 켜라.<br />
+락을 두 번 연거푸 잡으려 하거나 꼬인 경로를 발견하면 TSAN이 “WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock)” 이라는 경고를 때리며 즉시 자물쇠 오류 포인트를 알려준다.</p>
+<p><strong>해결 2. Lock-free 큐 브릿지 전술 (아키텍처 변경)</strong><br />
+제발 콜백 람다 안에서 <code>write</code>를 치지 마라.</p>
+<ol>
+<li>콜백 안에서는 오직 100마이크로초 만에 <code>boost::lockfree::queue</code> 나 <code>std::queue</code>(가벼운 락) 에 Payload 복사본만 집어 던진다.</li>
+<li>메인 스레드나 백그라운드 비워커(Worker Thread)가 그 큐에서 값을 빼내서 아득바득 DB에 쓰게 만들어라.</li>
+</ol>
+<p>이 원칙(Producer-Consumer 분리)만 지켜도 C++ 분산 망에서 겪는 멈춤 현상(Freeze)의 99%가 증발한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:16.2.5 제로 카피(Zero-Copy) 및 공유 메모리(Shared Memory) 통신의 이해</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>16.2.5 제로 카피(Zero-Copy) 및 공유 메모리(Shared Memory) 통신의 이해</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 16. Zenoh 성능 튜닝 및 트래픽 최적화</a> / <a href="index.html">16.2 시스템 및 운영체제(OS) 레벨 튜닝</a> / <span>16.2.5 제로 카피(Zero-Copy) 및 공유 메모리(Shared Memory) 통신의 이해</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>16.2.5 제로 카피(Zero-Copy) 및 공유 메모리(Shared Memory) 통신의 이해</h1>
+<p>Zenoh 의 철학에서 데이터를 “복사“하는 행위는 유죄다. 같은 컴퓨터 안에서 프로세스 A 가 프로세스 B 에게 데이터를 줄 때, 커널 버퍼로 데이터를 집어넣고 빼는 것만으로도 수백 마이크로초가 날아간다.</p>
+<h3>0.1 [인스펙션] 메모리 포인터 직결 전술 (Zero-Copy)</h3>
+<p>Zenoh 는 데이터를 보낼 때, 바이트 배열(Byte Array) 단위가 아닌 <code>ZBytes</code> (혹은 <code>ShmBuf</code>) 라는 자기장(포인터 컨테이너) 을 쓴다.</p>
+<p><strong>1. 공유 메모리(Shared Memory) 릴레이</strong><br />
+동일한 리눅스 서버 안에서 카메라 프로세스(C++) 가 Zenoh 라우터에게 4K 프레임(12MB) 을 보낼 때의 마법이다.</p>
+<ul>
+<li>C++ 프로세스는 하드디스크(<code>/dev/shm</code>) 의 특수 구역에 12MB짜리 덩어리를 올린다.</li>
+<li>그리고 Zenoh 네트워크로는 이 덩어리를 통째로 TCP 로 쏘는 게 아니라, “공유 메모리 150번지에 4K 데이터 있다!” 라는 “작은 쪽지(Metadata)” 만 핑 날린다.</li>
+<li>라우터는 그 쪽지를 받고 메인 메모리의 똑같은 150번지를 쳐다보기만 하면 된다(읽음).</li>
+</ul>
+<p><strong>2. SHM (Shared Memory) 활성화 런북</strong></p>
+<pre><code class="language-rust">// Rust 코드 예시 (수신단)
+let mut config = zenoh::Config::default();
+// 동일 머신 내에서는 무조건 SHM 모드를 켜서 복사를 없애버려라!
+config.insert_json5("transport/shared_memory/enabled", "true");
+</code></pre>
+<p>이 기능이 켜지는 순간, 한 대의 컴퓨터 안에서 도는 수십 개의 마이크로서비스(ROS2 노드들 등) 간의 데이터 전송 대역폭은 메모리 램(RAM) 의 물리적 한계속도인 초당 50~100 기가바이트(GB/s) 에 도달하게 된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:2.5.2 분산 질의(Distributed Query) - 지연 바인딩과 풀(Pull) 기반 데이터 획득</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>2.5.2 분산 질의(Distributed Query) - 지연 바인딩과 풀(Pull) 기반 데이터 획득</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 2. Zenoh 아키텍처와 프로토콜 이해</a> / <a href="index.html">2.5 통신 패턴의 추상화 및 다중 패러다임</a> / <span>2.5.2 분산 질의(Distributed Query) - 지연 바인딩과 풀(Pull) 기반 데이터 획득</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>2.5.2 분산 질의(Distributed Query) - 지연 바인딩과 풀(Pull) 기반 데이터 획득</h1>
+<p>초당 10번씩 굳이 푸시(Push)될 필요가 없이, “내가 버튼을 눌렀을 때만 최신 값을 가져오면 되는 데이터(예: 배터리 잔량, 펌웨어 버전)“에 Pub/Sub을 쓰는 건 엄청난 대역폭 낭비이자 폴링(Polling) 지옥의 시작이다. 이때 투입되는 특수 부대가 바로 <code>Queryable</code> 메커니즘이다.</p>
+<h3>0.1 RPC와의 본질적 차이 (다중 응답)</h3>
+<p>gRPC나 REST 같은 원격 프로시저 호출(RPC)은 “나와 너(1:1)” 형태의 질의응답이다. 대상 IP가 죽어있으면 404 에러가 떨어진다.<br />
+반면 Zenoh의 <code>Get</code> 쿼리는 “내가 허공에 소리칠 테니, 답을 아는 놈들은 다 대답해 봐라(1:N)” 모형이다.<br />
+도메인 내에 <code>battery</code> 값을 쥐고 있는 로봇이 10대면, 질문 1번에 10대의 응답(Reply)이 강물처럼 쏟아져 내린다.</p>
+<h3>0.2 [Runbook] 비동기 스트림(Stream)에서의 타임아웃 회피</h3>
+<p>여러 대의 Queryable 장비 중 한 대가 고장 나 데이터 포트가 질식되었다 치자. 대시보드 코드를 무지성 동기(Sync) 대기로 짜놓으면, 영원히 오지 않을 1대의 응답을 기다리느라 전체 쓰레드가 블락(Block/Lock)된다.</p>
+<p><strong>해결 패턴: 스트리밍 루프(Async For)와 관용적 탈출</strong></p>
+<pre><code class="language-python"># [Python 클라이언트: 분산 쿼리의 정석]
+
+# 1. 2초의 Time-to-Live 제한을 걸어, 망가진 놈은 버리고 산 놈들의 응답만 받겠다.
+replies = session.get("factory/robots/*/battery", timeout=2.0)
+
+# 2. 결과가 List로 한 번에 떨어지길 기다리지 마라! (비동기 스트림 처리)
+# 대답이 오는 족족 루프가 돌면서 화면에 먼저 렌더링을 시작한다.
+for reply in replies:
+    try:
+        print(f"{reply.key_expr} 배터리: {reply.sample.payload}")
+    except Exception as e:
+        # 특정 로봇이 보낸 데이터 파싱 에러가 다른 로봇의 데이터 처리를 방해하지 못하게 격리
+        pass 
+</code></pre>
+<p>분산 질의 시에는 ’완벽한 전체 집합 데이터’를 기약하지 마라. “현재 살아있는 자들의 데이터만 조합하여 어떻게든 화면을 멈추지 않게 유지한다(Fault Tolerant)“는 철학이 런북의 1순위다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

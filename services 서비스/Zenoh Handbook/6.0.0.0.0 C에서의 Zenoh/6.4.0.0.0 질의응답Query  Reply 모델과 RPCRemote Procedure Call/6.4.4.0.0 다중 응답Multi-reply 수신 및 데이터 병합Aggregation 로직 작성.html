@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:6.4.4 다중 응답(Multi-reply) 수신 및 데이터 병합(Aggregation) 로직 작성</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>6.4.4 다중 응답(Multi-reply) 수신 및 데이터 병합(Aggregation) 로직 작성</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 6. C++에서의 Zenoh</a> / <a href="index.html">6.4 질의응답(Query & Reply) 모델과 RPC(Remote Procedure Call)</a> / <span>6.4.4 다중 응답(Multi-reply) 수신 및 데이터 병합(Aggregation) 로직 작성</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>6.4.4 다중 응답(Multi-reply) 수신 및 데이터 병합(Aggregation) 로직 작성</h1>
+<p>Zenoh Query 패러다임이 압도적인 파괴력을 지니는 지점이다.<br />
+내가 <code>robot/*/temp</code> 라는 수식(Wildcard)으로 Query를 날리면 한 놈이 대답하는 게 아니라 물리적으로 서로 다른 C++ <code>Queryable</code> 프로그램 100개가 <strong>동시에 대답(Multi-Reply)</strong> 을 쏟아내기 시작한다. 이 다중 응답 폭격을 어떻게 맞이할 것인가?</p>
+<h3>0.1 [Runbook] 분산 빅데이터 콜라주(Aggregation) 전술</h3>
+<p>도착하는 응답들의 출처(Key)가 제각각이므로, 이들을 하나의 C++ 자료구조(<code>std::map</code>이나 <code>std::vector</code>)에 긁어모아야(Aggregated) 한다.</p>
+<pre><code class="language-cpp">#include "zenoh.hxx"
+#include &lt;iostream&gt;
+#include &lt;map&gt;
+#include &lt;mutex&gt;
+
+int main() {
+    auto session = zenoh::Session::open(zenoh::Config::create_default());
+
+    // 데이터 병합을 위한 저장소
+    std::map&lt;std::string, std::string&gt; aggregated_data;
+    std::mutex data_mutex;
+
+    // 와일드카드를 포함한 광역 질의(Query) 타격!
+    session.get(
+        "robot/*/temp", "",
+        // [중요] 이 람다는 대답하는 로봇 개수(N) 만큼 여러 번 호출된다!
+        [&amp;aggregated_data, &amp;data_mutex](const%20zenoh::Reply&amp;%20reply) { 
+            if (reply.is_ok()) {
+                auto sample = reply.get_ok();
+                auto key = sample.get_keyexpr().as_string();
+                auto val = sample.get_payload().as_string();
+                
+                // 멀티 쓰레드 안전 보장을 위한 락 확보 (매우 필수)
+                std::lock_guard&lt;std::mutex&gt; lock(data_mutex);
+                aggregated_data[key] = val; // 지도(Map)에 퍼즐 조각 끼워넣기
+                
+                std::cout &lt;&lt; "[개별 수신] " &lt;&lt; key &lt;&lt; " -&gt; " &lt;&lt; val &lt;&lt; std::endl;
+            }
+        },
+        // [중료 콜백] 망 내의 모든 응답이 끝났을 때 1번 호출되는 최종 함수
+        [&amp;aggregated_data, &amp;data_mutex]() {
+            std::lock_guard&lt;std::mutex&gt; lock(data_mutex);
+            std::cout &lt;&lt; "\n======= [병합 통계 보고서] =======" &lt;&lt; std::endl;
+            std::cout &lt;&lt; "총 응답 로봇 대수: " &lt;&lt; aggregated_data.size() &lt;&lt; std::endl;
+            for(const auto&amp; [k, v] : aggregated_data) {
+                std::cout &lt;&lt; "로봇 " &lt;&lt; k &lt;&lt; " 의 온도는 " &lt;&lt; v &lt;&lt; " 입니다." &lt;&lt; std::endl;
+            }
+        }
+    );
+
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    return 0;
+}
+</code></pre>
+<p>이 코드는 중앙집중식 서버가 100대의 로봇에게 일일이 TCP 루프를 돌며 데이터를 폴링(Polling)하던 구시대의 병목 코드를 완전히 박살 낸다. 클라이언트가 외치는 즉시, 라우팅 망이 모든 로봇에게 파동을 전달하고 수집된 패킷만을 즉각적인 콜백으로 내려주기 때문이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:10.7.4 Publisher 구현 및 주기적 데이터 전송</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>10.7.4 Publisher 구현 및 주기적 데이터 전송</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 10. 마이크로컨트롤러를 위한 Zenoh-Pico</a> / <a href="index.html">10.7 Zenoh-Pico 핵심 API 활용</a> / <span>10.7.4 Publisher 구현 및 주기적 데이터 전송</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>10.7.4 Publisher 구현 및 주기적 데이터 전송</h1>
+<p>마이크로컨트롤러는 원래 ’읽고 쏘는 기계’다. 하지만 Zenoh-Pico 의 <code>z_publisher_put()</code> 은 너무도 단순해서, 당신이 호출하는 순간 칩의 TCP 스택을 거쳐 그대로 망으로 발사된다. (버퍼링이나 딜레이가 없다).</p>
+<h3>0.1 [Runbook] 고주파 텔레메트리 연사 전술</h3>
+<pre><code class="language-c">#include &lt;zenoh-pico.h&gt;
+
+z_publisher_t pub;
+
+void setup_publisher() {
+    // 1. 내가 쏠 토픽 선언
+    z_owned_keyexpr_t key = z_keyexpr_new("robot/01/sensor/battery");
+    
+    // 2. Publisher 객체 생성 
+    pub = z_declare_publisher(z_loan(session), z_loan(key), NULL);
+    z_drop(z_move(key));
+}
+
+// 이 함수는 MCU 메인 루프에서 타이머(예: 매 100ms 마다)에 의해 불린다.
+void loop_publish(int battery_level) {
+    if (z_check(pub)) {
+        // [제로-히프(Zero-Heap) 데이터 직렬화]
+        // malloc 따위는 쓰지 않고 그냥 스택(Stack) 메모리의 배열을 쓴다.
+        char payload[10];
+        int len = snprintf(payload, sizeof(payload), "%d", battery_level);
+
+        // 3. 발사!
+        // 여기서 막히지 않고(Non-blocking) 1마이크로초 만에 리턴된다.
+        z_publisher_put(
+            z_loan(pub), 
+            (const uint8_t*)payload, len, 
+            NULL
+        );
+    }
+}
+</code></pre>
+<p>만약 이 <code>loop_publish</code> 함수를 타이머 제약 없이 <code>while(1)</code> 안에서 무한궤도로 돌리면 어떻게 될까?<br />
+칩의 네트워크 송신 버퍼(Tx Buffer)가 0.1초 만에 가득 차고 <code>OOM (Out Of Memory)</code> 내지는 <code>TX Stall</code> 에러를 터트리며 칩이 기절하게 된다. (제한된 보폭 제어의 중요성).</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

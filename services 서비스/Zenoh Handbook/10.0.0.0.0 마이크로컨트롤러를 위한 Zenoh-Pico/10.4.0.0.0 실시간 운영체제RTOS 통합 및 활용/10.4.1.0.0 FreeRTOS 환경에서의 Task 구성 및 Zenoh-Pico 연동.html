@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:10.4.1 FreeRTOS 환경에서의 Task 구성 및 Zenoh-Pico 연동</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>10.4.1 FreeRTOS 환경에서의 Task 구성 및 Zenoh-Pico 연동</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 10. 마이크로컨트롤러를 위한 Zenoh-Pico</a> / <a href="index.html">10.4 실시간 운영체제(RTOS) 통합 및 활용</a> / <span>10.4.1 FreeRTOS 환경에서의 Task 구성 및 Zenoh-Pico 연동</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>10.4.1 FreeRTOS 환경에서의 Task 구성 및 Zenoh-Pico 연동</h1>
+<p>FreeRTOS는 전 세계 MCU의 사실상 표준 운영체제다.<br />
+문제는 Zenoh-Pico 가 <code>z_session_yield()</code> 함수를 주기적으로 호출받아야 작동하는데, 이것을 메인 태스크(Main Task)에 박을 것인가, 아니면 전담 통신 태스크(Comm Task)를 따로 팔 것인가의 아키텍처 싸움이다.</p>
+<h3>0.1 [Runbook] 백그라운드 폴링 전담 태스크(Task) 전술</h3>
+<p>로봇 제어 태스크(우선순위 High)와 섞지 마라. 통신은 절대적으로 낮은 우선순위의 백그라운드 태스크(Low)로 격리시킨다.</p>
+<pre><code class="language-c">#include "FreeRTOS.h"
+#include "task.h"
+#include &lt;zenoh-pico.h&gt;
+
+z_session_t session;
+
+// 태스크 1: 오직 Zenoh 네트워크만 책임지는 톱니바퀴
+void zenoh_worker_task(void *pvParameters) {
+    // 1. 초기화 (이 때 FreeRTOS LwIP 소켓이 할당됨)
+    z_config_t config = z_config_default();
+    z_open(&amp;session, &amp;config, NULL);
+
+    while(1) {
+        // 2. 엔진 호흡 (최대 10밀리초 대기)
+        // 만약 네트워크에서 데이터가 오면, 이 함수 안에서 내부적으로
+        // 당신이 설정해둔 Subscriber Callback 함수들이 연쇄적으로터 터질 것이다.
+        z_session_yield(&amp;session, 10);
+        
+        // 3. FreeRTOS 의 다른 태스크들에게 CPU 를 양보(Yield) 
+        // 10ms 쉬어준다. 너무 자주 돌면 칩이 뜨거워진다!
+        vTaskDelay(pdMS_TO_TICKS(10)); 
+    }
+}
+
+// 메인 부팅 함수
+int main(void) {
+    // ... [하드웨어 브링업] ...
+
+    // 통신 태스크 생성 (메모리: 4096 워드 / 우선순위: 1(낮음))
+    xTaskCreate(
+        zenoh_worker_task, 
+        "ZenohTask", 
+        4096, 
+        NULL, 
+        1, 
+        NULL
+    );
+
+    // 태스크 스케줄러 점화 (이후로 코드는 돌아오지 않음)
+    vTaskStartScheduler();
+}
+</code></pre>
+<p>이 패턴이 가장 강력한 “비동기 분리(Asynchronous Isolation) 기법” 이다. 통신 딜레이(Timeouts)나 패킷 드랍이 아무리 심하게 터져도, 우선순위가 높은 모터 제어 태스크는 이 네트워크 지옥을 전혀 눈치채지 못한 채 100% 자신의 성능을 발휘한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:10.8.3 큰 페이로드(Payload) 분할 전송 및 조립 메커니즘</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>10.8.3 큰 페이로드(Payload) 분할 전송 및 조립 메커니즘</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 10. 마이크로컨트롤러를 위한 Zenoh-Pico</a> / <a href="index.html">10.8 데이터 직렬화(Serialization) 및 페이로드 관리</a> / <span>10.8.3 큰 페이로드(Payload) 분할 전송 및 조립 메커니즘</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>10.8.3 큰 페이로드(Payload) 분할 전송 및 조립 메커니즘</h1>
+<p>만약 센서가 찍은 50KB 짜리 저해상도 JPEG 사진을 클라우드로 쏴야 한다 치자.<br />
+Pico 는 1500바이트 짜리 TCP 윈도우 한두 장만 가지고 있다. 이걸 <code>z_put</code> 에 한 번에 때려박으면 즉시 LwIP 통신 스택이 OOM(Out of Memory) 단말마를 뱉으며 칩이 하얗게 멈춰버린다.</p>
+<h3>0.1 [Runbook] 청크 디바이드 앤 퀀커(Chunk Divide &amp; Conquer) 전술</h3>
+<p>우리가 수동으로 쏘는 택배를 잘게 쪼개서(Split) 수동으로 발송해야 한다. 수신단의 클라우드 백엔드(Go, Rust) 가 이 플래그 번호들을 취합해 조립하도록 아키텍처를 강제해야 한다.</p>
+<pre><code class="language-c">#include &lt;zenoh-pico.h&gt;
+
+#define CHUNK_SIZE 1024 // 1KB 단위
+
+// 커스텀 헤더 구조체 
+typedef struct {
+    uint32_t image_id;
+    uint32_t total_chunks;
+    uint32_t current_chunk;
+    uint32_t data_len;
+} __attribute__((packed)) ChunkHeader;
+
+void transmit_large_image(z_publisher_t *pub, uint8_t *image_buffer, uint32_t total_size) {
+    uint32_t chunks = (total_size / CHUNK_SIZE) + 1;
+    uint8_t packet[CHUNK_SIZE + sizeof(ChunkHeader)];
+    
+    for (uint32_t i = 0; i &lt; chunks; i++) {
+        // 1. 헤더 조립
+        ChunkHeader *hdr = (ChunkHeader*)packet;
+        hdr-&gt;image_id = 999;
+        hdr-&gt;total_chunks = chunks;
+        hdr-&gt;current_chunk = i;
+        
+        // 남은 바이트 계산
+        uint32_t offset = i * CHUNK_SIZE;
+        hdr-&gt;data_len = (total_size - offset &gt; CHUNK_SIZE) ? CHUNK_SIZE : (total_size - offset);
+        
+        // 2. 바이트 복사 (1KB 만 퍼나름)
+        memcpy(packet + sizeof(ChunkHeader), image_buffer + offset, hdr-&gt;data_len);
+        
+        // 3. 발사!
+        z_publisher_put(pub, packet, sizeof(ChunkHeader) + hdr-&gt;data_len, NULL);
+        
+        // 4. [극도로 중요함] 칩의 전송 버퍼가 쉴 시간을 주어야 한다!
+        // 이 딜레이가 없으면 TCP 큐가 꽉 차버려 패킷 로스가 폭주한다.
+        vTaskDelay(pdMS_TO_TICKS(10)); // FreeRTOS 기준 10ms 휴식
+    }
+}
+</code></pre>
+<p>이 코드는 단순해 보이지만 이기종 클라우드를 이어주는 “대용량 블랍(BLOB) 파이프라인” 의 심장이다.<br />
+마이크로컨트롤러에서는 무언가를 한꺼번에 집어삼키려 하지 마라. 가늘고 길게 베어 물어야 기계가 멈추지 않는다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

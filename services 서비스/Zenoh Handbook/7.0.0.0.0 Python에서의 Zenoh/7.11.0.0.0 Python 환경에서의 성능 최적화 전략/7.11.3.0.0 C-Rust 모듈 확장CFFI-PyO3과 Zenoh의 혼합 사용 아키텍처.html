@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:7.11.3 C/Rust 모듈 확장(CFFI, PyO3)과 Zenoh의 혼합 사용 아키텍처</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>7.11.3 C/Rust 모듈 확장(CFFI, PyO3)과 Zenoh의 혼합 사용 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 7. Python에서의 Zenoh</a> / <a href="index.html">7.11 Python 환경에서의 성능 최적화 전략</a> / <span>7.11.3 C/Rust 모듈 확장(CFFI, PyO3)과 Zenoh의 혼합 사용 아키텍처</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>7.11.3 C/Rust 모듈 확장(CFFI, PyO3)과 Zenoh의 혼합 사용 아키텍처</h1>
+<p>파이썬 내부에서 아무리 쥐어짜도 객체를 <code>struct.unpack()</code> 하는 시간조차 부족한 텐 텐-밀리초(10ms) 단위의 고주파수(HFT, High Frequency Trading) 도메인이라면, 아예 <strong>“내가 쓸 커스텀 로직을 Rust 나 C++ 로 짜서 파이썬 모듈(.so)로 임포트”</strong> 해버리는 최후의 수단이 남았다.</p>
+<h3>0.1 [Runbook] 데이터 오프로딩(Off-loading) 파이프라인</h3>
+<p><strong>1. 아키텍처 분리 전략</strong></p>
+<ol>
+<li>파이썬 스크립트에서는 <code>zenoh.open()</code> 과 껍데기 서버 루프만 유지한다 (유지보수 용이).</li>
+<li>무거운 수식 계산이나 이미지 포맷 변환 로직은 <code>Rust (PyO3)</code> 로 작성해 <code>my_c_algo.so</code> 로 컴파일한다.</li>
+<li>Zenoh 리스너에 바이트 배열(Payload)이 떨어지는 즉시, 파이썬 객체로 분해하지 말고 통째로 <code>my_c_algo.compute(sample.payload)</code> 로 다시 넘겨버린다!</li>
+</ol>
+<pre><code class="language-python">import zenoh
+# 내 손으로 직접 짠 C/Rust 가속 모듈
+import fast_algo_extension 
+
+def hybrid_listener(sample: zenoh.Sample):
+    # 파이썬은 이 데이터를 파싱할 능력도 의지도 없다.
+    # 그저 C 확장 모듈의 입구로 바이트 스트림을 던져버린다(Offload)
+    
+    # C/Rust 확장은 이 버퍼를 읽고 초정밀 연산을 한 후
+    # 결과 요약본(Int, Boolean 등)만 다시 파이썬으로 튕겨 넘겨준다!
+    result = fast_algo_extension.process_raw_bytes(sample.payload)
+    
+    if result.is_danger:
+        print("위험 경보! 즉각 브레이크 가동")
+
+with zenoh.open() as session:
+    sub = session.declare_subscriber("camera/60fps/raw", hybrid_listener)
+    ...
+</code></pre>
+<p>이 패턴이 바로 AI 생태계의 패왕인 <code>PyTorch</code>나 <code>OpenCV</code>가 파이썬에서 가장 날렵하게 도는 비밀이다.<br />
+파이썬 Zenoh 는 오직 “교환원“의 역할만 하고, 연산의 진짜 심장은 C/Rust 확장 팩에 맡긴다. 이 경계(Boundary) 설계야말로 파이썬 아키텍트가 가져야 할 궁극의 미학이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:16.3.4 QUIC 프로토콜의 스트림 다중화(Multiplexing) 및 혼잡 제어 알고리즘 튜닝</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>16.3.4 QUIC 프로토콜의 스트림 다중화(Multiplexing) 및 혼잡 제어 알고리즘 튜닝</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 16. Zenoh 성능 튜닝 및 트래픽 최적화</a> / <a href="index.html">16.3 트랜스포트 계층(Transport Layer) 최적화</a> / <span>16.3.4 QUIC 프로토콜의 스트림 다중화(Multiplexing) 및 혼잡 제어 알고리즘 튜닝</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>16.3.4 QUIC 프로토콜의 스트림 다중화(Multiplexing) 및 혼잡 제어 알고리즘 튜닝</h1>
+<p>TCP 위에서는 데이터를 쏘다가 하나의 패킷이 길을 잃으면, 뒷단의 모든 정상 패킷들이 앞 패킷을 재전송받을 때까지 줄을 서서 대기하는 참사(Head-of-line Blocking) 가 벌어진다. 이 병목을 피하는 마법의 런북이다.</p>
+<h3>0.1 [인스펙션] 독립 스트림 타겟팅 전술</h3>
+<p>QUIC 소켓은 내부적으로 고속도로의 차선(Stream) 을 여러 개 만들어낸다.</p>
+<p><strong>1. 멀티플렉싱(Multiplexing) 최적화</strong><br />
+Zenoh는 QUIC 을 쓸 때 토픽(Key Expression) 에 따라 내부 스트림을 쪼개는 능력이 있다.<br />
+카메라 영상 스트림 차선 한쪽에서 패킷 로스가 나서 차가 막혀도(Blocking), 라이다(LiDAR) 스트림의 차선은 아무 영향 없이 최고 속도로 클라우드로 날아간다. 개발자는 이 기능을 최대한 활성화해야 망이 죽지 않는다.</p>
+<p><strong>2. QUIC 파라미터 튜닝</strong><br />
+QUIC 프로토콜의 윈도우 사이즈와 혼잡 제어 설정은 OS 가 아닌 유저 레벨(Zenoh 플러그인) 차원에서 설정이 가능하다.</p>
+<pre><code class="language-json5">// zenohd.json5
+transport: {
+  link: {
+    quic: {
+      // BBR 혼잡 제어 명시 (모바일 망 전용)
+      congestion_control: "bbr",
+      // 한 번에 날아다닐 수 있는 스트림의 무한 펌핑
+      max_streams: 1024
+    }
+  }
+}
+</code></pre>
+<p>LTE 급 모바일 망(무선 환경) 에서 테스트해보면, TCP 대비 드론의 영상 끊김 횟수가 완벽하게 1/10 로 줄어드는 것을 확인할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

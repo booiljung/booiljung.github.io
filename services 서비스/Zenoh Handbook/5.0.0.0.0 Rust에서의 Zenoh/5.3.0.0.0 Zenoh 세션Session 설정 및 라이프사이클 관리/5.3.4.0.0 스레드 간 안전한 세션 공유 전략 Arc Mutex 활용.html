@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.3.4 스레드 간 안전한 세션 공유 전략 (Arc, Mutex 활용)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.3.4 스레드 간 안전한 세션 공유 전략 (Arc, Mutex 활용)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 5. Rust에서의 Zenoh</a> / <a href="index.html">5.3 Zenoh 세션(Session) 설정 및 라이프사이클 관리</a> / <span>5.3.4 스레드 간 안전한 세션 공유 전략 (Arc, Mutex 활용)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.3.4 스레드 간 안전한 세션 공유 전략 (Arc, Mutex 활용)</h1>
+<p><code>zenoh::open()</code> 을 통해 한 번 맺어진 <code>Session</code> 객체는 소중한 자원이다.<br />
+그런데 백엔드 서버를 짤 때는 HTTP 요청 스레드, 데이터베이스 워커 스레드 10여 개가 동시에 <code>session.put()</code> 을 호출해야만 한다.<br />
+C/C++ 개발자라면 <code>Session</code> 포인터를 무지성으로 전역 변수(Global Variable)에 박고 세그폴트(Segfault)의 공포에 떨었겠지만, Rust는 이를 절대 허락하지 않는다.</p>
+<h3>0.1 [Runbook] 비동기 다중 태스크간 세션 복제 마법</h3>
+<p>만물의 근원은 <code>Arc</code>(Atomic Reference Counting)다.<br />
+하지만 놀랍게도 Zenoh의 Rust 컴파일 설계자들은 <code>Session</code> 껍데기 자체를 기본적으로 <code>T: Clone + Send + Sync</code> 특성으로 구워놓았다.<br />
+즉, <code>Arc</code> 포장재조차 직접 쓸 필요 없이 <code>session.clone()</code>만 치면 완벽하게 레퍼런스 카운팅이 되어서 다른 스레드로 비동기 락 없이 주입된다!</p>
+<p><strong>[우아한 스레드 분배 전술]</strong></p>
+<pre><code class="language-rust">use std::sync::Arc;
+use tokio;
+
+#[tokio::main]
+async fn main() {
+    let session = zenoh::open(Config::default()).res().await.unwrap();
+    
+    // session 객체를 아크(Arc)에 담을 필요도 없다. 
+    // 내부적으로 이미 비싸지 않은 스레드-세이프 핸들이기 때문!
+    
+    // 워커 1: 온도 센서 보고 스레드
+    let s1 = session.clone(); 
+    tokio::spawn(async move {
+        loop {
+            // 뮤텍스 락(Lock) 없이 바로 동시 호출 가능!
+            s1.put("sensor/temp", "32.5").res().await.unwrap(); 
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    });
+
+    // 워커 2: 백엔드 상태 전송 스레드
+    let s2 = session.clone();
+    tokio::spawn(async move {
+        loop {
+            s2.put("system/status", "OK").res().await.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+    });
+
+    // 메인 스레드 대기
+    tokio::signal::ctrl_c().await.unwrap();
+}
+</code></pre>
+<p>Zenoh Rust API 설계팀의 천재성이 빛을 발하는 순간이다. 개발자는 성능 저하를 일으키는 <code>Mutex</code> 나 <code>RwLock</code> 오버헤드를 걱정할 필요 없이, 단순히 <code>session.clone()</code>을 천 번 만 번 복사해 멀티 코어 스레드에 뿌리기만 하면 내부 I/O 큐가 완벽하게 다중 접근을 정리(Multiplexing)해 준다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

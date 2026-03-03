@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:8.9.3 React Custom Hook 설계 (`useZenohSession`, `useZenohSubscribe`)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>8.9.3 React Custom Hook 설계 (`useZenohSession`, `useZenohSubscribe`)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 8. TypeScript에서의 Zenoh</a> / <a href="index.html">8.9 프론트엔드 프레임워크 통합 (React, Vue 중심)</a> / <span>8.9.3 React Custom Hook 설계 (`useZenohSession`, `useZenohSubscribe`)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>8.9.3 React Custom Hook 설계 (<code>useZenohSession</code>, <code>useZenohSubscribe</code>)</h1>
+<p>전역(Global) 세션은 유지하되, 각 UI 패널이 모니터 화면에 등장(Mount)할 때만 특정 데이터를 땡겨오고, 창을 닫으면 알아서 구독을 끊게 만드는 현대 React의 궁극기 <strong>“Custom Hook”</strong> 이다.</p>
+<h3>0.1 [Runbook] 마법의 Zenoh 훅스 팩토리</h3>
+<p><code>session</code> 객체는 React의 <code>useContext</code> 를 통해 이미 컴포넌트 트리 깊숙이 공급되고 있다고 가정한다.</p>
+<pre><code class="language-typescript">import { useEffect, useState } from "react";
+import * as zenoh from "@eclipse-zenoh/zenoh";
+// (글로벌 컨텍스트에서 가져오는 함수라 가정)
+import { useZenohSession } from "./ZenohProvider"; 
+
+/**
+ * 컴포넌트가 살아있는 동안만 특정 경로를 구독하고 상태로 꺼내어주는 훅
+ */
+export function useZenohSubscribe(keyExpr: string) {
+    const session = useZenohSession();
+    const [data, setData] = useState&lt;string | null&gt;(null);
+
+    useEffect(() =&gt; {
+        if (!session) return;
+        
+        let subObject: zenoh.Subscriber;
+        
+        // 1. 컴포넌트 마운트 시 야전 통신선 개통
+        const init = async () =&gt; {
+            subObject = await session.declareSubscriber(keyExpr, (sample) =&gt; {
+                const text = new TextDecoder().decode(sample.payload);
+                setData(text);
+            });
+        }
+        init();
+
+        // 2. 컴포넌트 파괴 시 통신망 자동 절단! (메모리 릭 방지)
+        return () =&gt; {
+            if (subObject) {
+                subObject.undeclare();
+            }
+        };
+    // keyExpr이나 session 객체가 바뀌면 Hook이 자동으로 리롤링(Rerolling)된다.
+    }, [session, keyExpr]); 
+
+    return data;
+}
+</code></pre>
+<p>이제 주니어 프론트엔드 개발자는 복잡한 C++ WASM 바인딩이나 Session 생명 주기를 몰라도 된다.<br />
+그저 컴포넌트 최상단에서 <code>const temp = useZenohSubscribe("room/1/temp");</code> 1줄만 선언하면, 로봇 기체 온도계와 프론트엔드 브라우저 화면이 생명공학적으로 일체화된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

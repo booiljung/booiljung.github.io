@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.7.2 JSON, CDR, Protobuf 포맷의 직렬화-역직렬화 성능 비교</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.7.2 JSON, CDR, Protobuf 포맷의 직렬화-역직렬화 성능 비교</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 5. Rust에서의 Zenoh</a> / <a href="index.html">5.7 데이터 직렬화(Serialization) 및 페이로드 최적화</a> / <span>5.7.2 JSON, CDR, Protobuf 포맷의 직렬화-역직렬화 성능 비교</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.7.2 JSON, CDR, Protobuf 포맷의 직렬화-역직렬화 성능 비교</h1>
+<p>초보자는 디버깅이 편하다는 이유로 전부 <code>JSON</code>으로 직렬화해서 보낸다.<br />
+하지만 하루에 1억 건의 메시지가 돌아다니는 분산 클러스터에서 <code>{ "battery": 95.5 }</code> 처럼 불필요한 키(Key) 이름, 심지어 괄호와 공백문자까지 네트워크 대역폭을 낭비하는 것은 인프라 비용 청구서를 폭발시키는 주범이다.</p>
+<h3>0.1 [Runbook] 프로덕션 대역폭 다이어트 전술 (포맷 벤치마크)</h3>
+<p>Zenoh 위에서 직렬화를 돌릴 때, 데이터 특성에 따라 엔진을 교체해야 한다.</p>
+<p><strong>1. JSON (serde_json)</strong></p>
+<ul>
+<li><strong>특징:</strong> 인간이 읽기 편하다. REST API 레거시 봇 연동에 쓰기 좋다.</li>
+<li><strong>성능 단점:</strong> 파싱이 끔찍하게 느리다. 바이너리 대비 용량이 3~5배 이상 부풀어 오른다.</li>
+<li><strong>Runbook:</strong> 외부 연동(Frontend 등) 관제 대시보드 API용으로만 제한적으로 사용하라.</li>
+</ul>
+<p><strong>2. CDR (Common Data Representation) / Bincode</strong></p>
+<ul>
+<li><strong>특징:</strong> DDS 진영과 뼈를 맞대고 진화해 온 로보틱스 성능의 근본. 키(Key) 이름을 싹 빼어버리고 “4바이트는 int, 다음 8바이트는 텍스트” 식으로 메모리 주소를 때려 박는다.</li>
+<li><strong>Runbook:</strong> 폐쇄망 안에서 군집 로봇들끼리 초고속 제어 데이터를 주고받을 때는 무조건 <code>bincode</code> 크레이트를 쓴다. 용량이 JSON의 절반 이하로 줄고 인코딩 속도는 10배 차이 난다.
+<pre><code class="language-rust">// bincode 크레이트 활용
+let payload = bincode::serialize(&amp;status).unwrap();
+</code></pre>
+</li>
+</ul>
+<pre><code>
+**3. Protobuf / FlatBuffers (스키마 기반)**
+- **특징:** 서버와 클라이언트가 명시적인 `.proto` 계약서를 들고 통신한다.
+- **Runbook:** 글로벌 자율주행 서버처럼, 버전(Version) 업그레이드 시 하위 호환성(Backward Compatibility)을 보장해야 하는 대형 서비스 백본에는 필수다. 다만 Rust 진영에서는 Protobuf(`prost`) 세팅이 번거로운 편이므로, 양단이 모두 Rust로 통일된 환경이면 굳이 쓸 필요 없이 `bincode`로 가는 것이 빠르다.</code></pre>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

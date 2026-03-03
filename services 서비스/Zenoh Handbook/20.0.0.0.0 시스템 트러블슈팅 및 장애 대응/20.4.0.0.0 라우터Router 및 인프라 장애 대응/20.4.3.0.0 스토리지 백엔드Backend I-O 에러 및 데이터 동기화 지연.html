@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:20.4.3 스토리지 백엔드(Backend) I/O 에러 및 데이터 동기화 지연</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>20.4.3 스토리지 백엔드(Backend) I/O 에러 및 데이터 동기화 지연</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 20. 시스템 트러블슈팅 및 장애 대응</a> / <a href="index.html">20.4 라우터(Router) 및 인프라 장애 대응</a> / <span>20.4.3 스토리지 백엔드(Backend) I/O 에러 및 데이터 동기화 지연</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>20.4.3 스토리지 백엔드(Backend) I/O 에러 및 데이터 동기화 지연</h1>
+<p>데이터를 공중에 흩뿌리는 Pub/Sub과 달리, 과거의 이력을 보존하고자 라우터에 스토리지를 다는(Storage Manager Plugin) 것은 완전히 다른 골칫거리를 낳는다. 특히 하드 디스크 I/O가 네트워크의 대역폭 한계를 따라가지 못할 때 발생하는 역류(Backpressure) 현상은 모든 통신 속도를 절반 이하로 떨어뜨린다.</p>
+<h3>0.1 증상 규명: Write-Stall (쓰기 지연 마비) 현상 식별</h3>
+<p>ROS2 로봇이 고해상도 초음파 데이터를 초당 100메가바이트씩 라우터에 퍼블리시하고, 라우터는 이것을 로컬 <code>RocksDB</code> 플러그인에 밀어 넣는 구조다.<br />
+처음 1분간은 맹렬하게 기록되다가, 어느 순간 갑자기 로봇에서 라우터로의 통신 딜레이(Latency)가 정상 수치(1ms)에서 5초(5000ms) 이상으로 기하급수적으로 폭등한다면 디스크 병목을 확신하라.</p>
+<ul>
+<li><strong>분석:</strong> Linux 터미널에서 <code>iostat -dx 1</code>을 쳐보라. 디스크 큐(<code>avgqu-sz</code>)가 수치 100을 넘어가고, <code>%util</code> (사용률)이 100%에 붙어있다면, SSD 드라이브 물리적 한계를 벗어나 하드웨어 쓰기 버퍼가 멈춘 상태다. Zenoh 라우터는 이 디스크 쓰레드의 동기화(Sync) 락에 걸려 다른 네트워크 통신 수신을 일시 중지(Block)시켜 버린다.</li>
+</ul>
+<h3>0.2 해결 전략 1: 비동기 논블로킹(Async/On-interval) 쓰기 정책 적용</h3>
+<p>라우터 설정 파일 <code>zenohd.json5</code>에서 DB 볼륨의 동기화 설정을 <code>on_insert</code> (데이터가 오자마자 저장) 방식에서 시계열적 묶음 저장(Batch/Buffering) 방식으로 변경하라.</p>
+<pre><code class="language-json5">plugins: {
+  storage_manager: {
+    volumes: {
+      rocksdb: {
+        // ...
+        // 버퍼 모드로 캐시에 쌓아둔 후 1초에 한 번만 디스크 블록 플러쉬를 수행
+        sync: { mode: "on_time", interval_ms: 1000 }
+      }
+    }
+  }
+}
+</code></pre>
+<p>강제 비동기 버퍼 모드를 채택하면, 기기가 갑작스레 재부팅될 때 최후반 1초 분량의 데이터는 소실될 수 있으나, 나머지 99.9% 평상시의 네트워크 통신 속도는 10배 이상 향상된다.</p>
+<h3>0.3 해결 전략 2: 읽기(Read) Lock으로 인한 네트워크 블로킹 대응</h3>
+<p>TS 클라우드 백엔드가 과거 데이터를 보려고 분산 쿼리 <code>z_get "robot/odom/history**"</code>를 요청했다. 이때 수천만 건의 데이터를 디스크 레코드에서 쓸어 담아 메모리로 올리느라 CPU의 로우 레벨 읽기 락(Read Lock)이 수 초간 지속될 수 있다.<br />
+해결책: 볼륨을 논리적으로 분리하라. 최신 제어 명령어가 오가는 세션과, 과거 히스토리를 대량으로 퍼가는 스토리지 세션을 별도의 라우터 컨테이너로 분할(Sharding)하거나 레플리카를 구성해 통신 통로와 검색 통로를 구조적으로 분리해야 메인 동맥경화(Arteriosclerosis)를 예방한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

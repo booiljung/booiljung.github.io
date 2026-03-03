@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:8.8.1 JSON의 성능 한계 분석 및 대안 탐색</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>8.8.1 JSON의 성능 한계 분석 및 대안 탐색</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 8. TypeScript에서의 Zenoh</a> / <a href="index.html">8.8 구조화된 데이터 통신을 위한 직렬화(Serialization) 프로토콜 연동</a> / <span>8.8.1 JSON의 성능 한계 분석 및 대안 탐색</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>8.8.1 JSON의 성능 한계 분석 및 대안 탐색</h1>
+<p>왜 우리는 JSON을 P2P 고속망에서 버려야 하는가?</p>
+<h3>0.1 [아키텍처 인스펙션] JSON이 유발하는 3대 병목</h3>
+<ol>
+<li>
+<p><strong>오버헤드 팽창 (Payload Bloat)</strong><br />
+숫자 <code>7</code> 을 보내기 위해 JSON은 <code>{"val": 7}</code> 이라는 10바이트를 태운다. (1,000% 오버헤드). 로봇과 드론의 LTE/5G 통신망 요금제는 기가바이트 당 돈이 매겨진다.</p>
+</li>
+<li>
+<p><strong>파싱 지연 (Parsing Latency)</strong><br />
+V8 엔진의 <code>JSON.parse()</code> 는 아무리 빨라도 문자열 전체를 한 번 쭉 스캔하고, 힙(Heap) 메모리에 새로운 자바스크립트 객체(Object) 껍데기를 만들어야 한다. 초당 만 건의 데이터가 쏟아지면 브라우저는 메모리 파편화(Fragmentation)와 가비지 컬렉터(GC) 폭발로 굳어버린다.</p>
+</li>
+<li>
+<p><strong>강제적 스키마 부재 (Schema-less Danger)</strong><br />
+TypeScript 겉면에서 <code>data as RobotStatus</code> 로 아무리 타입을 단언(Casting)해 봤자, C++ 백엔드 개발자가 오타를 내서 <code>{"battey": 50}</code> (r 누락)을 날려버리면 브라우저는 이 에디터/런타임에서 알림 없이 <code>undefined</code> 를 화면에 띄워버린다.</p>
+</li>
+</ol>
+<p><strong>해결책(The Alternatives)</strong><br />
+이 재앙을 부수기 위해, 데이터의 뼈대(구조)를 파일(<code>.proto</code> 등)로 미리 양쪽 팀(C++ 팀과 웹 팀)이 합의해 두고, 실제 P2P 통신망에는 “데이터 값” 만 0과 1의 바이너리로 초압축해서 쏘아 보내는 <strong>Protobuf</strong> 와 <strong>FlatBuffers</strong> 가 P2P 생태계의 표준으로 자리 잡았다. 웹 환경(TypeScript)은 이 무기들을 <code>ArrayBuffer</code>의 형태로 무리 없이 소화해낼 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.11.1 단위 테스트(Unit Test)를 위한 Zenoh 통신 Mocking 전략</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.11.1 단위 테스트(Unit Test)를 위한 Zenoh 통신 Mocking 전략</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 5. Rust에서의 Zenoh</a> / <a href="index.html">5.11 테스트(Testing) 및 CI/CD 파이프라인 통합</a> / <span>5.11.1 단위 테스트(Unit Test)를 위한 Zenoh 통신 Mocking 전략</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.11.1 단위 테스트(Unit Test)를 위한 Zenoh 통신 Mocking 전략</h1>
+<p><code>cargo test</code> 를 칠 때마다 진짜 라우터를 띄우고 이더넷을 태울 수는 없다. 테스트는 철저히 CPU 메모리 안에서만, 밀리초 단위로 끝내야 한다.</p>
+<h3>0.1 [Runbook] Zenoh 하부 소켓 절단(Mock) 전술</h3>
+<p>Zenoh는 굳이 트레이트(Trait) 기반의 복잡한 DI(의존성 주입) 패턴으로 코드를 더럽힐 필요가 없다.<br />
+Zenoh의 메모리 내부 로컬 라우팅(In-Memory Routing) 모드를 활용하면, OS 소켓을 전혀 열지 않고도 가짜 세션을 띄울 수 있다!</p>
+<p><strong>1. 격리된 샌드박스 설정 (Mem-Transport)</strong><br />
+테스트 코드 블록 안에서 <code>Config</code>를 짤 때, 외부 네트워크와의 통로를 완전히 폐쇄한다.</p>
+<pre><code class="language-rust">#[cfg(test)]
+mod tests {
+    use super::*;
+    use zenoh::config::Config;
+
+    async fn create_mock_session() -&gt; zenoh::Session {
+        let mut config = Config::default();
+        // 1. 멀티캐스트 스카우트 기능 완전 정지
+        config.scouting.multicast.set_enabled(Some(false)).unwrap();
+        // 2. 외부 접속 기능 정지
+        config.insert_json5("connect/endpoints", "[]").unwrap();
+        // 3. 내 귀를 닫기 (루프백조차 쓰지 않음)
+        config.insert_json5("listen/endpoints", "[]").unwrap();
+        
+        // 이렇게 생성된 Session은 컴퓨터 외부나 OS 소켓을 전혀 오염시키지 않는
+        // "순수 프로세스 내부 캐시용 세션"으로 구동된다.
+        zenoh::open(config).res().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_virtual_publish_subscribe() {
+        let session = create_mock_session().await;
+        
+        let publisher = session.declare_publisher("test/mock").res().await.unwrap();
+        let mut sub = session.declare_subscriber("test/mock").res().await.unwrap();
+
+        publisher.put("fake_data").res().await.unwrap();
+        
+        // 진짜 네트워크를 타지 않고 인메모리 루프백으로 1μs 만에 도달!
+        let received = sub.recv_async().await.unwrap();
+        assert_eq!(received.value.payload.contiguous().as_ref(), b"fake_data");
+    }
+}
+</code></pre>
+<p>이 방식을 사용하면 CI 인스턴스에서 병렬로 테스트 파일 10개가 돌아가더라도, 포트(<code>7447</code>) 번호가 충돌하여 <code>Address already in use</code> 에러가 뜨는 끔찍한 현상을 원천 차단할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

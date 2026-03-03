@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:7.10.2 안정성을 위한 예외 처리(Exception Handling) 모범 사례</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>7.10.2 안정성을 위한 예외 처리(Exception Handling) 모범 사례</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 7. Python에서의 Zenoh</a> / <a href="index.html">7.10 예외 처리 및 디버깅</a> / <span>7.10.2 안정성을 위한 예외 처리(Exception Handling) 모범 사례</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>7.10.2 안정성을 위한 예외 처리(Exception Handling) 모범 사례</h1>
+<p>파이썬 개발자의 최악의 악습인 <code>except Exception:</code> 문법 하나로 모든 것을 틀어막으려 하지 마라. Zenoh 파이프라인에서 발생하는 예외는 “즉각 프로세스를 죽이고 도커를 재시작해야 할 에러“와 “5초 뒤에 다시 시도해야 할 에러“로 완벽하게 나뉜다.</p>
+<h3>0.1 [Runbook] 프로덕션 레벨 트라이-캐치(Try-Catch) 전술 방벽</h3>
+<pre><code class="language-python">import zenoh
+import time
+import sys
+
+def run_zenoh_pipeline():
+    conf = zenoh.Config()
+    
+    # 1. 시동 단계의 에러: 100% 설정 파일 오타거나 권한 부족이다. 즉시 강제 종료(Exit)해야 한다.
+    try:
+        session = zenoh.open(conf)
+    except zenoh.ZenohException as e:
+        print(f"[FATAL] 코어 부팅 실패. 설정 파일을 점검하십시오: {e}")
+        sys.exit(1)
+
+    # 2. 런타임/로직 단계의 에러 방패막
+    try:
+        # 무지성 폭격 중
+        pub = session.declare_publisher("uav/1/telemetry")
+        for i in range(100):
+            pub.put(f"payload_{i}")
+            time.sleep(0.1)
+            
+    # [특수전] 메모리 부족, 라우터 내부의 기이한 붕괴가 발생했을 때
+    except zenoh.ZenohException as z_err:
+        print(f"[CRITICAL] Zenoh 백그라운드 엔진 크래시: {z_err}")
+        # 이 상황이면 세션을 복구하기 힘들다. 
+        # 시스템에 얼럿(Slack/이메일)을 때리고 프로세스를 재부팅시키는 게 맞다.
+        
+    # [일반전] 파이썬 네이티브 에러 (데이터 직렬화 실패 등)
+    except ValueError as v_err:
+        print(f"[WARN] 잘못된 파라미터가 들어왔습니다. 다음 루프 진행: {v_err}")
+        
+    finally:
+        # [최후의 보루] 에러가 나서 스크립트가 폭발하더라도, 세션 객체만큼은 
+        # 파이썬이 목숨을 걸고 파괴해 줘야 한다. 안 그러면 포트(7447)가 물려버린다.
+        print("세션 클리어")
+        session.close()
+
+if __name__ == "__main__":
+    run_zenoh_pipeline()
+</code></pre>
+<p>이처럼 예외를 <strong>운영체제 레벨(Fatal)</strong>, <strong>네트워크 레벨(Critical)</strong>, <strong>비즈니스 레벨(Warn)</strong> 의 3단계로 분리해서 Catch하는 코드를 작성해야만, 클라우드 운영팀이 당신 파이썬 스크립트의 로그만 보고도 어느 티어(Tier)에서 장애가 났는지 1초 만에 식별할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

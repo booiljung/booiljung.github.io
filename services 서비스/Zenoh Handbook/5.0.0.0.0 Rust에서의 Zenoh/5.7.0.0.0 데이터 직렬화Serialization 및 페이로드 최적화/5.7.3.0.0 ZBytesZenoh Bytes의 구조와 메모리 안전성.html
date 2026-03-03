@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.7.3 ZBytes(Zenoh Bytes)의 구조와 메모리 안전성</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.7.3 ZBytes(Zenoh Bytes)의 구조와 메모리 안전성</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 5. Rust에서의 Zenoh</a> / <a href="index.html">5.7 데이터 직렬화(Serialization) 및 페이로드 최적화</a> / <span>5.7.3 ZBytes(Zenoh Bytes)의 구조와 메모리 안전성</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.7.3 ZBytes(Zenoh Bytes)의 구조와 메모리 안전성</h1>
+<p>Zenoh API를 쓰다 보면 데이터를 쏠 때는 편하게 <code>put("...")</code> 으로 넘기지만, 받을 때는 내 데이터가 이상한 <code>sample.value.payload</code> 즉, <strong><code>ZBytes</code></strong> 라는 독자적인 버퍼 컨테이너에 담겨오는 것을 깨닫게 된다.</p>
+<p>왜 표준의 <code>Vec&lt;u8&gt;</code>을 쓰지 않고 굳이 <code>ZBytes</code>라는 귀찮은 객체를 씌워놨을까?</p>
+<h3>0.1 [Runbook] ZBytes 인스펙션: 조각난 네트워크 버퍼의 봉합</h3>
+<p>TCP/IP 네트워크에서 10MB짜리 덩어리를 쏘면 한 번에 도착하지 않는다. 1.5KB씩 잘게 쪼개져서(MTU) 도달한다. 과거의 무식한 라이브러리들은 이 조각들을 <code>Vec&lt;u8&gt;</code> 에 <code>push</code>하며 거대한 메모리를 재할당(Re-allocation)했다.</p>
+<p><strong>[ZBytes의 파편화 관리의 미학]</strong><br />
+Zenoh의 <code>ZBytes</code>는 파편화된 메모리 조각들의 헤더 포인터만 들고 있는 <strong>논리적인 묶음 배열(Scattered Array)</strong> 이다.</p>
+<ol>
+<li><strong><code>payload.contiguous()</code> 란 무엇인가?</strong><br />
+조각난 배열들을 억지로 물리적 1열(<code>&amp;[u8]</code>)로 이어 붙여 달라는(복사가 일어날 수도 있는) 명령이다. 초보자는 무지성으로 이걸 써서 역직렬화 도구(Serde)에 넘긴다.
+<pre><code class="language-rust">let bytes_ref = sample.value.payload.contiguous(); // 안전하지만 메모리 오버헤드 유발 가능
+</code></pre>
+</li>
+</ol>
+<pre><code>
+2. **[고급 전술] 청크 반복자(Chunk Iterator)를 활용한 인-플레이스(In-place) 처리**
+로봇 비전(Vision)에서 4K 해상도의 영상 바이트 덩어리를 받는 상황.
+조각난 채로 들어왔으면, 그냥 조각된 상태 그대로 파일 시스템이나 디스플레이 파이프에 밀어 넣는 것이 진정한 튜닝 고수다.
+   ```rust
+   use std::io::Write;
+
+   // 1.5KB씩 쪼개져 들어온 패킷들을 contiguous()로 합치지 않고, 
+   // 파편 그 자체를 하나씩 순회하며 꺼내 쓴다! (Zero-Allocation)
+   for chunk in sample.value.payload.chunks() {
+       file.write_all(chunk).unwrap(); 
+   }
+</code></pre>
+<p>이 <code>ZBytes</code> 철학을 이해하면, 당신의 노드는 1GB짜리 파일을 Zenoh로 전송받더라도 RAM 메모리 사용량이 고작 수십 MB에서 요동치지 않는 기적을 보일 것이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

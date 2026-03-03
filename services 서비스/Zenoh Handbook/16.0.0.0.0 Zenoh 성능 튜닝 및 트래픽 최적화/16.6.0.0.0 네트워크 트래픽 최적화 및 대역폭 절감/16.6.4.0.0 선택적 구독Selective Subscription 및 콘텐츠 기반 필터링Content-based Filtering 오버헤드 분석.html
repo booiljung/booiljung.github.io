@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:16.6.4 선택적 구독(Selective Subscription) 및 콘텐츠 기반 필터링(Content-based Filtering) 오버헤드 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>16.6.4 선택적 구독(Selective Subscription) 및 콘텐츠 기반 필터링(Content-based Filtering) 오버헤드 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 16. Zenoh 성능 튜닝 및 트래픽 최적화</a> / <a href="index.html">16.6 네트워크 트래픽 최적화 및 대역폭 절감</a> / <span>16.6.4 선택적 구독(Selective Subscription) 및 콘텐츠 기반 필터링(Content-based Filtering) 오버헤드 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>16.6.4 선택적 구독(Selective Subscription) 및 콘텐츠 기반 필터링(Content-based Filtering) 오버헤드 분석</h1>
+<p>데이터를 그냥 무작정 <code>sub "robot/**"</code> 으로 당겨오는 것은 관제탑 서버를 죽이는 직행 열차다.</p>
+<h3>0.1 [인스펙션] 구독망 정밀 타겟팅 전술</h3>
+<p>데이터의 종류가 엄청날 때 수신부(Subscriber) 가 대역폭을 아끼는 패턴이다.</p>
+<p><strong>1. 와일드카드(Wildcard) 오버 구독의 폐해</strong><br />
+관제탑이 <code>sub "**"</code> (모든 걸 구독해) 를 때렸다.<br />
+이 순간, 아프리카 사막의 로봇이 쏘는 4K 영상부터 남극 로봇의 라이다 센서 값까지 전 세계 지점의 쓰레기 트래픽들이 꾸역꾸역 라우팅을 거쳐 관제탑 컴퓨터로 밀려들어 온다. 이 관제탑의 인터넷 회선과 Zenoh 수신 스레드(Thread) 는 즉시 터져나간다.</p>
+<p><strong>2. 에지 측(Edge-side) 필터링의 우월성</strong><br />
+가장 아름다운 아키텍처는 “받아서 버리는 것(Client-side Filtering)” 이 아니라 “가져오기 전에 걸러내는 것(Edge-side Filtering)” 이다.</p>
+<ul>
+<li>나쁜 구독: <code>sub "robot/1/sensor"</code> 한 다음, 관제탑에서 <code>if value &gt; 30</code> 이면 경고 띄우기. (이미 데이터가 30도 미만일 때도 태평양 바다를 건너와서 인터넷 종량제 요금을 냈다).</li>
+<li>좋은 구독: 최신 Zenoh 의 고도화된 기능이나 쿼리(Query) 파라미터를 이용해 <code>get "robot/1/sensor?temp&gt;30"</code> 형태의 스마트 쿼리를 날리는 것이다. 이렇게 하면 30도가 안 넘는 데이터는 에지 단말 라우터 선에서 전파로 쏘아 올리지도 않고 폐기되므로(Zero Bandwidth), 관제탑의 대역폭은 <span class="math math-inline">0</span> 으로 수렴한다.</li>
+</ul>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

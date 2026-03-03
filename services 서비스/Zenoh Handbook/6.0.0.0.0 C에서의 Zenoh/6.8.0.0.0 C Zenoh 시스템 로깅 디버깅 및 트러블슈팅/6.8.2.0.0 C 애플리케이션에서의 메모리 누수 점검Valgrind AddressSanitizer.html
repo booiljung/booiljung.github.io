@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:6.8.2 C++ 애플리케이션에서의 메모리 누수 점검 (Valgrind, AddressSanitizer)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>6.8.2 C++ 애플리케이션에서의 메모리 누수 점검 (Valgrind, AddressSanitizer)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 6. C++에서의 Zenoh</a> / <a href="index.html">6.8 C++ Zenoh 시스템 로깅, 디버깅 및 트러블슈팅</a> / <span>6.8.2 C++ 애플리케이션에서의 메모리 누수 점검 (Valgrind, AddressSanitizer)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>6.8.2 C++ 애플리케이션에서의 메모리 누수 점검 (Valgrind, AddressSanitizer)</h1>
+<p>서버(Router)는 한 달째 살아서 패킷을 나르는데, 내 C++ 클라이언트 프로세스만 하루를 못 버티고 “Out Of Memory (OOM) 킬러“에게 참수당하고 있다면, 범인은 100% <code>zenoh::Subscriber</code> 람다 내부나 직렬화 코드 어딘가에서 잊혀진 할당(<code>new</code>)이다.</p>
+<h3>0.1 [Runbook] VRAM 및 메모리 혈전(Leak) 색출 훈련</h3>
+<p>이 챕터는 컴파일 스크립트와 터미널 프로파일러를 돌리는 시스템 해킹 런북이다.</p>
+<p><strong>1. AddressSanitizer(ASan) 무장 컴파일</strong><br />
+<code>Valgrind</code> 구시대의 유물은 느리다. 모던 C++ 의 구원자인 컴파일러 내장 버그 색출기 ASan 을 켜라.</p>
+<pre><code class="language-cmake"># CMakeLists.txt 내에 삽입! (Release 테스트 시에도 켜야 함)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -g -fno-omit-frame-pointer")
+</code></pre>
+<p>이 상태로 프로그램을 돌리고, 만약 <code>subscriber</code> 람다 안에서 <code>char* buf = new char[1024];</code> 해놓고 <code>delete</code> 를 안 했다?<br />
+앱이 종료되자마자 빨간색 에러 로그가 소스코드 <code>main.cpp:52줄</code>을 정확히 지목하며 메모리 출혈 지점을 고발할 것이다.</p>
+<p><strong>2. 댕글링 포인터(Dangling Pointer) 및 Use-After-Free 추적</strong><br />
+가장 악랄한 Zenoh C++ 버그는 <strong>“Zenoh가 Payload 메모리를 회수했는데, 내 메인 스레드가 그 주소를 아직도 읽고 있을 때”</strong> 터진다.<br />
+ASan 은 이 짓을 귀신같이 잡아낸다.</p>
+<pre><code class="language-cpp">uint8_t* g_bad_ptr = nullptr;
+
+auto sub = session.declare_subscriber("camera/feed", [](const%20zenoh::Sample&amp;%20s) {
+    // [최악의 짓] 수신 블록이 끝나면 파괴될 메모리의 주소를 훔쳐서 밖으로 빼낸다.
+    g_bad_ptr = const_cast&lt;uint8_t*&gt;(s.get_payload().as_vector().data());
+});
+
+// ...메인 스레드에서...
+// "ERROR: AddressSanitizer: heap-use-after-free on address 0x..." 폭발!
+if (g_bad_ptr[0] == 0xFF) { } 
+</code></pre>
+<p>메모리를 빼내고 싶으면 딥카피(<code>memcpy</code>나 <code>std::vector</code> 복사본 생성)를 하거나 앞 장(6.5.3)에서 배운 공유 메모리 참조 기술을 써야 한다. ASan 없이는 이 버그를 잡는 데 일주일이 걸린다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

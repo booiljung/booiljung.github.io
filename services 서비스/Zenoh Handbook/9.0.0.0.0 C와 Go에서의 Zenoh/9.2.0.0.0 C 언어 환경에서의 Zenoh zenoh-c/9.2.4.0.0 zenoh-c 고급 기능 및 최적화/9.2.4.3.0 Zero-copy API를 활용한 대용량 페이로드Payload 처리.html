@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.2.4.3 Zero-copy API를 활용한 대용량 페이로드(Payload) 처리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.2.4.3 Zero-copy API를 활용한 대용량 페이로드(Payload) 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> / <a href="../../../../index.html">서비스 (Services)</a> / <a href="../../../index.html">제목: Zenoh 핸드북</a> / <a href="../../index.html">Chapter 9. C와 Go에서의 Zenoh</a> / <a href="../index.html">9.2 C 언어 환경에서의 Zenoh (zenoh-c)</a> / <a href="index.html">9.2.4 zenoh-c 고급 기능 및 최적화</a> / <span>9.2.4.3 Zero-copy API를 활용한 대용량 페이로드(Payload) 처리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.2.4.3 Zero-copy API를 활용한 대용량 페이로드(Payload) 처리</h1>
+<p><code>memcpy()</code> 함수는 프로그래머에게 마약이다. 편하지만, 메모리 복사 시간이 수 밀리초씩 깎여나가면 CPU가 불탄다. C 언어의 궁극기는 “OS가 잡아준 메모리 물리 주소값을 그대로 상대방 프로그램에 쑤셔넣는 것” 이다.</p>
+<h3>0.1 [Runbook] 메모리 수거 위임(Deallocation Delegation) 전술</h3>
+<p>Zenoh 의 <code>put</code> 은 보통 안전을 위해 버퍼를 “복사“해서 자기들만의 엔진 큐에 담아버린다.<br />
+“복사하지 말고 내 주소값을 바로 읽어가라“고 하려면 명시적 Zero-Copy API를 써야 한다.</p>
+<pre><code class="language-c">#include &lt;zenoh.h&gt;
+#include &lt;stdlib.h&gt;
+
+// [함수 정의] 내 메모리를 대신 버려주는 청소부 
+void my_custom_free(uint8_t *ptr, size_t len, void *ctx) {
+    printf("Zero-copy 통신 완료! 내 메모리 %p 청소 개시.\n", ptr);
+    free(ptr);
+}
+
+void zero_copy_shoot(z_owned_session_t* session, z_owned_publisher_t* pub) {
+    // 1. 방대한 1GB 짜리 가상 메모리 객체를 내가 만들었다.
+    size_t HUGE_SIZE = 1024 * 1024 * 1024;
+    uint8_t* huge_map = (uint8_t*)malloc(HUGE_SIZE);
+    
+    // (데이터 쓰기 작렬)
+    huge_map[0] = 0xFF; // ...
+    
+    // 2. 옵션 초기화
+    z_publisher_put_options_t options = z_publisher_put_options_default();
+    
+    // 3. 대망의 Zero copy 바이트 생성!
+    // 내 메모리 주소($huge_map)와, 이게 다 쓰이고 나면 누가 이걸 치워버릴지(my_custom_free)
+    // 그 책임 자체를 Zenoh(Rust 엔진) 에게 던져버린다.
+    z_owned_bytes_t zcb = z_bytes_new_alloc(huge_map, HUGE_SIZE, my_custom_free, NULL);
+    
+    // 4. 발사 
+    // z_move 로 보냈지만, 내부적으론 아무런 1GB짜리 memcpy 가 일어나지 않았다! (O(1) 통신 속도)
+    z_publisher_put(z_loan(*pub), z_loan(zcb), HUGE_SIZE, &amp;options);
+    
+    // 5. 메모리 파기
+    z_drop(z_move(zcb)); 
+    
+    // 주의! 이 밑에서 огром_map 포인터를 건드리면 Use-After-Free 터짐!!!
+    // 엄청나게 빠른 대신 인간의 실수를 용서하지 않는다.
+}
+</code></pre>
+<p>이것이 C로 짠 카메라 캡처 보드가 FHD 60FPS 영상을 멀티캐스트로 흩뿌리면서도 라즈베리 파이의 CPU 사용량이 단 5% 에 머무는 핵심 기술이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

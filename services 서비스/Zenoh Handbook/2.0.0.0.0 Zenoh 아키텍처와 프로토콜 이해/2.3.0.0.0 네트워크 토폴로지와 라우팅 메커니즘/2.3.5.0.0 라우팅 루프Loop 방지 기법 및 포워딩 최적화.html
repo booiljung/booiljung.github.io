@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:2.3.5 라우팅 루프(Loop) 방지 기법 및 포워딩 최적화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>2.3.5 라우팅 루프(Loop) 방지 기법 및 포워딩 최적화</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 2. Zenoh 아키텍처와 프로토콜 이해</a> / <a href="index.html">2.3 네트워크 토폴로지와 라우팅 메커니즘</a> / <span>2.3.5 라우팅 루프(Loop) 방지 기법 및 포워딩 최적화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>2.3.5 라우팅 루프(Loop) 방지 기법 및 포워딩 최적화</h1>
+<p>네트워크 토폴로지를 유연한 Mesh 형태로 열어두는 순간, 필연적으로 “다람쥐 쳇바퀴” 에러, 즉 스위칭 루프(Routing Loop) 재앙이 도사리게 된다.<br />
+로봇 A가 데이터를 라우터 B에게 던졌는데 B가 C에게, C가 다시 A에게 무한반복으로 공을 넘기기 시작하면(Broadcast Loop), 대역폭 버퍼는 순식간에 수만 겹으로 폭증하고 거대한 네트워크 전체 셧다운을 야기한다.</p>
+<h3>0.1 스패닝 트리 (Spanning Tree) 자동 형성 메커니즘</h3>
+<p>Zenoh 라우팅 엔진의 코어 렌즈는 루프를 근원적으로 차단한다.<br />
+피어와 라우터가 아무리 미친 듯이 얼기설기 P2P로 맞붙어서 그물망을 형성하더라도, 라우팅 알고리즘은 내부적으로 “보이지 않는 트리 구조(이중선이 없는 완벽한 나무 모양)“인 스패닝 트리를 수학적으로 뽑아낸다. 데이터는 오직 이 트리 위로만 포워딩된다. 절대 뒤돌아서 쳇바퀴를 돌지 못하도록 설계된 것이다.</p>
+<h3>0.2 [Runbook] 브로드캐스트 스톰 발생을 일으키는 인위적 안티 패턴 방어</h3>
+<p>그럼에도 불구하고 엔지니어의 어설픈 아키텍처 설정 때문에 루프를 강제로 열어버리는 끔찍한 설정 런북이 있다.</p>
+<p><strong>절대 엄금 설정:</strong> 다중 라우터를 강제로 크로스 결선하는 경우.<br />
+서울 K8s K1 파드, K2 파드, K3 파드를 수동 클러스터링한다고 쳐보자.</p>
+<pre><code class="language-json5">// [치명적인 실수] 라우터 K1의 설정에 K2와 K3를 양방향으로 강제 결속
+// K1 -&gt; K2 connect, K2 -&gt; K3 connect, K3 -&gt; K1 connect
+</code></pre>
+<p>Zenoh 코어는 이 강제 루프 결선을 피해 스패닝 트리를 짜내려고 극한의 연산을 거치지만, 스위치가 뻗거나 재시작될 때 짧은 구간의 루프 스톰(Loop Storm)이 터질 확률이 존재한다.</p>
+<p><strong>올바른 O(E) 간결화 런북 선언:</strong><br />
+수동으로 큰 백본망을 엮을 땐, “피라미드 구조(Hierarchal)“가 되거나 “Star 모양“을 의도하고, 나머지는 라우터 백본들에게 무선 디스커버리 권한을 온전히 맡겨라. 강제로 중복된 서킷을 우겨넣는 행위는 장애 시 트레이싱 불가능의 늪으로 인프라 팀을 수장시킨다. 또한 <code>avoid_loops</code> 파라미터 방어막 기능이 켜져 있는지를 시스템 구성(CI/CD 배포 스크립트) 시 무조건 테스트로 검증하도록 런북에 문서화하라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

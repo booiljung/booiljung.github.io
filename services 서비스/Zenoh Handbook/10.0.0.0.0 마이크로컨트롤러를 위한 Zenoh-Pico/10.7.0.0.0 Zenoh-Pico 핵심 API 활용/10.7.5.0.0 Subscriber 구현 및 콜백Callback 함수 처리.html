@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:10.7.5 Subscriber 구현 및 콜백(Callback) 함수 처리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>10.7.5 Subscriber 구현 및 콜백(Callback) 함수 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 10. 마이크로컨트롤러를 위한 Zenoh-Pico</a> / <a href="index.html">10.7 Zenoh-Pico 핵심 API 활용</a> / <span>10.7.5 Subscriber 구현 및 콜백(Callback) 함수 처리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>10.7.5 Subscriber 구현 및 콜백(Callback) 함수 처리</h1>
+<p>마이크로컨트롤러가 데이터를 수신한다는 의미는, 외부의 명령(전등 켜기, 드론 폭파 등)을 받아들이겠다는 엄청난 결단이다.<br />
+Zenoh-Pico 의 수신은 <strong>인터럽트가 아니다.</strong> 오로지 메인 함수 짬짬이 돌리는 <code>z_session_yield()</code> 함수 내부 깊숙한 곳에서, 완성된 패킷이 조립되었을 때 딱 한 번 당신이 선언해 둔 함수(포인터)를 호출해줄 뿐이다.</p>
+<h3>0.1 [Runbook] 디스패처 콜백 전술 (Command Execution)</h3>
+<pre><code class="language-c">#include &lt;zenoh-pico.h&gt;
+#include &lt;string.h&gt;
+
+z_subscriber_t sub;
+
+// [경고] 이 콜백 함수 안에서는 절대 무거운 연산(예: Flash Write, 통신 대기) 금지!
+// 이 함수가 리턴되기 전까지 칩의 모든 Zenoh 통신 기능은 마비(Blocking)된다!
+void cmd_callback(const z_sample_t *sample, void *ctx) {
+    
+    // 넘어온 페이로드를 읽는다 (Zero-copy 로 날아온 버퍼의 일부분 포인터다)
+    z_str_t val = z_string_make((char*)sample-&gt;payload.start, sample-&gt;payload.len);
+    
+    printf("명령 수신: %s\n", val.start);
+
+    // 하드웨어 핀(Pin) 당기기 분기문
+    if (strncmp(val.start, "LED_ON", 6) == 0) {
+        HW_LED_TURN_ON();
+    } else if (strncmp(val.start, "LED_OFF", 7) == 0) {
+        HW_LED_TURN_OFF();
+    }
+}
+
+void setup_subscriber() {
+    z_owned_keyexpr_t key = z_keyexpr_new("robot/01/cmd");
+    
+    // 콜백 함수를 클로저(Closure) 구조체로 싼다.
+    z_owned_closure_sample_t callback;
+    z_closure(&amp;callback, cmd_callback, NULL, NULL);
+    
+    // 구독 시작 (라우터에게 '나한테 이 토픽 던져줘' 라고 알림)
+    sub = z_declare_subscriber(z_loan(session), z_loan(key), z_move(callback), NULL);
+    z_drop(z_move(key));
+}
+</code></pre>
+<p>이 코드는 단순해 보이지만 끔찍한 함정이 숨어있다.<br />
+콜백 함수로 주어지는 <code>sample-&gt;payload.start</code> 버퍼는 이 콜백 함수가 끝나는 순간 (중괄호가 닫히는 순간) <strong>Pico 엔진에 의해 휴지통으로 파기(Overwritten)</strong> 된다. 당신이 저 주소(Pointer)를 전역 변수에 저장해 놓고 나중에 메인 루프에서 읽으려 한다면, 거기엔 이미 다른 쓰레기 패킷이 덮어씌워진 상태일 것이다. (반드시 필요한 데이터는 즉각 복사본(Deep Copy)을 만들어 대피시켜라).</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

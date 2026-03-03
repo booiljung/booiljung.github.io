@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:11.4.5 ROS2 Service-Client 모델과 Zenoh Queryable-Query의 매핑 원리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>11.4.5 ROS2 Service-Client 모델과 Zenoh Queryable-Query의 매핑 원리</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 11. ROS2에서의 Zenoh</a> / <a href="index.html">11.4 차세대 통신 계층: rmw_zenoh 심층 분석</a> / <span>11.4.5 ROS2 Service-Client 모델과 Zenoh Queryable-Query의 매핑 원리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>11.4.5 ROS2 Service-Client 모델과 Zenoh Queryable-Query의 매핑 원리</h1>
+<p>로봇에게 “이 경로를 계산해 줘” 라고 부탁(Request)하고 응답(Response)을 기다리는 동기식 RPC 통신인 ‘Service’.<br />
+Zenoh 책을 주의 깊게 읽었다면, 이 구조가 Zenoh 의 <strong><code>Get()</code> 과 <code>Queryable</code> 구조</strong> 와 영혼까지 일치한다는 것을 깨달았을 것이다.</p>
+<h3>0.1 [인스펙션] RPC 매핑과 블로킹(Blocking) 브릿징 전술</h3>
+<p><strong>1. Service 토픽의 분할 구조</strong><br />
+ROS2 에서 <code>/calculate_path</code> 라는 서비스를 만들면, <code>rmw_zenoh</code> 는 밑단의 Zenoh 에게 다음과 같이 변조된 키를 2개 부여한다.</p>
+<ul>
+<li>요청(Request)을 받는 서버의 Key: <code>ros2/rq/calculate_pathRequest</code></li>
+<li>대답(Reply)을 돌려주는 Key:  <code>ros2/rr/calculate_pathReply</code> (<code>rq</code>: Request / <code>rr</code>: Reply 의 약자)</li>
+</ul>
+<p><strong>2. Client 의 <code>Get</code> 호출 작동 원리</strong></p>
+<ul>
+<li>ROS2 노드 A가 클라이언트로서 이 서비스를 부르면,</li>
+<li><code>rmw_zenoh</code> 는 <code>z_get("ros2/rq/calculate_path", Request데이터)</code> 를 쏘고 스레드를 블로킹(Blocking) 상태로 멈춘 채 기다린다.</li>
+<li>저 멀리 있는 ROS2 서비스 서버 (노드 B) 는 <code>Queryable</code> 로 대기하고 있다가, 이 질문 파티클을 낚아채 정답을 계산한 후(Callback 실행)</li>
+<li><code>z_reply()</code> 로 응답 데이터를 역류시킨다.</li>
+</ul>
+<p>이 완벽한 1:1 대칭(Symmetry) 구조 덕분에, ROS2 의 Service 는 그 기반이 DDS 에서 Zenoh 로 바뀌었는지 스스로 절대 눈치채지 못한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

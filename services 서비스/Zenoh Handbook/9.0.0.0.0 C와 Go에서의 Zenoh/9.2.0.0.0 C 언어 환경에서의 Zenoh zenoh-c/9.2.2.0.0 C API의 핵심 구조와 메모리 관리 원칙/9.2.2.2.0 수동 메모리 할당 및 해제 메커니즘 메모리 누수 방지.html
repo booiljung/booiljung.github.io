@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.2.2.2 수동 메모리 할당 및 해제 메커니즘, 메모리 누수 방지</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.2.2.2 수동 메모리 할당 및 해제 메커니즘, 메모리 누수 방지</h1>
+                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> / <a href="../../../../index.html">서비스 (Services)</a> / <a href="../../../index.html">제목: Zenoh 핸드북</a> / <a href="../../index.html">Chapter 9. C와 Go에서의 Zenoh</a> / <a href="../index.html">9.2 C 언어 환경에서의 Zenoh (zenoh-c)</a> / <a href="index.html">9.2.2 C API의 핵심 구조와 메모리 관리 원칙</a> / <span>9.2.2.2 수동 메모리 할당 및 해제 메커니즘, 메모리 누수 방지</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.2.2.2 수동 메모리 할당 및 해제 메커니즘, 메모리 누수 방지</h1>
+<p>C 개발자들의 숙명인 “청소부 역할“이다. <code>zenoh-c</code> 는 <code>z_drop()</code> 이라는 공용 해제(Free) 매크로를 제공한다.<br />
+하지만 언제 써야 할까? 그리고 에러가 나서 <code>return</code> 이 중간에 일어나는 방어 코드(Guard Clause)가 있을 땐 어떻게 이빨 빠진 메모리를 해제해야 할까?</p>
+<h3>0.1 [Runbook] 방어적 <code>z_drop()</code> 전술 (GOTO 스윕 기법)</h3>
+<p>리눅스 커널 소스코드에서 가장 사랑받는 에러 처리 및 일괄 메모리 수거 기법이다.</p>
+<pre><code class="language-c">#include &lt;zenoh.h&gt;
+#include &lt;stdio.h&gt;
+
+int safe_publisher_task() {
+    z_owned_config_t config = z_config_default();
+    z_owned_session_t session;
+    z_owned_publisher_t pub;
+    z_owned_keyexpr_t key_expr;
+
+    int ret_code = 0; // 성공/실패 여부
+
+    // [1단계] 세션 열기
+    session = z_open(z_move(config));
+    if (!z_session_check(&amp;session)) {
+        printf("세션 부팅 실패\n");
+        // 아직 아무것도 (pub 등) 생성 안됐으므로 바로 탈출!
+        return -1; 
+    }
+
+    // [2단계] 키 표현식(자원) 할당
+    key_expr = z_keyexpr_new("robot/battery");
+    // 주의: new 가 실패했을수도 있으니 반드시 체크
+    if (!z_keyexpr_check(&amp;key_expr)) {
+        printf("키 생성 실패\n");
+        ret_code = -1;
+        // ⭐ 이 시점부터 에러가 나면, '지금까지 만든 것들' 을 청소해야 함!
+        goto cleanup_session; 
+    }
+
+    // [3단계] 퍼블리셔(자원) 할당
+    pub = z_declare_publisher(z_loan(session), z_loan(key_expr), NULL);
+    if (!z_publisher_check(&amp;pub)) {
+        printf("퍼블리셔 생성 실패\n");
+        ret_code = -1;
+        goto cleanup_key; 
+    }
+
+    // [4단계] 정상 비즈니스 로직 수행
+    z_publisher_put(z_loan(pub), (const uint8_t*)"100", 3, NULL);
+    printf("명령 하달 성공\n");
+
+
+// === [메모리 수거 청소 구역 (Teardown)] ===
+// 스택의 역순으로 할당 해제를 수행한다.
+cleanup_pub:
+    z_undeclare_publisher(z_move(pub)); // 퍼블리셔 파괴
+cleanup_key:
+    z_drop(z_move(key_expr));         // 키 표현식 파괴
+cleanup_session:
+    z_close(z_move(session));         // 최종 세션 파괴
+
+    return ret_code;
+}
+</code></pre>
+<p>최신 C++ 의 <code>RAII (Resource Acquisition Is Initialization)</code> 가 없는 C 언어에서는, 이 <code>GOTO</code> 를 활용한 낙수 효과 청소법만이 초당 천번 호출되는 백그라운드 함수에서 “0%의 메모리 누수“를 달성하는 최강의 건축술이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

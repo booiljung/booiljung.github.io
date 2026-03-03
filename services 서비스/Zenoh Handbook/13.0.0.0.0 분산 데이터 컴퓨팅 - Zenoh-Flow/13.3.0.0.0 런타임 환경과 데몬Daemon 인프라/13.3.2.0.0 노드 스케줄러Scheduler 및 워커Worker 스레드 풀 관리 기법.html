@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:13.3.2 노드 스케줄러(Scheduler) 및 워커(Worker) 스레드 풀 관리 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>13.3.2 노드 스케줄러(Scheduler) 및 워커(Worker) 스레드 풀 관리 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 13. 분산 데이터 컴퓨팅: Zenoh-Flow</a> / <a href="index.html">13.3 런타임 환경과 데몬(Daemon) 인프라</a> / <span>13.3.2 노드 스케줄러(Scheduler) 및 워커(Worker) 스레드 풀 관리 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>13.3.2 노드 스케줄러(Scheduler) 및 워커(Worker) 스레드 풀 관리 기법</h1>
+<p>소스에서 데이터가 무수히 쏟아지는데, 필터(오퍼레이터)가 처리 속도를 못 따라간다면 큐(Queue)가 폭발하며 OOM(Out of Memory) 으로 죽는다. 데몬은 이 교통정리를 어떻게 수행하는가?</p>
+<h3>0.1 [Runbook] Rust Tokio 기반의 비동기 용광로 튜닝</h3>
+<p>Zenoh-Flow 의 스케줄러는 그 유명한 Rust 의 <code>Tokio</code> 비동기 런타임을 코어 엔진으로 삼고 있다.</p>
+<p><strong>1. 경량 워커(Worker) 스레드의 마법</strong></p>
+<ul>
+<li>데몬은 컴퓨터의 CPU 코어 개수만큼만 물리적(OS) 스레드를 띄운다. (예: 쿼드코어면 4개).</li>
+<li>그리고 이 4개의 진짜 스레드 위에, 수만 개의 “가벼운 가상 스레드(Async Task)” 를 태워서 잘게 썰어 돌린다.</li>
+<li>필터(Operator) 가 계산을 마치고 I/O 를 기다릴 때, 운영체제 단위의 컨텍스트 스위칭(Context Switching) 이 일어나지 않는다. 스케줄러가 알아서 다음 노드(Task) 로 계산 권한을 넘긴다. 따라서 수만 개의 파이프라인을 돌려도 CPU 캐시 미스 가 제로에 수렴한다.</li>
+</ul>
+<p><strong>2. 스레드 풀 강제 할당 (Pinning)</strong></p>
+<ul>
+<li><strong>문제:</strong> 인공지능 추론(Inference) 노드는 비동기가 통하지 않는 연산 괴물(Blocking Heavy Task) 이다. 이런 녀석을 일반 스레드 풀에 놔두면 다른 노드들이 순서를 뺏겨 파이프라인이 즉각 마비된다.</li>
+<li><strong>아키텍트의 개입:</strong> GPU나 무거운 필터를 태우는 노드는 스케줄러에게 “이 녀석은 별도의 블로킹 전용 독립 스레드에 가둬라!” 라고 데몬 파일에서 강제 격리 조치해야만 한다. 시스템 설계자의 피할 수 없는 임무다.</li>
+</ul>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

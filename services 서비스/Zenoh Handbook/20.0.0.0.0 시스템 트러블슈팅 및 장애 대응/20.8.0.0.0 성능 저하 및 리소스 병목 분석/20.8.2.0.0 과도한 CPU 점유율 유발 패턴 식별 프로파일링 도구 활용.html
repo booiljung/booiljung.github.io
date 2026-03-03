@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:20.8.2 과도한 CPU 점유율 유발 패턴 식별 (프로파일링 도구 활용)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>20.8.2 과도한 CPU 점유율 유발 패턴 식별 (프로파일링 도구 활용)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">서비스 (Services)</a> / <a href="../../index.html">제목: Zenoh 핸드북</a> / <a href="../index.html">Chapter 20. 시스템 트러블슈팅 및 장애 대응</a> / <a href="index.html">20.8 성능 저하 및 리소스 병목 분석</a> / <span>20.8.2 과도한 CPU 점유율 유발 패턴 식별 (프로파일링 도구 활용)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>20.8.2 과도한 CPU 점유율 유발 패턴 식별 (프로파일링 도구 활용)</h1>
+<p>메모리는 바닥을 기다시피 널널한데, 서버 애플리케이션의 특정 코어가 100% 점유율에 완전히 락(Lock)이 걸려버렸다면? 패킷이 도착하는 족족 무한 루프에 빠져 지수적인 폭주를 일으키고 있거나 직렬화 연산이 CPU 쓰레드를 물고 있는 현상이다.</p>
+<h3>0.1 단계: Flamegraph를 활용한 핫스팟(Hotspot) 분석</h3>
+<p>CPU 100%를 찍는 프로세스의 PID를 찾아내어 <code>perf</code> 도구를 이용해 심장부를 스캔하라.</p>
+<pre><code class="language-bash"># 30초 동안 해당 PID 프로세스의 함수 호출 그래프 트래킹
+sudo perf record -p 12345 -g -- sleep 30
+# 캡처된 데이터를 추출하여 Flamegraph용 스크립트로 변환
+sudo perf script &gt; out.perf
+</code></pre>
+<p>생성된 Flamegraph 웹 페이지(SVG)를 열었을 때, <code>zenoh::net::scouting</code> 함수 호출 스택 블록이 넓고 평평하게 전체 CPU의 80%를 집어삼키고 있다면? 그것은 멀티캐스트 루핑 버그나 네트워크 어딘가에서 초당 1만 번씩 불법적인 스카우팅 신호를 공격하듯 발사하고 있는 미친 고장 난 디바이스가 있음을 의미한다.</p>
+<h3>0.2 단계: 직렬화/역직렬화(Serialization/Deserialization) 비용 최적화</h3>
+<p>모니터링 대시보드 백엔드 코드에서 무거운 10MB짜리 JSON 문자열을 받고 로그(Log)를 찍기 위해 라우팅 스크립트 단에서 <code>JSON.parse(sample)</code>를 반복 호출하고 있지 않은가?<br />
+문자열 파싱 연산은 생각보다 매우 무거운 동기적 CPU 사용 지출을 일으킨다.<br />
+<strong>해법 강제:</strong><br />
+데이터는 무조건 바이트(<code>Vec&lt;u8&gt;</code>나 <code>Uint8Array</code>) 포맷 그대로 쥐고 있다가, 최종 사용자(UI 렌더링 측 브라우저 화면)에 도달했을 때 딱 한 번 파싱하여 소비하는 끝단 파이프라인(End-to-End) 디자인을 고수하라. 중간 매개 서버에서 남의 택배 상자(JSON)를 뜯어보는 호기심은 그 즉시 CPU 코어 마비라는 참담한 계산서로 되돌아올 것이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
