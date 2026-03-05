@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:11.3 zenoh-bridge-dds 구축 및 실전 활용</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>11.3 zenoh-bridge-dds 구축 및 실전 활용</h1>
+                    <nav class="breadcrumbs"><a href="../../../index.html">Home</a> / <a href="../../index.html">서비스 (Services)</a> / <a href="../index.html">Zenoh 핸드북</a> / <a href="index.html">Chapter 11. ROS2에서의 Zenoh</a> / <span>11.3 zenoh-bridge-dds 구축 및 실전 활용</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>11.3 zenoh-bridge-dds 구축 및 실전 활용</h1>
+<p>회사 내의 수많은 레거시(Legacy) 로봇들을 당장 내일 아침 클라우드 관제망에 붙여야 한다고 가정해 보자.<br />
+로봇 엔지니어들은 소스코드를 고칠 시간이 없고, 오직 터미널 창(Shell)만 열려 있다.</p>
+<p>이 장은 단 한 줄의 ROS2 코드 수정 없이, 백그라운드 프로세스로 <code>zenoh-bridge-dds</code> 를 띄워 로봇의 방화벽 단계를 강제로 뚫어내고, 불필요한 카메라 트래픽은 막아내며(Drop), 오직 핵심 V-SLAM 데이터만 클라우드의 Zenoh 라우터로 쏘아 올리는 “무배관 펌프 시공” 런북이다.</p>
+<h2>1.  zenoh-bridge-dds 패키지 설치 및 기본 실행 방법</h2>
+<p><code>zenoh-bridge-dds</code> 는 Rust 로 짜여진 완전히 독립된 실행 파일이다. ROS2 의 <code>setup.bash</code> 환경에 종속적이지 않으며, 그저 켜져 있는 DDS 망 어딘가에 조용히 들어가 스니핑(Sniffing)을 시작한다.</p>
+<h4>1.0.1 [Runbook] 브릿지 인젝션(Injection) 전술</h4>
+<p><strong>1. 바이너리 획득</strong><br />
+ROS2 패키지 매니저로 받아도 되지만, 최신 성능을 위해 Rust 의 Cargo 로 직접 빌드하거나 배포판을 꽂는 방식을 선언한다.</p>
+<pre><code class="language-bash">## Ubuntu 환경 (공식 Eclipse 데비안 저장소 사용)
+sudo sh -c 'echo "deb [trusted=yes] https://download.eclipse.org/zenoh/debian-repo/ /" &gt; /etc/apt/sources.list.d/zenoh.list'
+sudo apt update
+sudo apt install zenoh-bridge-dds
+</code></pre>
+<p><strong>2. 원터치 런 (One-touch Run) - 투명 브릿징 모드</strong><br />
+로봇의 터미널(SSH) 에 접속한 후 냅다 켜버린다.</p>
+<pre><code class="language-bash">## 기본 모드: 로봇 안의 모든 패킷을 모조리 잡아서 Zenoh 로 바꿔버린다!
+zenoh-bridge-dds
+</code></pre>
+<p><strong>3. 검증(Verification)</strong><br />
+이 프로그램이 켜지는 순간 터미널 창에는 이 로봇 내부에서 무슨 토픽(Topic)들이 오가고 있는지 미친 듯이 스크롤 로그가 올라간다.</p>
+<pre><code class="language-text">[INFO] Discovered DDS reader on topic: /cmd_vel
+[INFO] Discovered DDS writer on topic: /camera/rgb/image_raw
+[INFO] Zenoh routing established...
+</code></pre>
+<p>축하한다. 이 로봇 내부의 폐쇄적인 DDS 망은 이제 전 지구적인 Zenoh 포털(Portal) 과 물리적으로 연결되었다.</p>
+<h2>2.  다중 로컬 네트워크(Subnet) 간 ROS2 토픽 브릿징</h2>
+<p>공장에 두 개의 통신망이 있다. 하나는 로봇 군집 전용인 <code>192.168.1.x</code> 대역이고 (방안 A), 다른 하나는 인간이 쓰는 사무실 노트북 대역인 <code>10.0.0.x</code> 대역이다 (방안 B).<br />
+ROS2 의 DDS 는 라우터 단에서 도달 범위가 잘려버리기 때문에 노트북에서 로봇의 <code>/scan</code> (라이다) 토픽이 절대 보이지 않는다.</p>
+<h4>2.0.1 [Runbook] 서브넷 도하(Subnet Crossing) 전술</h4>
+<p>DDS 를 양쪽에 두고, 가운데를 통과하는 선은 오직 TCP 기반의 Zenoh 로 브릿징한다.</p>
+<p><strong>1. [방안 A] 로봇 군집망 대역의 브릿지 세팅 (192.168.1.10)</strong><br />
+이 브릿지는 로컬에서 DDS 를 빨아들인 뒤, 자기가 스스로 <strong>Zenoh 리스너(Listener)</strong> 가 되어 문을 열어준다.</p>
+<pre><code class="language-bash">## 로봇망 브릿지: 닻(Listen)을 내린다! TCP 7447 포트 개방
+zenoh-bridge-dds -l tcp/0.0.0.0:7447
+</code></pre>
+<p><strong>2. [방안 B] 사무실 노트북 망 대역의 브릿지 세팅 (10.0.0.50)</strong><br />
+사무실 노트북(ROS2 rviz2 구동체) 옆에 브릿지를 하나 더 띄운 뒤, 이 브릿지를 방안 A의 리스너로 연결(Connect) 시킨다.</p>
+<pre><code class="language-bash">## 사무실망 브릿지: 로봇망의 브릿지로 밧줄(Connect)을 던져 연결!
+zenoh-bridge-dds -e tcp/192.168.1.10:7447
+</code></pre>
+<p><strong>동작 원리:</strong><br />
+사무실 ноутбук이 <code>rviz2</code> 를 틀면, 이 명령은 사무실 브릿지(DDS-&gt;Zenoh)로 들어가고, 이 패킷은 중간의 기업용 라우터를 TCP 방화벽 프리패스로 통과한 뒤, 공장 로봇 브릿지(Zenoh-&gt;DDS)를 거쳐 로봇에게 전달된다.<br />
+DDS 멀티캐스트의 저주에서 벗어난 가장 원초적인 하이브리드 아키텍처다.</p>
+<h2>3.  인터넷(WAN)을 경유한 원격 ROS2 노드 간의 브릿지 통신</h2>
+<p>앞선 11.3.2 장의 방식을 거대한 지구 스케일로 확장한다.<br />
+서로 방화벽(NAT) 밑에 숨어있는 서울의 로봇과 부산의 백엔드가 소통하려면, 중간 어딘가(AWS/GCP) 에 <strong>공인 주소를 가진 마스터 라우터</strong> 가 띄워져 있어야 한다.</p>
+<h4>3.0.1 [Runbook] 글로벌 퍼블릭 스코프 라우팅 전술</h4>
+<p><strong>1. AWS 클라우드에 ‘마스터 라우터’ 띄우기 (IP: 99.88.77.66)</strong><br />
+가장 가벼운 최소사양 EC2 에 라우터를 한 대 세워둔다. 이 녀석은 아무 일도 안 한다. 그저 양쪽에서 날아오는 Zenoh TCP 소켓의 랑데부(Rendezvous) 지점이다.</p>
+<pre><code class="language-bash">## AWS Server (오직 라우팅망 제공)
+zenohd 
+</code></pre>
+<p><strong>2. 서울의 로봇 A 단말기 (NAT 내부 브릿지)</strong></p>
+<pre><code class="language-bash">## 로봇 A의 모든 DDS 데이터는 클라우드로 터널링된다.
+zenoh-bridge-dds -e tcp/99.88.77.66:7447
+</code></pre>
+<p><strong>3. 부산의 로봇 B 단말기 (NAT 내부 브릿지)</strong></p>
+<pre><code class="language-bash">## 로봇 B 역시 클라우드로 연결
+zenoh-bridge-dds -e tcp/99.88.77.66:7447
+</code></pre>
+<p>마법 세팅이 끝났다. 부산 로봇 단말에서 <code>ros2 run teleop_twist_keyboard teleop_twist_keyboard</code> 를 치면, 그 키보드 명령 패킷(DDS) 은 브릿지에서 (Zenoh) 로 번역되어 인터넷을 타고 AWS 를 거쳐 서울 로봇 브릿지까지 도착한 후, 다시 (DDS) 로 번역되어 서울 로봇의 바퀴를 굴린다.<br />
+핑(Ping)만 살아있다면 거리의 제약은 0 이다.</p>
+<h2>4.  브릿지 설정 파일(JSON/YAML) 상세 커스터마이징</h2>
+<p>“아무 옵션 없이 브릿지를 켜는 멍청한 짓은 절대 하지 마라.”<br />
+로봇 내부에서는 초당 수천 프레임의 센서(Joint State, IMU, TF) 데이터가 돈다. 이걸 통째로 Zenoh 터널로 퍼 올렸다가 클라우드 요금 폭탄을 맞고 터널이 파열되는 사고가 속출한다.</p>
+<h4>4.0.1 [Runbook] 프로덕션 레벨 필터링 <code>config.json5</code> 시공 전술</h4>
+<p>브릿지를 켤 때 <code>--config</code> 옵션을 줘서 동작을 강제로 제어해야 한다.</p>
+<pre><code class="language-json5">// bridge-config.json5
+{
+  mode: "client", // 로봇은 늘 클라우드에 붙는 클라이언트 입장
+  connect: {
+    endpoints: ["tcp/aws-router.company.com:7447"] // 락온!
+  },
+  
+  // DDS -&gt; Zenoh (로봇에서 나가는 설정)
+  dds_to_zenoh: {
+    // 디폴트값: "아무것도 나가지 못하게 막아라!" (화이트리스트 구조)
+    forwarding: "deny",
+    
+    // 오직 허락된 토픽만 클라우드로 발사 허용!
+    allow: {
+      topics: [
+        "/robot/battery_status",        // 배터리 (초당 1회)
+        "/robot/nav/status",            // 현재 주행 상태
+        "/rosout"                       // 에러 로그
+        // [경고] "/tf", "/scan", "/camera" 등 초고용량 토픽은 제외!
+      ]
+    }
+  },
+
+  // Zenoh -&gt; DDS (클라우드에서 로봇으로 들어오는 설정)
+  zenoh_to_dds: {
+    forwarding: "deny",
+    allow: {
+      topics: [
+        "/cmd_vel",                     // 강제 주행 조이스틱 포트
+        "/goal_pose"                    // 다음 목적지 좌표 갱신
+      ]
+    }
+  }
+}
+</code></pre>
+<p>이 설정 파일을 물려서 <code>zenoh-bridge-dds -c bridge-config.json5</code> 로 기동하라.<br />
+이것이 “더러운 쓰레기 패킷” 이 백본망으로 유입되는 것을 방지하는 기업형 엣지 톨게이트(Edge Tollgate) 아키텍처다.</p>
+<h2>5.  특정 토픽, 서비스, 액션의 허용 및 차단(Allow/Deny) 필터링 기법</h2>
+<p>ROS2 는 단순한 메시지(Topic) 외에도 동기식 통신(Service)과 장기 수행 통신(Action)을 사용한다.<br />
+Zenoh-bridge-dds 는 완벽하게 이 세 가지 통신 스펙을 분리해서 필터링할 수 있는 규격을 제공한다.</p>
+<h4>5.0.1 [Runbook] ROS2 통신 프로토콜 정밀 타격(Sniper) 전술</h4>
+<p>앞선 JSON 환경 설정 파일의 <code>allow</code> / <code>deny</code> 배열 안에 정규식(Regex)을 사용하여 세밀하게 그물망을 친다.</p>
+<pre><code class="language-json5">{
+  dds_to_zenoh: {
+    // 블랙리스트 기반 통제 방식 (기본적으론 다 나가되, 무거운 것만 차단)
+    forwarding: "allow", 
+    deny: {
+      // 1. Topic 차단: 영상 데이터의 외부 유출 금지 (보안)
+      topics: [
+        "/camera/.*/image_raw",  // 카메라 네임스페이스 하위 이미지 싹 다 차단
+        "/.*/pointcloud"         // 라이다 데이터 차단
+      ],
+      // 2. Service 차단: 로봇 내부의 파라미터 제엉 서비스를 외부에서 못 찌르게 막음
+      services: [
+        "/.*describe_parameters", 
+        "/.*set_parameters"
+      ],
+      // 3. Action 차단: 로봇 내비게이션 주행 명령 액션을 외부로 유출 금지
+      actions: [
+        "/navigate_to_pose"
+      ]
+    }
+  }
+}
+</code></pre>
+<p><strong>아키텍트의 주의점:</strong><br />
+통신 패러다임 상 <code>Service</code> 와 <code>Action</code> 은 일방적인 ‘던지기(Publish)’ 가 아니라 ‘요청/응답(Request/Reply)’ 구조다.<br />
+따라서 이 기능들을 통과시킬 경우, 브릿지는 클라우드 Zenoh 망 내부에서 11.7.6장에서 배운 <code>Queryable</code> 기능을 모방하여 거대한 쿼리 테이블(Query Table) 상태를 추적해야 한다.<br />
+만약 브릿지 필터에서 Service 를 Allow 해놨는데 도중에 연결이 끊어지면, ROS2 애플리케이션 안의 Service Client 는 영원한 블로킹 늪에 빠져 죽어버리게 된다. 가급적 WAN 환경에서는 Service 보다 비동기 Topic 을 쓰는 것이 자율주행 방어(Defensive) 디자인이다.</p>
+<h2>6.  브릿지 환경에서의 트래픽 루프 방지 및 네임스페이스 충돌 해결</h2>
+<p>전 세계 1,000 대의 로봇이 똑같이 브릿지를 통해 클라우드에 연결되었다고 치자.<br />
+가장 먼저 벌어지는 참사는 1,000 대의 로봇이 모두 <code>/cmd_vel</code> (주행명령), <code>/battery</code> (배터리) 라는 “동일한 이름표(Namespace)” 를 쓴다는 것이다.</p>
+<p>만약 클라우드에서 <code>"전진해라"</code> 패킷을 <code>/cmd_vel</code> 에 쏘면, 이 브릿징 망을 타고 1,000대의 로봇 관절이 동시에 일제히 구동되며 창고를 들이박아 모조리 폭발한다!</p>
+<h4>6.0.1 [Runbook] 네임스페이스 격리 및 리매핑(Remapping) 쉴드 전술</h4>
+<p>로봇 펌웨어를 수정하여 로봇 번호를 매길 필요 없다. 오직 나가는 출구인 <code>브릿지</code> 에서 패킷의 이름표(Scope)를 변조하여 클라우드망으로 올리는 해킹 기법이다.</p>
+<pre><code class="language-bash">## 로봇 001 번의 브릿지 기동 스크립트
+## [ROS2_SCOPE]: 로봇 내부의 토픽(예: /battery)을 잡아다가 
+## 클라우드에 던질때는 강제로 앞에 "/fleet/robot_001" 을 붙여서 던진다!
+
+export ROS2_SCOPE="/fleet/robot_001"
+zenoh-bridge-dds -e tcp/global-aws.com:7447 --scope ${ROS2_SCOPE}
+</code></pre>
+<p>이 옵션 하나로 클라우드(AWS) 단에서는 다음과 같은 아름다운 구획 정리가 달성된다:</p>
+<ul>
+<li>로봇 001 배터리: <code>/fleet/robot_001/battery</code></li>
+<li>로봇 002 배터리: <code>/fleet/robot_002/battery</code></li>
+<li>개별 통제 명령: 클라우드에서 <code>/fleet/robot_017/cmd_vel</code> 로 쏘면 오직 17번 로봇 브릿지만 자기 범위(Scope)를 알아보고 패킷을 수신한 뒤, 앞에 껍데기를 다 벗겨내고 로봇 내부망에 <code>/cmd_vel</code> 로 변역해서 던져준다.</li>
+</ul>
+<p><strong>[경고] 트래픽 루프(Traffic Loop) 재앙 방지:</strong><br />
+하나의 서브넷(한 대의 로봇) 안에 <code>zenoh-bridge-dds</code> 프로세스를 2개 이상 띄우지 마라.<br />
+브릿지1 가 뱉어낸 Zenoh-DDS 패킷을 브릿지2가 “오, 우리 쪽에 새로운 DDS 패킷이 생겼네!” 하고 다시 잡아먹은 뒤 클라우드에 되쏘고, 클라우드는 브릿지1 로 다시 내려주는 무한 루프 폭풍(Loop Storm)이 터져 네트워크가 질식사한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

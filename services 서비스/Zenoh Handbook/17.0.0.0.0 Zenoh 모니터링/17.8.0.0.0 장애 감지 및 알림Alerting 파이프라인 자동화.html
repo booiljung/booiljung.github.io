@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:17.8 장애 감지 및 알림(Alerting) 파이프라인 자동화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>17.8 장애 감지 및 알림(Alerting) 파이프라인 자동화</h1>
+                    <nav class="breadcrumbs"><a href="../../../index.html">Home</a> / <a href="../../index.html">서비스 (Services)</a> / <a href="../index.html">Zenoh 핸드북</a> / <a href="index.html">Chapter 17. Zenoh 모니터링</a> / <span>17.8 장애 감지 및 알림(Alerting) 파이프라인 자동화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>17.8 장애 감지 및 알림(Alerting) 파이프라인 자동화</h1>
+<p>메트릭을 구축하고 대시보드를 예쁘게 꾸몄다고 안심하지 마라.<br />
+당신이 퇴근하고 자고 있을 때 모니터를 쳐다봐 줄 사람은 아무도 없다. 장애 발생의 최초 발견자는 개발자도, 고객도 되어서는 안 된다. 시스템 자신이 스스로 병균을 감지하고 당신을 깨워야 한다.</p>
+<p>이 장에서는 앞서 구워놓은 메트릭(Prometheus) 과 로그(ELK) 가 한계치를 넘었을 때, 지체 없이 사이렌(Slack, SMS) 을 울리는 완전 자동화된 공세적 방어(Proactive Defense) 통신망을 세팅하는 런북을 완성한다.</p>
+<h2>1.  Prometheus Alertmanager 경고 규칙(Alerting Rules) 작성</h2>
+<p>프로메테우스 데몬은 바보처럼 데이터만 수집할 뿐, 뇌가 없다. 이 옆에 <code>Alertmanager</code> 라는 사냥개를 붙여주고 언제 짖어야 할지 규칙(Rule) 을 적어 주어야 한다.</p>
+<h4>1.0.1 [인스펙션] 한계점 타격(Trigger) 룰 생성 전술</h4>
+<p><strong>1. 임계치 폭발 알람 (Throughput Limit)</strong><br />
+네트워크 대역폭이 1GB 를 초과하려 할 때 짖게 만든다.</p>
+<pre><code class="language-yaml">## prometheus_rules.yml
+groups:
+- name: zenoh_network_alerts
+  rules:
+  - alert: HighPacketDropRate
+    expr: rate(zenoh_messages_dropped_total[5m]) &gt; 100
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Zenoh Router 5분 평균 패킷 학살 발생!"
+      description: "{{ $labels.instance }} 라우터가 초당 100개 이상의 패킷을 버리고 있습니다. 즉시 버퍼 튜닝 바랍니다."
+</code></pre>
+<p><strong>2. 지연 시간(Latency) SLA 위반 타격</strong><br />
+99% 의 지연시간(P99 Latency) 이 100ms 를 초과하는 순간 짖게 만든다.</p>
+<pre><code class="language-yaml">  - alert: LatencySpike
+    expr: histogram_quantile(0.99, rate(zenoh_latency_bucket[1m])) &gt; 0.1
+    for: 2m
+    labels:
+      severity: warning
+</code></pre>
+<p>여기서 가장 중요한 속성은 <code>for: 1m</code> 이다. 1초 살짝 튀었다고 알람을 울리면 양치기 소년이 되어 나중엔 아무도 안 본다. 반드시 1분 이상 “지속“될 때만 알람이 울리도록 노이즈 필터링 장치를 우겨 넣어야 한다.</p>
+<h2>2.  노드 다운타임 및 응답 지연 임계치(Threshold) 설정</h2>
+<p>패킷이 버려지는 것도 무섭지만, 서버 자체가 갑자기 사라진(Down) 상황은 인프라의 척추가 부러진 핵폐기물급 재앙이다.</p>
+<h4>2.0.1 [Runbook] 심장 정지(Cardiac Arrest) 감지 런북</h4>
+<p><strong>1. 업(Up) 포인터의 실종 추적</strong><br />
+프로메테우스가 타겟을 긁을 때 뱉는 시스템 고유 지표가 <code>up</code> 이다.<br />
+1 이면 살아있고 0 이면 죽은 것이다.</p>
+<pre><code class="language-yaml">  - alert: ZenohRouterDown
+    expr: up{job="zenoh-cloud-router"} == 0
+    for: 30s # 30초 동안 대답이 없으면 즉각 발포!
+    labels:
+      severity: disaster
+</code></pre>
+<p>라우터가 30초 동안 뻗었다는 것은 로봇 수천 대가 컨트롤 타워를 잃고 미아 상태로 헤매고 있다는 소리다. 제일 비싸고 빠른 비상망으로 연락을 때려야 한다.</p>
+<p><strong>2. 에지(Edge) 기기 특화 예외 처리 (Flapping 방어)</strong><br />
+문제는 달리는 차 안의 <code>Edge Node</code> 다. 이놈들은 원래 통신이 자주 끊겼다 붙었다(Flapping) 한다.<br />
+에지 노드에 대해 똑같이 <code>for: 30s</code> 로 <code>UP</code> 알람을 걸어놓으면, 하루에만 수천 통의 가짜 알람이 터져 나온다. 에지 노드는 <code>for: 5m</code> 정도로 느슨하게 풀어주거나, “1시간 안에 10번 이상 끊어질 때만” 같은 <code>Window</code> 기반 통계를 사용하여 모니터링 피로도(Alert Fatigue) 를 통제해야 한다.</p>
+<h2>3.  Slack, 이메일, Webhook 연동을 통한 실시간 알림 파이프라인</h2>
+<p>사냥개(Alertmanager) 가 범인을 물었으면, 이제 주인의 스마트폰이 진동할 차례다.</p>
+<h4>3.0.1 [인스펙션] 에스컬레이션(Escalation) 전술</h4>
+<p>이벤트의 등급(Severity) 에 따라 깨워야 할 직급의 타겟이 달라야 한다.</p>
+<p><strong>1. Alertmanager Routing 설정</strong></p>
+<pre><code class="language-yaml">## alertmanager.yml
+route:
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  receiver: 'slack-warning'
+  routes:
+    # Disaster 급 (라우터 죽음) 은 최우선 슬랙 채널과 SMS로 동시에 쏜다.
+    - match:
+        severity: disaster
+      receiver: 'sms-pagerduty'
+    # Warning 급 (메모리 80% 참) 은 인프라팀 슬랙에만 조용히 알린다.
+    - match:
+        severity: warning
+      receiver: 'slack-warning'
+</code></pre>
+<p><strong>2. Webhook 을 이용한 자가 치유(Auto-Healing)</strong><br />
+알람을 단순히 사람에게만 보내면 하수다. 최상위 아키텍트는 알람을 시스템으로 우회시킨다(Webhook 연동).<br />
+만약 <code>HighMemoryUsage</code> 알람이 터지면, 슬랙으로 메시지를 보냄과 동시에 쿠버네티스(K8s) API 로 <code>Webhook</code> 트리거를 쏴서 “야, OOM 터지기 전에 라우터 Pod 을 하나 더 복제해서 달아라(Scale-out)” 고 기계 대 기계통신(M2M) 보상을 명시하는 것이 궁극의 SRE 전략이다.</p>
+<h2>4.  장애 조치(Failover) 이벤트 발생 추적 및 기록</h2>
+<p>공장의 라우터 하나 코드가 뽑혔다. 다행히 당신이 14장에서 고가용성(HA) 페일오버를 잘 만들어놓아서, 로봇들은 즉시 옆에 있는 이중화(Backup) 라우터로 길을 돌려 달리기 시작했다. 시스템 상으로는 에러(<code>Drop</code>) 없는 완벽한 대처다.<br />
+하지만 그렇다고 모니터링이 침묵해서는 안 된다.</p>
+<h4>4.0.1 [Runbook] 암흑 사건(Shadow Incident) 영구 박제 전술</h4>
+<p>표면적으로는 오류가 없어도 “장애가 일어났고, 복원되었다” 는 이벤트는 영원히 기록되어야 한다.</p>
+<p><strong>1. 토폴로지 변경 알럿 (Topology Shift)</strong><br />
+Zenoh 의 라우터 라우팅 테이블(Routing Table) 의 사이즈가 급격히 줄었다가 다른 노드에서 늘어나는 것을 감지해야 한다.<br />
+로봇 수십 대가 스카우팅(Multicast) 을 시작하여 <code>Backup Router</code> 로 우르르 몰려간 <code>zenoh_session_count</code> 그래프의 순간적인 요동(Spike) 을 캐치하여, 인프라 팀에게 <code>"Failover Successful: 라우터A 사망, B로 인계완료"</code> 라는 정보성(INFO) 알람을 보내야 한다.</p>
+<p><strong>2. 사후 분석(Post-mortem) 을 위한 애노테이션 마킹</strong><br />
+그라파나(Grafana) 대시보드에서는 그 페일오버가 일어난 정확한 타임스탬프(오전 9시 10분) 에 세로줄(Annotation) 을 강제로 그어주어야 한다. 이후 장애 보고서를 쓸 때 “왜 이 지점에서 1초간 지연 시간이 급증했지?” 라는 의문을 대시보드에 그어진 “라우터 B 인계 시간” 이라는 실선 하나가 완벽하게 변호해 주기 때문이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

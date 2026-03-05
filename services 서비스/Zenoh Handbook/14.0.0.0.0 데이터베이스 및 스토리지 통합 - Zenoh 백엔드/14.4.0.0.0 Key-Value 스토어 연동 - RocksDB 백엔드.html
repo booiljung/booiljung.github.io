@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:14.4 Key-Value 스토어 연동: RocksDB 백엔드</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>14.4 Key-Value 스토어 연동: RocksDB 백엔드</h1>
+                    <nav class="breadcrumbs"><a href="../../../index.html">Home</a> / <a href="../../index.html">서비스 (Services)</a> / <a href="../index.html">Zenoh 핸드북</a> / <a href="index.html">Chapter 14. 데이터베이스 및 스토리지 통합: Zenoh 백엔드</a> / <span>14.4 Key-Value 스토어 연동: RocksDB 백엔드</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>14.4 Key-Value 스토어 연동: RocksDB 백엔드</h1>
+<p>파일 시스템(FS) 백엔드는 느리고, 메모리(Memory) 백엔드는 날아간다.<br />
+Zenoh가 엣지 디바이스를 위한 “궁극의 영속 스토리지” 로 점찍은 것이 바로 메타(Meta) 의 전설적인 내장형 KV 데이터베이스, <strong>RocksDB</strong> 다.</p>
+<p>이 챕터에서는 로봇의 뇌 구조에 가장 가볍고 미친 속도를 자랑하는 블록 레벨의 심연, RocksDB 와 Zenoh 의 접합 수술 런북을 전개한다.</p>
+<h2>1.  RocksDB 백엔드 플러그인 아키텍처의 특징</h2>
+<p>왜 수많은 DB 를 두고 하필 RocksDB 인가? Zenoh 철학과 완벽하게 맞아떨어지는 이빨 때문이다.</p>
+<h4>1.0.1 [인스펙션] 임베디드(Embedded) 극한 튜닝의 이유</h4>
+<p><strong>1. 네트워크 오버헤드의 증발</strong><br />
+Redis 나 PostgreSQL 은 내 컴퓨터에 깔려 있어도 “TCP/IP 루프백 채널(127.0.0.1)” 을 타야 한다. 포트를 열고 소켓을 붙여야 데이터가 들어간다.<br />
+RocksDB 는 <strong>로컬 라이브러리(임베디드 엔진)</strong> 다. Zenoh 라우터 데몬 프로세스 안에서 동일한 메모리 포인터를 공유하며 돌아간다. TCP 소켓의 벽이 없기 때문에 오직 디스크 I/O 속도만이 한계다.</p>
+<p><strong>2. Key-Value 구조와 Zenoh 토픽의 1:1 완벽 매핑</strong></p>
+<ul>
+<li>Zenoh 통신: 토픽(<code>robot/sensor1</code>), 페이로드(<code>[0x10, 0x11]</code>)</li>
+<li>RocksDB 구조: Key(<code>robot/sensor1</code>), Value(<code>[0x10, 0x11]</code>)<br />
+스키마(테이블) 변환 같은 쓸데없는 오버헤드 없이, 백엔드로 넘어온 바이트 블록이 그 모양 그대로 하드디스크의 트리(LSM Tree) 에 박혀버린다.</li>
+</ul>
+<h2>2.  RocksDB 기반 Zenoh 라우터 구축 및 플러그인 적재</h2>
+<p>라즈베리 파이건, 거대한 클라우드건 설정 파일 한장이면 로컬 디스크가 거대한 DB 서버로 돌변한다.</p>
+<h4>2.0.1 [Runbook] 엔진 점화 전술</h4>
+<p><strong>1. 폴더 소유권 확보</strong><br />
+RocksDB는 파일 하나에 데이터를 다 구겨 넣지 않고 무수한 <code>.sst</code> 조각 파일을 디스크에 뿌린다. 무조건 빈 폴더를 하나 내어줘야 한다.</p>
+<pre><code class="language-bash">mkdir -p /var/lib/zenoh/rocksdb_store
+</code></pre>
+<p><strong>2. 라우터 설정(Mount)</strong></p>
+<pre><code class="language-json5">storages: {
+  robot_rocks: {
+    key_expr: "robot/telemetry/**",
+    backend: "rocksdb",
+    // RocksDB 만의 특수 파라미터 영역!
+    dir: "/var/lib/zenoh/rocksdb_store", /* 필수 */
+    create_if_missing: true              /* 엔진 자동 초기화 */
+  }
+}
+</code></pre>
+<p>이제 데몬을 켜고 <code>z_put "robot/telemetry/gps" "LAT/LON"</code> 을 쏘면, <code>/var/lib/zenoh/rocksdb_store</code> 안에 무수한 16진수 바이너리 조각들이 쏟아지기 시작한다. 오직 Zenoh 라우터만이 이진 파일들을 해석할 수 있는 유일한 자물쇠다.</p>
+<h2>3.  대규모 엣지 노드 상태(State) 동기화 실습</h2>
+<p>10,000 대의 로터(드론) 가 날아다닌다. 각자가 자기 위치와 상태(<code>drone_id/status</code>) 를 뿜어낸다.<br />
+이 1만 대의 개별 State 를 관제탑 1대의 백엔드에 어떻게 오차 없이 영속(Persist) 시킬 것인가?</p>
+<h4>3.0.1 [Runbook] Swarm 상태 완전 복제 전술</h4>
+<p><strong>1. 관제탑(스토리지) 의 무차별 스니핑 거점 사수</strong><br />
+관제탑 관문 라우터(<code>zenohd</code>) 단 한 대에 짱짱한 NVMe SSD 를 꽂고 RocksDB 를 띄운다.</p>
+<pre><code class="language-json5">// 관제탑 라우터 설정
+storages: {
+  fleet_state: {
+    key_expr: "fleet/drone/**/status", 
+    backend: "rocksdb",
+    dir: "/data/fleet_store",
+    // 1만 대의 동시 타격을 막기 위해 램 버퍼를 무식하게 키운다!
+    write_buffer_size: 268435456 // 256MB
+  }
+}
+</code></pre>
+<p><strong>2. 드론(엣지) 의 망각(Fire and Forget) 비행</strong><br />
+드론은 자기가 관제탑과 끊겼건 말건, 그저 1초에 한 번씩 허공(자신의 엣지 Zenoh 라우터) 에 상태를 <code>Put</code> 하고 망각한다.<br />
+망이 연결되어 있다면, Zenoh 의 기본 라우팅 트리를 타고 데이터가 관제탑으로 빨려 들어가 단 1밀리초의 지연도 없이 RocksDB 디스크 위에 직렬화 조각(<code>.sst</code>) 으로 녹아든다.</p>
+<p>수많은 클라이언트가 단 하나의 DB 계정에 접속하려다(MySQL Connection Pool 폭발) 시스템이 멸망하는 전통적인 중앙집중형 모델을, “아무도 서로를 모르는 Pub/Sub 토픽 기반 쓰어버퍼” 구조로 치환시켜 무한한 확장을 이룩하는 패턴이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

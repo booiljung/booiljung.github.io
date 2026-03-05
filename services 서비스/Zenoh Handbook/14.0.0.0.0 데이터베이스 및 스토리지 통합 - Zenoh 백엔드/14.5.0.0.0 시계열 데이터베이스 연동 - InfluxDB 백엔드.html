@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:14.5 시계열 데이터베이스 연동: InfluxDB 백엔드</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>14.5 시계열 데이터베이스 연동: InfluxDB 백엔드</h1>
+                    <nav class="breadcrumbs"><a href="../../../index.html">Home</a> / <a href="../../index.html">서비스 (Services)</a> / <a href="../index.html">Zenoh 핸드북</a> / <a href="index.html">Chapter 14. 데이터베이스 및 스토리지 통합: Zenoh 백엔드</a> / <span>14.5 시계열 데이터베이스 연동: InfluxDB 백엔드</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>14.5 시계열 데이터베이스 연동: InfluxDB 백엔드</h1>
+<p>“현재 차의 속도가 몇인가?” (RocksDB)<br />
+“지난 3시간 동안 차의 속도 변화량을 그려봐.” (InfluxDB)</p>
+<p>Zenoh 통신망을 지나는 거대한 센서 데이터 파도를 오직 시간(Time) 의 축으로 썰어내어 저장하는, 가장 교과서적인 IoT 관제 백엔드의 접합 런북이다.</p>
+<h2>1.  IoT 센서 스트림 데이터와 InfluxDB의 조화</h2>
+<p>왜 시계열 DB 를 써야만 하는가? RocksDB 나 MySQL 로는 안 되는가?</p>
+<h4>1.0.1 [인스펙션] 시간 축의 강제 정렬 전술</h4>
+<p><strong>1. 일반 KV 스토어의 덮어쓰기 파괴</strong><br />
+<code>z_put "robot/temp" "25.0"</code><br />
+이걸 RocksDB 에 백 번 쏘면, 과거의 온도 값 99개는 영영 지워지고 마지막 1개만 남는다 (Overwrite).</p>
+<p><strong>2. 시계열 DB 의 선형 누적</strong><br />
+똑같은 <code>Put</code> 을 InfluxDB 백엔드에 백 번 쏘면?<br />
+<code>["10:01:00", 24.5], ["10:01:01", 25.0] ...</code><br />
+Zenoh 의 플러그인이 데이터가 도달하는 족족, 혹은 센서가 찍어 보낸 HLC 타임스탬프를 끄집어내어 “절대 지워지지 않는 시간의 로그” 로 차곡차곡 쌓아(Append-only) 준다.<br />
+로봇이 남긴 모든 궤적이 지워지지 않는 역사책에 기록되는 것이다.</p>
+<h2>2.  InfluxDB 백엔드 플러그인 설치 및 인증 토큰 설정</h2>
+<p>InfluxDB 서버는 외부에 별도로 띄우고, Zenoh 라우터는 이 서버에 무지막지한 쓰기 API 를 꽂아 넣는다.</p>
+<h4>2.0.1 [Runbook] HTTP 기반 스트림 주입기 세팅</h4>
+<p><strong>1. 플러그인 빌드 및 로드</strong><br />
+Zenoh는 내장된 RocksDB와 달리 InfluxDB는 외부 네트워크 데몬이기에 별도의 브릿지가 필요하다.</p>
+<pre><code class="language-bash">## 플러그인 설치 (또는 바이너리 다운로드)
+cargo install zenoh-backend-influxdb
+</code></pre>
+<p><strong>2. 통신 브릿지 암호화 마운트</strong><br />
+라우터를 켤 때 외부 InfluxDB 의 주소와 토큰(Token), 그리고 어느 버킷(Bucket) 에 부을 것인지를 명시해야 한다.</p>
+<pre><code class="language-json5">storages: {
+  timeseries_db: {
+    key_expr: "factory/telemetry/**",
+    backend: "influxdb",
+    // InfluxDB 연결 스펙
+    url: "http://10.0.0.5:8086",
+    org: "my_robotics_inc",
+    bucket: "sensor_raw_data",
+    token: "my-super-secret-auth-token"
+  }
+}
+</code></pre>
+<p>이제 라우터는 <code>factory/telemetry/**</code> 망을 도청하다가 패킷이 나타나면 곧바로 <code>10.0.0.5</code> 서버의 <code>sensor_raw_data</code> 버킷으로 HTTP POST 융단폭격을 개시한다.</p>
+<h2>3.  Zenoh 키 표현식을 InfluxDB Measurement 및 Tag로 변환하는 규칙</h2>
+<p>가장 중요한 파트다. <code>factory/robot1/sensor/temp</code> 라는 키가 도대체 InfluxDB 의 테이블(Measurement) 와 컬럼(Tag) 로 어떻게 해체되는가?</p>
+<h4>3.0.1 [Runbook] URL 라우팅 파서(Parser) 의 해부</h4>
+<p>Zenoh 의 InfluxDB 플러그인은 아주 기계적이고 영리한 문자열 치환 룰을 따른다.</p>
+<p><strong>1. 파싱의 규칙</strong><br />
+<code>z_put "telemetry/robot_a/temp" 25.5</code></p>
+<ul>
+<li><strong>Measurement (테이블 이름):</strong> 첫 번째 슬래시 앞의 문자열. 이 경우 <code>telemetry</code> 가 무조건 테이블 이름이 된다.</li>
+<li><strong>Tag (검색 인덱스):</strong> 첫 번째 슬래시 이후부터 마지막 슬래시 배제 전까지의 모든 경로 이름. 즉 <code>robot_a</code> 가 태그가 된다.</li>
+<li><strong>Field (값의 Key):</strong> 맨 마지막 문자열. <code>temp</code> 가 Field Key 가 되고, 내가 보낸 Payload <code>25.5</code> 가 실제 값이 된다.</li>
+</ul>
+<p><strong>2. 주의할 점</strong><br />
+아키텍트가 센서 토픽 이름을 설계할 때, 이 파싱 룰을 염두에 두지 않고 <code>temp/robot_a/telemetry</code> 이런 식으로 짜 놓으면?<br />
+InfluxDB 에 <code>temp</code> 라는 쓸데없는 테이블이 로봇마다 100개씩 생겨서 DB 스키마가 폭파된다. 백엔드가 무엇인지에 따라 네트워크의 프론트 토픽 계층 구조가 완벽하게 종속되어야만 한다.</p>
+<h2>4.  타임스탬프(Timestamp) 동기화 및 히스토리컬 쿼리(Historical Query) 처리</h2>
+<p>시간을 어떻게 박을 것인가? 라우터가 받은 시간인가, 로봇 센서가 찍은 시간인가?</p>
+<h4>4.0.1 [인스펙션] 시공간 절대성 부여 전술</h4>
+<p><strong>1. HLC(Hybrid Logical Clock) 타임스탬프 연동</strong><br />
+Zenoh 클라이언트(카메라나 센서) 가 <code>Put</code> 발송 시 옵션으로 <code>timestamp: true</code> 를 걸어 보내면, 플러그인은 DB 에 데이터를 <code>Flush</code> 할 때 서버 시간이 아니라 페이로드(패킷) 에 각인된 <strong>발생 시간(Event Time)</strong> 을 InfluxDB 의 타임 축(Time Column) 에 박아 넣는다. 지연 도착된 데이터라도 완벽히 제자리에 찾아 들어가는 무적의 런북이다.</p>
+<p><strong>2. Get 을 통한 시계열 데이터 추출 전술</strong><br />
+관제 센터에서 오늘 오후 2시의 온도 값 범위를 조회하고 싶다?</p>
+<pre><code class="language-bash">## REST API (URL Query) 의 시공간 절삭 기법 사용
+curl -X GET 'http://&lt;router_ip&gt;:8000/factory/robot_1/temp?time_range=[2023-11-01T14:00:00Z,2023-11-01T15:00:00Z]'
+</code></pre>
+<p>라우터가 이 옵션값을 낚아채어 InfluxDB 용 <code>Flux</code> 언어로 변환한 뒤 쿼리를 때리고 그 결과 배열(Array) 을 돌려준다. 단지 URL 옵션 하나로 빅데이터 시계열 검색 백엔드를 공짜로 쓰는 셈이다.</p>
+<h2>5.  데이터 보존 정책(Retention Policy) 설정 및 자동 폐기 전략</h2>
+<p>초당 1GB 의 라이다 데이터가 InfluxDB 에 쏟아진다면, 구글 데이터센터를 가져와도 일주일을 못 버틴다.</p>
+<h4>5.0.1 [Runbook] 데이터의 제식 폐기(TTL) 런북</h4>
+<p>Zenoh 의 책임은 데이터를 던지는 것까지다. 용량 관리는 오직 InfluxDB 의 <strong>Retention Policy (RP)</strong> 엔진에 맡겨야 한다.</p>
+<p><strong>1. 짧은 보존 정책(Short Retention) 버킷 생성</strong></p>
+<ul>
+<li>InfluxDB 관리자 패널에서 스토리지 버킷 공간을 생성할 때, 무조건 무제한(Never) 이 아니라 <code>1 day</code> 나 <code>7 days</code> 짜리 RP 제약이 걸린 버킷을 만들어라.</li>
+<li>Zenoh 의 InfluxDB 플러그인은 이 버킷을 타깃으로(<code>bucket: "sensor_7days"</code>) 연결된다.</li>
+</ul>
+<p><strong>2. 지속 쿼리 (Continuous Query) 다운샘플링</strong><br />
+오래된 데이터는 버리기 아깝고 원본은 무겁다.</p>
+<ul>
+<li>InfluxDB 내부 스케줄러(Tasks) 에 스크립트를 걸어, <code>sensor_7days</code> 버킷에 쌓인 “초당 데이터” 를 모아 “1시간 단위 평균값” 으로 압축 가공한 다음 <code>sensor_1year</code> 라는 장기 보관 버킷으로 옮겨 담게 하라.</li>
+<li>이렇게 해두면 Zenoh 는 가장 빠른 원본을 짧게 던지고 사라지면 되고, 뒷단의 영속 스토리지 엔진은 무거운 하드디스크 관리를 독립적으로 굴리는 <strong>관심사의 완벽한 분리(Separation of Concerns)</strong> 가 완성된다.</li>
+</ul>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

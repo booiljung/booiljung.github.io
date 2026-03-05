@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:12.3 MQTT와 Zenoh의 연동: Zenoh-MQTT 플러그인</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>12.3 MQTT와 Zenoh의 연동: Zenoh-MQTT 플러그인</h1>
+                    <nav class="breadcrumbs"><a href="../../../index.html">Home</a> / <a href="../../index.html">서비스 (Services)</a> / <a href="../index.html">Zenoh 핸드북</a> / <a href="index.html">Chapter 12. 이기종 통신 연동: MQTT 및 DDS 브릿지</a> / <span>12.3 MQTT와 Zenoh의 연동: Zenoh-MQTT 플러그인</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>12.3 MQTT와 Zenoh의 연동: Zenoh-MQTT 플러그인</h1>
+<p>세상 모든 IoT 강의가 MQTT 로 시작하고 끝난다. 수백만 개의 값싼 ESP32 센서들과 스마트홈 기기들이 이미 거대한 모스퀴토(Mosquitto) 브로커에 묶여 있다.</p>
+<p>이 거대한 레거시 자산을 휴지통에 버리고 모두 Zenoh Pico 로 재코딩할 것인가?<br />
+아니다. 철저히 MQTT 브로커에 빨대를 꽂고 모든 IoT 센서 데이터를 Zenoh 라우팅 테이블 안으로 단숨에 블랙홀처럼 집어삼키는 <code>zenoh-plugin-mqtt</code> 의 약탈적 브릿징 전술을 시연한다.</p>
+<h2>1.  MQTT 프로토콜(Publish-Subscribe)과 Zenoh의 아키텍처 비교</h2>
+<p>브릿지를 켜기 전에, 두 프로토콜의 유전자적 한계와 공통점을 직시해야만 설계 파열을 막을 수 있다.</p>
+<h4>1.0.1 [인스펙션] 브로커 패턴 vs 탈중앙화 패턴</h4>
+<p><strong>1. 중앙집중형 독재자 (MQTT)</strong><br />
+MQTT 는 브로커(Broker) 가 죽으면 전체 공장 통신이 100% 마비된다. 모든 센서(<code>Pub</code>) 와 화면(<code>Sub</code>) 은 무조건 백엔드 브로커 서버를 바라봐야 한다. (스타형 토폴로지). 센서끼리 직접 대화하는 로컬 무선통신(P2P) 같은 건 존재하지 않는다.</p>
+<p><strong>2. 탈중앙화 게릴라 (Zenoh)</strong><br />
+Zenoh 는 단말(Client) 이 라우터 없이도 허공(UDP Multicast) 을 향해 서로를 찾고 직결(P2P Peer) 할 수 있다. 라우터가 있으면 그저 길을 좀 더 넓게 쓸 수 있을 뿐, 통신이 완전히 박살나지는 않는다.</p>
+<p><strong>[아키텍처의 교차점]</strong><br />
+공통점은 둘 다 “주제(Topic)” 를 기반으로 한 Pub/Sub 모델을 쓴다는 것이다. 브릿지는 이 공통점을 파고든다.<br />
+Zenoh 입장에서는 <strong>MQTT 브로커 전체를 커다란 “Zenoh 센서 1개” 로 취급</strong>한다. 즉, MQTT 세상 전체가 Zenoh 의 거대한 트리 맵핑 아래의 일개 포크(Fork) 로 종속되는 형국을 띤다.</p>
+<h2>2.  Zenoh-MQTT 브릿지 설치 및 실행 환경 구축</h2>
+<p>가장 고전적이고 안정적인 브릿지 플러그인이다.</p>
+<h4>2.0.1 [Runbook] MQTT 플러그인 핫-로드 전술</h4>
+<p><strong>1. 바이너리 획득</strong></p>
+<pre><code class="language-bash">## Ubuntu / Debian 환경
+sudo apt install zenoh-plugin-mqtt
+</code></pre>
+<p><strong>2. 브릿지 단독 실행 모드 (Stand-alone)</strong><br />
+Zenoh 본체(라우터) 와 별개로 브릿지 코드만 독립적인 프로세스로 켤 때 쓴다.</p>
+<pre><code class="language-bash">## 로컬(127.0.0.1)에 떠 있는 MQTT 브로커(포트 1883) 에 빨대를 꽂는다!
+zenoh-bridge-mqtt -b tcp/localhost:1883
+</code></pre>
+<p><strong>3. 라우터 기생 모드 (Plugin Injection)</strong><br />
+가장 권장하는 엔터프라이즈 전술이다. <code>zenohd</code> (라우터) 를 켤 때 MQTT 브릿지 라이브러리를 통째로 몸속에 박아 넣은 채로 기동한다.</p>
+<ul>
+<li><code>zenohd</code> 의 설정 파일(<code>zenoh.json5</code>) 에 <code>plugins</code> 항목을 연다.</li>
+</ul>
+<pre><code class="language-json5">// zenoh.json5
+{
+  plugins: {
+    mqtt: {
+      // 로컬 MQTT 브로커와 통신!
+      broker: "tcp/127.0.0.1:1883" 
+    }
+  }
+}
+</code></pre>
+<p>이제 터미널에서 <code>zenohd --config zenoh.json5</code> 를 실행하면, 순식간에 MQTT 브로커의 모든 트래픽이 Zenoh 글로벌 망으로 흡수되기 시작한다.</p>
+<h2>3.  단방향(Uni-directional) 및 양방향(Bi-directional) 브릿지 구성</h2>
+<p>MQTT 에 떠드는 모든 토픽을 아무런 규칙 없이 Zenoh 망으로 다 퍼 올리면, 거대한 퍼블릭 브로커에 물렸을 때 트래픽 요금 폭탄을 맞고 터널이 파괴된다.</p>
+<h4>3.0.1 [Runbook] 혈류 제어(Flow Control) 규격화</h4>
+<p>환경 설정이나 파라미터를 통해 데이터의 ‘나가는 곳’ 과 ‘들어오는 곳’ 을 명확하게 단속한다.</p>
+<p><strong>1. 양방향 덤프(Dump) 모드 (기본값, 주의 필요!)</strong><br />
+아무런 옵션 없이 켜면 모든 토픽이 쌍방향으로 오간다.</p>
+<ul>
+<li>MQTT 센서의 온도 -&gt; Zenoh 로 흘러감.</li>
+<li>Zenoh 앱에서 내린 전등 제어 -&gt; MQTT 브로커로 흘러감.</li>
+</ul>
+<p><strong>2. 단방향 통제: 흡수 모드 (Only Subscribe from MQTT)</strong><br />
+오직 센서 데이터만 읽어오고 조작은 허용하지 않을 때 (보안 시나리오).</p>
+<pre><code class="language-json5">// 플러그인 JSON 파일의 세부 통제
+{
+  plugins: {
+    mqtt: {
+      broker: "tcp/127.0.0.1:1883",
+      // MQTT 브로커에서는 모든걸 구독(Sub)해서 가져온다 (--subscribe)
+      // 하지만 Zenoh 망의 데이터는 MQTT 로 절대 밀어넣지 않는다! (Pub 금지)
+      forward: "sub" // [pub, sub, pub_sub] 선택 가능
+    }
+  }
+}
+</code></pre>
+<p>CLI 상에서는 <code>zenoh-bridge-mqtt --subscribe "**" --publish ""</code> (Publish 필터를 빈 문자열로 줌) 로 제어 가능하다. 이것이 브릿지 트래픽 통제의 핵심이다.</p>
+<h2>4.  MQTT 토픽(Topic)과 Zenoh 키 표현식(Key Expression) 매핑 규칙</h2>
+<p>MQTT 앱과 Zenoh 앱이 서로 협업하려면 서로의 토픽 스펙이 어떻게 번역되는지 알아야 한다. 운 좋게도 규칙은 매우 직관적이다.</p>
+<h4>4.0.1 [인스펙션] 계층구조 스와핑(Swapping) 방정식</h4>
+<p><strong>1. 1:1 슬래시(/) 매핑</strong></p>
+<ul>
+<li>MQTT: <code>home/livingroom/temp</code></li>
+<li>Zenoh: <code>home/livingroom/temp</code><br />
+아무런 가공 없이 텍스트가 그대로 1:1 전송된다.</li>
+</ul>
+<p><strong>2. 와일드카드(Wildcard) 의 번역</strong></p>
+<ul>
+<li>MQTT 의 단일 계층 와일드카드는 <code>+</code> 이다. Zenoh 에서는 <code>*</code> 다.</li>
+<li>브릿지 통역: <code>home/+/temp</code> (MQTT) &lt;==&gt; <code>home/*/temp</code> (Zenoh)</li>
+<li>MQTT 의 하위 모든 계층 와일드카드는 <code>#</code> 이다. Zenoh 에서는 <code>**</code> 다.</li>
+<li>브릿지 통역: <code>home/livingroom/#</code> (MQTT) &lt;==&gt; <code>home/livingroom/**</code> (Zenoh)</li>
+</ul>
+<p><strong>3. 스페이스 매핑 (Namespace 덮어쓰기)</strong><br />
+가장 많이 쓰는 옵션이다. 외부 퍼블릭 MQTT 브로커의 토픽들이 내 로컬 망의 토픽과 겹치지 않도록 방파제를 친다.</p>
+<pre><code class="language-bash">## 옵션: --scope &lt;문자열&gt;
+zenoh-bridge-mqtt -b tcp/iot-broker.corp.com:1883 --scope "ext/mqtt"
+</code></pre>
+<p>이렇게 틀면, 외부 MQTT 브로커에서 날아오는 <code>home/temp</code> 가 내 Zenoh 망 안에서는 <code>ext/mqtt/home/temp</code> 가 되어 안전하게 구역이 분리된다.</p>
+<h2>5.  MQTT QoS(0, 1, 2)와 Zenoh 신뢰성(Reliability) 수준 매핑 전략</h2>
+<p>MQTT 서버에서 강력한 보장 모델(QoS 2: Exactly Once)로 데이터가 날아왔는데, 브릿지가 이걸 Zenoh 쪽으로 대충(Best Effort) 넘겨버리면 시스템의 신뢰성에 치명적인 구멍이 생긴다.</p>
+<h4>5.0.1 [Runbook] 프로토콜 타협점(Trade-off) 튜닝</h4>
+<p>Zenoh 는 QoS 를 철저하게 이항 분리한다.</p>
+<p><strong>1. 번역의 디폴트 규칙</strong></p>
+<ul>
+<li><strong>MQTT QoS 0 (Fire and Forget):</strong> Zenoh 망으로 넘어올 때 제일 싼 데이터 칩인 <code>Best-effort</code> 로 포장된다. 유실되어도 책임지지 않는다.</li>
+<li><strong>MQTT QoS 1 (At least once), QoS 2 (Exactly once):</strong> Zenoh 망으로 넘어올 때 모두 가장 값비싼 <code>Reliable</code> 칩으로 포장된다. TCP ACK 급의 완벽한 보장을 받는다.</li>
+</ul>
+<p><strong>2. 브릿지의 강제 하향(Downgrade) 정책</strong><br />
+만약 공장 IoT 센서 10,000개가 QoS 2 (가장 무거운 완벽보장 프로토콜) 로 쏴대는 악성 세팅을 해놨다면? Zenoh 브릿지까지 QoS 2 인 채로 클라우드로 올리면 브릿지가 CPU 한도를 넘어서 터진다.<br />
+이때 브릿지 옵션에서 강제로 트래픽 질을 깎아내려야(Throttling) 한다.</p>
+<pre><code class="language-json5">{
+  plugins: {
+    mqtt: {
+      broker: "tcp/...:1883",
+      // 들어오는 모든 데이터를 무자비하게 QoS 0 / Best-effort 로 격하해버린다!
+      qos: "0" 
+    }
+  }
+}
+</code></pre>
+<p>통신 병목 타개를 위한 엔지니어의 강력한 가지치기 런북이다.</p>
+<h2>6.  Retained 메시지와 Zenoh LWT(Last Will and Testament) 연동</h2>
+<p>단말기가 켜지면 무조건 “마지막으로 저장된 상태” 를 보여주는 강력한 기능들이 양쪽 생태계에 모두 존재한다.</p>
+<h4>6.0.1 [인스펙션] 유언장과 보존성의 이식수술</h4>
+<p><strong>1. MQTT 의 Retain -&gt; Zenoh 로의 번역</strong></p>
+<ul>
+<li>MQTT 센서 중에는 “내 설정값은 이거야” 라면서 브로커에 영구 보존(Retain=True) 플래그를 찍어보내는 녀석들이 있다.</li>
+<li>브릿지가 이 패킷을 잡아서 Zenoh 망으로 넘길 때 당황한다. 왜냐하면 Zenoh Pub/Sub 에는 Retain 개념이 없고, 스토리지(Storage)가 그 역할을 대행하기 때문이다.</li>
+<li>그래서 브릿지는 똑똑하게 이 Retained 메시지를 잡으면 Zenoh 의 <strong>Queryable (상태응답기)</strong> 로 탈바꿈시켜 응답 로직을 메모리에 들고 있는다! Zenoh 클라이언트가 나중에 <code>z_get()</code> 으로 물어보면 가장 최신의 Retain 값을 브릿지가 대답해 준다.</li>
+</ul>
+<p><strong>2. 유언장 (LWT) 번역</strong></p>
+<ul>
+<li>센서가 죽었을 때 MQTT 브로커가 최후의 메시지(Last Will)를 쏜다. <code>"센서가 오프라인입니다"</code></li>
+<li>브릿지는 이것을 받는 즉시 Zenoh 의 일반 메시지로 포장하여 Zenoh 망에 던져(Publish) 클라우드 관제망이 센서의 사망을 알 수 있도록 타전한다.</li>
+</ul>
+<h2>7.  외부 MQTT 브로커(Mosquitto, EMQX 등) 연결 및 인증(Authentication) 설정</h2>
+<p>AWS IoT Core 나 외부 유료 MQTT 서비스는 아이디와 비밀번호 없이 절대 열어주지 않는다.</p>
+<h4>7.0.1 [Runbook] 상업용 브로커 침공 전술</h4>
+<p>브릿지에 Credentials (ID/PW) 자격 증명 옵션을 꽂아 넣어 외부 성벽을 뚫고 들어간다.</p>
+<p><strong>1. JSON Config 스나이핑</strong><br />
+가장 우아한 방법은 <code>zenoh.json5</code> 파일 안에 아이디 비번을 숨겨 라우터 구동 시 읽어 들이는 것이다.</p>
+<pre><code class="language-json5">{
+  plugins: {
+    mqtt: {
+      broker: "tcp/mqtt.mycompany.com:1883",
+      username: "machine_robot_01",
+      password: "SuperSecretPassword123!",
+      // 연결이 끊어졌을 때 포기하지 않고 3초마다 평생 재시도 하라!
+      reconnect_delay: 3000
+    }
+  }
+}
+</code></pre>
+<p><strong>2. 환경 변수(CLI) 주입 (무식하지만 빠른 방법)</strong><br />
+도커 컨테이너를 띄울 때 비밀번호를 환경변수로 던진다.</p>
+<pre><code class="language-bash">## --broker 옵션 뒤에 HTTP URL 처럼 아이디 비번을 때려 박는다.
+zenoh-bridge-mqtt -b tcp/machine_robot_01:SuperSecretPassword123!@mqtt.mycompany.com:1883
+</code></pre>
+<p>이로서 Zenoh 시스템은 외부의 무거운 클라우드 인증 시스템의 통과증표를 얻고 당당한 MQTT 센서 중 1개로 위장(Spying) 하여 모든 데이터를 복사해온다.</p>
+<h2>8.  TLS/SSL을 활용한 안전한 MQTT 브릿지 통신 구성</h2>
+<p>공장 외부 인터넷(WAN) 을 거쳐 AWS IoT 브로커와 연결하려면, ID/PW 만으론 부족하고 패킷 자체가 암호화(MQTTS) 되어야 한다. 포트번호 또한 1883 이 아니라 8883 (TLS) 가 국룰이다.</p>
+<h4>8.0.1 [Runbook] 암호화 프로토콜 핸드셰이크 전술</h4>
+<p><strong>1. TLS 엔드포인트 타게팅</strong><br />
+브릿지를 켤 때 <code>tcp/</code> 접두사가 아니라 <code>tls/</code> 를 사용하여 암호화 스택을 깨운다.</p>
+<pre><code class="language-json5">{
+  plugins: {
+    mqtt: {
+      // 엔드포인트를 tls 로 바꾸고 포트번호도 8883(표준) 으로 지정!
+      broker: "tls/aws-iot-broker.com:8883",
+      
+      // AWS 가 묻는다 
+      // "네가 등록된 단말기인지 너의 인증서를 제출해라!" (Client Cert Mutual TLS)
+      tls: {
+        client_cert: "/opt/certs/device_001.pem",
+        client_key: "/opt/certs/device_001.private.key",
+        
+        // AWS 서버가 진짜인지 내가 검증하는 루트 인증서 목록
+        root_ca_certs: ["/opt/certs/AmazonRootCA1.pem"]
+      }
+    }
+  }
+}
+</code></pre>
+<p>이렇게 세팅된 브릿지는 그 보안 깐깐하기로 소문난 AWS IoT Core 까지 완벽하게 패스하여, Zenoh 에서 일어나는 로봇 움직임을 안전하게 글로벌 클라우드의 S3 스토리지 파이프라인(MQTT) 안으로 꽂아 넣게 된다.</p>
+<h2>9.  실습: 클라우드 MQTT 브로커와 에지 Zenoh 라우터 간의 센서 데이터 연동</h2>
+<p>마지막 최종 부검 실습이다. 내 회사 방구석에 떠 있는 Zenoh 데스크톱이 있고, 전 세계 누구나 쓸 수 있는 퍼블릭(Public) MQTT 브로커(Eclipse Mosquitto) 가 있다. 이 둘을 구멍 뚫어 기적을 만든다.</p>
+<h4>9.0.1 [Runbook] 세상의 끝과 끝 연결하기</h4>
+<p><strong>1. 내 데스크톱 (Zenoh 수신 준비)</strong></p>
+<pre><code class="language-bash">## 내 PC 에서 Zenoh 로 "mqtt/sensor" 토픽 대기 (아직 아무것도 안옴)
+z_sub -k "mqtt/sensor/#"
+</code></pre>
+<p><strong>2. 브릿지 투입 (스파이 파견)</strong><br />
+나의 PC 백그라운드에서, 퍼블릭 테스트용 MQTT 브로커 서버(test.mosquitto.org) 로 스파이를 위장 송출한다.</p>
+<pre><code class="language-bash">## 외부 브로커에 빨대를 꽂고, 
+## 겹치지 않게 "mqtt" 라는 네임스페이스 폴더 안에 다 담아와라!
+zenoh-bridge-mqtt -b tcp/test.mosquitto.org:1883 --scope "mqtt"
+</code></pre>
+<p><strong>3. 원격지 센서(발신) 흉내 내기</strong><br />
+스마트폰이나 다른 컴퓨터에서, 오직 표준 MQTT 프로그램만 켜서 공용 브로커에 토픽을 쏜다.</p>
+<pre><code class="language-bash">## 일반 MQTT 클라이언트 도구 사용 (Zenoh 와 무관하게 발송)
+mosquitto_pub -h test.mosquitto.org -t "sensor/temp" -m "35.5 C"
+</code></pre>
+<p><strong>[결과 분석]</strong><br />
+당신의 <code>z_sub</code> 가 켜져 있던 데스크톱 (1번 창) 에 <code>35.5 C</code> 가 찍혔는가?<br />
+이 마법은 이렇다: 외부 IoT 기기 -&gt; (MQTT 규격) -&gt; 공용 브로커 -&gt; 브릿지 스니핑 -&gt; (Zenoh 규격 변환) -&gt; <code>mqtt</code> 네임스페이스 덮어쓰기 -&gt; 당신의 로컬 <code>z_sub</code> 도착.<br />
+이로써 거대한 MQTT 대륙이 당신의 작은 Zenoh 식탁 위로 병합 완료되었다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

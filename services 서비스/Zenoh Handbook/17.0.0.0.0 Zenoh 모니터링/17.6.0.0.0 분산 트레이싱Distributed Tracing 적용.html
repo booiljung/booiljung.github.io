@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:17.6 분산 트레이싱(Distributed Tracing) 적용</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>17.6 분산 트레이싱(Distributed Tracing) 적용</h1>
+                    <nav class="breadcrumbs"><a href="../../../index.html">Home</a> / <a href="../../index.html">서비스 (Services)</a> / <a href="../index.html">Zenoh 핸드북</a> / <a href="index.html">Chapter 17. Zenoh 모니터링</a> / <span>17.6 분산 트레이싱(Distributed Tracing) 적용</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>17.6 분산 트레이싱(Distributed Tracing) 적용</h1>
+<p>“센서에서 데이터를 쐈는데, DB 에는 왜 2초 뒤에 들어가나요?”<br />
+이 질문을 받았을 때, 로그나 메트릭만으로는 답을 줄 수 없다. 중간에 거치는 라우터가 3개, 브릿지가 2개이기 때문에 도대체 어디서 목이 막혔는지 알 길이 없기 때문이다.</p>
+<p>이 병목을 짚어내려면 데이터가 탄생하는 순간 등에 GPS 추적기(Trace ID) 를 달아, 각 관문(Span) 을 통과할 때마다 걸린 시간을 하나로 이어 붙여야 한다. 이 장에서는 OpenTelemetry 의 표준 규격을 활용하여 Zenoh 의 미로를 가로지르는 엑스레이 폭포수(Waterfall) 차트를 그려내는 분산 트레이싱 런북을 전개한다.</p>
+<h2>1.  OpenTelemetry 기반 트레이싱 연동 개요</h2>
+<p>Zenoh 는 기본적으로 <code>tracing</code> 크레이트를 통해 자체 내부 흐름을 기록할 수 있지만, 이것을 글로벌 표준 통신규격인 OTLP(OpenTelemetry Protocol) 로 바꿔서 쏘려면 플러그인 연동이 필요하다.</p>
+<h4>1.0.1 [인스펙션] 추적망 프로토콜 통일 전술</h4>
+<p><strong>1. OpenTelemetry (OTel) Collector 거점 확보</strong><br />
+Zenoh 데몬과 당신의 로봇 프로세스들은 각각 독립적으로 트레이싱 데이터를 만들어낸다. 이것들을 각자 DB로 쏘면 관리가 안 되니, 중간에 <code>otel-collector</code> 라는 경량 데몬을 하나 띄워서 데이터를 취합해야 한다.<br />
+로봇(Zenoh Client) 도, 라우터(Zenohd) 도 무조건 자기가 만든 Span 데이터를 이 <code>otel-collector</code> (보통 4317 포트) 로 밀어 넣도록 환경변수를 먹인다.</p>
+<p><strong>2. Context Propagation (맥락 전달) 의 원리</strong><br />
+가장 중요한 핵심은 로봇이 만들어낸 최초의 암호(Trace ID) 가 Zenoh 네트워크를 넘어갈 때 끊어지지 않고 수신자(Subscriber) 에게 전달되어야 한다는 점이다. Zenoh 는 패킷 내부의 <code>Attachment</code> 나 페이로드 헤더 규격을 통해 이 W3C Trace Context 를 건네주는 투명한 다리가 되어야 한다.</p>
+<h2>2.  Jaeger 및 Zipkin을 활용한 엔드투엔드 메시지 흐름 추적</h2>
+<p>수집기(OTel Collector) 에 모인 데이터는 폭포수 그래프를 그려줄 시각화 툴로 보내야 한다. 마이크로서비스 관제의 양대 산맥인 Jaeger 와 Zipkin 이다.</p>
+<h4>2.0.1 [Runbook] 엑스레이 스캐너 가동 런북</h4>
+<p><strong>1. Jaeger 백엔드 투입</strong><br />
+K8s 나 Docker 에 <code>jaegertracing/all-in-one</code> 이미지를 띄워 데이터베이스 겸 대시보드를 세팅한다.</p>
+<p><strong>2. 병목 지점 시각화 분석</strong><br />
+Jaeger 대시보드에서 방금 로봇이 쏜 <code>Trace ID</code> 를 검색하면, 한 줄기 바(Bar) 가 아래와 같이 여러 개의 Span 으로 찢어져서 나타난다.</p>
+<ul>
+<li><code>Robot_Pub</code> (0ms ~ 2ms)</li>
+<li><code>Zenoh_Router_A</code> (2ms ~ 4ms)</li>
+<li><code>Zenoh_Router_B_WAN</code> (4ms ~ 54ms)  &lt;– <strong>빨간 불!</strong></li>
+<li><code>Cloud_Sub</code> (54ms ~ 56ms)</li>
+<li><code>DB_Write</code> (56ms ~ 60ms)<br />
+이 그래프를 보는 순간 “아, 서버나 로봇 문제가 아니라 라우터 A 와 B 를 잇는 인터넷(WAN) 이 50ms 나 걸리는 해저케이블 병목이구나!” 를 1초 만에 논리적으로 증명하게 된다.</li>
+</ul>
+<h2>3.  병목 지점 식별 및 지연 시간(Latency) 튜닝을 위한 트레이싱 분석</h2>
+<p>Jaeger 그래프에서 빨간불이 들어온 Span 을 찾았다. 이제 그 구간을 현미경으로 파헤쳐서 튜닝(16장 적용) 으로 연결해야 한다.</p>
+<h4>3.0.1 [인스펙션] 지연시간 핀셋 튜닝 전술</h4>
+<p><strong>1. 네트워크 오버헤드 vs 애플리케이션 수리기</strong><br />
+트레이싱 그래프가 알려주는 진실은 딱 2가지로 나뉜다.</p>
+<ul>
+<li><strong>간격 딜레이 (Gap):</strong> 라우터 A 에서 출발한 시간이 10ms 인데, 라우터 B에 도착한 시간이 50ms 라면 중간에 빈 공간(Gap) 이 생긴다. 이것은 100% 네트워크 회선 자체의 물리적 지연(WAN Latency) 또는 OS 커널의 큐잉 지연(Buffer Bloat) 이다. TCP BBR 이나 MTU 튜닝에 들어가야 한다.</li>
+<li><strong>실행 딜레이 (Width):</strong> 도착은 50ms 에 했는데, 라우터 B 의 <code>routing_lookup</code> 이라는 네모 박스 자체가 20ms 나 길게 뻗어있다면? 라우터 B 의 CPU 성능이 낮거나 구독자(Sub) 가 너무 많아서 룩업 타임이 걸린 것이다. (16.4장 정적 라우팅으로 해결 가능).</li>
+</ul>
+<p><strong>2. 에러 폭포(Error Cascade) 추적</strong><br />
+중간에 <code>DB_Write</code> Span 이 에러가 나서 붉게 물들면, 부모 Span 들도 줄줄이 에러 로그를 뱉는다. 트레이싱이 없으면 라우터 에러 로그만 보고 라우터를 고치려 드는 바보짓을 하게 되지만, 트레이싱은 가장 깊은 골짜기에 있는 “최초 원인(Root Cause)” Span 을 콕 집어내어 오폭을 막아준다.</p>
+<h2>4.  트레이싱 데이터 샘플링(Sampling) 기법과 오버헤드 최소화</h2>
+<p>모든 센서 데이터 10만 개마다 일일이 트레이싱 ID 를 붙여 Jaeger 로 날려 보내면, 본말이 전도되어 “트레이싱 데이터를 처리하기 위해 네트워크가 마비되는” 참사가 터진다.</p>
+<h4>4.0.1 [Runbook] 추적망의 다이어트(Sampling) 런북</h4>
+<p>내가 보내는 모든 차를 다 검문할 필요는 없다. 100대 중 1대만 샘플로 까봐도 도로의 막힘 정도는 충분히 측정할 수 있다.</p>
+<p><strong>1. 확률적 샘플링(Probabilistic Sampling)</strong><br />
+어플리케이션이 OTel 라이브러리를 초기화할 때, 샘플링 확률을 <span class="math math-inline">0.01\sim0.1</span> (1% ~ 10%) 로 극단적으로 억제하라.<br />
+<code>OTEL_TRACES_SAMPLER=traceidratio</code> 환경변수와 <code>OTEL_TRACES_SAMPLER_ARG=0.01</code> (1%) 세팅을 적용하면, 성능 저하는 <span class="math math-inline">0</span> 에 수렴하면서도 100번 중 1번 뽑히는 폭포수 그래프만으로 대략적인 시스템 지연의 평균값(P99) 을 계산할 수 있다.</p>
+<p><strong>2. 에러 꼬리 샘플링 (Tail-based Sampling 극대화)</strong><br />
+확률로 뽑으면 정작 에러가 난 녀석의 그래프를 운 나쁘게 못 볼 수 있다.<br />
+최고급 아키텍처는 OTel Collector 에 메모리 버퍼를 주고 <strong>“정상 처리된 99% 의 트레이싱은 수집기 선에서 다 버리고, 끝내 에러가 난 1% 나 유독 1초 이상 오래 걸린 느림보 패킷의 트레이싱 로그만 선별해서 DB로 저장해라”</strong> (Tail-based Sampling) 라고 명령하는 것이다. 이것이 저장 비용을 1/100 로 부수면서 모니터링 가치를 100배로 올리는 가성비의 끝판왕이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

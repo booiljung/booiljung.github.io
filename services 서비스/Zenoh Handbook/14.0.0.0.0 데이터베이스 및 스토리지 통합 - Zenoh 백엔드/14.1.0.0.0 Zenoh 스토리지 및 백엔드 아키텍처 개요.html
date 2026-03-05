@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:14.1 Zenoh 스토리지 및 백엔드 아키텍처 개요</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>14.1 Zenoh 스토리지 및 백엔드 아키텍처 개요</h1>
+                    <nav class="breadcrumbs"><a href="../../../index.html">Home</a> / <a href="../../index.html">서비스 (Services)</a> / <a href="../index.html">Zenoh 핸드북</a> / <a href="index.html">Chapter 14. 데이터베이스 및 스토리지 통합: Zenoh 백엔드</a> / <span>14.1 Zenoh 스토리지 및 백엔드 아키텍처 개요</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>14.1 Zenoh 스토리지 및 백엔드 아키텍처 개요</h1>
+<p>데이터가 한 번 흐르고 마는 것이라면 메신저일 뿐이다. 시계열 분석, 머신러닝 재학습, 그리고 시스템 크래시 복구를 위해서는 흩날리는 전파 속의 데이터를 붙잡아 자기장(HDD) 속으로 묶어 두어야 한다.</p>
+<p>이 장에서는 Zenoh 가 그 가벼운 몸집으로 페타바이트급 데이터베이스에 빨대를 꽂아 넣고, “동적 플러그인” 이라는 무기를 통해 인프라단에 데이터를 영속화(Persist) 하는 철학적 아키텍처를 해부한다.</p>
+<h2>1.  백엔드 플러그인 시스템의 개념과 필요성</h2>
+<p>만약 Zenoh 코어 라우터가 처음부터 MySQL 드라이버를 몸에 달고 만들어졌다면, 라우터 바이너리는 100MB 가 넘어가 라즈베리 파이 구동조차 버거웠을 것이다.</p>
+<h4>1.0.1 [인스펙션] 디커플링(Decoupling) 의 궁극성</h4>
+<p><strong>1. “내가 알 바 아니다” 식의 저장소 격리</strong></p>
+<ul>
+<li>Zenoh 라우터 본체(<code>zenohd</code>) 는 이 세상에 DB가 존재하는지조차 모른다. 그냥 메모리에 올라온 글을 바다 건너로 라우팅하는 역할만 한다.</li>
+<li>DB 에 글을 쓰는 역할은 철저히 별도의 <strong>백엔드 플러그인(Backend Plugin)</strong> 이 담당한다.</li>
+</ul>
+<p><strong>2. 핫 플러그(Hot-plug) 와 런타임 주입</strong></p>
+<ul>
+<li>스토리지 플러그인(동적 라이브러리 <code>.so</code> 나 <code>.dll</code> 파일 형태) 들은 데몬이 켜질 때, 또는 켜진 이후에 메모리 속으로 주입(Load) 된다.</li>
+<li>InfluxDB 건, RocksDB 건, 사용자 커스텀 텍스트 기록기 건 간에 <code>zenoh-backend-xxx</code> 로 규격화된 플러그인만 구해서 폴더에 던져두면 데몬이 이것을 알아서 낚아채어 Zenoh 망의 글로벌 데이터 공간(Global Data Space) 과 접합시킨다.<br />
+이것이 클라우드 네이티브에서 말하는 완벽한 저장소 추상화(Storage Abstraction) 의 형태다.</li>
+</ul>
+<h2>2.  스토리지 볼륨(Storage Volume)과 데이터 영속성의 이해</h2>
+<p>“플러그인을 꽂았습니다. 그런데 InfluxDB 안의 어떤 테이블(Database) 에 저장하죠?”<br />
+Zenoh 는 이 질문에 대답하기 위해 <strong>“볼륨(Volume)”</strong> 이라는 가상의 폴더 개념을 도입한다.</p>
+<h4>2.0.1 [인스펙션] 논리적 마운트(Mount) 포인트 설계</h4>
+<p><strong>1. 백엔드 대 볼륨의 위계</strong></p>
+<ul>
+<li><strong>Backend (백엔드):</strong> InfluxDB 와 연결하는 “방법(통신 드라이버)” 그 자체를 뜻한다.</li>
+<li><strong>Volume (볼륨):</strong> InfluxDB 속의 <code>factory_a_db</code>, <code>factory_b_db</code> 등의 구체적인 저장 공간(버킷)을 뜻한다.</li>
+<li>하나의 InfluxDB 백엔드 위에는 여러 개의 볼륨을 생성해 물릴 수 있다. 마치 하나의 하드디스크 드라이버 위에 C드라이브, D드라이브 파티션을 나누어 쓰는 것과 같다.</li>
+</ul>
+<p><strong>2. 영속성(Persistence) 획득의 순간</strong><br />
+라우터는 평소에 메시지가 지나가면 남기지 않는다(Fire-and-forget). 하지만 파티션(볼륨) 이 생성되고, 그 볼륨이 “특정 토픽” 을 관찰하도록 마운트되는 순간, 볼륨은 그 토픽의 데이터들을 낚아채어 백엔드(DB) 에 영구적으로 새겨넣는다(Persist).<br />
+메모리 위에서 춤추던 메시지가 데이터베이스의 무덤에 비석으로 남게 되는 메커니즘이다.</p>
+<h2>3.  Zenoh 라우터 내 스토리지 엔진의 동작 메커니즘</h2>
+<p>수만 개의 토픽이 날아다니는데 스토리지는 어떻게 자기 몫을 알아서 집어먹을 수 있는가?</p>
+<h4>3.0.1 [인스펙션] 구독자(Subscriber) 로 위장한 기생수</h4>
+<p>데이터베이스 어댑터라고 해서 특별한 핵심 관리자 권한을 가진 게 아니다. 스토리지 엔진은 Zenoh 네트워크 안의 완벽한 일개 <strong>“참여자(Client)”</strong> 로 행동한다.</p>
+<p><strong>1. 스니핑(Sniffing) 패턴</strong></p>
+<ul>
+<li>당신이 라우터 안에서 <code>factory/sensor/**</code> 를 빨아들이는 스토리지를 하나 켰다.</li>
+<li>이 말인즉슨, 스토리지 프로세스가 암묵적으로 <code>z_sub "factory/sensor/**"</code> 명령을 데몬 내부에서 치고 앉아있다는 뜻과 같다.</li>
+<li>망에 <code>Put</code> 패킷이 날아오면, 라우터는 다른 일반 클라이언트에게 보내주듯 똑같이 스토리지에게도 원본 복사본을 던져준다. 스토리지는 그 포인터를 받아서 하드디스크(DB) 에 Write 구문을 날리는 워커 머신일 뿐이다.</li>
+</ul>
+<p><strong>2. 덤프 타이밍 동기화 (Asynchronous Flush)</strong><br />
+수많은 데이터가 들어올 때 하나하나 DB 소켓을 열어 트랜잭션을 맺고 닫으면 스토리지는 질식사한다. Zenoh 의 스토리지 엔진은 데이터를 받으면 일단 버퍼 메모리에 우겨넣고(Batch), 묶어서 한 방에 백엔드로 <code>Flush</code> 치는 비동기 아키텍처로 짜여 있어 망의 지연(Latency) 에 전혀 타격을 주지 않는다.</p>
+<h2>4.  Pub/Sub와 Query-Reply 모델이 스토리지에 미치는 영향</h2>
+<p>스토리지는 데이터를 넣기만 해선 반쪽짜리다. 꺼내야 한다.<br />
+Zenoh 스토리지는 쓰기(Write) 와 읽기(Read) 의 철학이 극명하게 두 개의 다른 세계선(Protocol) 으로 나뉘어 있다.</p>
+<h4>4.0.1 [인스펙션] 양방향 인터페이스의 해부</h4>
+<p><strong>1. Write 전용 인터페이스: Pub/Sub</strong></p>
+<ul>
+<li>데이터를 DB 에 기록하는 행위는 오로지 <code>Pub</code> (또는 <code>Put</code>) 패킷을 통해서만 이루어진다.</li>
+<li>로봇 센서가 “가스 냄새가 남!” 이라며 <code>Put</code> 을 뿌연 허공(네트워크) 에 던지면, 스토리지는 구독자(Sub) 의 입장에서 그것을 묵묵히 주워다가 DB 에 구겨 넣는다. 가장 수동적이고 안정적인 기록 파이프라다.</li>
+</ul>
+<p><strong>2. Read 전용 인터페이스: Query/Reply</strong></p>
+<ul>
+<li>관제 웹 서버 안에서 지난달의 배터리 평균값을 알고 싶다. <code>Sub</code> 로는 절대 과거의 데이터를 얻지 못한다.</li>
+<li>이때 웹 서버는 <code>Get</code> 쿼리를 때린다.</li>
+<li>이 <code>Get</code> 쿼리가 망을 타고 돌다가, 해당 데이터를 갖고 있는 스토리지의 문을 두드린다. (스토리지는 내부적으로 거대한 Queryable - 자동 응답기 - 로 취급된다).</li>
+<li>스토리지는 데이터베이스에 쿼리를 날려 값을 뽑아온 뒤, 질문자에게 직접 <code>Reply</code> 로 대답한다.</li>
+</ul>
+<p>스토리지는 스스로 패킷을 쏘거나 구독을 요청하지 않는다. 생태계의 모든 Pub 과 Query 가 알아서 이 종착역 단자대에 부딪혀서 들어오고 나갈 뿐이다.</p>
+<h2>5.  키 표현식(Key Expressions)과 데이터 파티셔닝 매핑</h2>
+<p>당신은 회사에 InfluxDB, MongoDB 등 5개의 데이터베이스를 띄워놓고 라우터 뒤에 묶었다 치자.<br />
+수만 개의 토픽이 지나가는데, 이 토픽이 도대체 어느 DB 의, 어느 볼륨으로 들어가야 할지를 누가 정해주는가?</p>
+<h4>5.0.1 [인스펙션] URL 기반의 강제 라우팅(Demultiplexing) 전술</h4>
+<p>이것이 Zenoh 스토리지 아키텍처의 아름다움이다. 어떤 데이터베이스 쿼리문도 필요가 없다. 오직 폴더 이름(키) 으로 매핑된다.</p>
+<p><strong>1. 키 표현식 스코핑(Scoping)</strong><br />
+라우터의 JSON 설정 파일 안에서 강제로 교통정리를 세팅한다.</p>
+<pre><code class="language-json5">storages: {
+  // 1번 저장소: 카메라 영상 전용 (공장 전체)
+  video_storage: {
+    key_expr: "factory/**/video/raw",
+    backend: "rocksdb", // 성능 쩌는 파일 DB
+  },
+  // 2번 저장소: 온도 센서 전용 (시계열)
+  temp_storage: {
+    key_expr: "factory/**/sensor/temp",
+    backend: "influxdb", // 인플럭스 시계열 DB
+  }
+}
+</code></pre>
+<p>이 세팅 단 두 줄로 인해, 로봇이 쏘는 수만 개의 패킷 중 <code>video</code> 딱지가 붙은 것은 <code>RocksDB</code> 워커가 빨아먹고, <code>temp</code> 딱지가 붙은 것은 <code>InfluxDB</code> 워커가 빨아먹는 극단적인 병렬 분산 처리가 완성된다.<br />
+토픽(Key) 이 곧 데이터베이스 테이블(Table) 이고 스키마(Schema) 다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
