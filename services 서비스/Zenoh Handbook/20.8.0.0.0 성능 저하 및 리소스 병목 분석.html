@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:20.8 성능 저하 및 리소스 병목 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>20.8 성능 저하 및 리소스 병목 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>20.8 성능 저하 및 리소스 병목 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>20.8 성능 저하 및 리소스 병목 분석</h1>
+<p>통신 단절이나 크래시 같은 ’죽음(Dead)’보다 디버깅하기 가혹한 상태는 ’비정상적으로 느린 응답(Slowly Dying)’이다. 수백 대의 디바이스가 1분 동안은 잘 동작하다가 어느 기점을 넘어가는 순간, 데이터가 1초, 5초, 10초씩 밀리기 시작하다 결국 시스템 전체가 갯벌에 빠진 것처럼 끈적거리게 된다면, 엔지니어는 엄청난 무력감을 느낀다.</p>
+<p>에러 로그도 없고 통신선도 멀쩡하지만 시스템이 느려지는 현상의 99%는, 네트워크 파이프라인(Network Pipeline)과 운영체제의 물리적 자원(CPU, Memory, Disk I/O) 간의 흡수율 불균형(Imbalance)에서 야기된 **백프레셔(Backpressure)**가 터진 것이다.</p>
+<p>이 절에서는 성능이 꺾이면서 라우터의 메모리가 폭발해 OOM(Out of Memory) 킬러의 타겟이 되는 현상, 무한 루프나 블로킹으로 인한 100% CPU 점유율, 큐(Queue)가 막히며 과거의 데이터만 화면에 노출되는 큐잉 딜레이, 그리고 대용량 이미지/LiDAR 페이로드가 파편화되어(Fragmentation) 수신율이 박살 나는 현상을 낱낱이 파헤친다. 병목을 뚫어내는 튜닝(Tuning) 기법을 장착하라.</p>
+<h2>1.  OOM(Out of Memory) 발생 원인 및 프로세스 강제 종료(OOM Killer) 대응</h2>
+<p>수 MB(메가바이트)의 메모리만으로도 거뜬하던 라우터(zenohd) 데몬이나 관제 프로세스가, 어느 순간 수 GB(기가바이트)의 RAM을 먹어치우며 리눅스 커널의 OOM(Out of Memory) 킬러에 의해 무참히 암살당한다면 그 주범은 <strong>통신 대기열 버퍼(Queue Buffer)의 범람</strong>에 있다.</p>
+<h4>1.0.1 단계: 저속 구독자(Slow Subscriber)로 인한 메모리 적체 현상</h4>
+<p>에지의 센서들은 1초에 1,000개의 데이터를 라우터로 무자비하게 퍼블리시한다. 그런데 클라우드의 백엔드나 파이썬 스크립트(구독자) 프로그램이 DB I/O 처리 등에 막혀서 1초에 단 100개만 가져간다.</p>
+<ul>
+<li><code>Reliable</code> 모드: Zenoh 라우터는 가져가지 못한 연약한(?) 구독자를 위해 나머지 900개의 패킷을 언젠가 전달해주기 위해 RAM에 캐싱(Caching)한다. 이런 상황이 단 10분만 누적되어도 라우터의 메모리는 선형적으로 폭발하여 OOM 킬러의 제물 1순위 타겟이 된다.</li>
+<li><strong>아키텍처 조치 방안:</strong> 최하단 센서의 송출 주파수(Hz) 자체를 물리적으로 낮추거나, 백엔드 컨슈머 구독자의 대수를 여러 대로 스케일 아웃(Scale-out) 시키는 수평 확장을 통해 근본적 속도 불균형을 해소하라.</li>
+</ul>
+<h4>1.0.2 단계: 공유 메모리 큐(Shared Memory Queue) 및 캐시 사이즈 제한(Cap)</h4>
+<p>서버 전체가 죽어 동반 자살(Cascading Crash)하는 비극을 막으려면, 뇌관을 라우터 선에서 물리적으로 폭파시켜야 한다. 라우터 설정 파일(<code>zenohd.json5</code>)에서 특정 세션에 허용된 최대 큐의 한계치 마지노선을 타이트하게 통제하라.</p>
+<pre><code class="language-json5">// zenohd.json5 네트워크 버퍼 제한 레이어
+transport: {
+  shared_memory: {
+    // 버퍼 사이즈를 무한히 두지 말고 50MB 등으로 리미트를 건다.
+    limit: 52428800  
+  },
+  link: {
+    tx_buffer_size: 1048576,
+    rx_buffer_size: 1048576
+  }
+}
+</code></pre>
+<p>설정을 걸면, OOM으로 죽는 대신 큐가 차는 순간 신규 유입 패킷을 비정하게 버려버리고(Drop) <code>Queue Full</code> 에러 로그를 뱉는다. 이 상태가 서버 전체 마비보다는 천 배 나은 아키텍트의 선택결과다.</p>
+<h2>2.  과도한 CPU 점유율 유발 패턴 식별 (프로파일링 도구 활용)</h2>
+<p>메모리는 바닥을 기다시피 널널한데, 서버 애플리케이션의 특정 코어가 100% 점유율에 완전히 락(Lock)이 걸려버렸다면? 패킷이 도착하는 족족 무한 루프에 빠져 지수적인 폭주를 일으키고 있거나 직렬화 연산이 CPU 쓰레드를 물고 있는 현상이다.</p>
+<h4>2.0.1 단계: Flamegraph를 활용한 핫스팟(Hotspot) 분석</h4>
+<p>CPU 100%를 찍는 프로세스의 PID를 찾아내어 <code>perf</code> 도구를 이용해 심장부를 스캔하라.</p>
+<pre><code class="language-bash">## 30초 동안 해당 PID 프로세스의 함수 호출 그래프 트래킹
+sudo perf record -p 12345 -g -- sleep 30
+## 캡처된 데이터를 추출하여 Flamegraph용 스크립트로 변환
+sudo perf script &gt; out.perf
+</code></pre>
+<p>생성된 Flamegraph 웹 페이지(SVG)를 열었을 때, <code>zenoh::net::scouting</code> 함수 호출 스택 블록이 넓고 평평하게 전체 CPU의 80%를 집어삼키고 있다면? 그것은 멀티캐스트 루핑 버그나 네트워크 어딘가에서 초당 1만 번씩 불법적인 스카우팅 신호를 공격하듯 발사하고 있는 미친 고장 난 디바이스가 있음을 의미한다.</p>
+<h4>2.0.2 단계: 직렬화/역직렬화(Serialization/Deserialization) 비용 최적화</h4>
+<p>모니터링 대시보드 백엔드 코드에서 무거운 10MB짜리 JSON 문자열을 받고 로그(Log)를 찍기 위해 라우팅 스크립트 단에서 <code>JSON.parse(sample)</code>를 반복 호출하고 있지 않은가?<br />
+문자열 파싱 연산은 생각보다 매우 무거운 동기적 CPU 사용 지출을 일으킨다.<br />
+<strong>해법 강제:</strong><br />
+데이터는 무조건 바이트(<code>Vec&lt;u8&gt;</code>나 <code>Uint8Array</code>) 포맷 그대로 쥐고 있다가, 최종 사용자(UI 렌더링 측 브라우저 화면)에 도달했을 때 딱 한 번 파싱하여 소비하는 끝단 파이프라인(End-to-End) 디자인을 고수하라. 중간 매개 서버에서 남의 택배 상자(JSON)를 뜯어보는 호기심은 그 즉시 CPU 코어 마비라는 참담한 계산서로 되돌아올 것이다.</p>
+<h2>3.  메시지 큐잉(Queueing) 지연, 버퍼 오버플로우 및 메시지 드롭</h2>
+<p>네트워크 대역폭 상태는 엄청 쾌적한 상황인데, 송신자 카메라가 찍은 타임스탬프와 수신자 화면에 렌더링된 타임스탬프의 차이(Latency/Glass-to-glass delay)가 초 단위로 계속 벌어진다면 이것은 순수 100% 큐잉(Queueing) 지연 현상이다. 누군가 중간에 줄을 서서 길을 막고 있다.</p>
+<h4>3.0.1 단계: 혼잡 제어(Congestion Control) 정책의 전환 - Block vs Drop</h4>
+<p>로보틱스 텔레오퍼레이션(원격 제어망)에서 1초 전 과거의 조이스틱 데이터나 낡은 카메라 프레임은 전혀 쓸모가 없을뿐더러, 오히려 벽에 충돌을 일으키는 독이 된다.<br />
+만약 라우터 안의 큐 구간이 꽉 찼다면, 라우터가 이 정체를 해소하려고 땀 뻘뻘 흘리며 <code>Block</code> (막고 기다림)시키도록 놔두지 마라!<br />
+퍼블리셔와 서브스크라이버 통신 옵션에서 <code>congestion_control</code> 정책을 <code>Drop</code> (미련 없이 버리기)으로 과감히 설정하라. 로보틱스 통신에서는 최신(Latest) 프레임 딱 1개를 살려내는 것이 과거 프레임 100개를 복원하는 것보다 무한히 가치 있다.</p>
+<h4>3.0.2 단계: 워터마크(Watermark)와 적응형 스로틀링(Throttling) 방벽 구축</h4>
+<p>라우터가 버리게 할 것이 아니라, 보내는 놈부터 목줄을 죄어야 한다.<br />
+모든 주요 애플리케이션의 개발 코드를 작성할 때, 현재 공유 메모리 사용량과 송수신 버퍼 큐 사이즈를 프로메테우스 메트릭으로 노출하게 감시기를 달아라.<br />
+그리고 큐 임계치(Watermark) 사용량이 70%를 넘기는 순간 알람을 울려, 퍼블리셔(로봇) 스스로 카메라 전송 프레임을 30FPS에서 10FPS로 동적 다운샘플링하여 내뿜어대는 데이터의 절대량 자체를 스로틀링(Throttling)하는 시스템 자가 치료(Self-Healing) 방어 논리 기제를 완성해야 진정한 엔터프라이즈 레벨의 안정성이 담보된다.</p>
+<h2>4.  대용량 페이로드(Payload) 전송 시 발생하는 단편화(Fragmentation) 및 조립 실패 현상</h2>
+<p>Zenoh는 단순 온도 센서 값(<code>float 4byte</code>) 뿐만 아니라, 10 메가바이트짜리 고해상도 4K 카메라 스트리밍이나 대저택 스캔용 LiDAR 포인트클라우드(Map) 데이터도 고속으로 밀어 넣을 수 있는 압도적인 퍼포먼스를 가졌다. 그러나 거대 페이로드는 하위 트랜스포트 계층망에서 찢어지고(Fragmentation) 합쳐지는(Assembly) 혹독한 고문을 받는다.</p>
+<h4>4.0.1 함정 1: 무선 UDP/QUIC 기반 대형 패킷 손실률의 비극</h4>
+<p>10MB짜리 통짜 맵 데이터를 <code>z_put</code>으로 송출하면, 하위 UDP 프로토콜은 패킷을 수천 개의 MTU(일반적으로 1500바이트 내외) 파편으로 갈가리 찢어 던진다.<br />
+무선 5G 네트워크에 노이즈가 발생해 이 수천 개의 파편 중 <strong>단 한 개의 조각이라도 유실</strong>되면 어떻게 되는가? 수신 측 엔진(Zenoh TCP/QUIC 모듈) 조립 공장에서는 영원히 완제품을 만들 수 없어, 완벽하게 도착했던 나머지 999개의 조각마저 전부 휴지통에 던져 폐기(Assembly failed)해 버린다!<br />
+만약 “텍스트는 완벽히 도달하는데, 영상이나 맵 데이터만 보내면 아무 예고 없이 중간중간 타임아웃이 나고 안 온다“면 100% 파편 조립 실패 증상이다.</p>
+<h4>4.0.2 해결 전략: 어플리케이션 계층 청킹(Chunking) 및 하이브리드 S3 우회</h4>
+<p><strong>방안 1.</strong> 통신 트랜스포트 레이어를 QUIC 대신 패킷 재조립을 OS 커널 차원에서 완벽히 통제 지원해 주는 신뢰성 있는 <strong>TCP</strong>로 과감하게 고정하라.<br />
+<strong>방안 2.</strong> 10MB 데이터를 통째로 날리지 말고, 어플리케이션 코딩 계층에서 100KB 단위 배열의 패킷으로 잘라내어(Chunk) 포장한 뒤 순서 번호(Sequence Num)를 달아 여러 개의 토픽으로 나누어 발행하고 수신단에서 블록을 재조립하도록 로직을 수선하라.<br />
+<strong>방안 3 (근본적 해결책).</strong> Zenoh 메시지 브로커는 파일 서버용 FTP가 아니다. 이런 거대한 데이터 덩어리는 AWS S3나 내장 MinIO 같은 클라우드 오브젝트 전용 스토리지에 즉시 구워버리고, Zenoh 퍼블리시는 가볍게 <strong>“새 지도가 S3의 <code>https://aws.../map_41.zip</code> 주소에 갱신되었다“는 URL 텍스트 주소 1줄만</strong> 전송하도록 데이터 파이프라인의 구조적 우회(Bypass)를 단행하라. 이것이 분산 인프라 설계의 가장 아름다운 아키텍처다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

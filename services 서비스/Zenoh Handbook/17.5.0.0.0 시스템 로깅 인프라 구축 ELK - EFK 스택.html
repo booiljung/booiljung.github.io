@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:17.5 시스템 로깅 인프라 구축 (ELK / EFK 스택)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>17.5 시스템 로깅 인프라 구축 (ELK / EFK 스택)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>17.5 시스템 로깅 인프라 구축 (ELK / EFK 스택)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>17.5 시스템 로깅 인프라 구축 (ELK / EFK 스택)</h1>
+<p>메트릭(Metric)이 시스템의 거시적인 붕괴 현상(Symptom)을 정량적으로 지시한다면, 로그(Log)는 특정 노드와 세션이 유발한 구체적인 인과 관계(Root Cause)와 예외 처리(Exception)의 컨텍스트를 서술하는 미시적 단서다.</p>
+<p>대단위 분산 로보틱스 환경에서 수백 대의 에지(Edge) 단말이 각자의 로컬 디스크에 텍스트 파일 버퍼 형식을 띠며 로그를 파편화하여 적재한다면, 장애 시퀀스 추적을 위해 관리자가 개별 단말에 SSH 프로토콜로 직접 접근해야 하는 치명적 탐색 비용이 발생한다. 본 장에서는 파편화된 다종(Heterogeneous) Zenoh 데몬의 로깅 출력을 단일 저장소로 수집(Aggregation)하고, 고속 인덱싱(Indexing)을 통해 준실시간(Near Real-time) 검색 체계를 확립하는 중앙 집중형 로깅(Centralized Logging) 인프라 구축 런북(Runbook)을 명세한다.</p>
+<h2>1.  Zenoh 로깅 레벨(<code>RUST_LOG</code>) 설정 가이드</h2>
+<p>Zenoh 코어 라우터 및 클라이언트는 Rust 언어 생태계의 비동기 트레이싱 표준인 <code>tracing</code> 패러다임과 호환 환경 변수 규격인 <code>env_logger</code> 문법을 준수한다.</p>
+<p><strong>1. <code>RUST_LOG</code> 환경 변수의 기본 필터링 (Noise-canceling)</strong><br />
+기본 상태(Default)로 데몬을 기동할 경우, 무분별한 정보성(<code>INFO</code>) 및 디버깅(<code>DEBUG</code>) 로그가 방출되어 인프라의 스토리지 입출력(I/O) 대역폭을 소진시킬 위험이 크다. 운영체제의 전역 환경 변수를 통해 타겟팅된 필터 룰을 인가해야 한다.</p>
+<pre><code class="language-bash"># 프로덕션(Production) 표준 환경 설정: 
+# 전역 크레이트는 경고(WARN) 이상만 허용하되, zenoh 본체 모듈에 한정하여 INFO 레벨을 허가한다.
+export RUST_LOG="warn,zenoh=info"
+./zenohd
+</code></pre>
+<p><strong>2. 딥 다이브 트러블슈팅을 위한 극단적 엑스레이 (Trace Level)</strong><br />
+개발 및 벤치마크 단계에서 특정 패킷의 직렬화(Serialization) 실패나 라우팅 드롭(Drop) 지점을 역추적해야 할 시, 코어 모듈 내 특정 하위 네임스페이스만을 핀포인트(Pinpoint) 타겟팅하여 심도 깊은 로깅을 활성화한다.</p>
+<pre><code class="language-bash"># 디버깅 설정: zenoh 코어의 네트워크(net) 모듈 하위 프레이밍(framing) 계층의 
+# 모든 바이트 치환 흐름(trace)을 추적한다.
+export RUST_LOG="warn,zenoh::net::framing=trace"
+</code></pre>
+<p>추적 범위를 네임스페이스로 제한하지 않고 전역을 대상으로 <code>RUST_LOG=trace</code>를 인가할 경우, 초당 기가바이트(GB) 단위의 문자열 직렬화 과부하가 발생해 렌더링 스레드의 데드락(Deadlock) 및 호스트 강제 종료를 유발할 수 있으므로 극도의 주의가 요구된다.</p>
+<h2>2.  Fluentd 및 Logstash를 활용한 로그 파이프라인 구성</h2>
+<p>Zenoh 프로세스가 표준 출력(stdout)이나 로컬 파일(File Sink)로 방출하는 원시 로그 문자열은 검색 엔진 프로세서가 파싱(Parsing)하기 부적합한 비정형 데이터(Unstructured Data)다. 이를 정규화하여 중앙 저장소(Elasticsearch 등)로 배달하는 전방위 로그 배포 에이전트(Log Shipper) 계층의 도입이 필수적이다.</p>
+<p><strong>1. 구조적 로깅 포맷팅 (Log Forwarding 대원칙)</strong><br />
+데이터 검색 효율을 극대화하기 위해, 원천 텍스트 로그는 전송 에이전트 단계에서 <code>time</code>(발생 시간), <code>level</code>(심각도), <code>module</code>(발생 모듈), <code>message</code>(세부 내용) 등의 명시적 키(Key)를 가진 JSON 형식으로 파싱(Parsing)되거나 분리되어야 한다.</p>
+<p><strong>2. 에지 환경을 위한 경량 배달부 탑재 (Fluent-bit)</strong><br />
+컴퓨팅 자원이 제약된 로보틱스 에지 환경에 JVM 기반의 무거운 Logstash를 이식하는 것은 아키텍처적 남용(Over-engineering)이다. 메모리 풋프린트가 수십 메가바이트(MB) 이내인 C 언어 기반 초경량 데몬 <strong>Fluent-bit</strong>를 전면 이식하여 <code>zenohd</code>의 로그 스트림을 포워딩(Forwarding)한다.</p>
+<pre><code class="language-ini"># fluent-bit.conf (Edge Client Node)
+[INPUT]
+    Name   tail
+    Path   /var/log/zenohd.log
+    Tag    zenoh.edge
+[OUTPUT]
+    Name   es
+    Match  zenoh.edge
+    Host   13.4.5.6 # 클라우드 핵심망의 Elasticsearch 인그레스 주소
+    Port   9200
+</code></pre>
+<p>해당 데몬 설정이 에지군에 일괄 프로비저닝(Provisioning)되는 즉시, 분산된 수백 대의 로봇이 방출하는 에러 징후가 클라우드 지표로 실시간 응집(Aggregation)되기 시작한다.</p>
+<h2>3.  Elasticsearch 기반 로그 중앙 집중화</h2>
+<p>에지(Edge)의 Fluent-bit 인스턴스들이 비동기적으로 전송하는 대규모 로그 페이로드는 텍스트 데이터를 고유의 역색인(Inverted Index) 구조로 변환하여 밀리초 단위의 쿼리 응답 속도를 보장해 주는 <strong>Elasticsearch(ES)</strong> 검색 엔진 서브시스템으로 귀결된다.</p>
+<p><strong>1. Kibana 대시보드를 통합한 컨텍스트 시각화</strong><br />
+ES 데이터베이스 노드에 적재된 로데이터(Raw Data)는 Kibana 웹 프론트엔드 UI를 통해 논리적인 연산 테이블 기반 뷰포트로 조직화된다.<br />
+KQL(Kibana Query Language) 기반으로 <code>level: "ERROR" AND message: "Dropping"</code> 등 복합 필터 질의를 전송하는 시점, 전 세계에 흩어진 라우터들의 포트 충돌, 패킷 소산(Drop) 현상 등이 도출되며 장애 범위 특정(Isolation)이 완성된다.</p>
+<p><strong>2. 인덱스 수명 주기(ILM, Index Lifecycle Management) 관리</strong><br />
+수십 기가바이트(GB)씩 가산되는 분산 라우터 로그 볼륨을 고비용 스토리지에 무한정 누적해 두는 것은 인프라스트럭처의 자원 파산(Storage Starvation)을 가속화한다. Elasticsearch 데몬에 자동화된 ILM 정책을 명세해야 한다.</p>
+<ul>
+<li><strong>Hot Tier:</strong> 최근 3일 이내에 적재된 트러블슈팅 골든 타임 대상 로그군. 최고 성능 NVMe SSD 블록상에 상시 대기시켜 고속 검색을 담보(Ensure)한다.</li>
+<li><strong>Warm Tier:</strong> 3일이 만료된 시점의 아카이빙 데이터. 조회 빈도가 낮으므로 상대적으로 입출력 비용이 저렴한 HDD 스토리지 클러스터로 하향 마이그레이션한다.</li>
+<li><strong>Delete Tier:</strong> 30일(또는 법적 보관 기한) 만료 시점 도달 로그 인덱스. 가차 없이 데몬 캐시 및 디스크 테이블상에서 삭제(Delete) 트리거를 발생시킨다.</li>
+</ul>
+<h2>4.  에러 로그 기반의 이상 징후 선제적 탐지 기법</h2>
+<p>최종적인 로그 인프라는 장애 발생 시에 비로소 콘솔 창을 열어 검색하도록 방치되는 소극적 기록 장치를 넘어서야 한다. 진정한 AIOps(AI for IT Operations)의 기반은 시스템 서브루틴의 로그 스트림이 스스로 특정 룰 기반 이상 징후(Alerting)를 탐지하여 관리자의 운영체제 및 전송망 파이프라인(예: Slack, PagerDuty 등)을 강제로 깨우는 주도적 선제 탐지 시스템에 있다.</p>
+<p><strong>1. 임계치(Threshold) 강제 스파이크 산출 룰</strong><br />
+“과거 1개월간 <code>WARN: Auth Failed</code> 메시지의 허용 기준선(Baseline)이 1일 3회 미만이었으나, 직전 타임스탬프 슬라이딩 윈도우(10분) 동안 동일 메시지 노출 횟수가 500을 도과했다.”<br />
+이렇듯 특정 <strong>로그 텍스트 패턴이 단위 시간 내 발동하는 빈도수(Frequency)가 정규 분포 임계치를 확연히 이탈(Spike)</strong> 시, 이는 분산 공격(DDoS/Brute Force)의 트리거(Trigger)로 간주하고 즉각적인 알람 파이프라인을 점화한다.</p>
+<p><strong>2. 특이/치명적 텍스트 매칭(Rare Event) 절대 룰</strong><br />
+시스템상에서 <code>PANIC</code>, <code>OOM_KILL</code>, <code>Zenoh core crashed</code> 와 직결되는 키워드 등은 수집 누적 빈도수와 무관하게 그 존재의 단 1줄만으로도 심각한 크래시 리포트를 함축한다. 해당 정규식 키워드가 발견되는 즉시 무조건 담당자에게 자동 전화(Call) 라우팅을 지시하는 절대 규칙(Absolute Rule) 체인으로 구성한다.</p>
+<pre><code class="language-mermaid">graph LR
+    classDef edge fill:#e1f5fe,stroke:#0277bd,stroke-width:2px;
+    classDef shipper fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
+    classDef storage fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef visualize fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px;
+    classDef alert fill:#ffebee,stroke:#c62828,stroke-width:2px;
+
+    subgraph Edge_Devices [Edge / Robot Nodes]
+        Zenoh_C[Zenoh Client&lt;br&gt;`stdout`]:::edge
+        Zenoh_R[Zenoh Router&lt;br&gt;`stdout`]:::edge
+    end
+
+    subgraph Log_Shippers [Log Collector / Forwarder]
+        FluentBit_C[Fluent-bit&lt;br&gt;Parse to JSON]:::shipper
+        FluentBit_R[Fluent-bit&lt;br&gt;Parse to JSON]:::shipper
+    end
+
+    Zenoh_C -.-&gt; FluentBit_C
+    Zenoh_R -.-&gt; FluentBit_R
+
+    subgraph ELK_EFK_Stack [Cloud Logging Core (EFK)]
+        ES[(Elasticsearch&lt;br&gt;Inverted Indexing)]:::storage
+        Kibana[Kibana&lt;br&gt;Visualization UI]:::visualize
+        Alerting{Watcher / ElastAlert}:::alert
+    end
+
+    FluentBit_C == HTTP POST JSON ==&gt; ES
+    FluentBit_R == HTTP POST JSON ==&gt; ES
+    
+    ES -.-&gt; Kibana
+    ES -.-&gt; Alerting
+    
+    Alerting --&gt;|Spike Rule Hit| Slack[Slack Alert]:::alert
+    Alerting --&gt;|PANIC Hit| PagerDuty[PagerDuty / Call]:::alert
+</code></pre>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

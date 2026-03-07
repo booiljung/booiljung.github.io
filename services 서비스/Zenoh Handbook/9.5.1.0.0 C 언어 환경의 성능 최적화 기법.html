@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.5.1 C 언어 환경의 성능 최적화 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.5.1 C 언어 환경의 성능 최적화 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>9.5.1 C 언어 환경의 성능 최적화 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.5.1 C 언어 환경의 성능 최적화 기법</h1>
+<p>C 언어 성능의 적은 “운영체제(OS)” 다.<br />
+당신이 아무리 Zenoh 통신 코드를 빠르게 짰어도, 리눅스 커널이 당신의 스레드를 잠재워버리면(Context Switch) 모든 것이 허사로 돌아간다. 이 장은 OS의 간섭을 배제하고 CPU 자원을 독점하는 테크닉을 다룬다.</p>
+<h2>1.  락 프리(Lock-free) 큐 구조 연동 및 지연 시간(Latency) 최소화</h2>
+<p>앞선 9.2.4 장에서 Mutex로 전역 변수를 보호했다고 하더라도, 초당 수십만 번 락(Lock)을 쥐었다 폈다 하면 커널 단위의 컨텍스트 스위칭 오버헤드로 인해 시스템이 정지된 듯한 지연(Jitter)이 발생한다.</p>
+<h4>1.0.1 [Runbook] 락-프리 링 버퍼(Ring Buffer) 전술</h4>
+<p>다수의 Subscriber 스레드(생산자)가 단방향으로 데이터를 써넣고, 하나의 메인 로봇 스레드(소비자)가 데이터를 집어 읽는 이상적인 모델(MPSC: Multi-Producer Single-Consumer)을 구현한다.</p>
+<pre><code class="language-c">#include &lt;stdatomic.h&gt; // C11 아토믹 연산
+#include &lt;zenoh.h&gt;
+#include &lt;string.h&gt;
+
+#define RING_SIZE 1024
+typedef struct {
+    char data[32]; // 페이로드 보관함
+} Packet;
+
+Packet ring_buffer[RING_SIZE];
+atomic_size_t ring_head = 0; // 쓰는 곳
+atomic_size_t ring_tail = 0; // 읽을 곳
+
+// [Zenoh 콜백: 여러 스레드에서 무작위로 호출됨]
+void lockfree_callback(const z_sample_t* sample, void* ctx) {
+    // 1. 머리를 원자적(Atomic)으로 1칸 전진시킨다 (락이 없음!)
+    // 이 연산은 CPU 레벨에서 처리되므로 지연이 0.000001초 미만이다.
+    size_t current_head = atomic_fetch_add(&amp;ring_head, 1) % RING_SIZE;
+    
+    // 2. 가로챈 버퍼 자리에 내 데이터를 우겨넣는다.
+    // (여기서 페이로드 크기가 32바이트를 안 넘는다고 가정)
+    memcpy(ring_buffer[current_head].data, sample-&gt;payload.start, sample-&gt;payload.len);
+    ring_buffer[current_head].data[sample-&gt;payload.len] = '\0';
+}
+
+// [메인 로봇 제어 스레드: 1명만 무한히 순회함]
+void* robot_control_loop(void* arg) {
+    while(1) {
+        // 머리가 꼬리보다 크면 = 새 데이터가 들어왔다는 뜻
+        size_t h = atomic_load(&amp;ring_head);
+        size_t t = atomic_load(&amp;ring_tail);
+        
+        while (t &lt; h) {
+            size_t idx = t % RING_SIZE;
+            printf("Lock-free 소비: %s\n", ring_buffer[idx].data);
+            t++;
+        }
+        atomic_store(&amp;ring_tail, t); // 꼬리 위치 갱신
+        
+        // (적절히 sleep 하여 CPU 코어 독점 방지)
+        usleep(100); 
+    }
+}
+</code></pre>
+<p>위의 아토믹(<code>atomic_fetch_add</code>) 링 버퍼는 Pthread Mutex를 쓰는 방식 대비 <strong>최소 100배에서 500배 빠른 처리 속도</strong>를 자랑한다. 로보틱스의 C 개발자라면 숨 쉬듯 짜낼 수 있어야 하는 가장 강력한 자료 구조다.</p>
+<h2>2.  CPU 친화도(Affinity) 및 실시간(Real-time) 스케줄링 적용</h2>
+<p>Linux 커널은 매우 공평하다. 모든 스레드에 찔끔찔끔 CPU 시간을 공평하게 나눠주려다 보니 캐시 메모리(L1/L2)가 자꾸 리셋(Thrashing)된다.<br />
+우리는 리눅스에게 말해야 한다. <strong>“이 Zenoh 통신 스레드는 무조건 3번 코어에 묶고, 우선순위를 강제로 최상위로 올려라!”</strong></p>
+<h4>2.0.1 [Runbook] POSIX 코어 격리(Core Isolation) 전술</h4>
+<p>로봇 제어용 메인 구동부를 만들 때 반드시 적용해야 할 설정이다.</p>
+<pre><code class="language-c">#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include &lt;pthread.h&gt;
+#include &lt;sched.h&gt;
+#include &lt;stdio.h&gt;
+
+void optimize_thread_for_robotics(pthread_t thread_id, int core_num) {
+    // 1. CPU 코어 강제 할당 (Affinity)
+    cpu_set_t cpuset;
+    CPU_ZERO(&amp;cpuset);
+    CPU_SET(core_num, &amp;cpuset); // 0,1,2,3 번 코어 중 지정
+
+    int rc = pthread_setaffinity_np(thread_id, sizeof(cpu_set_t), &amp;cpuset);
+    if (rc != 0) {
+        printf("!! 코어 바인딩 실패\n");
+    }
+
+    // 2. 리눅스 실시간(Real-Time) 스케줄링 강제 세팅 (FIFO 방식)
+    // 일반 스레드 따위는 다 집어던지고 이 스레드만 최우선으로 돌리겠다는 선언
+    struct sched_param param;
+    param.sched_priority = 99; // 1~99 (99가 최고 존엄)
+    
+    // 이 명령어는 Sudo 권한이 없으면 실패한다! 
+    rc = pthread_setschedparam(thread_id, SCHED_FIFO, &amp;param);
+    if (rc != 0) {
+        printf("!! RT 스케줄링 설정 실패 (루트 권한 필요!)\n");
+    }
+}
+</code></pre>
+<p>로봇 프로그램이 시작하자마자 메인 스레드나 Zenoh의 수신 스핀 스레드에 이 함수를 쏴버리면, OS 단의 컨텍스트 스위칭에 의해 패킷이 지연되거나 모터 제어가 0.05초씩 튀는(Jitter) 현상을 원천 차단할 수 있다. (단, 이 설정을 남용하면 리눅스 OS 자체가 먹통이 되어 마우스조차 움직이지 않을 수 있다.)</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

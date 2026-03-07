@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:16.4 Zenoh 네트워크 및 세션 구성 튜닝</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>16.4 Zenoh 네트워크 및 세션 구성 튜닝</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>16.4 Zenoh 네트워크 및 세션 구성 튜닝</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>16.4 Zenoh 네트워크 및 세션 구성 튜닝</h1>
+<p>길이 뚫려있어도 그 길을 달리는 트럭의 배차 간격(Session) 과 내비게이션 경로(Routing) 가 쓰레기라면 아무 의미가 없다.</p>
+<p>Zenoh 는 로봇이 켜지자마자 “주변에 누가 있나?” 소리치며(Scouting) 스스로 길을 개척하는 마법 같은 동적 능력을 가졌지만, 프로덕션 최적화 장에서는 이 모든 자동화 기능들이 끔찍한 오버헤드(Overhead) 로 돌변한다.<br />
+이 장에서는 인프라 엔지니어의 철권통치인 “하드코어 정적 라우팅(Static Routing)” 과 세션의 심장 박동(Keep-Alive) 을 직접 성형하는 방법론을 마스터한다.</p>
+<h2>1.  피어 모드(Peer) vs 클라이언트-라우터 모드(Client-Router) 성능 트레이드오프</h2>
+<p>Zenoh 프로그램을 기동할 때 <code>Config::default()</code> 로 대충 넘기면, 당신의 코드가 “라우터(Peer)” 인지 “껍데기(Client)” 인지 운명적인 갈림길에 놓이게 된다.</p>
+<h4>1.0.1 [인스펙션] 토폴로지 역할(Role) 강제 전술</h4>
+<p><strong>1. Peer 모드의 재앙과 축복</strong></p>
+<ul>
+<li>로봇 A와 로봇 B가 각각 <code>mode="peer"</code> 로 켜지면, 이 둘은 라우터 없이 서로 다이렉트로 소켓을 뚫어 P2P 통신을 한다.</li>
+<li><strong>장점:</strong> 병목 지점(라우터 서버) 이 없어서 홉(Hop) 카운트가 1 이다. 지연 시간(Latency) 이 극한으로 짧아진다.</li>
+<li><strong>단점 (병목의 역설):</strong> 로봇이 10대면 서로 10x10 의 연결(Mesh) 을 유지해야 한다. 에지 기기의 RAM 과 CPU 가 네트워크 상태 관리에 모조리 빨려 들어가서 관제 소프트웨어가 뻗어버리는 대참사가 난다!</li>
+</ul>
+<p><strong>2. Client 모드의 하향 평준화</strong></p>
+<ul>
+<li>로봇 1,000대가 <code>mode="client"</code> 로 켜지면, 무조건 중앙의 <code>zenohd</code> (라우터) 로만 데이터를 보낸다.</li>
+<li><strong>장점:</strong> 로봇 1개당 소켓이 딱 1개뿐이므로 에지 하드웨어의 부하가 완벽히 소멸한다(Zero Networking Overhead).</li>
+<li><strong>단점:</strong> 로봇 A 가 로봇 B 한테 데이터를 주려고 해도, 빙 돌아서 클라우드를 찍고 와야 한다(2 Hops).</li>
+</ul>
+<p><strong>3. 아키텍트의 결단 (Hybrid)</strong><br />
+스웜(Swarm) 비행을 하는 드론 무리는 자기들끼리 묶인(Mesh) 1대의 <code>Peer</code> 와, 그 밑에 매달려 십자키를 당기는 9대의 <code>Client</code> 로 계층을 분리해 짜는 것이 병목 최적화의 교과서적 런북이다.</p>
+<h2>2.  정적 라우팅 대 동적 라우팅의 오버헤드 비교</h2>
+<p>Zenoh 망에 노드 하나가 추가되면, 기존 노드들은 “야! 새로 누구 왔다! 라우팅 테이블(Routing Table) 복사해주자!” 며 수군댄다. 이 Gossip 트래픽 자체가 쓰레기다.</p>
+<h4>2.0.1 [Runbook] 정적 경로(Static Path) 고정 전술</h4>
+<p>공장에서 쓰이는 센서와 관제탑은 위치가 고정되어 있다. 이들이 서로를 “찾도록(Scouting)” 내버려 두는 것은 자원 낭비다.</p>
+<p><strong>1. 동적 스카우팅 전면 차단</strong></p>
+<pre><code class="language-rust">// 에지 클라이언트 Rust 코드
+let mut config = zenoh::Config::default();
+// 주변 찾기 모드 아예 삭제!
+config.insert_json5("scouting/multicast/enabled", "false"); 
+config.insert_json5("scouting/gossip/enabled", "false");
+</code></pre>
+<p><strong>2. 절대 좌표 강제 지시 (Hardcoded Ping)</strong><br />
+스카우팅을 껐으므로, 목적지를 명시적으로 박아 넣지 않으면 이 로봇은 평생 수신불능 상태다.</p>
+<pre><code class="language-rust">// 무조건 저 클라우드 IP 로만 길을 뚫어라!
+config.insert_json5("connect", r#"["tcp/13.250.40.50:7447"]"#);
+</code></pre>
+<p>이렇게 하면 라우터가 “누구 없소?” 하고 브로드캐스트 패킷을 날리는 행위(초당 수백, 수천 Byte) 가 네트워크에서 원천 소거되며, 100% 내가 쏘아 올린 순수 페이로드 트래픽만이 망을 채우는 완벽한 클린(Clean) 파이프가 완성된다.</p>
+<h2>3.  스카우팅(Scouting) 오버헤드 감소 및 멀티캐스트 주기 미세 조정</h2>
+<p>만약 당신이 농업용 트랙터 군단처럼 기기들이 계속 켜졌다 꺼졌다(Ad-hoc) 하는 동적 망을 써야 해서 스카우팅을 절대 끌 수 없다면? 대화를 최소한으로 억제해야 한다.</p>
+<h4>3.0.1 [인스펙션] 맥박(Heartbeat) 조절 전술</h4>
+<p>기본적으로 Zenoh 는 너무나도 말이 많다. 자기가 살아있다고 1초에 한 번씩 네트워크 동네방네 떠들고 다닌다.</p>
+<p><strong>1. 스카우팅 주기 강제 연장</strong><br />
+멀티캐스트 탐색 신호 발송 주기를 늘려 잡는다.</p>
+<pre><code class="language-json5">// zenohd.json5
+scouting: {
+  multicast: {
+    // 1초에 한 번씩 쏘던 걸, 5초(5000ms) 단위로 줄여라!
+    interval: 5000 
+  }
+}
+</code></pre>
+<p><strong>2. 고정된 이웃(Static Peer)의 무응답 허용</strong><br />
+Gossip 프로토콜(자기들끼리 아키텍처 상태를 동기화하는 백그라운드망) 주기 역시 튜닝 대상이다. 동기화 주기를 1초에서 10초로 늘리면 망이 변경되었을 때 전체가 적응(Convergence) 하는 데 10초가 걸리게 되지만, 그동안 CPU 와 네트워크 아이들(Idle) 대역폭을 무지막지하게 아낄 수 있다. 성능 최적화란 끊임없는 “지연 발견“과 “대역폭 확보” 사이의 핑퐁 게임이다.</p>
+<h2>4.  Keep-alive 패킷 주기 최적화 및 끊김(Drop) 감지 시간 조정</h2>
+<p>연결이 맺어지면, 라우터와 클라이언트는 서로가 안 죽었는지 <code>Keep-alive</code>(생존 핑) 패킷을 정기적으로 날린다. 이 공(Ball) 도 결국 네트워크 트래픽이다.</p>
+<h4>4.0.1 [Runbook] 생존 마지노선 타협 전략</h4>
+<p><strong>1. 촘촘한 관제 (Fast Failover)</strong><br />
+위험한 레이스 카의 원격 조종기라면, 차가 통신 기둥 뒤에 숨어서 끊긴 걸 0.1초 만에 알아차리고 즉각 안전 브레이크를 걸어야 한다.</p>
+<ul>
+<li><strong>튜닝:</strong> <code>Keep-alive</code> 주기를 <code>100ms</code> 로 바짝 조인다. 네트워크가 지저분해지지만 끊김은 즉시 감지된다.</li>
+</ul>
+<p><strong>2. 무념무상 센서 수집망 (Lazy Monitoring)</strong><br />
+1분에 한 번씩 기온을 올리는 농업용 온도 센서인데, 배터리를 아껴야 한다.</p>
+<ul>
+<li><strong>튜닝:</strong> <code>Keep-alive</code> 주기를 <code>300,000ms (5분)</code> 로 확연하게 벌어버리거나 아예 꺼버린다.</li>
+</ul>
+<pre><code class="language-json5">transport: {
+  link: {
+    tcp: {
+      keep_alive: true,
+      // 핑 간격 조절! (단위 확인 필수)
+      keep_alive_interval: 10000 
+    }
+  }
+}
+</code></pre>
+<p>통신 배터리, 즉 라디오 주파수(RF) 장치를 한 번 켤 때마다 전력은 치명적으로 닳는다. IoT/에지 최적화의 절반은 전파를 덜 쏘는 잠의 기술(Sleep Engineering) 이다.</p>
+<h2>5.  라우팅 테이블(Routing Table) 캐싱과 토폴로지 홉(Hop) 최소화 전략</h2>
+<p>Zenoh 라우터는 데이터가 들어올 때마다 자기 머릿속에 있는 지도(Routing Table) 를 훑어서 “어느 소켓 구멍으로 내보낼지” 결정한다. 데이터의 토픽(Key Expression) 이 과도하게 많거나 와일드카드(<code>*</code>, <code>**</code>) 매칭 규칙이 꼬여있으면, 이 지도를 검색하는 시간(Look-up time) 이 패킷 전달 속도를 바닥으로 쳐박는다.</p>
+<h4>5.0.1 [인스펙션] 메모리 맵(Memory Map) 정규화 전술</h4>
+<p><strong>1. 와일드카드(Wildcard) 정렬과 깊이(Depth)의 공포</strong></p>
+<ul>
+<li>로봇이 구독(Subscribe) 선언을 할 때, <code>robot/**/sensor/*</code> 와 같은 끔찍한 패턴을 남발하지 마라.</li>
+<li>라우터가 저 와일드카드에 들어오는 패킷을 매칭하기 위해 O(N) 의 문자열 정규식 횡단 검사를 수행하며 CPU 를 불태우게 된다. 타겟 토픽은 가능하면 하드코딩된 상수(<code>robot/1/sensor/temp</code>) 로 구독해야 라우터 내부의 해시맵(HashMap) 에서 O(1) 의 속도로 번개처럼 파이프가 매핑된다.</li>
+</ul>
+<p><strong>2. 토폴로지 깊이 제한 (Hop Mutilation)</strong><br />
+데이터가 <code>A -&gt; 라우터1 -&gt; 라우터2 -&gt; 라우터3 -&gt; B</code> 처럼 체인(Chain) 에 얽혀 전달된다 치자. 각 홉(Hop) 을 지날 때마다 OS 컨텍스트 스위칭과 큐잉 딜레이로 인해 최소 1ms 씩 누적 패널티를 얻어맞는다.<br />
+스웜 통신 설계 상 3 Hop 이상을 거치는 트리(Tree) 아키텍처는 프로덕션에서 완전 폐기되어야 한다. 클라우드 1티어, 에지 2티어로 이루어진 완벽한 플랫(Flat) 하이브리드 토폴로지를 사수하라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

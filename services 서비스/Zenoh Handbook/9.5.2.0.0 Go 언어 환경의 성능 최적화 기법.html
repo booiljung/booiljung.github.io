@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.5.2 Go 언어 환경의 성능 최적화 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.5.2 Go 언어 환경의 성능 최적화 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>9.5.2 Go 언어 환경의 성능 최적화 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.5.2 Go 언어 환경의 성능 최적화 기법</h1>
+<p>Go 언어 환경의 제일 큰 적은 “CGO 장벽” 과 “가비지 컬렉터(GC)” 다.<br />
+Zenoh 엔진 자체는 0.01ms 만에 처리를 끝마쳐도, 이 결과물이 CGO 런타임을 타고 메모리를 할당(<code>malloc</code> -&gt; Go 힙)받는 순간 속도가 반토막 나버린다. 이 장은 서버(Server) 아키텍트가 숙지해야 할 Go 엔진 회피 기동 전술이다.</p>
+<h2>1.  CGO 호출 오버헤드 측정 및 최소화 설계 원칙</h2>
+<p>CGO 는 공짜가 아니다. Go 메모리 포인터 세계와 C 포인터 물리 세계가 한번 교차할 때마다 <code>runtime.cgocall</code> 이라는 어마어마한 컨텍스트 스위칭 비용을 지불해야 한다. (약 50나노초~수 마이크로초).</p>
+<h4>1.0.1 [Runbook] CGO 횟수 압축 전술 (Batching)</h4>
+<p>1초에 10만 번 <code>put</code> 을 때리는 로직이 필요하다고 치자.</p>
+<pre><code class="language-go">// ❌ 안티 패턴: CGO 방어벽을 10만 번 때림 (서버 CPU 폭발)
+for i := 0; i &lt; 100000; i++ {
+    pub.Put(tinyPayload[i], nil) // 이 안에서 CGO 콜이 각각 발생!
+}
+</code></pre>
+<p>Go 서버를 작성할 때 Zenoh 로 통신을 한다면, 데이터 생성 부하가 CGO 호출 오버헤드를 추월하는지 반드시 체크해야 한다. 만약 극한의 속도가 필요하다면, <strong>여러 개의 텔레메트리 데이터를 하나의 큰 바이트 덩어리(Batch Array)로 뭉친 뒤 한 방에 Push</strong> 하는 식으로 CGO 횟수를 극적으로 줄여내야 한다.<br />
+“통신 횟수” 자체를 줄이는 것, 이것이 CGO 기반 라이브러리인 <code>zenoh-go</code> 를 다루는 첫 번째 원칙이다.</p>
+<h2>2.  메모리 풀(<code>sync.Pool</code>)을 이용한 메시지 객체 재사용 전략</h2>
+<p>고빈도 메시지(1초에 10만 개 송수신) 환경에서, 무심코 적은 <code>payload := make([]byte, 1024)</code> 코드 한 줄은 끔찍한 재앙을 불러온다. 1초에 10만 개의 쓰레기 껍데기(Garbage)가 생성되며, 10초만 지나도 Go의 GC 데몬이 깨어나 서버를 강제 연산 중지(Stop The World) 시킨 뒤 쓰레기통을 비우느라 트래픽을 먹통으로 만든다.</p>
+<h4>2.0.1 [Runbook] 영구적인 버퍼 재활용 창고(Pool) 전술</h4>
+<pre><code class="language-go">package main
+
+import (
+	"fmt"
+	"github.com/eclipse-zenoh/zenoh-go"
+	"sync"
+)
+
+// 1. 단 한 번만! 1KB 짜리 빈 박스를 무한정 뿜어내는 공장(Pool)을 설계한다.
+var payloadPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 1024)
+	},
+}
+
+func startOptimizedTelemetry(pub *zenoh.Publisher) {
+	for i := 0; i &lt; 100000; i++ {
+		// 2. 새 메모리를 만들지(make) 말고, 공장에서 헌 바이트 배열을 "빌려" 온다.
+		buffer := payloadPool.Get().([]byte)
+
+		// 3. 실제 데이터 조작 (예: 앞부분에만 데이터를 덮어씌움)
+		copy(buffer, []byte("Hello Robot!"))
+
+		// 4. 발송 (필요한 만큼의 길이만 슬라이싱해서 쏜다)
+		pub.Put(buffer[:12], nil)
+
+		// 5. [핵심] 다 쓴 바이트 배열을 다시 공장에 "반납" 한다!
+		// 이거 하나로 이 애플리케이션의 메모리 할당량은 10만 번이 아니라 '0번'에 수렴한다.
+		payloadPool.Put(buffer)
+	}
+
+	fmt.Println("🚀 10만방 락프리/GC프리 폭격 시뮬레이션 완료")
+}
+</code></pre>
+<p>이 패턴을 도입하면 <code>pprof</code> 로 메모리 측정을 했을 때, Heap 할당 그래프가 상향 곡선을 그리는 대신 바닥을 기어가게 될 것이다.</p>
+<h2>3.  <code>pprof</code>를 활용한 <code>zenoh-go</code> 애플리케이션 프로파일링 분석</h2>
+<p>“어디서 느려지는지 짐작하지 마라. 측정해라.”<br />
+Go 엔진이 제공하는 우주 최고의 무기, <code>pprof</code> 를 백엔드 서버에 꽂아 넣는다. 무려 웹 대시보드로 CGO 와 GC 가 언제 얼마나 불탔는지를 증명해 준다.</p>
+<h4>3.0.1 [Runbook] 라이브 시스템 프로파일링 파이프라인 개통 전술</h4>
+<pre><code class="language-go">package main
+
+import (
+	"log"
+	"net/http"
+	_ "net/http/pprof" // 이거 한줄이면 자체적인 진단 모니터링 데몬이 기동된다!
+	"github.com/eclipse-zenoh/zenoh-go"
+)
+
+func main() {
+	// 1. 운영 서버의 백그라운드에 6060 포트로 프로파일러(X-Ray)를 튼다.
+	go func() {
+		log.Println("PPROF 진단 서버 개방: localhost:6060")
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
+	// 2. Zenoh 서버 메인 프로그램 기동
+	session, _ := zenoh.Open(zenoh.DefaultConfig())
+	defer session.Close()
+	
+	// ...(어마어마한 트래픽 통신 시뮬레이션)...
+	select {}
+}
+</code></pre>
+<p><strong>진단(Diagnosis) 방법</strong><br />
+서버가 미친 듯이 돌고 있을 때 당신의 노트북 터미널을 열고 다음 명령어를 쏜다.</p>
+<pre><code class="language-bash">## 30초 동안 서버의 CPU 점유율 내역을 훔친다 (웹 그래프 표출)
+go tool pprof -http=:8080 http://localhost:6060/debug/pprof/profile?seconds=30
+</code></pre>
+<p>브라우저가 열리며 빨간 네모 칸들(Flame Graph)이 쏟아져 나온다!</p>
+<ul>
+<li>만약 <strong><code>runtime.cgocall</code></strong> 박스가 전체의 60%를 차지하고 있다면 -&gt; 9.5.2.1 대로 패킷 병합(Batching)을 수행해라.</li>
+<li>만약 <strong><code>runtime.mallocgc</code></strong> (가비지컬렉터 쓰레기수거 작업) 박스가 압도적이라면 -&gt; 빙고! 9.5.2.2 의 <code>sync.Pool</code> 전략을 어기고 매번 <code>make([]byte)</code> 를 생성하고 있다는 명백한 증거다!</li>
+</ul>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:10.2 Zenoh-Pico 아키텍처 및 내부 구조</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>10.2 Zenoh-Pico 아키텍처 및 내부 구조</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>10.2 Zenoh-Pico 아키텍처 및 내부 구조</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>10.2 Zenoh-Pico 아키텍처 및 내부 구조</h1>
+<p>가용 메모리가 수 킬로바이트(KB)에 불과한 칩에서 복잡한 멀티캐스트 라우팅 엔진을 구현하기 위해서는 아키텍처 레벨에서의 본질적인 연산 소거(Operation Elimination)가 요구된다.</p>
+<p>본 절에서는 <code>zenoh-pico</code>가 고비용의 스레드 스케줄러(Thread Scheduler)나 데이터베이스 시스템 없이, 단일 스레드 구조 하에서 상태 머신(State Machine)과 메모리 복제 최소화(Zero-Copy) 기법만으로 통신망을 구동하는 내부 메커니즘을 상세히 해부한다. 이 원리를 정확히 이해하지 못하고 API를 남용할 경우, 임베디드 커널에서의 비정상 종료(Kernel Crash) 및 하드 폴트(Hard Fault)를 피할 수 없다.</p>
+<h2>1.  정적 메모리 모델과 동적 할당(Malloc) 회피 기법</h2>
+<p>범용 라이브러리인 <code>zenoh-c</code>는 세션을 개방(<code>z_open</code>)하거나 퍼블리셔를 선언(<code>z_publisher_declare</code>)할 때 백그라운드에서 동적 할당(<code>malloc</code>)을 통해 수 킬로바이트의 힙(Heap) 메모리를 소비한다. 반면, <code>zenoh-pico</code>는 런타임 단계에서의 동적 할당을 철저히 금지하는 정적 메모리 모델을 적용한다.</p>
+<p><strong>정적(Static) 구조체 선언 전술</strong><br />
+<code>zenoh-pico</code> 환경의 개발자는 컴파일 타임에 물리적 메모리 지도를 작성하여 통신 엔진에 제공해야 한다.</p>
+<pre><code class="language-c">#include &lt;zenoh-pico.h&gt;
+#include &lt;stdio.h&gt;
+
+/* 1. 데이터 세그먼트(Data Segment) 또는 BSS 영역에 배치되는 전역 버퍼.
+   OS 기동 이전에 메모리가 정적으로 할당(Static Allocation)되어 파편화를 방지한다. */
+uint8_t rx_buffer[1024]; 
+uint8_t tx_buffer[1024];
+
+z_session_t session; 
+z_publisher_t publisher;
+
+void boot_pico() {
+    // 2. Pico 코어 환경 설정 초기화
+    z_config_t config = z_config_default();
+    
+    // 3. 사용자 정의 전역 버퍼 주소를 설정 체계에 주입
+    zp_config_insert_json(&amp;config, ZP_RX_BUF_ADDR_KEY, (char*)&amp;rx_buffer);
+    zp_config_insert_json(&amp;config, ZP_RX_BUF_SIZE_KEY, "1024");
+    
+    zp_config_insert_json(&amp;config, ZP_TX_BUF_ADDR_KEY, (char*)&amp;tx_buffer);
+    zp_config_insert_json(&amp;config, ZP_TX_BUF_SIZE_KEY, "1024");
+
+    // 4. 세션 초기화 (내부적으로 malloc 함수가 일절 호출되지 않음)
+    z_open(&amp;session, &amp;config, NULL);
+}
+</code></pre>
+<p>이 패턴이 보장하는 공학적 이점은 무한히 반복되는 송수신 과정에서도 메모리 단편화(Fragmentation)에 의한 고갈 사태 발생 확률이 수학적으로 “0“에 수렴한다는 점이다. 이는 심우주 탐사선이나 산업용 초정밀 로봇의 코어 소프트웨어들이 채택하는 필수 시스템 설계 원칙이기도 하다.</p>
+<h2>2.  제로 카피(Zero-Copy) 버퍼 관리</h2>
+<p>클럭 스피드가 제한적인 초저전력 칩에서는 데이터를 다른 버퍼 배열로 복사(<code>memcpy</code>)하는 것조차 심각한 연산 지연을 초래한다. <code>zenoh-pico</code>는 데이터 스트림을 전송할 때 데이터 덩어리를 물리적으로 이동시키지 않고 시작 주소를 가리키는 포인터 오프셋(Offset)만을 통과시키는 ’초경량화 제로-카피 메커니즘’을 지원한다.</p>
+<p><strong>주소 오프셋 조작 전술</strong><br />
+카메라 모듈 등의 하드웨어 다이렉트 메모리 액세스(DMAC, Direct Memory Access Controller)가 특정 물리 메모리 주소(예: <code>0x40020000</code>)에 센서 데이터를 기록하고 있다면, 이를 <code>tx_buffer</code>로 다시 전송할 필요가 없다.</p>
+<pre><code class="language-c">#include &lt;zenoh-pico.h&gt;
+
+void zero_copy_tx(z_publisher_t* pub) {
+    // 1. 하드웨어 DMA 컨트롤러가 직접 점유한 물리 메모리 주소 매핑
+    uint8_t* hardware_image_buffer = (uint8_t*)0x40020000;
+    size_t image_size = 153600; // 320x240 RGB565 페이로드 크기
+
+    // 2. 포인터 주소만 페이로드로 포장하여 송신 (내부 복사 없음)
+    z_publisher_put(
+        pub, 
+        hardware_image_buffer, 
+        image_size, 
+        NULL
+    );
+    
+    // 이 패킷은 TCP/IP 또는 UART 드라이버 하드웨어에 의해
+    // 해당 메모리 주소 시점부터 네트워크 디바이스로 직접 스트리밍된다.
+}
+</code></pre>
+<p>제로 카피를 우회하고 버퍼 간 복사 조작을 남발하는 불필요한 구현은 버스(Bus) 병목을 유발하여 CPU 점유율을 비정상적으로 치솟게 만든다.</p>
+<h2>3.  비동기 이벤트 기반 루프 및 협력적 폴링 (Cooperative Polling) 모델</h2>
+<p>OS 레벨의 멀티 스레딩이 부재한 상황에서, 네트워크 스택을 비동기적으로 유지하는 책임은 메인 펌웨어 루프를 관장하는 개발자에게 있다. <code>zenoh-pico</code>에는 백그라운드 수신 데몬 프로세스가 존재하지 않는다.</p>
+<p><strong>협력적 폴링(Cooperative Polling) 전술</strong><br />
+펌웨어의 메인루프(<code>while(1)</code>)나 FreeRTOS의 백그라운드 태스크 내에서 반드시 <code>zenoh-pico</code> 엔진의 수신 검사 함수(<code>yield</code>)를 호출하여 타이머 주도권을 양보해야 한다.</p>
+<pre><code class="language-c">#include &lt;zenoh-pico.h&gt;
+
+void my_robot_firmware_main() {
+    // 1. 하드웨어 추상 계층(HAL) 및 GPIO, UART 등 기초 런타임 초기화
+    // 2. Zenoh-Pico 세션 개방 (z_open)
+
+    while (1) {
+        // 3. 디바이스 고유의 제어 로직 (센싱, 액추에이터 PWM 제어 등)
+        read_sensor();
+        drive_motor();
+
+        // 4. [핵심] Zenoh 엔진 구동 기회 양도 (Cooperative Yield)
+        // 설정된 시간(10ms) 내에 네트워크 인터페이스를 훑고 지나간다.
+        // 수신된 데이터가 있다면 이 함수 내에서 곧바로 Subscriber 콜백이 실행된다!
+        z_session_yield(&amp;session, 10); 
+        
+        // 주의: 메인 제어 루프가 블로킹(Blocking)을 유발하여 yield 주기가 불규칙해지면
+        // TCP 수신 버퍼 범람(Overflow)이 발생하며 상위의 Zenoh Router가 
+        // 해당 노드를 망에서 강제 퇴출(Drop)시킬 수 있다.
+    }
+}
+</code></pre>
+<p>임베디드 네트워크 아키텍처 상의 연결 끊김 및 데이터 유실 문제의 대다수는 이 <code>yield</code> 통제권 할당 주기와 하드웨어 제어 로직 사이의 시분할(Time Slicing) 실패에 기인한다. 단일 스레드에서의 지연 함수(<code>delay</code>, <code>sleep</code>) 남용은 네트워크 생명 유지에 치명적이다.</p>
+<h2>4.  상태 머신(State Machine)과 프로토콜 스택 처리</h2>
+<p>노이즈에 취약하고 패킷이 불규칙적으로 분절도어 도착하는 UART 계열의 스트리밍 환경에서 바이너리 페이로드를 조립해내는 일은 난이도가 높다. 이를 해결하기 위해 <code>zenoh-pico</code> 엔진 최하단에는 유한 상태 머신(FSM, Finite State Machine) 기반의 스트림 디코더가 이식되어 있다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; STATE_MAGIC: Start (Wait for Magic Byte)
+    
+    STATE_MAGIC --&gt; STATE_HEADER: [Matches Magic Byte]\nExtract size / type
+    STATE_MAGIC --&gt; STATE_MAGIC: [Invalid]\nDiscard Byte
+    
+    STATE_HEADER --&gt; STATE_PAYLOAD: [Header Complete]\nPrepare Pointer
+    STATE_HEADER --&gt; STATE_HEADER: [Receiving Header]
+    
+    STATE_PAYLOAD --&gt; TRIGGER_CALLBACK: [Payload Length Met]
+    STATE_PAYLOAD --&gt; STATE_PAYLOAD: [Accumulate ++Offset]
+    
+    TRIGGER_CALLBACK --&gt; STATE_MAGIC: Output To Developer\n(Zero-copy pass)
+</code></pre>
+<p><strong>상태 전이 기반의 바이트 집적(Byte Accumulation) 사이클</strong><br />
+엔진은 인터럽트나 폴링을 통해 획득한 1바이트를 즉시 상태 머신 버퍼(<code>rx_buffer</code>)에 밀어 넣으며, 온전한 “Zenoh 규격 프레임 1개“가 조립 완료되는 찰나(State Shift)에만 메인 컨텍스트 내의 사용자 콜백 함수를 비동기적으로 호출한다.</p>
+<ol>
+<li><strong>상태 A (대기 및 헤더 스캐닝):</strong> 물리 계층으로부터 유입된 바이트가 Zenoh 프로토콜의 약속된 시작 표식(Magic Code)인지 판별한다.</li>
+<li><strong>상태 B (페이로드 오프셋 조립):</strong> 해더 분석을 통해 예측된 길이(예: 50바이트의 데이터)만큼 연속된 바이트를 수신하며, 사전 할당된 <code>rx_buffer</code> 내 특정 오프셋으로 차례대로 삽입한다.</li>
+<li><strong>상태 C (콜백 격발 및 루프 복귀):</strong> 목표 바이트 조립이 정상 종료됨과 동시에 CRC 무결성 검증을 거친 후, 해당 버퍼의 시작점 주소(Zero-copy 포인터)를 파라미터로 삼아 개발자가 등록한 <code>Subscriber Callback</code>을 호출한다. 실행 분개가 끝나면 장치는 즉시 대기 상태(A)로 회귀한다.</li>
+</ol>
+<p>이러한 상태 기반 바이트 머신 체계를 통해, 극단적으로 제약된 수 킬로바이트(KB)의 워크 스페이스만으로도 초당 수백 개의 파편화된 비정형 데이터 프레임을 안정적으로 통제하는 것이 <code>zenoh-pico</code> 시스템 아키텍처의 근본 원리이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
