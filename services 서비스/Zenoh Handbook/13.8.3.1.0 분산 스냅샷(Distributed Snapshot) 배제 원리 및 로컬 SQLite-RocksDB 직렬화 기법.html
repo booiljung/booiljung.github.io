@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:13.8.3.1 분산 스냅샷(Distributed Snapshot) 배제 원리 및 로컬 SQLite-RocksDB 직렬화 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>13.8.3.1 분산 스냅샷(Distributed Snapshot) 배제 원리 및 로컬 SQLite-RocksDB 직렬화 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>13.8.3.1 분산 스냅샷(Distributed Snapshot) 배제 원리 및 로컬 SQLite-RocksDB 직렬화 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>13.8.3.1 분산 스냅샷(Distributed Snapshot) 배제 원리 및 로컬 SQLite-RocksDB 직렬화 기법</h1>
+<p><code>Segfault</code> 로 뻗어버린 워커 데몬이 시스템 레벨에서 재부팅되고 마스터의 YAML 도면 폭격마저 무사히 맞고 초기화(<code>Initialize</code>)에 성공했다 한들(13.8.2.2장 참조), 여전히 복원되지 않은 치명적 잔해(Rubble) 한 가지가 남아있다.<br />
+이 딥러닝 필터 노드가 죽기 바로 직전인 <code>50ms</code> 전까지 누적해서 쌓아뒀던, “지난 10초간의 보행자 이동 궤적 배열” 같은 <strong>State(과거의 연산 상태 문맥)</strong> 다. 데몬이 재시작되면서 RAM이 싹 날아갔으므로, 10초 분량에 해당하는 상태(State Context)가 통째로 증발(Amnesia)해 버렸다.</p>
+<p>이를 방어한답시고 전 세계에 흩어진 1,000대의 노드의 RAM을 주기적으로 멈춰(Pause) 통째로 복사본을 뜨고 클라우드에 전송하는 Apache Flink 방식의 무식한 무기력증, 즉 <strong>글로벌 분산 스냅샷(Global Distributed Snapshot)</strong> 을 하드 리얼타임 레이더망에 적용하는 것은 응답 속도를 박살 내는 미친 짓이다.</p>
+<p>본 절에서는 마스터 기반 분산 스냅샷 동기화의 오버헤드를 경멸하고 파괴해 버린 뒤, 엣지 보드 단말 각자의 NVMe/SSD 에 C++ 컨텍스트 덩어리를 빛의 속도로 쑤셔 박아 영속성(Persistence)을 보장하는, 철저한 개인지향 <strong>로컬 분산 스토리지(SQLite/RocksDB) 직렬화 마이크로 런북</strong>을 갈파한다.</p>
+<h2>1.  글로벌 스냅샷 배리어(Snapshot Barrier) 체계의 혐오</h2>
+<p>구식 빅데이터 스트림 툴들은 상태가 날아감을 막기 위해, 마스터 데몬이 파이파라인 안에 1분마다 <code>[스냅샷 찍어라!]</code> 라는 특수 배리어 패킷 캡슐(Barrier Token)을 흘려보낸다.<br />
+이 패킷을 받은 노드들은 자신이 연산하던 모든 스레드를 정지(Lock) 시킨 채 자신의 RAM 속에 든 모든 <code>Numpy</code> 배열과 변수 덩어리를 JSON 따위의 뚱뚱한 텍스트로 압축하여 아마존 S3(원격지) 같은 곳으로 1분마다 덤프 쳐 올리는(Upload) 지옥불 스케줄링을 태운다.</p>
+<p>자율주행 자동차가 초당 60 프레임의 사선을 넘나들고 있는데, “상태 백업 좀 하겠다” 며 파이프라인 연산이 3초간 먹통(Barrier Blocking Lock)에 빠진다는 것은 제어 공학에서 용납되지 않는 쓰레기 설계다. <code>Zenoh-Flow</code> 는 이 글로벌 타이머 종속 동기화 기법을 뼈대부터 철저히 혐오한다. 통신을 타는 상태 백업(Remote Backup)은 지연(Latency)의 온상이다.</p>
+<h2>2.  노드 간 독립 전선: 임베디드(In-Memory/Local) K-V 저장소 격리</h2>
+<p>아키텍트는 통신 소켓을 절단해버린다. 자신의 목숨(상태 변수)은 중앙 서버에 위탁해 묶어두는 것이 아니라 파이프라인에 구멍 뚫어놓은 자신의 SSD 밑바닥에 실시간 이스케이프(Escape) 플러그를 심어야 한다.<br />
+C/C++ 혹은 Python 오퍼레이터 노드 클래스 내부에, 다른 누구와도 간섭(Lock)이 없는 초경량 로컬(Local) 데이터베이스 트랜잭션 창구를 박아넣는다.</p>
+<pre><code class="language-cpp">// [글로벌 스냅샷을 혐오하는 로컬 극단적 직렬화 스토리지 런북]
+
+// 1. 메모리에 상주하면서 SSD 물리 디스크 뒤끝에 즉각 I/O를 내리꽂는
+// 괴물급 경량 DB(RocksDB, 혹은 SQLite) 밸브를 오퍼레이터의 심혈관에 이식한다.
+rocksdb::DB* local_stone_db; 
+rocksdb::DB::Open(options, "/opt/zenoh_states/radar_tracker", &amp;local_stone_db);
+
+void on_data(Data radar_packet) {
+    // 2. 궤적 추적 알고리즘 
+    trajectory_window.push_back(radar_packet); 
+    
+    // 3. 글로벌 배리어를 기다리지 않는다! 오퍼레이터가 처리하는 그 찰나의 1틱마다!
+    // 과거 궤적을 바이트(Bytes)로 피칠갑 압축하여 자신의 바닥(SSD)에 마취 없이 갈겨넣는다.
+    std::string bytes = custom_fast_serialize(trajectory_window); 
+    
+    // 네트워크 경합 0%. 글로벌 Lock 0%. 단 몇 마이크로 초 만에 디스크에 도장 쾅!
+    local_stone_db-&gt;Put(write_options, "last_known_trajectory", bytes); 
+    
+    // 4. 다음 데이터 처리를 위해 즉각 스레드 잠금 해제 
+    send_out();
+}
+</code></pre>
+<h2>3.  영속성(Persistence)의 탈중앙화와 플래시 스토리지의 학대</h2>
+<p>이 로컬 <code>RocksDB</code> 런북의 힘은 무시무시하다.<br />
+아무리 <code>Segfault</code> 로 커널 메모리가 파괴되고 데몬 엔진이 강제 폭파되어 <code>systemd</code> 로 인해 1초 뒤 완전히 새하얗게 부활한다 해도(Amnesia), 엣지 장비의 NVMe/SSD 공간 어딘가에는 죽기 불과 <code>5ms</code> 직전까지 치열하게 궤적 텐서를 물고 집행했던 연산 컨텍스트 캡슐(<code>last_known_trajectory</code>)이 식지도 않은 채 보존되어 있다.</p>
+<p>글로벌 데몬 마스터의 무겁디무거운 스냅샷 통제 명령이나 시간 동기화(Barrier Alignment)는 단 한 바이트도 개입하지 않았다.<br />
+연산의 최전선(Edge)을 달리는 오퍼레이터가 매 틱(Tick)마다 플래시 메모리(SSD) 수명을 잔혹하게 갉아먹어가며 자신의 뇌내 상태(State)를 수 마이크로초 단위로 바닥 장판 밑에 밀어 넣어 두는 것. 분산 동기화의 모순을 로컬 스토리지 한계 극한의 I/O 내리꽂기로 부숴버리고 데이터플로우의 무결점 상태 복원력(State Resilience)을 달성하는 이율배반이 바로 엣지-퍼스트(Edge-first) 엔지니어링의 오만함이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

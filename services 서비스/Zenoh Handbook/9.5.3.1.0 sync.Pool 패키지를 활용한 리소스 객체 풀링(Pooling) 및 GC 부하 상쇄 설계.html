@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.5.3.1 sync.Pool 패키지를 활용한 리소스 객체 풀링(Pooling) 및 GC 부하 상쇄 설계</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.5.3.1 sync.Pool 패키지를 활용한 리소스 객체 풀링(Pooling) 및 GC 부하 상쇄 설계</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>9.5.3.1 sync.Pool 패키지를 활용한 리소스 객체 풀링(Pooling) 및 GC 부하 상쇄 설계</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.5.3.1 sync.Pool 패키지를 활용한 리소스 객체 풀링(Pooling) 및 GC 부하 상쇄 설계</h1>
+<p>Zenoh-go(Go 런타임 바인딩) 기반의 게이트웨이 및 클라우드 트래픽 흡수 망에서 레이턴시 성능을 잡아먹는 것은 네트워크 스루풋 제한조차, 포인터 캐시 미스조차 아니다. 가장 끔찍하게 애플리케이션의 맥박을 불규칙적으로 멈춰버리는(Jitter) 원흉은 바로 쉴 새 없이 몰아치는 가비지 컬렉터(Garbage Collector, GC)의 백그라운드 스캐닝(Mark &amp; Sweep Process) 부하다.</p>
+<p>초당 10,000건의 센서 JSON 메시지를 파싱하기 위해 새로운 객체 타입 구조체를 <code>make()</code>나 <code>new()</code>로 힙(Heap)에 양산해 내는 행위는, 시스템 메모리를 불바다로 만들어 GC를 강제 기상시키는 가장 무지한 행위다. 본 절에서는 운영체제 및 언어 런타임의 한계를 부수기 위해, 일회용 컵을 다시 회수해 씻어 쓰는 논리적 힙 재활용 교리인 <strong><code>sync.Pool</code> 리소스 객체 풀링(Pooling)</strong> 아키텍처를 전개한다.</p>
+<h2>1.  막무가내 메모리 얼로케이션(Allocation)의 참전과 GC 폭발</h2>
+<p>새로운 Zenoh 수신 콜백(Subscriber Callback)이 발동될 때, 엔지니어들이 가장 빈번하게 짜 넣는 스크립트의 폐해를 진단한다.</p>
+<pre><code class="language-go">// [GC의 무차별 포격을 유발하는 오소독스(Orthodox) 패턴]
+func onHeavyTelemetryReceived(sample zenoh.Sample) {
+    // 1. 매 호출 시마다, 힙(Heap) 영역에 새로운 거대 포장지 구조체를 생성한다!
+    localDataModel := make([]float64, 4096) 
+    
+    // 2. 바이트 파싱 후 연산 진행
+    json.Unmarshal(sample.Value, &amp;localDataModel)
+    pushToExternalAI(localDataModel)
+    // 3. 함수 종료 시 변수 localDataModel 범위에서 벗어나 쓰레기가 됨(Garbage)
+}
+</code></pre>
+<p>위 코드를 초당 2만 건씩 가해지도록 수신 트래픽을 상향시켜 보라. 초당 약 650MB의 메모리가 순식간에 버려지며 힙에 퇴적된다.<br />
+수 초 뒤 Go 런타임은 여유 메모리 확충을 위해 심근경색을 일으키듯 Stop-The-World (STW) 페이즈로 돌입하여, 현재 가동 중이던 모든 Zenoh I/O 스레드를 중지시키고 저 쓰레기 변수들의 메모리를 하나하나 빗자루(Sweep)질하는 대환장파티가 벌어지게 된다.</p>
+<h2>2.  sync.Pool 의 생태계 방어 기작: 깊은 공간(Deep Space) 풀</h2>
+<p>이 끔찍한 오버헤드를 O(1)에 근접하게 멸종시키기 위해서는, 데이터를 담는 껍데기를 처음 한 번만 생성(Allocate)하고 함수가 끝나기 전에 절대로 버리지 않는 <strong>오브젝트 대여 및 반납 규칙</strong>을 지켜야 한다.<br />
+Go 표준 라이브러리의 최전방 방패인 <code>sync.Pool</code> 패키지가 이를 실현한다.</p>
+<pre><code class="language-go">// 1. 어플리케이션 구동 시 단 한 번 선언되는 전역 객체 재활용 풀소
+var telemetryArrayPool = sync.Pool{
+    New: func() interface{} {
+        // 맨 처음 풀이 비어있을 때만 이 무거운 Heap 할당 코드가 돌아간다
+        return make([]float64, 4096)
+    },
+}
+
+func onHeavyTelemetryReceived(sample zenoh.Sample) {
+    // 2. 메모리 할당(Alloc) 금지! 풀에서 그냥 깨끗하게 씻은 그릇을 대여해온다
+    reusedDataModel := telemetryArrayPool.Get().([]float64)
+
+    // 배열 내부 더미 값 삭제 처리 (0으로 패딩)
+    for i := range reusedDataModel { reusedDataModel[i] = 0.0 }
+    
+    json.Unmarshal(sample.Value, &amp;reusedDataModel)
+    pushToExternalAI(reusedDataModel)
+
+    // 3. [가장 중대한 서약] GC가 출동할 건더기가 남지 않게, 다 쓴 그릇을 살포시 반납한다.
+    telemetryArrayPool.Put(reusedDataModel) 
+}
+</code></pre>
+<p>이 런북이 반영되는 순간, 단 하루 동안 1억 번의 트래픽 트랜잭션 이벤트가 몰아치더라도, 시스템은 단 64개의 배열 파편만을 힙에 올린 채 마치 서커스 공놀이처럼 구조체를 돌려 막는다. 결과적으로 GC에게 할당된 쓰레기통의 무게 잔량은 거짓말처럼 ’0(Zero)’를 유지하게 되며, 시스템의 CPU 사용률(Sys Use)은 바닥으로 치닫는 기적을 맛본다.</p>
+<h2>3.  메모리 오염(Stale Data Impurity) 방지를 위한 클렌징 프로토콜</h2>
+<p>객체 풀링(Pooling)이 주는 영광스러운 퍼포먼스는 너무나 치명적인 독극물을 하나 머금고 있다.<br />
+과거 콜백 스레드가 A 로봇의 센서 값(<code>10.5</code>도)을 구조체 변수에 기록하고 반납했는데, 다음 차례인 B 로봇의 콜백 과정에서 파싱 에러가 났다 치자. 만약 B 로봇이 그 지저분한 그릇(Pool Object)의 속을 비우지 않고 그대로 읽어들인다면, B 로봇은 과거 A 로봇의 온도 값을 자신의 데이터로 오인하여 AI 모듈로 발송해버린다! (이른바 더티 리드, Dirty Read Data Leak).</p>
+<p>따라서 풀(Pool)에서 <code>Get()</code> 으로 객체를 탈환해낸 엔지니어는 인접한 바로 다음 라인에 <strong>강박적인 초기화(Cleansing) 루틴</strong>을 반드시 쐐기 박아야 한다. 데이터 슬라이스의 길이를 <code>model[:0]</code> 로 줄이거나 배열 전체를 0으로 강제 초기화(Zeroing)하는 엄격한 프로토콜 없이는 객체지향 횡령과 데이터 오염이라는 사보타주(Sabotage)를 자초할 뿐이다. 자원을 훔쳐 쓰는(Reuse) 엔지니어는 반드시 뒤를 철저히 소독(Sanitize)하는 엄결한 집행관이어야 함을 숙지하라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

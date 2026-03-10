@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.2.2.1 락 경합(Lock Contention) 방지를 위한 비동기 상태 머신 기반 스케줄링</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.2.2.1 락 경합(Lock Contention) 방지를 위한 비동기 상태 머신 기반 스케줄링</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>9.2.2.1 락 경합(Lock Contention) 방지를 위한 비동기 상태 머신 기반 스케줄링</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.2.2.1 락 경합(Lock Contention) 방지를 위한 비동기 상태 머신 기반 스케줄링</h1>
+<p>산업용 제어 시스템의 코어 로직을 작성할 때, C 언어 엔지니어들은 관습적으로 다중 스레드(Multi-threading)와 뮤텍스 락(Mutex Lock)을 남용하여 데이터 무결성을 보존하려 시도한다. 그러나 센서 프레임이 10kHz 속도로 쏟아지는 하드 리얼타임(Hard Real-Time) 통신망에서, <code>pthread_mutex_lock()</code>과 같은 시스템 콜은 커널 컨텍스트 스위칭을 유발하여 시스템 전체의 응답 지연을 치명적으로 증가시킨다.</p>
+<p><code>zenoh-c</code>는 근본적으로 이러한 스레드 차단(Thread Blocking) 패러다임을 혁파하기 위해, 비동기 상태 머신(Asynchronous State Machine)을 구조적 대안으로 강제한다. 본 절에서는 락 경합(Lock Contention)으로 인한 성능 파탄을 회피하고, 이벤트 루프 기반의 단일 스레드 비선점(Non-preemptive) 스케줄링 런북을 C 환경에 정착시키는 기법을 논증한다.</p>
+<h2>1.  다중 스레드 뮤텍스(Mutex)의 파괴적 오버헤드</h2>
+<p>만약 Zenoh에서 데이터를 수신받는 콜백 함수(<code>on_receive</code>)와, 이를 디스플레이 화면에 렌더링하는 메인 그래픽스 스레드가 하나의 전역 메모리 버퍼(Global Buffer)를 공유한다고 가정해보자.</p>
+<p>과거의 엔지니어링은 메인 프레임워크와 네트워크 콜백이 동시에 버퍼에 접근할 때 데이터 레이스(Data Race)가 일어나는 것을 막기 위해 상호 배제 락(Mutex)을 설정했다.<br />
+수신 스레드가 락을 쥔 채 연산이 조금이라도 길어지면, 메인 렌더링 스레드는 락을 획득하기 위해 대기(Sleep) 모드로 빠져버게 되며, 이는 전체 파이프라인의 조향 응답 시간(Steering Response Time)을 5ms에서 50ms로 폭등시키는 이른바 우선순위 역전(Priority Inversion)과 락 경합 파동(Lock Contention Cascade)을 불러일으킨다. 초저지연 아키텍처에서 락의 사용은 필연적으로 죄각과 같다.</p>
+<h2>2.  락-프리(Lock-Free) 비동기 상태 머신 건축</h2>
+<p><code>zenoh-c</code>가 설계한 이상적인 폼 팩터(Form Factor)는 이러한 뮤텍스를 전면 배제하는 <strong>폴링(Polling) 기반 비동기 상태 머신</strong> 구조다.<br />
+별도의 수신 스레드가 메인 스레드의 메모리를 침범하는 대신, 단일한 메인 코어 제어 루프 내부에서 Zenoh의 논블로킹(Non-blocking) 큐를 곁눈질하듯 감시하는 비차단 수신(<code>z_session_loan_read</code> 모델 또는 콜백 큐 이관) 방식을 택한다.</p>
+<pre><code class="language-c">// 상태 머신의 1차원적 단계 분류 (Enum)
+typedef enum {
+    STATE_AWAKE,
+    STATE_FETCH_ZENOH,
+    STATE_PROCESS_KINEMATICS,
+    STATE_SLEEP
+} SystemState;
+
+SystemState current_state = STATE_AWAKE;
+
+// [단일 스레드 환경의 Main 제어 루프]
+while (system_running) {
+    switch (current_state) {
+        case STATE_FETCH_ZENOH:
+            // 락킹(Locking) 없는 논블로킹 팝(Pop) 시도
+            // 데이터가 없다면 그 즉시 대기 없이 루틴을 탈출하여 다음 상태로 전이
+            if (try_drain_zenoh_events(&amp;local_buffer) == SUCCESS) {
+                current_state = STATE_PROCESS_KINEMATICS;
+            } else {
+                current_state = STATE_SLEEP;
+            }
+            break;
+            
+        case STATE_PROCESS_KINEMATICS:
+            compute_motor_vectors(&amp;local_buffer);
+            current_state = STATE_SLEEP;
+            break;
+            
+        // ... 생략
+    }
+}
+</code></pre>
+<p>이 접근법은 커널(OS)의 스레드 인터럽트 제어를 철저히 배제하고, 사용자 공간(User Space)에서 타임슬롯을 분배하는 스케줄러를 직접 직조한 형태다.</p>
+<h2>3.  원자적 연산(Atomic Operation)과 링 버퍼 채택</h2>
+<p>상태 머신이 아닌, 필연적으로 멀티 코어(Multi-core)가 나누어 역할을 수행해야 하는 대규모 엣지 통신 장비라면 어떠할까.<br />
+이러한 한계 상황에서는 뮤텍스(Mutex) 대신 하드웨어 레지스터 단에서 제공하는 분할 불가능 연산, 즉 <strong>원자적 조작(Atomic Operations)</strong> 을 통한 락-프리(Lock-Free) 링 버퍼(Ring Buffer)를 활용해야 한다.</p>
+<ul>
+<li><code>zenoh-c</code> 콜백 스레드는 오직 생산자(Producer)의 역할로서 배열 포인터의 <code>Write Index</code> 만을 C11 표준의 <code>atomic_fetch_add()</code> 속성으로 원자적 증가시킨다.</li>
+<li>데이터 연산 스레드(Consumer)는 절대적으로 <code>Read Index</code> 만을 통제하며 따라잡는다.</li>
+</ul>
+<p>이와 같은 단일 생산자-단일 소비자(SPSC: Single-Producer Single-Consumer) 아키텍처는 생산자와 소비자 간의 메모리 접근 영역을 원천적으로 분리하였으므로(False Sharing 차단 조건 달성 시), 그 어떠한 교착 상태(Deadlock)나 스레드 정지도 개입될 여지가 존재하지 않게 된다. 락 경합 없는 상태 머신이야말로 <code>zenoh-c</code>의 메모리 통찰력을 현상계 물리량의 속도로 투영하는 최고의 공학적 전술이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

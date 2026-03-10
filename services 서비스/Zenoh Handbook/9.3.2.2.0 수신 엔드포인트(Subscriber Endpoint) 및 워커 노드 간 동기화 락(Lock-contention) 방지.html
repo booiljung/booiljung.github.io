@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.3.2.2 수신 엔드포인트(Subscriber Endpoint) 및 워커 노드 간 동기화 락(Lock-contention) 방지</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.3.2.2 수신 엔드포인트(Subscriber Endpoint) 및 워커 노드 간 동기화 락(Lock-contention) 방지</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>9.3.2.2 수신 엔드포인트(Subscriber Endpoint) 및 워커 노드 간 동기화 락(Lock-contention) 방지</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.3.2.2 수신 엔드포인트(Subscriber Endpoint) 및 워커 노드 간 동기화 락(Lock-contention) 방지</h1>
+<p>단일 머신(Go 기반 서버) 내에서 Zenoh 콜백과 워커 고루틴이 채널(Channel)을 통해 엄격하게 분리되었다 할지라도, 대규모 데이터 집계(Aggregation) 구간에서 자원 경합이라는 새로운 장벽에 직면하게 된다. 수백 개의 워커 고루틴이 하나의 메모리 캐시 맵(<code>map[string]Telemetry</code>)에 인지된 상태를 갱신(Update)하려 달려들 때, 초보적인 설계자들은 관성적으로 <code>sync.Mutex</code>를 선언하여 임계 구역(Critical Section)을 막이버린다.</p>
+<p>본 절에서는 100만 TPS(Transactions Per Second) 급의 수신 엔드포인트에서 워커 고루틴들에게 일어나는 락 경합(Lock Contention)의 참상을 분석하고, 이를 락-프리(Lock-free) 샤딩 구조체와 <code>sync.Map</code>을 매개로 분쇄해 내는 고도의 Go 동시성 최적화 기법을 기술한다.</p>
+<h2>1.  전역 뮤텍스(Global Mutex)의 멈춤 현상(Stall) 한계</h2>
+<p>하나의 Zenoh 라우터를 통해 모여든 여러 엣지 센서 값(온도, 전압, 회전수)을 조합하여 단일 로봇 단말의 최신 상태 객체(State View) 딕셔너리로 조립해야 한다고 가정하자.</p>
+<pre><code class="language-go">// [안티 패턴]
+var GlobalStateMap = make(map[string]RobotState)
+var stateMutex sync.Mutex
+
+func ProcessWorker(data RawData) {
+    stateMutex.Lock()  // 천하제일 경합 대회의 시작
+    current := GlobalStateMap[data.RobotId]
+    current.ApplyUpdate(data)
+    GlobalStateMap[data.RobotId] = current
+    stateMutex.Unlock()
+}
+</code></pre>
+<p>이 구조에서 워커가 10명일 때는 문제가 없으나, 워커를 1,000명으로 늘리게 되면 999명의 고루틴은 <code>stateMutex.Lock()</code> 앞에서 OS 커널의 중지를 맞고 잠들어버린다. CPU에는 64개의 물리 코어가 탑재되어 있음에도 불구하고, 모든 연산은 오직 단 하나의 코어로 직렬화(Serialization)되어 통과하게 된다. 멀티 코어를 완전히 무력화시키는 지점, 이것이 바로 동기화 락 컨텐션의 파괴력이다.</p>
+<h2>2.  해시 기반 메모리 샤딩(Sharding) 및 분산 락 아키텍처</h2>
+<p>글로벌 락의 멱살을 풀기 위해서는 자원 스페이스 자체를 기하학적으로 조각내야(Sharding) 한다.<br />
+<code>GlobalStateMap</code> 이라는 거대한 하나의 자물쇠 대신 128개, 혹은 256개의 물리적으로 독립된 자물쇠가 걸린 작은 금고들로 메모리를 쪼개라.</p>
+<p>로봇의 식별자(ID) 문자열에 해시 연산(Hash Function)을 통과시켜, 해당 로봇의 상태가 저장될 특정 파티션(Partition) 인덱스를 추출한다. 1번 로봇의 데이터는 13 파티션을 타격하고, 2번 로봇의 데이터는 88 파티션을 타격한다.</p>
+<pre><code class="language-go">const SHARD_COUNT = 256
+
+type ShardedStateMap struct {
+    shards [SHARD_COUNT]struct {
+        sync.RWMutex
+        items map[string]RobotState
+    }
+}
+
+// O(1) 해시로 락 구역 할당
+func (m *ShardedStateMap) UpdateItem(robotID string, data RawData) {
+    shardIndex := fastHash(robotID) % SHARD_COUNT
+    shard := &amp;m.shards[shardIndex]
+
+    // 1/256 로 파편화된 분산 락 획득 (경합 확률 1/256로 급감)
+    shard.Lock()
+    defer shard.Unlock()
+    
+    current := shard.items[robotID]
+    current.ApplyUpdate(data)
+    shard.items[robotID] = current
+}
+</code></pre>
+<p>이 코드는 기존 전역 락 대비 CPU의 코어 파편화 처리량을 폭발적으로 견인한다. 서로 다른 로봇으로부터 올라온 데이터들은 서로의 락 공간을 침해하지 않음으로써, 수천 개의 백그라운드 워커 고루틴들이 각 코어에서 100% 병렬(Parallel)로 Zenoh 페이로드를 조립해내는 진풍경을 연출하게 된다.</p>
+<h2>3.  Lock-free Atomic 읽기 증폭 및 Sync.Map 전개</h2>
+<p>실시간 데이터를 저장하는(Write) 연산이 10%이고, 외곽의 API 서버나 인공지능 추론 모듈이 이 현재의 맵을 털어가는(Read) 읽기 연산이 90% 이상을 차지하는 비대칭 관제 시스템이라면, <code>sync.RWMutex</code> 샤딩마저도 오버헤드가 될 수 있다.</p>
+<p>이때는 Go 언어가 코어 레벨에서 제공하는 <code>sync.Map</code>을 도입하여 락-프리에 가까운 원자적 포인터 교체(Atomic Pointer Swap) 기반 캐시망을 건조해야 한다. 읽기 스레드들은 락을 획득하지 않고 캐시 공간을 무절제하게 투과하며 데이터를 스와이프해 가고, 쓰기 스레드는 불변(Immutable) 객체 조각을 딥 카피한 후 원자 연산으로 포인터 하나만 교체하여 전체 워커의 동시 관찰(Visibility) 망을 순식간에 업데이트해 버린다.<br />
+수신 엔드포인트의 병목은 절대 Zenoh 네트워크 엔진 단에 있지 않다. 그 엔진 뒤에서 데이터를 분쇄하고 응집하는 큐브 조립의 기술(Concurrency Synchronization)에 99%의 성패가 달려있음을 아키텍트는 뼈저리게 인식해야 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

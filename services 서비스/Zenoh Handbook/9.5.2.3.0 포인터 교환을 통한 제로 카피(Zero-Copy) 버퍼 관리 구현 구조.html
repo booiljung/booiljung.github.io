@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.5.2.3 포인터 교환을 통한 제로 카피(Zero-Copy) 버퍼 관리 구현 구조</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.5.2.3 포인터 교환을 통한 제로 카피(Zero-Copy) 버퍼 관리 구현 구조</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">서비스 (Services)</a> / <a href="index.html">Zenoh 핸드북</a> / <span>9.5.2.3 포인터 교환을 통한 제로 카피(Zero-Copy) 버퍼 관리 구현 구조</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.5.2.3 포인터 교환을 통한 제로 카피(Zero-Copy) 버퍼 관리 구현 구조</h1>
+<p>초거대 데이터 세트(멀티 메가픽셀 해상도의 카메라 비전이나 레이더 센서 데이터)가 <code>zenoh-c</code> 통신망을 타고 수신 코어 버퍼에 낙하했을 때, 이를 후처리 인공지능 모듈 단으로 떠넘기기 위해 메모리 복사(<code>memcpy</code>나 깊은 참조)를 수행한다면, 전장에서 입증된 캐시 정렬이나 락 프리 스탠스는 아무런 효험 없이 일순간 파탄 나버린다.</p>
+<p>데이터를 복사하는 멍청한 반복 루프를 거부하고, 대신 메모리 주소값만을 닌자(Ninja)처럼 맞교환하는 포인터 스와핑(Pointer Swapping) 테크닉이야말로 거대 큐 시스템(Massive Queueing System)에서 레이턴시 한계를 돌파하는 최후 무기다. 본 절에서는 C 아키텍처 환경에서 제로 카피 버퍼링을 실현하는 무명(Unnamed) 포인터 핑퐁 관리의 구현론을 탐구한다.</p>
+<h2>1.  다차원 버퍼 영역 복사에 수반되는 기형적 I/O 낭비</h2>
+<p>대용량 영상 텔레메트리가 <code>zenoh_on_receive</code> 콜백 안으로 도달할 때, 어설픈 펌웨어에서는 파이프라인의 안전 보장을 명목으로 또 다른 메인 워커 공간으로 바이트스트림을 그대로 투척(Write)하려 든다.</p>
+<pre><code class="language-c">// [안티 패턴] 5MB짜리 프레임이 올 때마다 수만 클럭을 증발시키는 복제 공학의 비극
+uint8_t system_shared_buffer[5 * 1024 * 1024];
+
+void zenoh_sub_callback(const z_sample_t *sample, void *context) {
+    // 5MB 데이터를 매번 CPU 레지스터를 거쳐 뺑뺑이(Loop)로 복사!
+    memcpy(system_shared_buffer, sample-&gt;payload.start, sample-&gt;payload.len);
+    signal_worker_thread_to_start();
+}
+</code></pre>
+<p>이 패턴은 최악의 오버헤드를 수반한다. <code>memcpy</code>는 CPU가 데이터를 램(RAM)에서 읽고(Load) 다른 램 공간에 지져대는(Store) 과정이다. 이 반복 작업으로 인해 캐시 라인 전체(Data Cache)가 쓸데없는 비디오 프레임 바이트로 점철되며, 정작 중요한 코어 연산 엔진 코드들은 캐시 축출(Evicted)을 당해 바닥으로 떨어진다.</p>
+<h2>2.  핑퐁(Ping-Pong) 포인터 주소 맞교환 설계의 등반</h2>
+<p><code>memcpy</code> 자체를 범죄로 선언하고 진정한 논리적 ’제로 카피(Zero-Copy)’를 이륙시키기 위해, 버퍼 체계는 다중 고정 배열과 다중 포인터 주소 풀(Pointer Pool) 기반의 교환 아키텍처로 진화해야 한다.<br />
+배열이나 데이터를 옮기는 것이 아니다. <strong>“내가 그 데이터를 보고 있던 카메라 렌즈(포인터 주소)를 상대 스레드에게 벗어주는 행위”</strong> 로 접근 방식을 180도 뒤집어야 한다.</p>
+<pre><code class="language-c">// 1. 메모리 이동이 필요 없는 거대 고정 핑퐁(Ping-Pong) 버퍼 풀 선언
+#define MAX_FRAME_SIZE (5 * 1024 * 1024)
+uint8_t physical_buffer_A[MAX_FRAME_SIZE];
+uint8_t physical_buffer_B[MAX_FRAME_SIZE];
+
+// 2. 단지 주소값만 담는, 8바이트짜리 극도로 가벼운 포인터 렌즈
+uint8_t* ptr_rx_writing = physical_buffer_A; // Zenoh 수신 스레드가 쥐고 있는 쓰기 권한
+uint8_t* ptr_worker_reading = physical_buffer_B; // AI 연산 스레드가 쥐고 있는 읽기 권한
+
+// ... 세마포어나 Atomic을 활용한 동기화 구역 ... 
+
+// [결정적 연산] 5MB의 복사가 아니라, 단 8바이트 주소 두 개를 맞교환하는 궁극의 치환!
+void swap_buffers_instantly() {
+    uint8_t* temp = ptr_rx_writing;
+    ptr_rx_writing = ptr_worker_reading;
+    ptr_worker_reading = temp;
+}
+</code></pre>
+<p>수신 스레드가 배열 A를 채워 넣고 있는 동안, 워커 스레드는 배열 B에 있는 오래된 과거 프레임을 딥러닝 추론기에 밀어 넣고 있다.<br />
+수신이 완료되어 프레임이 완성되는 바로 그 찰나의 순간! 수신 스레드와 워커 스레드는 메모리를 옮기지 않고 단지 서로가 들고 있던 포인터 레퍼런스(ptr_rx_writing 와 ptr_worker_reading)의 주소값만을 단층 스와핑(Swapping) 연산으로 교환해버린다.</p>
+<h2>3.  Atomic 연산을 통한 스왑 무결성의 통제</h2>
+<p>단 3줄의 어셈블리어 명령만으로 완성되는 이 스와핑 연산은 5MB짜리 <code>memcpy</code> 딜레이를 O(0)의 무한 속도로 끌어올린다.<br />
+하지만 두 스레드가 교착 상태에 빠지지 않고 정밀하게 타이밍을 맞춰 포인터 스와핑을 전개하려면, 이 교환 동작이 그 어떤 인터럽트에도 방해받지 않는 원자적 조작(Atomic Operation)으로 통제되어야 한다.</p>
+<p>C11의 <code>stdatomic.h</code> 에 내재된 <code>atomic_exchange</code>나 <code>atomic_compare_exchange_strong</code>를 이용하여, 렌즈(포인터) 교환 시점에 수신 스레드와 읽기 스레드가 동시에 빈 허공(Null Pointer)을 쳐다보거나 절반만 업데이트된 주소를 가리키는 충돌 파국을 무결점으로 차단해야 한다.<br />
+데이터를 그 자리에 못 박아둔 채 시야(Pointer)만을 초광속으로 교란하여 분산 노드의 역할을 주입하는 이 환상적인 구조야말로, 메모리 이동 병목의 종점을 가리키는 초당 100만 회 이상의 트랜잭션 수호 철학이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
