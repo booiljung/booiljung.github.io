@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:27.6. 다중 인스턴스(Multi-Instance) EKF 및 페일오버(Failover) 아키텍처</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>27.6. 다중 인스턴스(Multi-Instance) EKF 및 페일오버(Failover) 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6. 다중 인스턴스(Multi-Instance) EKF 및 페일오버(Failover) 아키텍처</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>27.6. 다중 인스턴스(Multi-Instance) EKF 및 페일오버(Failover) 아키텍처</h1>
+<p>단일 확장 칼만 필터(EKF)는 단 하나의 오차 없는 완전무결한 센서를 가정하는 수학적 모형을 기반으로 작동한다. 하지만 현실에서 상업용 픽스호크(Pixhawk)를 장착한 드론은 이중화(Dual) 또는 삼중화(Triple)된 이기종 센서(IMU 3개, GPS 2개, 마그네토미터 3개 등)를 탑재하여 하드웨어 결함에 대비한다.</p>
+<p>이 엄청난 양의 센서 데이터를 단일 24상태 EKF 배열에 무작정 들이붓는다면(Measurement Mixing), 고장 난 센서 하나가 뿜어내는 글리치(Glitch) 성 데이터가 필터 전체의 공분산을 파괴시켜 멀쩡한 다른 센서의 데이터 연산까지 오염시키는 치명적 문제가 발생한다.</p>
+<p>본 절에서는 이러한 ’연쇄 오염’을 원천 차단하고 단일 하드웨어 불량을 무결점 비행 제어로 승화시키는 PX4 ECL의 핵심 소프트웨어 페일오버 구조인 <strong>다중 인스턴스(Multi-Instance) EKF 센서 셀렉터 아키텍처</strong>를 분석한다.</p>
+<hr />
+<h2>1.  독립적인 n개의 평행 우주: EKF 인스턴스 분리</h2>
+<p>PX4는 비행 제어기 보드에 장착된 IMU 센서와 지자기 센서의 개수 조합에 비례하여 EKF 모듈 클래스의 <strong>객체 인스턴스(Instance)</strong> 를 메모리상에 독립적으로 여러 개 찍어낸다. (최대 기본 4개 설정 지원)</p>
+<p>예를 들어, Pixhawk 6C 하드웨어에 3개의 IMU와 2개의 마그네토미터가 연결되어 있다면, <code>EKF2</code> 래퍼 모듈은 내부적으로 <code>EKF</code> 클래스 인스턴스를 3개(혹은 그 이상) 독립적으로 동적 할당(<code>new</code>)한다.</p>
+<ul>
+<li><strong>인스턴스 0:</strong> IMU0 + MAG0 + GPS0 조합 전담 필터</li>
+<li><strong>인스턴스 1:</strong> IMU1 + MAG1 + GPS0 조합 전담 필터</li>
+<li><strong>인스턴스 2:</strong> IMU2 + MAG0 + GPS0 조합 전담 필터</li>
+</ul>
+<p>각각의 <code>EKF</code> 인스턴스는 철저히 자신에게 배정된 센서 데이터만을 구독(Subscribe)하며, 독자적인 24 차원 <code>StateSample</code> 배열과 <span class="math math-inline">24 \times 24</span> 차원의 공분산 행렬 <span class="math math-inline">\mathbf{P}</span> 를 보유한다. 즉, 드론의 두뇌 속에서는 똑같은 시간선 위에서 각 센서 조합에 따라 조금씩 다른 미래를 점치는 <strong>n개의 평행 우주</strong>가 연산되고 있는 셈이다.</p>
+<pre><code class="language-cpp">// src/modules/ekf2/EKF2.cpp 내 다중 인스턴스 할당 로직 (개념적 코드)
+
+// _ekf_instances 배열에 개별 EKF 코어 객체 동적 생성
+for (int i = 0; i &lt; num_instances; i++) {
+    _ekf_instances[i] = new EKF();
+    // 각 인스턴스에 고유한 IMU, Mag 조합 아이디 부여
+    _ekf_instances[i]-&gt;set_imu_id(imu_array[i]);
+    _ekf_instances[i]-&gt;set_mag_id(mag_array[i % num_mags]);
+}
+</code></pre>
+<p>이렇게 하면 IMU1 센서가 진동으로 맛이 가서 인스턴스 1번의 공분산 행렬이 폭발(NaN)하더라도, IMU0과 IMU2를 바라보고 있는 인스턴스 0번과 2번의 연산 결과는 수학적으로 전혀 오염되지 않는 격리성(Isolation)을 확보할 수 있다.</p>
+<hr />
+<h2>2.  센서 셀렉터(Sensor Selector) 모듈: 대통령을 선출하는 선거 보드</h2>
+<p>n개의 EKF 평행 우주가 각자 자신이 생각하는 ’진짜 기체 상태(위치, 속도, 자세)’를 산출해 내고 있다면, 최종적으로 기체의 모터에 명령을 내리는 비행 제어기(Attitude/Position Controller)는 도대체 누구의 말을 들어야 할까?</p>
+<p>이 딜레마를 해결하기 위해 다중 인스턴스 상단에는 <strong>센서 셀렉터(<code>EKF2Selector</code>)</strong> 모듈이 존재한다. 센서 셀렉터의 임무는 매 밀리초(ms)마다 n개의 EKF 인스턴스들이 산출해 낸 결과물의 ’건강 상태(Health Metrics)’를 평가하여 단 하나의 최고 권력자(Primary Instance)를 선출하는 것이다.</p>
+<h3>2.1  EKF 테스트 수치 (Test Ratios)</h3>
+<p>각 EKF 인스턴스는 융합 단계에서 계산한 잔차(Innovation) 값들을 바탕으로 자기 자신의 신뢰도 점수를 자가 보고한다.</p>
+<ul>
+<li><code>vel_test_ratio</code>: GPS 속도 잔차가 임계치를 초과한 비율</li>
+<li><code>pos_test_ratio</code>: GPS 위치 잔차 초과 비율</li>
+<li><code>mag_test_ratio</code>: 지자기 센서 방위각 잔차 초과 비율</li>
+</ul>
+<p>만약 특정 인스턴스에서 이 테스트 비율 수치들이 1.0(100%)을 넘어서 지속된다면, 해당 인스턴스의 센서 조합에 물리적인 결함이 발생했거나 EKF 연산이 튀었다(Diverged)고 판단할 수 있다.</p>
+<h3>2.2  प्राइमरी(Primary) 인스턴스 스위칭 로직</h3>
+<p>센서 셀렉터는 매 프레임마다 모든 인스턴스의 이 테스트 비율값 누적 오차를 모니터링한다.</p>
+<pre><code class="language-cpp">// src/modules/ekf2/EKF2Selector.cpp 내부의 메인 스위칭 평가 로직
+
+// 1. 현재 메인(Primary) 활성 EKF의 상태 점검
+float current_primary_error = evaluate_error(_primary_instance);
+
+// 2. 만약 활성 EKF의 에러가 치명적 허용치(Threshold)를 넘었을 경우
+if (current_primary_error &gt; CRITICAL_ERROR_THRESHOLD) {
+    
+    // 3. 백그라운드에서 돌아가고 있는 다른 대기 EKF 인스턴스들의 에러 종합 평가
+    int best_alternative = find_best_performing_instance();
+    
+    // 4. 새로운 인스턴스로 조향 권한 이양 (Switch Over)
+    if (best_alternative &gt;= 0) {
+        _primary_instance = best_alternative;
+        notify_system_of_ekf_switch(best_alternative); // GCS 및 시스템에 에러 경고 토픽 발행
+    }
+}
+</code></pre>
+<p>만약 현재 Primary로 구동 중인 <code>인스턴스 0</code>의 GPS 수신기가 간섭을 받아 <code>pos_test_ratio</code>가 폭증하면, 셀렉터는 냉혹하게 권한을 박탈하고 뒤에서 조용히 올바른 궤적을 연산하고 있던 <code>인스턴스 1</code>을 새로운 Primary로 승격시킨다.<br />
+이 모든 스위칭 과정은 <strong>0.01초 이내</strong>에 소프트웨어적으로 처리되므로, 비행 중인 드론은 약간의 트위치(Twitch)만 발생할 뿐 궤적을 이탈하지 않고 안전하게 귀환할 수 있다.</p>
+<hr />
+<h2>3.  오프셋(Offset) 부드러운 전환 기법 (Bumpless Transfer)</h2>
+<p>그런데, 1번 인스턴스와 2번 인스턴스가 각자 추정한 고도(Z position) 값이 센서 바이어스 탓에 <span class="math math-inline">\text{50cm}</span> 정도 미세하게 다를 수 있다.<br />
+이 상태에서 셀렉터가 Primary EKF를 1번에서 2번으로 스위칭해 버리면, 비행 제어기의 고도 입력값이 0.01초 만에 <span class="math math-inline">\text{50cm}</span> 순간이동 이동(Jump)하게 된다. 위치 제어기(Position Controller)는 이 엄청난 에러를 상쇄하기 위해 모터 출력을 순간적으로 최대(Full Throttle)로 터뜨리거나 최저로 낮출 것이고, 드론은 허공에서 롤러코스터를 타거나 최악의 경우 모터 실속을 겪게 될 것이다.</p>
+<p>PX4는 이를 방지하기 위해 <strong>위치/자세 상태 변수에 대한 오프셋 블렌딩(Offset Blending 또는 Bumpless Transfer)</strong> 을 수행한다.</p>
+<ol>
+<li>스위칭이 결정되는 순간, 새로운 Primary(2번)가 보고하고 있던 위치와 구 Primary(1번)가 보고해 온 위치의 차이(<span class="math math-inline">\Delta pos</span>)를 계산하여 전역 오프셋 변수에 저장한다.</li>
+<li>이후 비행 제어기로 값을 퍼블리시할 때, 2번 인스턴스의 원본 출력값에 이 <span class="math math-inline">\Delta pos</span> 를 그대로 덧대어(Offset) 내보낸다.</li>
+<li>제어기 입장에서는 스위칭 전후의 데이터가 계단(Step) 현상 없이 완전히 매끄럽게 연결되는 것처럼 선형적으로 보인다.</li>
+<li>이 오프셋 분량(<span class="math math-inline">\Delta pos</span>)을 수 초~수십 초에 걸쳐 매우 느린 저주파(Low-pass) 필터 곡선을 그리며 서서히 <span class="math math-inline">0</span>으로 죽여나간다. (Fade-out)</li>
+</ol>
+<p>이를 통해 조종자나 자율 비행 알고리즘은 센서 페일오버 스위칭이 발생했는지 시각적으로 체감조차 하지 못한 채 안전 비행을 이어갈 수 있다.</p>
+<hr />
+<h2>4.  소결</h2>
+<p>PX4 EKF2의 다중 인스턴스 아키텍처는 유인 항공기의 “삼중화 플라이 바이 와이어(Fly-By-Wire)” 다수결 하드웨어 시스템을 철저하게 소프트웨어 로직만으로 에뮬레이션(Emulation) 해낸 산업계 오픈소스 제어공학의 정점이다.<br />
+격리된 모래상자(Sand-box) 같은 인스턴스와 혹독한 감시자(Selector)의 조화는 저가의 중국산 MEMS IMU 칩셋들을 조합해서도 수억 원짜리 항법 장치에 필적하는 거시적 비행 신뢰도를 창출해 낸다.</p>
+<p>지금까지 24상태 수학에서 시작하여 퓨전, 메모리 보정, 셀렉터 페일오버까지 EKF 코어 시스템의 핵심 뼈대를 남김없이 발라냈다. 다음 절에서는 이 복잡다단한 시스템이 결국 GCS와 조종자에게 “자신이 아프다“는 것을 어떻게 표현하는지, QGroundControl과 동기화되는 <strong>시스템 상태 진단 메시징 체계</strong>를 분석하며 Chapter 27의 문을 닫는다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

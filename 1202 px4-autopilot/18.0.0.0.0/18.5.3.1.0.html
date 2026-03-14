@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.5.3.1. `read()` 시스템 콜 매핑: `uORBDeviceNode::read()`의 내부 동작</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.5.3.1. `read()` 시스템 콜 매핑: `uORBDeviceNode::read()`의 내부 동작</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.5.3.1. `read()` 시스템 콜 매핑: `uORBDeviceNode::read()`의 내부 동작</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.5.3.1. <code>read()</code> 시스템 콜 매핑: <code>uORBDeviceNode::read()</code>의 내부 동작</h1>
+<p>PX4-Autopilot의 uORB 아키텍처에서 구독자(Subscriber)가 특정 토픽(Topic)의 최신 데이터를 확보하기 위해 <code>orb_copy()</code> API를 호출하는 순간, 하부에서는 POSIX <code>read()</code> 시스템 콜 계층을 거슬러 올라가는 정교한 매핑 작업이 연쇄적으로 시작된다. 본 절에서는 <code>orb_copy()</code>가 어떻게 운영체제(NuttX 등 RTOS)의 가상 파일 시스템(VFS)을 통해 <code>uORBDeviceNode</code> 객체의 <code>read()</code> 핸들러로 라우팅되는지 그 내부 동작을 탐구한다.</p>
+<h2>1. <code>orb_copy()</code>에서 <code>read()</code> 시스템 콜로의 전이 파이프라인</h2>
+<p>C 언어 환경에서 데이터 정보 추출을 위해 <code>orb_copy(const struct orb_metadata *meta, int handle, void *buffer)</code>가 실행되면, 이는 내부적으로 지연 없는 얇은 래퍼(Wrapper) 층을 거쳐 곧바로 표준 라이브러리의 <code>read()</code> I/O 연산으로 직결된다.</p>
+<pre><code class="language-c">// C API 레벨의 orb_copy 구현체 (PX4 펌웨어 소스 기반 개념적 요약)
+int orb_copy(const struct orb_metadata *meta, int handle, void *buffer)
+{
+    // handle 매개변수는 앞서 orb_subscribe()에서 이미 확보한 파일 디스크립터(fd)
+    ssize_t ret = read(handle, buffer, meta-&gt;o_size);
+    return (ret == (ssize_t)meta-&gt;o_size) ? PX4_OK : PX4_ERROR;
+}
+</code></pre>
+<p>이 구현 코드는 실시간 통신 미들웨어가 굳이 전용의 무거운 IPC(Inter-Process Communication) 송수신 프로토콜 계층을 두지 않고, 파일(File) 시스템 추상화를 통해 직관적으로 메모리 I/O를 수행한다는 PX4-Autopilot의 철학을 선명하게 입증한다.</p>
+<h2>2. VFS 브릿지와 <code>uORBDeviceNode::read()</code> 연결의 기술적 시퀀스</h2>
+<p>비행 제어 앱이나 상태 추정기가 상주하는 사용자 모드(User Mode)에서 호출된 <code>read()</code>는 트랩(Trap)을 통해 커널 모드(Kernel Mode)로 진입하며 제어권을 이관한다.</p>
+<ol>
+<li><strong>VFS 계층 (Virtual File System Layer)</strong>: 커널은 인자로 전달된 정수형 파일 핸들(<code>handle</code> / <code>fd</code>)을 현재 진행 중인 프로세스의 파일 디스크립터 테이블에서 역참조하여 OS 내부의 <code>struct file</code> 객체 포인터로 환산 정렬한다.</li>
+<li><strong>드라이버 점프 (Driver Method Jump)</strong>: 해당 파일 객체 내에 바인딩되어 있는 <code>file_operations</code> 가상 함수 테이블(V-Table) 스위치보드를 참조하여, 현재 이 디스크립터의 주인인 <code>uORBDeviceNode</code>의 <code>read</code> 콜백 함수 포인터로 흐름을 분기한다.</li>
+<li><strong><code>uORBDeviceNode::read(struct file *filp, char *buffer, size_t buflen)</code></strong>: 드라이버 영역의 본격적인 데이터 페치 알고리즘 구역으로 진입하게 되며, 이 함수의 호출 인자로서 목표 메모리 버퍼(<code>buffer</code>)의 주소 맵과 요구 사이즈(<code>buflen</code>)가 손실 없이 주입된다.</li>
+</ol>
+<h2>3. <code>uORBDeviceNode::read()</code> 내부 물리 버퍼 접근의 정밀 로직</h2>
+<p>드라이버 객체 내부로 제어 패권이 넘어오면, <code>uORBDeviceNode</code>는 인수 <code>filp-&gt;f_priv</code> 구조에 보관되어 있던 현재 구독자의 고유 상태 관리형 객체(Subscriber State Object)를 다시 복원해낸다.</p>
+<p>이를 토대로 다음과 같은 물리적 메모리 연산이 순차적으로 발생한다.</p>
+<ul>
+<li><strong>크기 무결성 검증 (Bounds / Size Checking)</strong>: 넘겨받은 요청 길이 <code>buflen</code>이 토픽 생성 시 정의되었던 바이트 크기(<code>meta-&gt;o_size</code>)와 단 1바이트의 오차도 없이 일치하는지 방어적(Defensive)으로 검사한다. 형변환 오류 등으로 데이터 사이즈가 일치하지 않을 경우, 잘못된 포인터 증감에 의한 링 버퍼 이탈 읽기 및 그로 인한 메모리 결함(Segmentation Fault 시스템 패닉)이 초래될 수 있기 때문이다.</li>
+<li><strong>큐 인덱스 환산 (Queue Index Calculation)</strong>: 토픽 버퍼는 단순 1회용이 아니라 링 버퍼(Ring Buffer) 방식을 차용하여 다중 메시지 이력(Message History) 트랙을 보관할 수도 있으므로, 현재 해당 구독자의 로컬 세대 카운터(<code>local_generation</code>) 값을 참조하여 대상 버퍼의 범주 <code>[0, Queue Size)</code> 내에서 가장 최신 메시지가 파킹된 배열 인덱스의 오프셋 물리 주소를 정밀 산출한다.</li>
+<li><strong>물리 복사 완료 (Atomic-like Memcpy)</strong>: 계산이 완료된 uORB 내부 버퍼의 절대 데이터 포인터 위치에서, 시스템 콜을 통해 넘겨받은 유저 측 메모리 레이아웃 공간 <code>buffer</code> 영역으로 <code>memcpy()</code> 호출을 이행하여 바이트 단위 원시 복사를 완수한다.</li>
+</ul>
+<p>이러한 <code>read()</code> 연동 아키텍처는 유저 구역의 포인터 블록과 센서 드라이버 구역의 메모리 큐를 가장 최소화된 오버헤드로 직접 견인(Direct Mapping)하는 최단 경로(Shortest Path)로서, 드론 비행 시 데이터 병목 현상을 소멸시키는 데 지대한 공헌을 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

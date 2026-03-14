@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.8.2.1. PX4의 Mission Item 기반 귀환 경로 재계산 및 랠리 포인트(Rally Point) 전환 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.8.2.1. PX4의 Mission Item 기반 귀환 경로 재계산 및 랠리 포인트(Rally Point) 전환 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 5. PX4와 Ardupilot의 비행 제어 및 관제 철학 차이</a> / <span>5.8.2.1. PX4의 Mission Item 기반 귀환 경로 재계산 및 랠리 포인트(Rally Point) 전환 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.8.2.1. PX4의 Mission Item 기반 귀환 경로 재계산 및 랠리 포인트(Rally Point) 전환 로직</h1>
+<p>PX4 아키텍처에서 비상 복귀(RTL)는 단순한 직진 비행을 넘어선 고도의 내비게이션(Navigation) 연산 문제입니다. PX4는 커맨더(Commander)가 RTL 모드를 발동시키는 즉시, 기체의 조종석을 <strong>내비게이터(Navigator) 모듈</strong>에게 넘겨주며 매우 구조화되고 계산적인 귀환 궤적을 그려냅니다.</p>
+<h3>0.1  임무 기반 역추적 (Return via Mission Path)</h3>
+<p>거대한 산을 등반하듯 우회하는 웨이포인트(Waypoint) 비행 중 통신이 끊어질 경우, 산을 관통해 일직선으로 돌아오려는 일반적인 RTL은 곧장 추락으로 이어집니다. 이를 방지하기 위해 PX4는 강력한 임무 경로 역추적 기능을 활성화할 수 있습니다 (<code>RTL_TYPE = 1</code>).</p>
+<ol>
+<li>RTL이 발동되면 내비게이터 모듈의 <code>rtl.cpp</code>는 현재 기체가 통과한 가장 마지막 미션 아이템(Mission Item)의 인덱스(Index)를 조회합니다.</li>
+<li>현재 위치에서 그 마지막 웨이포인트(예: WP 4)를 향해 먼저 날아갑니다.</li>
+<li>이후 비행 메모리에 저장된 임무 리스트를 역순으로 끄집어내어 WP 3 <span class="math math-inline">\rightarrow</span> WP 2 <span class="math math-inline">\rightarrow</span> WP 1의 순서로, **“내가 안전하게 뚫고 지나갔던 바로 그 검증된 경로”**를 다시 되짚어 홈(Home)으로 복귀합니다.</li>
+</ol>
+<h3>0.2  랠리 포인트(Rally Point): 대체 착륙장의 동적 전환</h3>
+<p>수십 킬로미터를 날아가는 장거리 고정익 매핑이나 배달 임무에서는, 이륙했던 ’집(Home)’으로 돌아오기엔 배터리가 턱없이 부족한 상황이 발생할 수 있습니다. 이를 대비해 PX4는 다수의 사전 검증된 비상 착륙장, 즉 <strong>랠리 포인트(Rally Point)</strong> 시스템을 운용합니다.</p>
+<p>QGroundControl을 통해 비행 전 랠리 포인트 좌표들을 올려두면, RTL 발동 시 흥미로운 연산 로직이 전개됩니다.</p>
+<ul>
+<li>내비게이터는 기체의 현재 3차원 좌표에서 원래의 홈(Home)까지의 거리와, 모든 랠리 포인트까지의 거리를 실시간으로 전수 계산합니다.</li>
+<li>만약 홈보다 특정 랠리 포인트가 임계치 이상 더 가깝다면, 내비게이터는 기존의 귀환 계획을 과감히 폐기하고 목적지를 그 가장 가까운 랠리 포인트로 즉각 무단 전환(Override)시켜 버립니다.</li>
+<li>조종자는 화면상에서 기체가 집이 아닌 엉뚱한 곳으로 날아가는 것처럼 보일 수 있지만, 이는 기체의 1차 생존을 위한 지극히 정상적이고 계산된 소프트웨어적 결단입니다.</li>
+</ul>
+<h3>0.3  구조화된 안전의 결정체</h3>
+<p>이처럼 PX4의 RTL 로직은 비행 전에 조종자가 얼마나 꼼꼼하게 미션을 짜고 랠리 포인트를 배치했느냐(Pre-flight Planning)에 완벽하게 의존합니다. 예측할 수 없는 임의의 행동을 극단적으로 배제하고, 철저히 검증된 좌표(Mission Item, Rally Point)들만을 징검다리 삼아 복귀하는 이 깐깐한 아키텍처는 보수적인 상업용 항공 규제를 통과하는 데 최적화된 설계 철학입니다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

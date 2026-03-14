@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.1.2.2.2. 블로킹(Blocking) API 호출 금지 원칙과 이를 위반했을 때 발생하는 큐 지연(Queue Starvation) 현상</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.1.2.2.2. 블로킹(Blocking) API 호출 금지 원칙과 이를 위반했을 때 발생하는 큐 지연(Queue Starvation) 현상</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.1.2.2.2. 블로킹(Blocking) API 호출 금지 원칙과 이를 위반했을 때 발생하는 큐 지연(Queue Starvation) 현상</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.1.2.2.2. 블로킹(Blocking) API 호출 금지 원칙과 이를 위반했을 때 발생하는 큐 지연(Queue Starvation) 현상</h1>
+<p>협력적(Cooperative) Work Queue 아키텍처는 PX4 생태계에 축복과도 같은 성능 향상을 가져다주었지만, 이는 개발자들에게 **‘절대적인 이타주의’**를 강요하는 잔혹한 시스템이기도 하다. 독립 태스크(<code>task_create</code>) 시절에는 내 모듈 안에서 1초를 자든 10초를 자든 운영체제가 알아서 다른 모듈을 챙겨주었지만, 메인 워커 스레드의 컨베이어 벨트에 올라탄 순간부터 여러분의 코드는 <strong>절대로 스레드의 흐름을 고의적으로 막아서는 안 된다.</strong></p>
+<p>이것이 바로 Work Queue 시스템을 지탱하는 제1원칙: **“블로킹(Blocking) API 호출 결사반대”**이다.</p>
+<h2>1. 블로킹 대역죄인 리스트</h2>
+<p>PX4의 코어 모듈(자세 제어기, 센서 드라이버 등)이 올라타는 워크 큐(예: <code>wq_hp_default</code>) 내부 콜백(<code>Run()</code>)에서 절대 호출해서는 안 되는 금기어들은 다음과 같다. 초보 개발자들이 가장 빈번하게 저지르는 실수들이다.</p>
+<ol>
+<li><strong>시간 지연 함수:</strong> <code>sleep()</code>, <code>usleep()</code>, <code>px4_usleep()</code></li>
+</ol>
+<ul>
+<li><em>잘못된 생각:</em> “센서 칩을 켰으니 안정화될 때까지 10ms만 재우자.”</li>
+</ul>
+<ol start="2">
+<li><strong>동기적 파일 I/O:</strong> <code>open()</code>, <code>read()</code>, <code>write()</code>, <code>printf()</code> (특히 디버깅 용도로 시리얼에 긴 문장을 쏠 때)</li>
+</ol>
+<ul>
+<li><em>잘못된 생각:</em> “디버깅 로깅 텍스트 몇 줄 SD 카드에 쓰는 건 순식간이겠지.”</li>
+</ul>
+<ol start="3">
+<li><strong>무한 대기 락(Lock):</strong> <code>pthread_mutex_lock()</code>을 잡고 놓아주지 않거나, 타임아웃 없는 <code>poll()</code> 함수 호출</li>
+</ol>
+<ul>
+<li><em>잘못된 생각:</em> “멀티스레드 안전하려면 일단 무조건 뮤텍스 걸고 봐야지.”</li>
+</ul>
+<h2>2. 큐 기아(Queue Starvation) 현상의 비극</h2>
+<p>만약 여러분이 짠 커스텀 센서 모듈 <code>MyCustomSensor::Run()</code> 함수 안에 무심코 <code>usleep(10000);</code> (10ms 대기)를 적어두고 빌드하여 기체에 올렸다고 가정해 보자. 이 모듈은 가장 바쁘게 돌아가는 <code>wq_hp_default</code> 큐에 안착했다.</p>
+<ol>
+<li>메인 워커 스레드가 큐에 쌓인 장부 순서대로 1번 모듈, 2번 모듈을 순식간에(수십 us 내에) 콜백하고 3번인 <code>MyCustomSensor::Run()</code>을 호출한다.</li>
+<li>함수 안으로 진입한 워커 스레드는 <code>usleep(10000)</code>을 만나 10밀리초 동안 깊은 잠에 빠진다.</li>
+<li><strong>비극의 시작:</strong> 바로 이때, 큐의 4번째 칸에서 차례를 기다리던 ’자세 제어기(Attitude Controller)’와 5번째 칸의 ’모터 믹서(Motor Mixer)’는 절망에 빠진다. 메인 워커 스레드가 깨어나서 3번 함수를 <code>return</code> 해줄 때까지 <strong>이들은 단 1줄의 코드도 실행하지 못한다.</strong></li>
+<li>기체는 10ms 동안 이전에 내렸던 모터 PWM 명령을 그대로 유지한 채 허공에 떠 있는다. 1000Hz(1ms) 주기로 밸런스를 잡아야 하는 레이싱 드론에게 10ms의 암전은 **측면으로 처박히기(Flip and Crash)**에 완벽하고 충분한 시간이다.</li>
+</ol>
+<p>이처럼 앞선 큐의 불량 모듈 하나가 스레드를 점거하여 뒤따르는 필수 모듈들이 굶어 죽는 현상을 **큐 기아(Queue Starvation)**라고 부른다.</p>
+<h2>3. 비동기 상태 머신(FSM)으로의 탈출</h2>
+<p>그렇다면 센서 안정화를 위해 반드시 10ms를 기다려야만 할 때는 어떻게 코딩해야 하는가?<br />
+블로킹을 피하기 위해서는 여러분의 프로그래밍 뇌 구조를 **비동기 유한 상태 기계(Asynchronous FSM)**로 완전히 개조해야 한다.</p>
+<ol>
+<li><strong>상태 저장:</strong> <code>Run()</code> 함수 안에서 현재 상태를 <code>STATE_WAITING</code>으로 설정하고.</li>
+<li><strong>미래 예약:</strong> 10ms 뒤에 스케줄러가 이 <code>Run()</code> 함수를 다시 호출해주도록 <code>ScheduleDelayed(10000)</code> 예약 버저를 누른다.</li>
+<li><strong>즉시 반환:</strong> 머뭇거리지 않고 즉각 <code>return;</code> 하여 제어권을 스케줄러에게 반환한다!</li>
+</ol>
+<p>이렇게 하면 메인 워커 스레드는 막힘없이 4번 자세 제어기, 5번 모터를 실행해주어 기체의 안정을 지킨다. 그리고 10ms 뒤, 스케줄러는 다시 <code>MyCustomSensor::Run()</code>을 호출해주고, 이미 대기 시간이 지났음을 인지한 모듈은 <code>STATE_READING</code> 상태로 넘어가 안전하게 작업을 이어간다.</p>
+<p>이 블로킹 없는 비동기 메커니즘이야말로 PX4 아키텍처의 정수이자 가장 진입 장벽이 높은 코딩 패턴이다. 이제 아키텍처 이론은 마무리되었다. 다음 단원(21.2)부터는 이러한 컴포넌트들을 실제로 CMake와 Kconfig 빌드 매트릭스 안에 어떻게 조립하고 밀어 넣는지(Integration) 실전으로 들어간다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

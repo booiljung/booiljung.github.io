@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.4.2.3. 링 버퍼(Ring Buffer) 헤드(Head) 포인터 이동 및 세대 카운터(Generation Counter)의 원자적(Atomic) 증가(`fetch_add`)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.4.2.3. 링 버퍼(Ring Buffer) 헤드(Head) 포인터 이동 및 세대 카운터(Generation Counter)의 원자적(Atomic) 증가(`fetch_add`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.4.2.3. 링 버퍼(Ring Buffer) 헤드(Head) 포인터 이동 및 세대 카운터(Generation Counter)의 원자적(Atomic) 증가(`fetch_add`)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.4.2.3. 링 버퍼(Ring Buffer) 헤드(Head) 포인터 이동 및 세대 카운터(Generation Counter)의 원자적(Atomic) 증가(<code>fetch_add</code>)</h1>
+<p>PX4-Autopilot의 uORB 토픽 생태계에서 개별 센서 데이터 덩어리는 휘발성의 단일 변수가 아닌, 최신 시간순 N개의 과거 이력을 안전하게 보존할 수 있는 연속된 링 버퍼(Ring Buffer) 배열 상에 꼬리를 물며 기록된다. 발행자(Publisher)가 신규 갱신된 비행 데이터를 <code>orb_publish</code>를 통해 밀어 넣을 때마다, 이 물리 공간의 <strong>어느 배열 인덱스 위치에 데이터를 써야 할지 결정하는 포인터 계산 로직</strong>과, 이 버퍼 공간이 완벽히 갱신되었음을 전 세계의 타 모듈(구독자들)에 공표하는 <strong>세대 카운터(Generation Counter)의 수학적 증가 로직</strong>이 매우 긴밀하게 맞물려 돌아간다. 본 절에서는 이 두 톱니바퀴 변수가 어떻게 교묘하게 상호작용하며, 락프리(Lock-free) 읽기 아키텍처의 절대적 안전 기틀을 최종 완성하는지 심층 해부한다.</p>
+<h2>1. 링 버퍼 공간의 가상 무한 논리와 조향(Head) 인덱스 연산</h2>
+<p>시스템 커널 공간의 <code>uORBDeviceNode</code> 내부에는 생성 당시 큐(Queue) 사이즈(<code>_queue_size</code>) 매개변수에 맞춰 특정 토픽만을 위해 연속 할당된 바이트 배열 청크(Chunk) 힙 메모리 버퍼가 고정 존재한다.<br />
+새 데이터의 구조체가 쓰일 물리적 배열 인덱스 타겟(Head Pointer) 위치는, 단순히 <code>1</code>씩 더해지다가 배열 사이즈 끝단 막다른 길에 닿으면 <code>0</code>번 방으로 회귀(Reset)하는 <code>if</code> 분기 방식 논리가 아니라, 시스템 부팅 이래 누적된 총 발행 횟수인 <code>_generation</code> 전역 변수의 값을 활용한 모듈로(Modulo, <code>%</code>) 수학적 몫 연산으로 매번 깔끔하게 결정된다.</p>
+<pre><code class="language-cpp">// 링 버퍼의 현재 차례 헤드 인덱스 위치 계산
+unsigned head_index = _generation % _queue_size;
+
+// 버퍼 배열 내의 실제 덮어쓰기할 물리적 메모리 오프셋 타겟 주소
+uint8_t* target_ptr = &amp;_buffer[head_index * _o_size];
+</code></pre>
+<p>이 세련된 공학적 접근법의 천재성은, 데이터를 밀어 넣는 발행자(Publisher) 스레드 입장에서는 배열 구조체의 유한한 끝을 물리적으로 신경 쓰거나 포인터를 강제로 리셋 컨트롤하는 인위적인 선형 조건문 분기 예측 낭비(<code>if (index &gt;= size) index = 0;</code>) 없이, <strong>가상적으로 끝이 존재하지 않는 무한한 1차원 우주 배열</strong>에 데이터를 계속 평행하게 추가 추가해 나가는 것처럼 논리 흐름 개체군을 완벽히 추상화(Abstraction)할 수 있다는 점이다.<br />
+물리적 메모리 위에서는 오직 모듈로 연산의 순리만으로 인해, 버려져야 할 오래된 꼬리(Tail) 인덱스 데이터가 가장 최신의 따끈한 새 데이터로 자연스럽게 랩어라운드 덮어쓰기(Wrap-around Overwrite) 소멸되며 링 버퍼의 한정된 생태계가 안전하게 영속 순환 복구 유지된다.</p>
+<h2>2. <code>_generation</code> 카운터 변수: 락프리 동기화의 절대적 나침반</h2>
+<p>실제 메모리의 원시 <code>memcpy</code> 공간 복사 연산이 한정된 임계 구역 방어막(Interrupt Masking) 안에서 에러 없이 완전하게 끝난 직후, 배열 포인터를 다음 칸으로 한 수 전진시키고 무결성 데이터 탄생을 전 영역에 선포하는 최종 방점(찍기) 임무는 <code>_generation</code> 변수 정수를 <code>1</code> 증가시키는 산술 연산이 도맡는다.</p>
+<p>만약 C++ 환경 위에서 다수의 혼재된 발행자 스레드 환경이 이 전역 변수를 컴파일러의 최적화에 놀아난 원시 연산인 <code>_generation++</code> (내부적으로 CPU 레지스터에 로드 -&gt; 더하기 -&gt; 다시 스토어하는 Read-Modify-Write 3단계에 거쳐 취약하게 분절 수행됨)로 엉성하게 처리하려 든다면, 찰나의 순간이 엮이는 참혹한 데이터 레이스 컨디션(Race Condition)을 직면하게 된다. 이를 물리적으로 방어 통제하기 위해 모던 PX4 시스템은 언어적 차원에서 원자적(Atomic) 수학 증가 연산(<code>fetch_add</code> 기능) 타입을 시스템 레벨에서 강력히 동원 도입한다.</p>
+<pre><code class="language-cpp">// 1. C++ 11 표준 원자적 변수 템플릿 선언 (또는 GCC Built-in __atomic 타입 적용)
+std::atomic&lt;unsigned&gt; _generation{0};
+
+// ... memcpy 기반 타겟 버퍼 덮어쓰기 연산 안전하게 물리적 완료 후 ...
+
+// 2. 단일 어셈블리 인스트럭션 틱으로 Read-Modify-Write 스텝 동시 완료 절대 보장
+_generation.fetch_add(1, std::memory_order_release);
+</code></pre>
+<p>이 특수한 C++ 원자적 연산 명령어(<code>fetch_add</code> 구문, 혹은 컴파일러 타겟 아키텍처 레벨에서의 버스 락킹 <code>LDREX/STREX</code> 구현체 어셈블리 등)가 발동하는 찰나, 이 단순한 정수 변수의 수치 증가는 다중 CPU 캐시 코히런시(Cache Coherency) 정책에 의해 즉각 칩의 메인 메모리에 가장 신뢰할 수 있는 단절 없는 벽돌로 강제 물리 덤프 반영된다.</p>
+<h2>3. C++ <code>memory_order_release</code> 마커와 티어링(Tearing) 오염의 선제적 방어막</h2>
+<p>위 코드 블록 아키텍처에서 가장 흥미롭고 파괴적인 통찰은 <code>std::memory_order_release</code> (또는 이와 동등한 OS 하부 메모리 배리어 래퍼) 강제 정책이 변수 증가에 당당하게 함께 쓰인다는 점이다. 이는 극도로 똑똑해진 현대의 CPU 컴파일러나 칩 슈퍼스칼라(Superscalar) 파이프라인 아키텍처가 “실행 속도 퍼포먼스 향상을 한답시고 <code>_generation</code> 변수 증가 연산을 <code>memcpy</code> 메모리 복사 연산 스텝보다 <strong>순서를 지 멋대로 먼저 역전해서 미리 실행시켜 버리는 인스트럭션 재배치 악몽(Instruction Reordering Hazard)</strong>“을 하드웨어 레벨에서부터 원천 봉쇄하는 강력한 메모리 배리어(Memory Barrier) 방어막이다.</p>
+<p>절대적 규칙 상, 퍼블리셔 시스템이 링 버퍼 메모리 블록 조립(<code>memcpy</code>)을 완전히 끝마치기도 전에 설레발을 쳐서 <code>_generation</code> 카운터가 +1 먼저 올라가 버린다면, 이를 죽어라 눈이 빠지게 감시(Poll)하던 바깥의 수많은 구독자(Subscriber) 스레드는 “오, 새 데이터가 헤드에 드디어 떴다!“라며 아직 절반도 업데이트되지 않은 구멍 송송 뚫린 오염된 버퍼 메모리 조각을 <code>orb_copy</code>로 신나게 읽어가 버리는 비참한 티어링(Tearing) 데이터 참탈 폭풍을 여과 없이 겪기 때문이다.</p>
+<p>결론적으로 <code>_generation</code> 변수 단위의 원자적 증가 마무리는, 단순히 링 버퍼의 헤드 빈칸 위치를 1칸 미루어 올리는 기계적 이동 카운팅 스위치일 뿐만 아니라, 링 밖 공간의 수백 개의 VFS 구독자 스레드 군단에 **“이제 이 배열 인덱스의 데이터 묶음은 내가 목숨 걸고 검증했으니 마음껏 복사해가라”**는 이 세계 가장 강력하고 명시적인 락프리(Lock-free) 도장(Seal)을 쿵 찍어 배포하는 위대한 하드웨어적 보증서 발급 행위이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

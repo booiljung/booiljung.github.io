@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:27.3.3.2. 상태 공분산 배열 업데이트 로직 및 부동소수점 오차에 의한 비대칭성 제어 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>27.3.3.2. 상태 공분산 배열 업데이트 로직 및 부동소수점 오차에 의한 비대칭성 제어 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.3.3.2. 상태 공분산 배열 업데이트 로직 및 부동소수점 오차에 의한 비대칭성 제어 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>27.3.3.2. 상태 공분산 배열 업데이트 로직 및 부동소수점 오차에 의한 비대칭성 제어 기법</h1>
+<p>EKF가 기체의 상태를 예측(<code>predictState</code>)하고 그 불확실성을 팽창(<code>predictCovariance</code>)시키는 과정을 마쳤다면, 이제는 외부 센서 정보(GPS, 비전 등)를 받아들여 불확실성을 축소하고 상태를 교정하는 <strong>상태 공분산 업데이트(State Covariance Update)</strong> 단계에 돌입한다.</p>
+<p>이 업데이트 과정의 핵심은 칼만 게인(Kalman Gain, <span class="math math-inline">\mathbf{K}</span>)을 통해 거대한 <span class="math math-inline">24 \times 24</span> 공분산 행렬 <span class="math math-inline">\mathbf{P}</span> 를 수정하는 것인데, 수천 번 반복되는 부동소수점(<code>float</code>) 뺄셈 연산은 필연적으로 행렬의 필수 수학적 성질인 <strong>대칭성(Symmetry)</strong> 과 <strong>양정치성(Positive-Definiteness)</strong> 을 훼손하게 된다.</p>
+<p>본 절에서는 융합 수식 자체의 수학적 전개와 함께, PX4 ECL 코드가 부동소수점 연산의 마수(Numeric Instability)로부터 EKF의 뇌(공분산)를 어떻게 보호하는지 분석한다.</p>
+<hr />
+<h2>1.  조셉 형식(Joseph Form) 공분산 업데이트의 함의</h2>
+<p>일반적인 문헌에 나오는 확장 칼만 필터의 공분산 업데이트(축소) 공식은 매우 짧고 간단하다.<br />
+<span class="math math-display"> \mathbf{P}_{k|k} = (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k) \mathbf{P}_{k|k-1} </span></p>
+<ul>
+<li><span class="math math-inline">\mathbf{I}</span>: <span class="math math-inline">24 \times 24</span> 단위 행렬 (Identity Matrix)</li>
+<li><span class="math math-inline">\mathbf{K}_k</span>: 칼만 게인 벡터/행렬</li>
+<li><span class="math math-inline">\mathbf{H}_k</span>: 관측 야코비안 벡터/행렬</li>
+</ul>
+<p>하지만 이 기본 형태(Standard Form)는 치명적인 약점을 안고 있다. 행렬 안의 값들을 뺄셈(<span class="math math-inline">\mathbf{I} - \mathbf{K}\mathbf{H}</span>)하는 과정에서 정밀도(Precision) 손실이 누적되면, 대칭 행렬이어야 할 <span class="math math-inline">\mathbf{P}</span> 행렬의 수치가 어긋나면서 수학적으로 파탄이 나게 된다.</p>
+<p>이를 극복하기 위해 PX4 ECL을 비롯한 실무형 항법 시스템은 연산량이 훨씬 많아지더라도 수학적 안정성이 압도 높은 <strong>조셉 형식(Joseph Form)</strong> 으로 공분산 필터를 업데이트하도록 내부 코딩되어 있다(혹은 그와 대등하게 안정화된 변형식 사용).</p>
+<p><span class="math math-display"> \mathbf{P}_{k|k} = (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k) \mathbf{P}_{k|k-1} (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)^T + \mathbf{K}_k \mathbf{R}_k \mathbf{K}_k^T </span></p>
+<p>조셉 형태식은 좌우가 <span class="math math-inline">\mathbf{A}\mathbf{P}\mathbf{A}^T</span> 형태의 샌드위치 구조로 감싸져 있어, 어떠한 수치적 반올림 오차(Truncation Error)가 발생해도 결과물인 <span class="math math-inline">\mathbf{P}_{k|k}</span> 가 억지로 <strong>대칭성(Symmetric)</strong> 을 유지하도록 강제하는 위력을 지닌다.</p>
+<hr />
+<h2>2.  수치적 비대칭성 제어 (Symmetry Enforcement)</h2>
+<p>조셉 형식을 사용하거나 최적화된 심볼릭 단축식을 사용하더라도, 32비트 싱글 프리시전(<code>float</code>)을 주로 사용하는 STM32 마이크로컨트롤러에서는 시간이 지날수록 <span class="math math-inline">P(i, j)</span> 와 <span class="math math-inline">P(j, i)</span> 값이 미세하게 어긋나는 현상(Drift)을 피할 수 없다.</p>
+<p>만약 <span class="math math-inline">P(10, 5) = 0.00012</span> 인데 <span class="math math-inline">P(5, 10) = 0.00018</span> 이 되어버린다면, 공분산 고유값(Eigenvalue) 계산이 뒤틀리면서 필터는 <span class="math math-inline">NaN</span> (Not a Number)을 내뱉고 장렬히 산화한다. 이를 막기 위해 퓨전 단계(<code>fuse...()</code>) 직후에는 상삼각-하삼각 요소들의 산술 평균을 강제로 집어넣어 대칭성을 복원하는 하드코딩된 패치(Patch) 로직이 반드시 수행된다.</p>
+<pre><code class="language-cpp">// src/lib/ecl/EKF/common.cpp (혹은 각 퓨전 함수 내부의 후처리 로직)
+
+// 24x24 행렬을 순회하며 비대칭성을 강제로 으깸 (Symmetry Enforcement)
+for (unsigned row = 0; row &lt; 24; row++) {
+    for (unsigned col = 0; col &lt; row; col++) {
+        // [row, col] 과 [col, row] 의 평균치를 구함
+        const float val = 0.5f * (P(row, col) + P(col, row));
+        
+        // 양쪽 대칭 셀에 동일한 평균값을 덮어씌움
+        P(row, col) = val;
+        P(col, row) = val;
+    }
+}
+</code></pre>
+<p>이 무식해 보이는 이중 루프 순회 패치가 바로 장기간 비행에도 드론이 추락하지 않게 해주는 생명줄과 같다.</p>
+<hr />
+<h2>3.  음수 공분산 방어 메커니즘 (Positive-Definite Protection)</h2>
+<p>비대칭성보다 더욱 치명적인 예외 상황이 있다. 바로 행렬의 대각 성분(Diagonal Elements, <span class="math math-inline">P(i, i)</span>)이 음수 값으로 곤두박질치는 현상이다.<br />
+<span class="math math-inline">P(i, i)</span> 는 <span class="math math-inline">i</span>번째 상태 변수 자기 자신에 대한 분산(Variance, 시그마 제곱 <span class="math math-inline">\sigma^2</span>)을 의미하므로, 수학적으로 절대로 <span class="math math-inline">0</span> 미만의 음수가 될 수 없다. 음수 분산이라는 것은 수식 체계를 완전히 부정하는 유령 데이터다.</p>
+<p>관측 업데이트의 <span class="math math-inline">\mathbf{P}_{new} = \mathbf{P}_{old} - \mathbf{K}\mathbf{H}\mathbf{P}</span> 빼기 연산 과정에서 칼만 게인이 너무 공격적으로 적용되면 대각 성분이 일시적으로 아주 미세한 음수(예: <span class="math math-inline">-1e-08</span>)로 계산될 수 있다.<br />
+이를 방지하기 위해 PX4 개발자들은 0이 아니라는 확신을 줄 최소 분산 마지노선(Tolerance)을 시스템 전역 상수로 박아 두었다.</p>
+<pre><code class="language-cpp">// 매 업데이트 스텝의 마지막에 대각(분산) 성분의 음수화를 필터링
+for (unsigned i = 0; i &lt; 24; i++) {
+    // MIN_VARIANCE_TOLERANCE (예: 1e-6f) 이하로 값이 떨어지지 않도록 무조건 꺾어올림(Clipping)
+    P(i, i) = math::max(P(i, i), MIN_VARIANCE_TOLERANCE);
+}
+</code></pre>
+<p>이 클리핑(Clipping) 연산을 통해 EKF 코어 시스템 내부는 항상 양정치성(Positive-Definite)을 지켜내고 붕괴의 위험으로부터 탈출한다.</p>
+<hr />
+<h2>4.  소결: 유한계수를 수호하는 몸부림</h2>
+<p>칼만 필터를 수학 책(Textbook)으로만 접한 학부생은 오로지 연속 행렬 연산의 아름다움만을 생각한다. 하지만 그것을 C++ 언어로 타이핑하여 임베디드 칩 안에 심어 공중에 띄우는 시스템 엔지니어는, 이 세상에 무한정밀도(Infinite Precision)를 가진 실수는 존재하지 않으며 소수점 아래 7번째 자리부터 시작되는 오차의 저주(<code>float</code> 표현 한계)와 사투를 벌여야 한다는 것을 뼈저리게 알고 있다.</p>
+<p><code>predictCovariance</code>의 희소 행렬 오토제너레이션이 ’속도’를 극한으로 끌어올린 칼이라면, 앞서 살펴본 대칭성 복원 및 음수 클리핑 로직은 EKF를 ’에러 수렴’의 함정에서 구출해 내는 튼튼한 방패다.<br />
+PX4 ECL이 글로벌 상용 무인기 시장을 장악한 비밀은 화려한 수학 모형에만 있는 것이 아니라, 이러한 컴퓨터 공학적 예외 상황을 악착같이 보수해 낸 엔지니어링의 승리에 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

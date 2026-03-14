@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.4.2.1. 상태 변이 로직 스레드 안전성(Thread-safety) 확보</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.4.2.1. 상태 변이 로직 스레드 안전성(Thread-safety) 확보</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.4.2.1. 상태 변이 로직 스레드 안전성(Thread-safety) 확보</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.4.2.1. 상태 변이 로직 스레드 안전성(Thread-safety) 확보</h1>
+<p>PX4 모듈 개발에서 가장 끔찍한 버그는 “내 노트북에서는 잘 되는데, 드론이 날고 있을 때만 가끔씩 미친다“는 류의 버그다. 이런 버그의 99%는 스레드 동기화(Thread Synchronization)를 무시한 타이밍 이슈에서 기인한다.</p>
+<p>앞선 21.4.2 단원에서 다루었던 <code>is_running()</code> 함수의 한계를 다시 떠올려보자.<br />
+사용자 커맨드파서가 <code>custom_app start</code> 명령을 받고 <code>task_spawn</code>으로 진입했을 때, 아래의 단순한 <code>if</code> 문은 심각한 보안 결함을 감추고 있다.</p>
+<pre><code class="language-cpp">// 보안 결함이 있는 나쁜 코드의 예시
+if (!is_running()) {
+    // 1. 실행 중이 아니네? 그럼 객체를 만들자!
+    CustomApp *inst = new CustomApp();
+    // 2. 그리고 스레드를 띄우고 상태를 'Running'으로 바꾸자!
+    inst-&gt;start(); 
+}
+</code></pre>
+<p>이 코드는 순차적인 논리 구조로는 완벽하지만, <strong>선점형(Preemptive) 멀티태스킹 커널</strong>인 NuttX 환경에서는 언제든지 CPU 코어 제어권을 다른 스레드에게 빼앗길 수 있다는 점을 간과하고 있다.</p>
+<h2>1. 스케줄러의 무자비한 인터럽트 (Context Switch)</h2>
+<p>만약 2개의 터미널 셸(혹은 2개의 자동화 스크립트)이 0.001초 차이로 <code>custom_app start</code> 명령(스레드 A, 스레드 B)을 전송했다고 치자. CPU 내부에서는 다음과 같은 끔찍한 교차 실행(Interleaving)이 벌어진다.</p>
+<ol>
+<li><strong>[스레드 A]</strong> <code>if (!is_running())</code> 을 통과한다. (당연히 현재 모듈은 꺼져있으므로 <code>true</code> 반환)</li>
+<li><strong>커널의 참견:</strong> 바로 이 순간, 타이머 인터럽트가 발생하며 NuttX 스케줄러가 스레드 A의 CPU 파이프라인을 멈춰 세우고 스레드 B에게 통제권을 넘긴다. (Context Switch)</li>
+<li><strong>[스레드 B]</strong> 아직 스레드 A가 객체(<code>new CustomApp()</code>)를 만들거나 실행 상태를 <code>Running</code>으로 뒤집지 못하고 멈춰버렸으므로, 스레드 B 역시 <code>if (!is_running())</code> 코드를 가뿐하게 통과해 버린다.</li>
+<li><strong>[스레드 B]</strong> <code>new CustomApp()</code>을 호출해 메모리에 1번 모듈을 만들고 시동을 건다.</li>
+<li><strong>커널의 참견:</strong> 다시 제어권이 스레드 A에게 돌아간다.</li>
+<li><strong>[스레드 A]</strong> A는 자신이 멈췄던 지점(<code>new</code> 호출 직전)부터 영문도 모른 채 메모리에 2번 모듈(<code>new CustomApp()</code>)을 또 만들고 2번째 시동을 강제로 걸어버린다.</li>
+</ol>
+<p>결과는 대참사다. 똑같은 센서를 읽고 모터에 명령을 내리는 복제 인간 모듈 두 마리가 하나의 픽스호크 램(RAM) 안에서 좀비처럼 무한 루프를 돌며 자원을 갈아 마시고 I/O 충돌을 일으키게 된다.</p>
+<h2>2. Lock의 도입: “내가 변기 칸에 들어갈 땐 문을 잠가라”</h2>
+<p>해결책은 오직 하나, 상태를 확인하고(<code>Check</code>), 값을 변경하는(<code>Act</code>) 행위들을 중간에 누구도 방해할 수 없는 **구분되지 않는 하나의 덩어리 코드(Atomic Operation)**로 원자화(Atomization)시키는 것뿐이다.</p>
+<p>이를 위해 운영체제는 락(Lock)이라는 화장실 자물쇠 개념을 제공한다. 화장실 변기 칸(공유 메모리=상태 변수)에 누가 들어가 있는지 확인(Check)하고, 비어있으면 들어가서 문을 잠그고 볼일(Act: 상태 변경)을 보는 행위 전체를 다른 사람이 함부로 중간에 문을 열지 못하게 자물쇠(Lock)를 채우는 것이다.</p>
+<p>하지만 <code>is_running()</code> 같은 단 한 줄의 단순한 <code>boolean</code> 상태 비교를 위해, 무거운 커널 시스템 콜(System Call)인 뮤텍스(Mutex)를 잡아끌어 오는 것도 성능 파괴의 주범이 된다.</p>
+<p>가벼운 깃털 같은 상태 변수에 가벼운 자물쇠를 걸어주는 방법, 즉 <code>_task_id</code>라는 정수형 변수 하나를 두고 C++의 원자적 연산(Atomic Operation)과 스핀락(Spinlock)의 원리를 교묘하게 섞어 쓰는 실전 방어벽 코드를 다음 장(21.4.2.1.1)에서 뜯어보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.7.3.1.1. `orb_advert_t` 핸들을 획득할 때 발생하는 파일 기술자(File Descriptor) 테이블 락(Lock) 우회 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.7.3.1.1. `orb_advert_t` 핸들을 획득할 때 발생하는 파일 기술자(File Descriptor) 테이블 락(Lock) 우회 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.7.3.1.1. `orb_advert_t` 핸들을 획득할 때 발생하는 파일 기술자(File Descriptor) 테이블 락(Lock) 우회 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.7.3.1.1. <code>orb_advert_t</code> 핸들을 획득할 때 발생하는 파일 기술자(File Descriptor) 테이블 락(Lock) 우회 로직</h1>
+<p>앞 장에서 uORB <code>Publication</code> 래퍼가 데이터 출판 직전 빈틈을 노려 알아서 커널에 광고(Advertisement, <code>orb_advertise</code>)를 때려준다고 했다. 이 마법 같은 자동화에도 무시무시한 지뢰가 하나 숨어있는데, 바로 **’파일 기술자(File Descriptor) 테이블’의 전역 락(Global Lock)**이다.</p>
+<p>픽스호크 운영체제(NuttX) 내부에서 새로운 파일 핸들(<code>fd</code>)을 발급받으려면, 커널은 시스템 전체가 공유하는 거대한 배열(File Descriptor Table)을 뒤져서 빈자리를 찾아야 한다.<br />
+이 배열은 50개의 모듈이 1초에도 수백 번씩 동시에 접근하는 최고의 핫스팟이므로, 커널은 배열을 뒤지기 전에 무조건 강력한 **세마포어 락(Semaphore Lock)**을 걸어버린다.</p>
+<h2>1. 지각 폭탄(Latency Bomb)의 원리</h2>
+<p>만약 <code>mc_rate_control</code> (자세 제어기) 모듈이 비행 도중에, 그것도 가장 바쁜 <code>Run()</code> 함수 한가운데서 <code>_gyro_pub.publish(data)</code>를 처음으로 호출했다고 차보자.</p>
+<ol>
+<li>래퍼는 내부적으로 <code>orb_advertise()</code>를 부른다.</li>
+<li>이 함수는 커널의 파일 테이블 락(Lock)을 획득하려고 시도한다.</li>
+<li>그런데 하필 백그라운드에서 SD 카드 로거(<code>logger</code>)가 거대한 로그 파일을 새로 생성하느라 이 락을 꽉 붙잡고 놓아주지 않고 있다!</li>
+<li>결과: 초당 1,000번씩 돌아야 하는 픽스호크의 심장부 제어기 스레드가, 한낱 로그 파일 생성이 끝날 때까지 스레드 슬립(Sleep) 상태로 곤두박질치며 기체는 공중에서 굳어버린다.</li>
+</ol>
+<p>이 무서운 지각 폭탄(Latency Bomb)을 피하기 위해, 노련한 PX4 개발자들은 C++ 래퍼의 자동 광고 기능을 절대 맹신하지 않고, <strong>비행 전 안전한 초기화 구역</strong>에서 락 우회술을 시전한다.</p>
+<h2>2. 락 우회술: 초기화 스레드에서의 선제적 광고(Pre-advertisement)</h2>
+<p>해결책은 모듈 클래스의 <code>start()</code>나 <code>init()</code> 단계, 즉 아직 드론이 모터 시동을 걸기 전(Pre-flight)의 매우 한가한 백그라운드 스레드에서 **가짜 데이터(Dummy Data)**를 던져 강제로 핸들을 미리 따놓는 것이다.</p>
+<pre><code class="language-cpp">class CustomController : public px4::ScheduledWorkItem {
+public:
+    int init() {
+        // 비행 전 한가할 때, 빈 객체를 하나 만들어서 냅다 던져버린다!
+        // 이 순간 커널 락(Lock)이 걸리겠지만 비행 중이 아니므로 아무 타격이 없다.
+        actuator_controls_s dummy_data{};
+        _actuator_pub.publish(dummy_data); 
+        
+        // 래퍼 내부에 영원히 지워지지 않는 orb_advert_t 핸들이 박혀 들어갔다!
+        return PX4_OK;
+    }
+
+private:
+    void Run() override {
+        // 비행 중에는 절대 락이 걸리지 않는 순도 100% Lock-free 출판만 일어난다!
+        actuator_controls_s real_data = calculate_pid();
+        _actuator_pub.publish(real_data); 
+    }
+
+    uORB::Publication&lt;actuator_controls_s&gt; _actuator_pub{ORB_ID(actuator_controls)};
+};
+</code></pre>
+<p>이 고전적이고 확실한 ‘초기화 꼼수’ 덕분에, 비행 중 돌아가는 <code>Run()</code> 함수 안의 <code>publish()</code> 호출은 단 한 번도 커널의 무거운 스핀락(Spinlock)이나 파일 테이블 락(File Table Lock)을 맞닥뜨리지 않은 채 **10us 이내의 고정된 실행 시간(Deterministic Latency)**을 완벽히 보장받게 된다.</p>
+<p>그러나 하드웨어의 발전은 또 다른 차원의 문제를 불러온다. 최신 픽스호크 6X처럼 듀얼 코어나 트라이 코어(Multi-core CPU)를 쓰는 H7 칩셋 위에서는, 이토록 완벽하게 락을 치웠음에도 물리적인 L1 캐시(Cache) 오작동으로 데이터가 박살 나는 심령 현상이 벌어진다.<br />
+이 악마 같은 코히런시(Cache Coherency) 문제를 PX4가 어떻게 틀어막는지 가장 낮은 레벨의 실리콘 마법을 다음 장(21.7.3.1.2)에서 구경해 보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

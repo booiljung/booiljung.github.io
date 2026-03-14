@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:# 1.  빌드 시스템의 코어: CMake, Ninja, 메이크파일 제너레이션 아키텍처</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1># 1.  빌드 시스템의 코어: CMake, Ninja, 메이크파일 제너레이션 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 15. PX4 개발 환경(Toolchain) 및 빌드 시스템 구축</a> / <span># 1.  빌드 시스템의 코어: CMake, Ninja, 메이크파일 제너레이션 아키텍처</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1># 1.  빌드 시스템의 코어: CMake, Ninja, 메이크파일 제너레이션 아키텍처</h1>
+<p>앞서 단편적으로 언급하였던 PX4의 빌드 심장부, 메타 빌드 생성기(Meta-Build Generator)들의 관계와 사슬 구조를 이 장에서 하나의 거대한 다이어그램(Diagram) 관점으로 통일하여 분석한다. 이들의 작동 원리는 펌웨어를 만들어내는 역할을 넘어, 코드가 어떤 계층적 순서로 조립되는지 알려주는 내비게이터(Navigator)와 같다.</p>
+<p><strong>CMake: 우주 제너레이터의 설계자</strong><br />
+CMake는 그 자체로 어떠한 문법이나 C++ 코드를 기계어로 번역(Compile)할 능력이 단 1%도 없는 순수한 텍스트 처리 프로그램이다. 오직 <code>CMakeLists.txt</code> 에 적힌 매크로 함수들을 디코딩하여 수만 개의 소스 파일 리스트와 컴파일 옵션 깃발(Flag)들을 엮는 작업만 담당한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[CMakeLists.txt 로드] --&gt; B{호스트/타겟 환경 감지}
+    B --&gt; C[보드 Kconfig 명세서 스캔]
+    C --&gt; D[Python 스크립트 트리거]
+    D -.-&gt;|Jinja2/empy| E[C++ 코드 동적 생성]
+    D --&gt; F[의존성 그래프 연산]
+    F --&gt; G(Ninja 빌드 스크립트 출력)
+</code></pre>
+<p>이 설계 로직이 빛을 발하는 곳은 **모듈화(Modularity)**의 마법이다. <code>src/modules/</code> 아래에 수백 개의 폴더가 존재해도, 보드 타겟 설정에서 <code>+modules/landing_target_estimator</code> 와 같이 해당 모듈 스위치를 ON 시키지 않으면, CMake는 잔혹하게 해당 폴더 전체를 종속 트리에 넣지 않고 잘라버린다. 이로 인해 작은 펌웨어 크기를 유지해야 하는 마이크로 하드웨어들의 생존이 가능해진다.</p>
+<p><strong>Ninja: 피도 눈물도 없는 다중 타격 폭격기</strong><br />
+CMake가 남기고 간 텅 빈 도면, 단 하나의 <code>build.ninja</code> 메타파일을 물려받는 것은 철저한 실행자 <code>Ninja</code> 엔진이다.<br />
+과거 <code>Make</code>는 순차 트리 구조에 갇혀 <code>A가 만들어진 후 폴더 B로 진입하라</code>는 순차적 강박에 시달렸으나, <code>Ninja</code>는 방향성 비순환 그래프(DAG, Directed Acyclic Graph) 이론을 채택하여 타겟과 타겟 간에 의존 화살표가 없는 객체 방(Room) 수백 개를 동시에 걷어차고(Spawn) 다수의 <code>arm-none-eabi-gcc</code> 파동을 일으킨다.<br />
+만약 <code>make clang-tidy</code> 코드 포맷 컨벤션이 발포되면, 닌자는 수천 개의 파일을 단 몇 초 만에 병렬 스캐닝하여 띄어쓰기 규격이 어긋난 위치를 화면 한가득 피바람(Error log)으로 도배해 버리는 무시무시한 효율성을 자랑한다.</p>
+<p>결과적으로 <strong>개발자의 두뇌 <span class="math math-inline">\rightarrow</span> CMake (작전 구성기) <span class="math math-inline">\rightarrow</span> Ninja (다중 실행기) <span class="math math-inline">\rightarrow</span> GCC (기계어 번역기) <span class="math math-inline">\rightarrow</span> Pixhawk 메모리 덤프</strong>로 이어지는 4단계 수자원 댐 방류 구조를 완벽하게 인지하라. 한 곳의 수문만 막혀도 빌드 라인은 영원히 멈추게 된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

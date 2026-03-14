@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.3.1. EKF(Extended Kalman Filter) 설계 및 운용 사상</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.3.1. EKF(Extended Kalman Filter) 설계 및 운용 사상</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 5. PX4와 Ardupilot의 비행 제어 및 관제 철학 차이</a> / <span>5.3.1. EKF(Extended Kalman Filter) 설계 및 운용 사상</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.3.1. EKF(Extended Kalman Filter) 설계 및 운용 사상</h1>
+<p>드론 비행 소프트웨어의 두뇌 속 깊은 곳에서, 센서들의 끊임없는 신호 노이즈와 데이터 간섭의 홍수 속에서 궁극적인 ’진실의 궤적(Ground Truth)’을 수학적으로 도출해 내는 마법과도 같은 엔진이 있습니다. 바로 **확장 칼만 필터(Extended Kalman Filter, EKF)**입니다.</p>
+<p>현대 무인항공기 아키텍처, 예컨대 PX4의 기본 탑재 필터인 **EKF2(ECL 24 상태 기반 필터)**나 Ardupilot의 <strong>EKF3</strong> 라이브러리 등은 모두 이 EKF 사상에 기원을 두고 있습니다. 이 절에서는 선형 수학인 칼만 필터가 어떻게 비선형 3차원 운동학 우주에 융합되었는지, 드론 펌웨어의 EKF 소프트웨어 운용 사상을 해부합니다.</p>
+<h3>0.1  칼만 필터의 두뇌 구조: “예측(Predict)“과 “보정(Update)“의 무한 왈츠</h3>
+<p>칼만 필터가 왜 기존 추정기(보상 필터)들을 제치고 드론 세계의 지배자가 되었을까요? 칼만 필터는 과거 측정 데이터의 누적 평균에 매달리는 것이 아니라, 물리학 기반의 동역학적 모델 위에 확률의 세계를 덧씌운 2단계 연속 사이클을 채택하고 있기 때문입니다.</p>
+<p>이를 드론의 프로세스 주기에 빗대면 다음과 같은 운용 사상이 됩니다.</p>
+<ol>
+<li><strong>예측 단계 (Predict / Time Update 파트)</strong></li>
+</ol>
+<ul>
+<li>초당 400번(400Hz) 들어오는 가장 빠른 인터럽터 센서인 IMU(가속도, 자이로) 데이터를 기반으로 수행됩니다.</li>
+<li>EKF 모듈은 물리학(뉴턴 역학) 공식을 활용해 “0.0025초 전의 내 위치, 속도와 현재 얻은 구동 모터 추력/IMU 가속도 벡터를 고려했을 때, 지금 드론은 논리적으로 어느 좌표계상에 존재할 것이다“라고 상태 모델을 선제적으로 밀어붙여(Propagation) 위상 공간(State Vector)을 전진시킵니다.</li>
+<li>동시에, “내 예측이 틀렸을지도 모르는 불확실성(Covariance, 오차 공분산)” 역시 함께 부풀려 증가시킵니다.</li>
+</ul>
+<ol start="2">
+<li><strong>보정 단계 (Update / Measurement 파트)</strong></li>
+</ol>
+<ul>
+<li>매 예측 단계마다 이루어지지 않습니다. 느릿느릿한 센서, 예를 들어 GPS가 10Hz 딜레이로 “너의 현재 위/경도 지구 위치는 여기다“라는 새로운 관측점 측정(Measurement) 데이터를 EKF 모듈에 비동기적으로 던져주는 순간 발생합니다.</li>
+<li>EKF는 자신이 앞서 물리학 공식으로 상상했던 ’예측 좌표’와 GPS가 던져준 ’실측 좌표’의 차이, 이른바 **혁신량(Innovation)**을 계산합니다.</li>
+<li>EKF는 이 둘 중 누구의 데이터를 더 신뢰할 것인지 확률적 이득(Kalman Gain)을 저울질한 후, 신뢰도를 배합하여 이전의 ’상태 예측’을 뒤축에서 당겨 완벽하게 현실로 싱크(Sync/보정) 시킨 뒤 불확실성 지수를 확 줄여버립니다.</li>
+</ul>
+<p>이것이 비행 중 초당 수백 번씩 일어나는 EKF 확률 제어 엔진의 끝없는 호흡(Predict-Update) 왈츠입니다.</p>
+<h3>0.2  비선형 우주로의 확장(Extended), 테일러 급수의 선형화(Linearization) 마술</h3>
+<p>기본적인 원형의 ’칼만 필터’는 1960년대 아폴로 달 착륙선 궤적에도 쓰인 위대한 알고리즘이지만, 치명적인 약점이 하나 있었습니다. 바로 상태 변화와 센서 관측 시스템이 철저히 1차 함수의 비례 곡선을 그리는 선형 시스템(Linear System)에서만 정상 작동한다는 점이었습니다.</p>
+<p>하지만 드론이 3차원 하늘을 휘저으며 기울어질 때 발생하는 피치(Pitch), 롤(Roll), 요축(Yaw) 각도의 삼각함수 파생 회전 변환(Euler &amp; Quaternion)과 원심력(Coriolis Effect) 등은 지독한 **비선형성(Non-linear)**을 방출합니다. 기본형 칼만 필터는 여기서 확률 궤도를 잃고 발산(Divergence)해 폭주합니다.</p>
+<p>따라서 펌웨어 개발자들은 이 필터를 **‘확장(Extended)’**시켰습니다.<br />
+EKF 운용의 핵심 사상은 <strong>자코비안 행렬(Jacobian Matrix)</strong> 편미분 계산에 있습니다. 비선형 우주에서 드론이 처한 작디작은 찰나의 ‘현재 1포인트 점(평균 상태)’ 위치에 한해서만, 곡선의 험한 비탈길을 테일러 급수 1차항을 이용해 접선의 미분 기울기를 그려 내 한시적인 선형 평면이라고 컴파일러(매트릭스)를 속여버리는 것입니다(Linearization).<br />
+매 틱(Tick)마다 동적으로 생성되는 이 미분 행렬 속임수를 통해, 드론은 복잡한 다항식 공간을 미세한 선형 찰나의 조각 모음으로 변주하여 아슬아슬하게 오차를 필터링하며 춤을 이어갑니다.</p>
+<h3>0.3  상태 백터(State Vector): 24개의 변수들이 짜내는 교향곡</h3>
+<p>그렇다면 실제 PX4 소스코드 라이브러리(ECL EKF2) 기준으로, 행렬 수학에 포함되어 끝없이 갱신되는 EKF의 두뇌, 즉 추정 상태 배열(State Vector) 항목 안에는 어떤 것들이 포함되어 관리될까요? 놀랍게도 24개의 다차원 변수 덩어리가 하나의 행렬 세트로 관리됩니다.</p>
+<ul>
+<li><code>States [0~3]</code>: 자세를 관장하는 위치를 표기한 쿼터니언 (Quaternion) 수학 4원수 값</li>
+<li><code>States [4~6]</code>: 기체의 3차원 속도 (Velocity NED)</li>
+<li><code>States [7~9]</code>: 기체의 3차원 위치 좌표 (Position NED)</li>
+<li><code>States [10~12]</code>: 자이로스코프 센서값의 누적 편향 오차 (Gyro Bias) 추정</li>
+<li><code>States [13~15]</code>: 가속도계 센서값의 누적 편향 오차 (Accel Bias) 추정</li>
+<li><code>States [16~18]</code>: 지구 자기장의 3차원 벡터 파악 (단기 자기장 간섭 대응 목적)</li>
+<li><code>States [19~21]</code>: 나침반 방향 편향(Heading) 및 기체 내부 자력 왜곡</li>
+<li><code>States [22~23]</code>: 풍향/풍속 방향 예측치 (바람에 드론이 밀리는 외란 물리력 추정)</li>
+</ul>
+<p>여기서 흥미로운 운용 철학이 돋보입니다. 단순한 공간 좌표 추적(<code>States 0~9</code>) 뿐만 아니라, 센서 하드웨어 결함에 의한 자이로 온도 적분 편차 오차(<code>Bias</code>) 파트마저 10~15번 항목으로 상태 행렬에 함께 밀어 넣고 추정의 대상으로 흡수했다는 점입니다. 심지어 불어오는 24차원 돌풍(<code>Wind</code>) 외란까지도 스스로 계산 확률 모델 안에 녹여버립니다.<br />
+이렇게 구성된 압도적인 EKF 아키텍처는 센서 하나의 값이 미쳐서 고장 날 징조를 보여도 “이건 센서 자체의 불량 바이어스(Bias)가 강해진 것이다“라며 내부적으로 자기 진단 및 보정 파라미터를 실시간 수정하는 막강한 생존력을 선사하게 됩니다.</p>
+<blockquote>
+<p><strong>참고 문헌 및 공식 매뉴얼</strong></p>
+<ul>
+<li>Estimation and Control Library(ECL) EKF2 Architecture Manual. PX4 Firmware Reference.</li>
+<li>Kalman, R. E. (1960). “A New Approach to Linear Filtering and Prediction Problems.”</li>
+</ul>
+</blockquote>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

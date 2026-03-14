@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.4. 비행 제어기(Flight Controller) 아키텍처와 튜닝 철학</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.4. 비행 제어기(Flight Controller) 아키텍처와 튜닝 철학</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 5. PX4와 Ardupilot의 비행 제어 및 관제 철학 차이</a> / <span>5.4. 비행 제어기(Flight Controller) 아키텍처와 튜닝 철학</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.4. 비행 제어기(Flight Controller) 아키텍처와 튜닝 철학</h1>
+<p>앞선 5.3절까지 다룬 상태 추정기(Estimator)의 역할이 드론의 현재 위치와 상태를 완벽하게 파악하는 ’물리적 자아의 형성’이었다면, 본 장부터 다루게 될 <strong>비행 제어기(Flight Controller)</strong> 모듈의 역할은 조종사나 자동 비행 알고리즘이 내린 명령(Setpoint)을 수행하기 위해 모터를 어느 정도의 힘으로 돌려야 하는지 계산하는 ‘근육의 신경 전달’ 체계라 할 수 있습니다.</p>
+<p>드론의 뇌와 근육을 매개하는 이 제어 루프(Control Loop) 아키텍처에 있어서, PX4와 Ardupilot은 그 태생적 뿌리만큼이나 확연히 다른 수학적 구조와 튜닝 철학을 보여줍니다. 본 절에서는 두 펌웨어가 기체를 통제하는 근본적인 사상을 개괄합니다.</p>
+<h3>0.1  PX4의 제어 철학: 학술적 정밀성과 명시적 물리량(Explicit Physics)</h3>
+<p>ETH Zurich(취리히 연방 공과대학교)라는 세계 최고 수준의 로봇 공학 연구실에서 잉태된 PX4-Autopilot은, 철저히 제어 공학 교과서에 입각한 <strong>명시적(Explicit)이고 계층적인 수학 모델링</strong>을 추구합니다.</p>
+<ul>
+<li><strong>물리량 기반의 엄격한 직렬 캐스케이드(Cascaded) 제어</strong>: PX4는 조종사의 스틱 입력 혹은 미션 웨이포인트(Mission Waypoint)를 절대 곧바로 각도(Angle)나 모터 출력으로 변환하지 않습니다. 모든 명령은 반드시 <code>위치 오차</code> <span class="math math-inline">\to</span> <code>목표 속도</code> <span class="math math-inline">\to</span> <code>목표 가속도/추력</code> <span class="math math-inline">\to</span> <code>목표 자세</code> <span class="math math-inline">\to</span> <code>목표 각속도</code>의 엄격하고 순차적인 물리량 변환 단계를 거칩니다.</li>
+<li><strong>피드포워드(Feedforward) 중심주의</strong>: 최신 로보틱스 제어 이론의 뼈대인 ’모델 기반의 사전 제어’를 중시합니다. 즉 오차가 발생한 뒤에 P/I/D 게인을 통해 뒤늦게 수습하는 것보다, 목표 궤적이 주어졌을 때 기체 동역학 모델에 기반하여 “이 정도 움직이려면 모터를 이만큼 돌려야 해“라고 선제적으로 출력을 밀어붙이는(Feedforward) 비율이 매우 높습니다.</li>
+<li><strong>엔지니어링 튜닝</strong>: PX4의 PID 튜닝은 스텝 응답(Step Response) 그래프를 분석하고, 물리적인 타임 상수(Time Constant)를 계산해 내는 엔지니어(설계자) 친화적인 구조를 갖추고 있습니다.</li>
+</ul>
+<h3>0.2  Ardupilot의 제어 철학: 실전적 유연성과 휴리스틱 필터링(Heuristic Filtering)</h3>
+<p>반면 전 세계 수만 명의 DIY 애호가들, 커스텀 기체 제작자들의 손을 거치며 거대한 커뮤니티 주도로 성장한 Ardupilot은 제어 공학의 교과서적 아름다움보다는 <strong>“어떤 쓰레기 같은 뼈대의 드론이 들어와도 기어코 날려버리는” 실전 지향적 생존성</strong>을 훈장처럼 자랑합니다.</p>
+<ul>
+<li><strong>병렬 및 비선형(Non-linear) 혼합 제어</strong>: 교과서적인 직렬 통과를 고집하지 않습니다. 필요하다면 위치 오차 제어기에서 곧바로 강력한 P 제어를 거쳐 모터 출력으로 쏘아버리기도 하며, Square Root Controller(제곱근 제어기) 같은 비선형적인 수학 기법을 도입하여 조종감을 부드럽게 깎아냅니다.</li>
+<li><strong>극한의 필터링 시스템</strong>: 세상에 존재하는 온갖 비대칭 드론 뼈대가 만들어내는 극심한 공진과 노이즈를 제압하기 위해 Harmonic Notch Filter, 소음 기반 대역폭 컷오프 등 신호 처리(Signal Processing) 필터 계층이 스파게티처럼 정교하게 엮여 있습니다.</li>
+<li><strong>마법의 AutoTune (블랙박스 제어)</strong>: 사용자가 제어 이론을 전혀 몰라도 비행 중 기체를 마구 뒤흔들며 스스로 P, I, D 값을 완벽에 가깝게 찾아내는 AutoTune 알고리즘은 타의 추종을 불허하는 Ardupilot 최대의 무기입니다.</li>
+</ul>
+<h3>0.3  제어 아키텍처 비교의 관전 포인트</h3>
+<p>이어지는 하부 섹션에서는 이 두 가지 상반된 철학이 소스 코드 레벨과 실제 제어 루프상에서 어떻게 구현되어 있는지 다음의 두 가지 큰 축을 통해 집중적으로 비교 분석할 것입니다.</p>
+<ol>
+<li><strong>제어 루프(Control Loop) 구조</strong>: 위치, 속도, 자세, 각속도의 오차를 어떻게 계산하고 추종(Tracking)하는가? (직렬 P-PID 아키텍처와 병렬 혼합 아키텍처 비교)</li>
+<li><strong>모터 제어 할당(Control Allocation) 및 믹서(Mixer)</strong>: 제어 루프에서 뱉어낸 ’기체를 비틀어라(Torque)’라는 추상적인 명령을 개별 하드웨어 모터의 PWM 수치로 분배하는 메커니즘의 차이.</li>
+</ol>
+<p>이러한 제어 아키텍처의 차이를 명확히 이해하는 것은, 실제 기체 튜닝 과정에서 직면하는 미세한 진동을 잡고 추종 성능(Tracking Performance)을 극대화하기 위해 각 펌웨어의 어떤 파라미터(Parameter) 블록을 건드려야 하는지를 스스로 통찰(Insight)해 내는 핵심 역량이 됩니다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

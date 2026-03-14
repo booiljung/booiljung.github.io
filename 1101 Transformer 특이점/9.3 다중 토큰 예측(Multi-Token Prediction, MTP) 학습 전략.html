@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:9.3 다중 토큰 예측(Multi-Token Prediction, MTP) 학습 전략</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>9.3 다중 토큰 예측(Multi-Token Prediction, MTP) 학습 전략</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">트랜스포머 싱귤래리티 (The Transformer Singularity)</a> / <span>9.3 다중 토큰 예측(Multi-Token Prediction, MTP) 학습 전략</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>9.3 다중 토큰 예측(Multi-Token Prediction, MTP) 학습 전략</h1>
+<p>2025-12-21, G30DR</p>
+<p>인공지능, 특히 거대 언어 모델(Large Language Model, LLM)의 역사는 ’다음 토큰 예측(Next Token Prediction, NTP)’이라는 단 하나의 절대적인 명제 위에서 발전해 왔다. 주어진 문맥 <span class="math math-inline">t_{1}, t_{2}, \dots, t_{n}</span>이 주어졌을 때, <span class="math math-inline">t_{n+1}</span>이 나타날 확률 <span class="math math-inline">P(t_{n+1} | t_{1:n})</span>을 최대화하는 것. 이 단순하고도 강력한 자기회귀(Autoregressive) 학습 목표는 GPT 시리즈를 비롯한 수많은 모델을 성공으로 이끌었으며, 인류의 언어를 통계적으로 모델링하는 데 있어 가장 효율적인 방법론으로 간주되어 왔다.</p>
+<p>그러나 모델의 파라미터가 수천억 개를 넘어설지라도, 단일 시점에 오직 하나의 토큰만을 내다보는 NTP 방식은 근본적인 한계를 지닌다. 인간의 사고 과정이나 텍스트의 생성 원리는 단순히 직전 단어에 의해 다음 단어가 결정되는 마르코프 체인(Markov Chain)보다 훨씬 복잡하고 거시적인 계획(Planning)을 포함하기 때문이다. 모델이 문장의 끝을 미리 생각하고 현재의 단어를 선택하는 ’계획 능력’을 학습하기에, NTP는 지나치게 근시안적(Myopic)이고 국소적인 최적화에 머무를 위험이 있다.</p>
+<p>본 절에서는 DeepSeek-V3 아키텍처의 가장 혁신적인 학습 전략 중 하나인 **다중 토큰 예측(Multi-Token Prediction, MTP)**을 심층적으로 분석한다. DeepSeek-V3가 채택한 MTP 전략은 단순한 학습 목표의 변경을 넘어, 모델이 텍스트의 인과적 구조를 이해하는 방식을 재정의하고, 훈련 효율성과 추론 속도라는 두 마리 토끼를 동시에 잡는 아키텍처적 특이점(Singularity)을 보여준다. 우리는 MTP의 등장 배경부터 DeepSeek-V3 특유의 순차적(Sequential) 아키텍처, 학습 역학, 그리고 이것이 추론 가속화(Inference Acceleration)로 이어지는 메커니즘을 아주 상세하게 파헤쳐 볼 것이다.</p>
+<h2>1.  단일 토큰 예측(NTP)의 한계와 MTP의 이론적 배경</h2>
+<p>전통적인 언어 모델링의 표준인 NTP는 데이터의 각 시점(Time Step)에서 오직 하나의 정답 레이블에 대해서만 오류를 계산하고 역전파(Backpropagation)를 수행한다. 이는 방대한 텍스트 데이터를 학습함에 있어 심각한 **샘플 비효율성(Sample Inefficiency)**을 초래한다.1 문장 하나에는 문법적 구조, 논리적 인과관계, 사실적 정보 등 다층적인 정보가 포함되어 있지만, 모델은 오직 ’바로 다음 단어’를 맞추는 데에만 집중하도록 강요받는다.</p>
+<p>이러한 학습 방식은 다음과 같은 세 가지 주요한 문제점을 야기한다.</p>
+<p>첫째, <strong>장기 의존성(Long-term Dependency) 학습의 어려움</strong>이다. 모델이 <span class="math math-inline">t_{n+1}</span>을 예측할 때, 미래에 등장할 <span class="math math-inline">t_{n+10}</span>이나 <span class="math math-inline">t_{n+20}</span>의 내용은 고려 대상이 아니다. 결과적으로 모델은 국소적인 패턴 매칭에는 강해지지만, 긴 호흡의 글을 일관성 있게 작성하거나 복잡한 추론 과정을 설계하는 데 필요한 ’전역적 시야(Global View)’를 갖기 어렵다.1</p>
+<p>둘째, <strong>추론 시의 하드웨어 병목(Memory Wall)</strong> 현상이다. 자기회귀 모델은 추론 시 한 번에 하나의 토큰만 생성해야 한다. 현대적인 GPU(H800 등)는 막대한 병렬 연산 능력을 갖추고 있지만, 토큰 하나를 생성하기 위해 거대한 모델의 모든 가중치를 메모리에서 불러와야 하는 메모리 대역폭(Memory Bandwidth)의 제약 때문에 연산 자원의 대부분이 유휴 상태(Idle)로 낭비된다.3</p>
+<p>셋째, <strong>데이터의 정보 밀도 활용 부족</strong>이다. 텍스트 데이터는 본질적으로 미래의 정보가 현재의 정보와 긴밀하게 연결된 고밀도 신호다. 그러나 NTP는 이 풍부한 미래 정보를 학습 신호로 직접 활용하지 않고, 오직 다음 스텝의 예측 대상으로만 미루어 둔다.</p>
+<p>이러한 배경에서 대두된 **다중 토큰 예측(MTP)**은 모델이 현재 시점에서 <span class="math math-inline">t_{n+1}</span>뿐만 아니라 <span class="math math-inline">t_{n+2}, \dots, t_{n+D}</span>까지 한 번에 예측하도록 훈련하는 전략이다. 이는 모델에게 “다음을 예측하라“는 지시 대신 “미래의 흐름을 예측하라“는 더 어려운 과제를 부여함으로써, 데이터로부터 더 풍부한 신호를 추출하고 추론 능력을 강화하려는 시도이다.5</p>
+<p>DeepSeek-V3는 이러한 MTP의 개념을 도입하되, 기존 연구들이 시도했던 단순한 병렬 헤드 방식과는 차별화된 <strong>순차적 MTP(Sequential MTP)</strong> 구조를 제안했다. 이는 MTP가 단순한 보조 과제(Auxiliary Task)를 넘어, 메인 모델의 표현력을 근본적으로 강화하고 추론 효율성을 극대화하는 핵심 엔진으로 작동하게 만든다.7</p>
+<p><strong>기존 NTP (단일 토큰 예측)</strong></p>
+<pre><code class="language-mermaid">graph 
+    N_Ctx["문맥 (Context)"] --&gt; N_Model["모델 (Transformer)"]
+    N_Model --&gt; N_Out["t_{n+1} 예측"]
+    N_Out -.-&gt;|"미래 고려 없음"| N_Void["?"]
+    style N_Out fill:#ffcccc,stroke:#333
+</code></pre>
+<p><strong>DeepSeek-V3 MTP (다중 토큰 예측)</strong></p>
+<pre><code class="language-mermaid">graph TD
+    direction LR
+    M_Ctx["문맥 (Context)"] --&gt; M_Model["메인 모델"]
+    M_Model --&gt; M_Out1["t_{n+1} 예측"]
+    M_Out1 --&gt; M_Mod1["MTP 모듈 1"]
+    M_Mod1 --&gt; M_Out2["t_{n+2} 예측"]
+    M_Out2 --&gt; M_Mod2["MTP 모듈 2"]
+    M_Mod2 --&gt; M_Out3["t_{n+3} ... 예측"]
+
+    style M_Out1 fill:#ccffcc,stroke:#333
+    style M_Out2 fill:#ccffcc,stroke:#333
+    style M_Out3 fill:#ccffcc,stroke:#333
+</code></pre>
+<h2>2.  DeepSeek-V3 MTP 아키텍처: 순차적 인과성의 보존</h2>
+<p>MTP를 구현하는 방식은 크게 두 가지로 나눌 수 있다. 하나는 공유된 트랜스포머 백본(Backbone) 위에 여러 개의 독립적인 출력 헤드(Output Heads)를 병렬로 배치하는 방식이고, 다른 하나는 DeepSeek-V3가 채택한 순차적 모듈(Sequential Modules) 방식이다. Meta의 연구(Gloeckle et al., 2024)를 포함한 초기 MTP 시도들은 주로 전자의 방식을 택했으나, DeepSeek-V3는 언어의 인과적 특성을 보존하기 위해 후자를 선택했다.3</p>
+<pre><code class="language-mermaid">graph TD
+    %% 9.3.2 DeepSeek-V3 MTP 아키텍처
+    subgraph "메인 모델 (Main Model)"
+        Input["입력 토큰 시퀀스 (t_{1:i})"] --&gt; MainTrans["Transformer Layers"]
+        MainTrans --&gt; H0["Main Hidden State (h_i^0)"]
+        H0 --&gt; Head0["공유 출력 헤드 (Shared Head)"]
+        Head0 --&gt; Pred1["t_{i+1} 예측"]
+    end
+
+    subgraph "MTP 모듈 1 (Depth 1)"
+        Target1["정답 토큰 t_{i+1} 임베딩"] 
+        H0 --"입력 연결"--&gt; Concat1("Concat &amp; Projection")
+        Target1 --&gt; Concat1
+        Concat1 --&gt; TRM1["경량 Transformer Block"]
+        TRM1 --&gt; H1["Hidden State (h_i^1)"]
+        H1 --&gt; Head1["공유 출력 헤드"]
+        Head1 --&gt; Pred2["t_{i+2} 예측"]
+    end
+
+    subgraph "MTP 모듈 2 (Depth 2)"
+        Target2["정답 토큰 t_{i+2} 임베딩"]
+        H1 --"인과적 정보 흐름"--&gt; Concat2("Concat &amp; Projection")
+        Target2 --&gt; Concat2
+        Concat2 --&gt; TRM2["경량 Transformer Block"]
+        TRM2 --&gt; H2["Hidden State (h_i^2)"]
+        H2 --&gt; Head2["공유 출력 헤드"]
+        Head2 --&gt; Pred3["t_{i+3} 예측"]
+    end
+
+    style Input fill:#f9f,stroke:#333
+    style H0 fill:#bbf,stroke:#333
+    style H1 fill:#bbf,stroke:#333
+    style H2 fill:#bbf,stroke:#333
+    style Target1 fill:#ff9,stroke:#333
+    style Target2 fill:#ff9,stroke:#333
+</code></pre>
+<h3>2.1  병렬 예측 vs 순차적 예측</h3>
+<p>기존의 병렬 예측(Parallel Prediction) 방식에서는 <span class="math math-inline">t_{1:n}</span>이라는 공통의 문맥 벡터(Context Vector)로부터 <span class="math math-inline">n</span>개의 서로 다른 헤드가 각각 <span class="math math-inline">t_{n+1}, t_{n+2}, \dots, t_{n+D}</span>를 독립적으로 예측한다.</p>
+<p>이 방식의 치명적인 단점은 <span class="math math-inline">t_{n+2}</span>를 예측하는 헤드가 <span class="math math-inline">t_{n+1}</span>에 대한 정보를 전혀 알지 못한다는 것이다. 즉, 조건부 확률 <span class="math math-inline">P(t_{n+2} | t_{1:n+1})</span>을 계산해야 함에도 불구하고, 실제로는 <span class="math math-inline">P(t_{n+2} | t_{1:n})</span>을 계산하게 된다. 이는 언어의 인과적 연쇄(Causal Chain)를 끊어버리는 결과를 낳으며, 생성된 미래 토큰들 간의 정합성을 보장하기 어렵게 만든다.10</p>
+<p>반면, DeepSeek-V3의 **순차적 MTP(Sequential MTP)**는 메인 모델의 끝단에 작은 트랜스포머 블록들을 직렬로 연결하여 이 문제를 해결한다. <span class="math math-inline">k</span>번째 MTP 모듈은 이전 단계(메인 모델 또는 <span class="math math-inline">k-1</span>번째 MTP 모듈)의 출력뿐만 아니라, 현재 예측하려는 시점의 정답 토큰(Teacher Forcing) 정보를 입력받아 다음 단계로 넘겨준다.</p>
+<pre><code class="language-mermaid">graph TD
+    %% 병렬 vs 순차적 비교
+    subgraph "병렬 MTP (기존 방식: Meta 등)"
+        P_Context["문맥 벡터 (Context)"]
+        P_Context --&gt;|"독립적 분기"| P_Head1["Head 1"]
+        P_Context --&gt;|"독립적 분기"| P_Head2["Head 2"]
+        P_Head1 --&gt; P_Pred1["t_{n+1} 예측"]
+        P_Head2 --&gt; P_Pred2["t_{n+2} 예측"]
+        P_Pred1 -.-&gt; P_Pred2
+        linkStyle 4 stroke:red,stroke-width:4px
+        Note_P["t_{n+2}는 t_{n+1}을 모름 (인과성 단절)"]
+    end
+
+    subgraph "순차적 MTP (DeepSeek-V3)"
+        S_Context["문맥 벡터 (Context)"]
+        S_Context --&gt; S_Mod1["Module 1"]
+        S_Mod1 --&gt; S_Pred1["t_{n+1} 정보 포함"]
+        S_Pred1 --&gt; S_Mod2["Module 2"]
+        S_Mod2 --&gt; S_Pred2["t_{n+2} 예측"]
+        Note_S["t_{n+2}는 t_{n+1}을 알고 있음 (인과성 보존)"]
+        style S_Mod2 fill:#e1f5fe
+    end
+</code></pre>
+<h3>2.2  MTP 모듈의 상세 구조 및 데이터 흐름</h3>
+<p>DeepSeek-V3에서 MTP 모듈은 메인 모델(Main Model)의 마지막 층 위에 <span class="math math-inline">D</span>개의 깊이로 쌓인다. 각 MTP 모듈 <span class="math math-inline">k</span> (<span class="math math-inline">1 \le k \le D</span>)는 다음과 같은 구성 요소를 갖는다.11</p>
+<ol>
+<li><strong>공유 임베딩 층 (Shared Embedding Layer):</strong> 입력 토큰을 벡터로 변환하는 층으로, 메인 모델과 동일한 가중치를 사용한다.</li>
+<li><strong>공유 출력 헤드 (Shared Output Head):</strong> 은닉 상태(Hidden State)를 단어 분포(Logits)로 변환하는 층으로, 역시 메인 모델과 가중치를 공유한다.</li>
+<li><strong>트랜스포머 블록 (Transformer Block):</strong> 각 MTP 깊이마다 존재하는 경량화된 어텐션 블록이다.</li>
+<li><strong>투영 행렬 (Projection Matrix):</strong> 차원을 맞추거나 정보를 혼합하기 위한 선형 층이다.</li>
+</ol>
+<p><span class="math math-inline">i</span>번째 위치에서 <span class="math math-inline">k</span>번째 미래 토큰을 예측하는 과정은 다음과 같이 수식화될 수 있다.</p>
+<p><span class="math math-inline">k</span>번째 MTP 모듈의 입력은 이전 단계의 은닉 상태 <span class="math math-inline">h_{i}^{k-1}</span>과, <span class="math math-inline">k</span>단계만큼 미래에 있는 정답 토큰 <span class="math math-inline">t_{i+k}</span>의 임베딩 <span class="math math-inline">Emb(t_{i+k})</span>의 결합으로 구성된다.<br />
+<span class="math math-display">
+h_{i}^{k} = \text{TransformerBlock}_{k} \left( \text{Concat}(h_{i}^{k-1}, \text{Emb}(t_{i+k}) \cdot M_{proj}) \right)
+</span><br />
+여기서 <span class="math math-inline">h_{i}^{0}</span>는 메인 모델의 마지막 층 출력값이다. 이 식에서 주목해야 할 점은 **입력 연결(Input Concatenation)**이다. <span class="math math-inline">k</span>번째 모듈은 자신이 예측해야 할 대상의 ’직전 문맥’에 해당하는 정보를 이전 모듈로부터 받고, 훈련 시에는 ’실제 정답’에 해당하는 <span class="math math-inline">t_{i+k}</span>의 힌트를 받아서 내부 상태를 갱신한다. 그리고 이 갱신된 상태 <span class="math math-inline">h_{i}^{k}</span>를 통해 <span class="math math-inline">t_{i+k+1}</span>을 예측한다.<br />
+<span class="math math-display">
+P(t_{i+k+1} | t_{1:i+k}) \approx \text{Softmax}(\text{OutputHead}(h_{i}^{k}))
+</span><br />
+이러한 순차적 구조는 마치 RNN(Recurrent Neural Network)이 시간을 따라 펼쳐지는 것과 유사한 형태를 띠지만, 시간축이 아닌 ‘예측 깊이(Prediction Depth)’ 축으로 펼쳐진다는 점에서 차이가 있다.10 이를 통해 DeepSeek-V3는 <span class="math math-inline">t_{n+2}</span>를 예측할 때 <span class="math math-inline">t_{n+1}</span>의 정보가 자연스럽게 흘러들어가는 **완전한 인과적 연쇄(Complete Causal Chain)**를 유지한다. 이는 MTP 예측의 정확도를 비약적으로 높이는 핵심 설계이다.3</p>
+<table><thead><tr><th><strong>특징</strong></th><th><strong>병렬 MTP (기존 연구)</strong></th><th><strong>순차적 MTP (DeepSeek-V3)</strong></th></tr></thead><tbody>
+<tr><td><strong>정보 흐름</strong></td><td><span class="math math-inline">t_{1:n} \rightarrow [t_{n+1}, t_{n+2}]</span> (독립적)</td><td><span class="math math-inline">t_{1:n} \rightarrow t_{n+1} \rightarrow t_{n+2}</span> (연쇄적)</td></tr>
+<tr><td><strong>인과성</strong></td><td><span class="math math-inline">t_{n+2}</span> 예측 시 <span class="math math-inline">t_{n+1}</span> 정보 부재</td><td><span class="math math-inline">t_{n+2}</span> 예측 시 <span class="math math-inline">t_{n+1}</span> 문맥 반영</td></tr>
+<tr><td><strong>파라미터</strong></td><td>독립된 헤드 (<span class="math math-inline">n \times \text{Head}</span>)</td><td>트랜스포머 블록 (<span class="math math-inline">D \times \text{Block}</span>)</td></tr>
+<tr><td><strong>정확도</strong></td><td>미래로 갈수록 급격히 하락</td><td>상대적으로 높은 정확도 유지</td></tr>
+<tr><td><strong>활용</strong></td><td>단순 보조 손실</td><td>추론 시 사변적 디코딩 초안 모델로 활용</td></tr>
+</tbody></table>
+<h3>2.3  파라미터 공유의 효율성</h3>
+<p>DeepSeek-V3는 메모리 효율성을 극대화하기 위해 MTP 모듈들이 메인 모델과 임베딩 층 및 출력 헤드를 공유하도록 설계했다.9 이는 단순히 파라미터 수를 줄이는 것을 넘어, MTP 모듈이 학습하는 표현(Representation) 공간이 메인 모델의 공간과 일치되도록 강제하는 정규화(Regularization) 효과를 갖는다. 즉, MTP 모듈이 독자적인 언어를 배우는 것이 아니라, 메인 모델의 언어 이해를 확장하는 방향으로 학습되도록 유도하는 것이다. DeepSeek-V3의 전체 파라미터 671B 중 MTP 모듈이 차지하는 비중은 약 14B 정도로, 전체 모델 크기 대비 매우 적은 오버헤드만을 추가하면서도 성능 향상을 이끌어낸다.14</p>
+<h2>3.  MTP 학습 전략과 최적화 역학</h2>
+<p>DeepSeek-V3의 MTP는 단순한 아키텍처 추가가 아니라, 정교한 손실 함수 설계와 학습 스케줄링이 결합된 총체적인 학습 전략이다.</p>
+<pre><code class="language-mermaid">graph LR
+    %% 9.3.3 학습 전략
+    subgraph "학습 파이프라인 (Training Pipeline)"
+        LossNTP["NTP 손실 (L_NTP)"] 
+        LossMTP["MTP 손실 합 (L_MTP)"]
+        
+        Lambda["가중치 λ (Scheduling)"] --&gt; Mul{"x (곱하기)"}
+        LossMTP --&gt; Mul
+        LossNTP --&gt; Add{"+ (더하기)"}
+        Mul --&gt; Add
+        Add --&gt; TotalLoss["총 손실 (L_Total)"]
+        TotalLoss --&gt; Backprop["역전파 (Backpropagation)"]
+        Backprop --&gt; Update["메인 모델 &amp; MTP 모듈 업데이트"]
+    end
+
+    subgraph "λ 스케줄링 전략"
+        direction TB
+        Stage1["초기 10조 토큰"] --&gt;|λ = 0.3| Effect1["구조 학습 및 넓은 시야 확보"]
+        Stage1 --&gt; Gap["..."]
+        Gap --&gt; Stage2["후기 4.8조 토큰"]
+        Stage2 --&gt;|λ = 0.1| Effect2["NTP 정밀화 및 주 작업 집중"]
+    end
+
+    style Lambda fill:#ffcc00,stroke:#333
+    style TotalLoss fill:#ff6666,stroke:#333
+</code></pre>
+<h3>3.1  손실 함수의 구성</h3>
+<p>전체 학습 손실 함수 <span class="math math-inline">\mathcal{L}*{Total}</span>은 메인 모델의 NTP 손실 <span class="math math-inline">\mathcal{L}*{NTP}</span>와 MTP 모듈들의 손실 합 <span class="math math-inline">\mathcal{L}_{MTP}</span>의 가중 합으로 정의된다.16<br />
+<span class="math math-display">
+\mathcal{L}_{Total} = \mathcal{L}_{NTP} + \lambda \cdot \mathcal{L}_{MTP}
+</span><br />
+여기서 MTP 손실 <span class="math math-inline">\mathcal{L}_{MTP}</span>는 모든 예측 깊이 <span class="math math-inline">k</span>에서의 교차 엔트로피(Cross-Entropy) 손실의 평균이다.<br />
+<span class="math math-display">
+\mathcal{L}_{MTP} = \frac{1}{D} \sum_{k=1}^{D} \mathcal{L}_{MTP}^{(k)}
+</span><br />
+각 <span class="math math-inline">\mathcal{L}_{MTP}^{(k)}</span>는 다음과 같이 계산된다:<br />
+<span class="math math-display">
+\mathcal{L}_{MTP}^{(k)} = -\frac{1}{T} \sum_{i=1}^{T} \log P(t_{i+k+1} | h_{i}^{k})
+</span><br />
+이 손실 함수는 모델에게 이중적인 부담을 지운다. 메인 모델은 당장 <span class="math math-inline">t_{i+1}</span>을 잘 예측해야 할 뿐만 아니라, 그 은닉 상태 <span class="math math-inline">h_{i}^{0}</span>가 MTP 모듈을 통과했을 때 <span class="math math-inline">t_{i+2}</span> 등 미래 토큰까지 잘 예측할 수 있도록 ‘미래 지향적인’ 정보를 담고 있어야 한다. 즉, 역전파 과정에서 MTP 손실의 기울기(Gradient)가 MTP 모듈을 타고 내려와 메인 모델의 트랜스포머 블록까지 영향을 미친다. 이는 메인 모델이 현재의 문맥을 해석할 때, 단순히 다음 단어를 맞추기 위한 얕은 특징(Shallow Features)이 아니라, 문장 전체의 전개를 관장하는 깊은 특징(Deep Features)을 학습하게 만든다.</p>
+<h3>3.2  <span class="math math-inline">\lambda</span> 스케줄링: 학습 단계별 전략</h3>
+<p>MTP 손실의 가중치 <span class="math math-inline">\lambda</span>는 고정된 값이 아니라 학습 진행 상황에 따라 동적으로 조절된다. DeepSeek-V3의 기술 보고서에 따르면, 전체 14.8조 토큰 학습 과정 중 초기 10조 토큰 구간에서는 <span class="math math-inline">\lambda = 0.3</span>을, 나머지 4.8조 토큰 구간에서는 <span class="math math-inline">\lambda = 0.1</span>을 적용했다.13</p>
+<p>이러한 <strong>감쇠 스케줄링(Decay Scheduling)</strong> 전략은 학습 역학(Training Dynamics) 관점에서 매우 중요한 함의를 갖는다.</p>
+<ol>
+<li><strong>초기 단계 (High <span class="math math-inline">\lambda</span>):</strong> 학습 초기에는 모델이 언어의 전반적인 구조와 패턴을 빠르게 파악해야 한다. 이때 높은 <span class="math math-inline">\lambda</span> 값은 모델에게 미래 토큰에 대한 강력한 신호를 주입하여, 문맥 파악 능력을 가속화한다. MTP는 일종의 ‘비계(Scaffolding)’ 역할을 하여 모델이 국소 최적점(Local Minima)에 빠지지 않고 더 넓은 시야를 갖도록 돕는다.</li>
+<li><strong>후기 단계 (Low <span class="math math-inline">\lambda</span>):</strong> 모델이 어느 정도 성숙한 후기 단계에서는 메인 모델의 정밀한 다음 토큰 예측 능력이 최우선이 된다. 이때 과도한 MTP 손실은 오히려 메인 작업(NTP)의 미세 조정을 방해하는 노이즈로 작용할 수 있다. 따라서 <span class="math math-inline">\lambda</span>를 낮추어 MTP의 영향력을 줄이고, 모델이 NTP 성능을 극한으로 끌어올리도록 유도한다.</li>
+</ol>
+<p>이러한 전략은 커리큘럼 학습(Curriculum Learning)의 일종으로 해석될 수 있으며, DeepSeek-V3가 방대한 데이터셋을 효율적으로 소화하고 높은 성능을 달성한 비결 중 하나이다.</p>
+<h2>4.  MTP의 이론적 효용: 왜 성능이 향상되는가?</h2>
+<p>단순히 예측 대상을 늘리는 것이 어떻게 메인 모델의 지능을 높이는가? 이에 대한 답은 정보 이론과 표현 학습(Representation Learning)의 관점에서 찾을 수 있다.</p>
+<h3>4.1  학습 신호의 고밀도화 (Densification)</h3>
+<p>표준 NTP 훈련에서 길이 <span class="math math-inline">T</span>의 시퀀스는 <span class="math math-inline">T</span>개의 감독 신호(Supervisory Signal)를 제공한다. 그러나 <span class="math math-inline">D=1</span>인 MTP를 적용하면, 모델은 각 시점마다 2개의 예측을 수행하므로 총 <span class="math math-inline">2T</span>개의 신호를 얻게 된다. 이는 데이터의 효율성을 두 배로 높이는 것과 유사한 효과를 낸다.17 특히 코딩이나 수학 문제 해결과 같이 논리적 단계가 긴밀하게 연결된 데이터에서, 이러한 고밀도 신호는 모델이 각 단계 간의 인과관계를 더 명확하게 학습하도록 돕는다.</p>
+<h3>4.2  표현의 전역화 및 계획(Planning) 능력</h3>
+<p>정보 병목 이론(Information Bottleneck Theory)에 따르면, 신경망의 깊은 층은 입력의 불필요한 정보는 버리고 출력 예측에 필요한 핵심 정보만을 압축하여 보존하려 한다. NTP 모델은 ’다음 단어’와 관련된 정보만을 남기려는 경향이 있어, 당장은 필요 없지만 나중에 중요한 정보를 조기에 소실할 위험이 있다.</p>
+<p>반면 MTP 모델은 은닉 상태 <span class="math math-inline">h_{i}</span>에 <span class="math math-inline">t_{i+1}</span>뿐만 아니라 <span class="math math-inline">t_{i+2}, \dots, t_{i+D}</span>를 예측하는 데 필요한 정보까지 모두 압축해 넣어야 한다. 이는 모델이 문맥을 해석할 때 더 긴 시간 범위를 고려하게 만들며, 결과적으로 ‘계획(Planning)’ 능력을 내재화하게 된다. 이는 추론 시 MTP 모듈을 떼어내더라도 메인 모델 자체의 사고력이 향상되는 원인이다.7</p>
+<h3>4.3  인덕션 헤드(Induction Heads)의 강화</h3>
+<p>Gloeckle 등의 연구 1는 MTP가 트랜스포머 내부의 <strong>인덕션 헤드(Induction Heads)</strong> 형성을 촉진한다고 보고했다. 인덕션 헤드는 <code>[A]...... [A] -&gt;</code>와 같은 패턴 복사 메커니즘을 수행하는 어텐션 헤드로, LLM의 문맥 내 학습(In-Context Learning) 능력의 핵심으로 알려져 있다. 여러 토큰을 동시에 예측하려면 과거의 패턴을 더 정확하게 파악하고 복사해야 하므로, MTP 훈련은 이러한 인덕션 헤드의 발달을 강력하게 자극한다. DeepSeek-V3가 코딩 벤치마크(HumanEval, MBPP) 등에서 보여준 탁월한 성능은 이러한 인덕션 능력 강화와 밀접한 관련이 있다.19</p>
+<h2>5.  추론 가속화: 자기 사변적 디코딩 (Self-Speculative Decoding)</h2>
+<p>DeepSeek-V3 MTP 전략의 백미는 훈련된 MTP 모듈을 폐기하지 않고 추론 단계에서 재활용한다는 점이다. 이는 <strong>사변적 디코딩(Speculative Decoding)</strong> 기법과 결합되어, 추가적인 모델 훈련이나 복잡한 파이프라인 없이도 즉각적인 추론 속도 향상을 가져온다.3</p>
+<pre><code class="language-mermaid">graph TD
+    %% 9.3.5 사변적 디코딩
+    Start(("추론 시작 (Step n)")) --&gt; MainGen["메인 모델: t_{n+1} 생성"]
+    MainGen --&gt; MTPDraft["MTP 모듈: t_{n+2} 초안 제안 (Draft)"]
+    
+    subgraph "검증 단계 (Verification Step n+1)"
+        InputNext["입력: t_{n+1}"] --&gt; MainVerify["메인 모델 연산"]
+        MainVerify --&gt; RealPred["t_{n+2} 실제 계산"]
+        RealPred --&gt; Compare{"비교: Draft == Real?"}
+    end
+
+    MTPDraft -.-&gt; Compare
+    
+    Compare --"일치 (Accept)"--&gt; Success["토큰 2개 동시 확정 (Speed Up)"]
+    Compare --"불일치 (Reject)"--&gt; Fail["t_{n+2} 재생성 (기존 속도)"]
+
+    Success --&gt; NextStep(("다음 스텝으로"))
+    Fail --&gt; NextStep
+    
+    style Success fill:#99ff99,stroke:#333
+    style MTPDraft fill:#ffffcc,stroke:#333,stroke-dasharray: 5 5
+</code></pre>
+<h3>5.1  사변적 디코딩의 원리와 MTP의 역할</h3>
+<p>사변적 디코딩은 ’작고 빠른 초안 모델(Draft Model)’이 미래 토큰들을 미리 제안(Draft)하고, ’크고 정확한 검증 모델(Verify Model)’이 이를 병렬로 검증하는 방식이다. 검증 모델이 한 번의 포워드 패스(Forward Pass)로 여러 개의 초안 토큰을 확인하고 승인한다면, 전체적인 생성 속도는 빨라진다.</p>
+<p>일반적인 사변적 디코딩은 별도의 초안 모델을 훈련시키고 메모리에 올려야 하는 부담이 있다. 또한 초안 모델과 검증 모델의 구조가 달라 예측 분포의 불일치가 발생하면 채택률(Acceptance Rate)이 떨어져 오히려 속도가 느려질 수도 있다.</p>
+<p>그러나 DeepSeek-V3는 자기 사변적 디코딩(Self-Speculative Decoding) 방식을 취한다. 훈련 시 사용했던 MTP 모듈 자체가 초안 모델 역할을 수행하는 것이다.</p>
+<h3>5.2  MTP 모듈을 이용한 초안 생성 및 검증</h3>
+<p>추론 과정은 다음과 같이 진행된다 4:</p>
+<ol>
+<li><strong>생성 및 제안:</strong> 메인 모델이 현재 시점 <span class="math math-inline">t_{n}</span>을 입력받아 <span class="math math-inline">t_{n+1}</span>을 생성할 때, 메인 모델에 붙어 있는 MTP 모듈은 그 즉시 <span class="math math-inline">t_{n+2}</span>를 예측(제안)한다.</li>
+<li><strong>검증:</strong> 다음 스텝에서 메인 모델은 <span class="math math-inline">t_{n+1}</span>을 입력으로 받아 <span class="math math-inline">t_{n+2}</span>를 계산한다. 이때 이전에 MTP 모듈이 제안했던 <span class="math math-inline">t_{n+2}&#39;</span>과 메인 모델이 계산한 <span class="math math-inline">t_{n+2}</span>를 비교한다.</li>
+<li><strong>채택:</strong> 만약 두 토큰이 일치하면(또는 확률 분포상 허용 범위 내라면), <span class="math math-inline">t_{n+2}</span>는 별도의 추가 연산 없이 즉시 확정된다. 이렇게 되면 한 번의 메인 모델 연산으로 2개의 토큰을 얻게 되는 셈이다.</li>
+</ol>
+<h3>5.3  압도적인 채택률과 성능 향상</h3>
+<p>DeepSeek-V3의 MTP 기반 사변적 디코딩은 타 방식 대비 압도적인 효율을 자랑한다. 그 비결은 <strong>가중치 공유와 공동 훈련</strong>에 있다. MTP 모듈은 메인 모델과 임베딩 및 헤드를 공유하며 함께 훈련되었기 때문에, 메인 모델의 확률 분포와 거의 완벽하게 정렬(Aligned)되어 있다.</p>
+<p>실험 결과에 따르면, DeepSeek-V3의 MTP 모듈이 제안한 두 번째 토큰의 **채택률(Acceptance Rate)은 85%에서 90%**에 달한다.3 이는 일반적인 외부 초안 모델들이 50~60% 수준의 채택률을 보이는 것과 비교할 때 경이로운 수치이다. 이 높은 채택률 덕분에 DeepSeek-V3는 추론 시 <strong>1.8배의 토큰 생성 속도(TPS)</strong> 향상을 달성했다.8 이는 하드웨어 추가 없이 알고리즘의 개선만으로 2배에 가까운 성능 향상을 이끌어낸 것으로, 비용 효율성 측면에서 막대한 이점을 제공한다.</p>
+<h2>6.  다른 MTP 접근법과의 비교 분석</h2>
+<p>DeepSeek-V3의 MTP 전략을 다른 최신 MTP 연구들과 비교해 보면 그 독창성이 더욱 부각된다.</p>
+<p><strong>표 9.3.1 주요 MTP 접근법 비교</strong></p>
+<table><thead><tr><th><strong>비교 항목</strong></th><th><strong>Meta’s MTP (Gloeckle et al., 2024)</strong></th><th><strong>Medusa (Cai et al., 2024)</strong></th><th><strong>DeepSeek-V3 MTP</strong></th></tr></thead><tbody>
+<tr><td><strong>기본 구조</strong></td><td>공유 트렁크 + <strong>병렬 독립 헤드</strong></td><td>마지막 층 + <strong>병렬 MLP 헤드</strong></td><td>공유 트렁크 + <strong>순차적 트랜스포머 모듈</strong></td></tr>
+<tr><td><strong>인과성 처리</strong></td><td>미래 토큰 간 독립적 (비인과적)</td><td>독립적 예측, 트리 어텐션으로 보정</td><td><strong>완전한 인과적 연쇄 (Sequential)</strong></td></tr>
+<tr><td><strong>파라미터</strong></td><td><span class="math math-inline">n</span>개의 독립적 출력 헤드</td><td>여러 개의 MLP 헤드</td><td>경량 트랜스포머 블록 + 공유 헤드</td></tr>
+<tr><td><strong>훈련 목표</strong></td><td>샘플 효율성, 추론 속도</td><td>추론 가속화 전용 (Post-training)</td><td><strong>메인 모델 성능 강화</strong> + 추론 가속화</td></tr>
+<tr><td><strong>추론 방식</strong></td><td>트리 기반 검증 (복잡함)</td><td>트리 기반 검증 (복잡함)</td><td><strong>단순 순차 검증 (Low Overhead)</strong></td></tr>
+<tr><td><strong>채택률</strong></td><td>모델/데이터에 따라 가변적</td><td>60~70% 수준</td><td><strong>85~90% (매우 높음)</strong></td></tr>
+</tbody></table>
+<p>Meta의 방식이나 Medusa와 같은 기존 접근법들은 주로 ’병렬 예측’을 사용했다. 이는 구현이 쉽지만, 앞서 언급했듯 미래 토큰들 간의 상관관계를 무시하기 때문에 예측 정확도가 떨어진다. 반면 DeepSeek-V3는 ’순차적 모듈’을 도입하여 인과성을 보존함으로써, 메인 모델과의 정합성을 극대화했다. 이는 훈련 단계에서는 더 나은 표현 학습을 유도하고, 추론 단계에서는 더 높은 채택률을 보장하는 선순환 구조를 만들어냈다.</p>
+<p>또한, Medusa 등은 주로 ‘훈련 후(Post-training)’ 단계에서 별도의 헤드를 부착하여 튜닝하는 방식을 제안한 반면, DeepSeek-V3는 MTP를 ‘사전 훈련(Pre-training)’ 단계부터 핵심 목표로 통합했다. 이는 MTP가 단순히 추론 속도를 높이는 부가 기능이 아니라, 모델의 기본 지능을 형성하는 근간임을 보여준다.</p>
+<pre><code class="language-mermaid">graph LR
+    %% 9.3.6 효용 요약
+    Center["DeepSeek-V3 MTP 효과"]
+    
+    Effect1["1: 학습 신호 고밀도화"]
+    Desc1["T개 토큰 -&gt; 2T개 신호&lt;br/&gt;(샘플 효율성 2배)"]
+    
+    Effect2["2: 계획(Planning) 능력"]
+    Desc2["미래 정보를 현재 압축&lt;br/&gt;(전역적 시야 확보)"]
+    
+    Effect3["3: 추론 가속화"]
+    Desc3["채택률 85~90%&lt;br/&gt;(별도 모델 없는 Speculative Decoding)"]
+    
+    Effect4["4: 인덕션 헤드 강화"]
+    Desc4["패턴 복사 및&lt;br/&gt;In-Context Learning 향상"]
+
+    Center --&gt; Effect1
+    Center --&gt; Effect2
+    Center --&gt; Effect3
+    Center --&gt; Effect4
+    
+    Effect1 --- Desc1
+    Effect2 --- Desc2
+    Effect3 --- Desc3
+    Effect4 --- Desc4
+
+    style Center fill:#e1bee7,stroke:#333,stroke-width:2px
+    style Effect3 fill:#b2dfdb,stroke:#333
+</code></pre>
+<h2>7.  결론: 트랜스포머 싱귤래리티를 향한 도약</h2>
+<p>DeepSeek-V3의 다중 토큰 예측(MTP) 전략은 LLM 학습의 패러다임을 ’다음 단어 맞추기’에서 ’미래 흐름 예측하기’로 전환하는 중요한 분기점이다. 이는 다음과 같은 세 가지 차원에서 트랜스포머 모델의 진화를 가속화한다.</p>
+<ol>
+<li><strong>지능의 심화:</strong> MTP는 모델에게 더 넓은 문맥을 고려하고 계획하는 능력을 훈련시켜, 코드 생성이나 수학적 추론과 같은 복잡한 작업에서의 성능을 근본적으로 향상시킨다.</li>
+<li><strong>효율의 극대화:</strong> 훈련 단계에서는 데이터로부터 더 많은 정보를 추출하여 학습 속도를 높이고, 추론 단계에서는 이미 학습된 모듈을 재활용하여 하드웨어의 한계를 뛰어넘는 속도를 제공한다.</li>
+<li><strong>아키텍처의 통합:</strong> 훈련과 추론, 성능과 속도라는 상충될 수 있는 목표들을 하나의 우아한 아키텍처(순차적 MTP) 안에서 통합적으로 해결했다.</li>
+</ol>
+<p>특히 DeepSeek-V3가 보여준 보조 손실 없는 부하 분산(Auxiliary-loss-free Load Balancing, 9.1절 참조)과 MTP의 결합은, 수천억 파라미터 규모의 모델을 다루는 엔지니어링의 정점을 보여준다. MTP는 단순한 트릭이 아니다. 그것은 언어 모델이 인간의 사고 방식에 한 걸음 더 다가서기 위해 필연적으로 거쳐야 할 진화의 단계이며, 트랜스포머 아키텍처가 맞이할 ’특이점(Singularity)’의 핵심 동력으로 작용할 것이다.</p>
+<p>향후 연구에서는 <span class="math math-inline">D</span>값을 더 늘렸을 때의 장기 계획 능력 변화, 혹은 강화학습(RL) 단계에서 MTP가 보상 모델링에 미치는 영향 등에 대한 탐구가 이어질 것으로 보인다. DeepSeek-V3의 MTP 전략은 이미 오픈소스 모델 생태계에 새로운 표준을 제시했으며, 이는 앞으로 등장할 모든 차세대 모델들의 설계에 깊은 영감을 줄 것이다.</p>
+<h2>8. 참고 자료</h2>
+<ol>
+<li>[2404.19737] Better &amp; Faster Large Language Models via Multi-token Prediction - arXiv, https://arxiv.org/abs/2404.19737</li>
+<li>Your LLM Knows the Future: Uncovering Its Multi-Token Prediction Potential, https://machinelearning.apple.com/research/prediction-potential</li>
+<li>DeepSeek-V3 Technical Report - The VITALab website, https://vitalab.github.io/article/2025/02/11/DeepSeekV3.html</li>
+<li>Multi Token Prediction (MTP) — vllm-ascend, https://docs.vllm.ai/projects/ascend/en/latest/developer_guide/feature_guide/Multi_Token_Prediction.html</li>
+<li>ON MULTI-TOKEN PREDICTION FOR EFFICIENT LLM INFERENCE - OpenReview, https://openreview.net/pdf?id=gKInyC9nlQ</li>
+<li>Accelerating Language Models with Multi-Token Prediction | by Himank Jain | Medium, https://medium.com/@himankvjain/accelerating-language-models-with-multi-token-prediction-9f0167232f5b</li>
+<li>deepseek-ai/DeepSeek-V3 - GitHub, https://github.com/deepseek-ai/DeepSeek-V3</li>
+<li>DeepSeek-V3 Technical Report - arXiv, https://arxiv.org/html/2412.19437v1</li>
+<li>How Multi-Token Prediction (MTP) works in DeepSeek-V3 | by Mao Jia | GoPenAI, https://blog.gopenai.com/how-multi-token-prediction-mtp-works-in-deepseek-v3-94bb9301989c</li>
+<li>DeepSeek-V3 Explained. How Was the Revolutionary Model… | by Ataka Jeong | Medium, https://medium.com/@jjjy213/deepseek-v3-explained-fdac83ba280c</li>
+<li>Accelerating DeepSeek-V3 inference using multi-token prediction in SGLang, https://rocm.docs.amd.com/projects/ai-developer-hub/en/latest/notebooks/inference/mtp.html</li>
+<li>DeepSeek-V3 — Advances in MoE Load Balancing and Multi-Token Prediction Training | by Yugen.ai - Medium, https://medium.com/yugen-ai-technology-blog/deepseek-v3-advances-in-moe-load-balancing-and-multi-token-prediction-training-f6d68c59749c</li>
+<li>Primers • DeepSeek V3 - aman.ai, https://aman.ai/primers/ai/deepseekV3/</li>
+<li>Deepseek releases new V3 checkpoint (V3-0324) : r/LocalLLaMA - Reddit, https://www.reddit.com/r/LocalLLaMA/comments/1jip611/deepseek_releases_new_v3_checkpoint_v30324/</li>
+<li>DeepSeek V3-0324 Live on Lambda!, https://lambda.ai/blog/deepseek-v3-0324-live-on-lambda</li>
+<li>DeepSeek-V3 Technical Report - arXiv, https://arxiv.org/pdf/2412.19437</li>
+<li>Your LLM Knows the Future: Uncovering Its Multi-Token Prediction Potential - arXiv, https://arxiv.org/html/2507.11851v1</li>
+<li>Understanding and Enhancing the Planning Capability of Language Models via Multi-Token Prediction - ResearchGate, https://www.researchgate.net/publication/395968912_Understanding_and_Enhancing_the_Planning_Capability_of_Language_Models_via_Multi-Token_Prediction</li>
+<li>Better &amp; Faster Large Language Models via Multi-token Prediction - arXiv, https://arxiv.org/pdf/2404.19737</li>
+<li>SGLang Speculative Decoding Tutorial: How to Deploy DeepSeek Models and Achieve 1.4× Throughput – With Benchmarks - HPC-AI Tech, https://company.hpc-ai.com/blog/sglang-speculative-decoding-tutorial</li>
+<li>Want to Master Open-Source LLMs in 2025? Start with DeepSeek V3 | by Pranam Shetty | Medium, https://medium.com/@prxshetty/want-to-master-open-source-llms-in-2025-start-with-deepseek-v3-f485d45a6387</li>
+<li>Insights into DeepSeek-V3: Scaling Challenges and Reflections on Hardware for AI Architectures - arXiv, https://arxiv.org/html/2505.09343v1</li>
+</ol>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

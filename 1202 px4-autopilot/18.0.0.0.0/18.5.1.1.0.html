@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.5.1.1. `orb_subscribe()` 내부의 VFS `open()` 시스템 콜 호출 및 OS 레벨 파일 디스크립터 할당</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.5.1.1. `orb_subscribe()` 내부의 VFS `open()` 시스템 콜 호출 및 OS 레벨 파일 디스크립터 할당</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.5.1.1. `orb_subscribe()` 내부의 VFS `open()` 시스템 콜 호출 및 OS 레벨 파일 디스크립터 할당</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.5.1.1. <code>orb_subscribe()</code> 내부의 VFS <code>open()</code> 시스템 콜 호출 및 OS 레벨 파일 디스크립터 할당</h1>
+<p>PX4-Autopilot의 설계 철학은 POSIX(Portable Operating System Interface) 호환성을 최대한 보존하여 개발자에게 익숙하고 유연한 환경을 제공하는 것이다. uORB(micro Object Request Broker) 메시징 체계에서도 토픽(Topic)을 구독하는 과정은 운영체제의 하위 계층에서 가상 파일 시스템(Virtual File System, VFS)의 일반 파일을 여는 행위와 동일하게 취급된다. 본 절에서는 <code>orb_subscribe()</code> 함수가 내부적으로 어떻게 OS 레벨의 <code>open()</code> 시스템 콜로 변환되며, 최종적으로 파일 디스크립터(File Descriptor)를 할당받는 프로세스를 심층 분석한다. (본 분석은 PX4 펌웨어 최신 메인 브랜치와 NuttX 운영체제를 기준으로 한다.)</p>
+<h2>1. <code>orb_subscribe</code>의 호출 컨텍스트 (Call Context)</h2>
+<p>센서 노드나 제어기 모듈에서 특정 데이터를 수신하기 위해 <code>orb_subscribe(const struct orb_metadata *meta)</code>를 호출하면, C API 계층은 곧바로 이 요청을 uORB 코어 매니저(C++)로 전달한다. 여기서 가장 중요한 역할은 추상적인 “메타데이터 구조체“를 OS가 이해할 수 있는 “파일 시스템 경로 문자열“로 변환하는 것이다.</p>
+<p>예를 들어, <code>ORB_ID(vehicle_attitude)</code>를 매개변수로 넘긴다면, <code>uORB::Manager</code>는 내부 문자열 생성 로직을 통해 해당 토픽의 디바이스 노드 절대 경로(<code>/obj/vehicle_attitude0</code>)를 조립한다. 멀티 인스턴스(Multi-instance)를 지원하는 환경이므로, 토픽 이름 뒤에 인스턴스 번호 <code>0</code>이 붙는 형태를 띤다.</p>
+<h2>2. VFS를 통한 <code>open()</code> 시스템 콜의 여정</h2>
+<p>경로 생성 이후, 프레임워크는 곧바로 C 런타임 표준 라이브러리의 <code>open()</code> 시스템 콜을 <code>O_RDONLY</code>(읽기 전용) 모드로 호출한다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant App as PX4 Application&lt;br&gt;(Estimator/Controller)
+    participant API as uORB C API&lt;br&gt;(orb_subscribe)
+    participant Core as uORB 코어 매니저(C++)
+    participant OS as NuttX VFS&lt;br&gt;(open syscall)
+    participant N_Drv as uORBDeviceNode&lt;br&gt;(가상 디바이스 드라이버)
+
+    App-&gt;&gt;API: orb_subscribe(ORB_ID(sensor_gyro))
+    API-&gt;&gt;Core: orb_subscribe(meta)
+    Core-&gt;&gt;Core: 경로 조립: "/obj/sensor_gyro0"
+    Core-&gt;&gt;OS: open("/obj/sensor_gyro0", O_RDONLY)
+    OS-&gt;&gt;OS: VFS 네임스페이스 트래버스(Traversal)
+    OS-&gt;&gt;N_Drv: uORBDeviceNode::open(struct file *filp)
+    N_Drv--&gt;&gt;OS: 성공(0) 상태 반환 및 file 구조체 연동
+    OS--&gt;&gt;Core: 유효한 파일 디스크립터 (fd &gt; 0)
+    Core--&gt;&gt;API: fd 반환
+    API--&gt;&gt;App: fd 반환
+</code></pre>
+<p>위의 시퀀스 다이어그램에서 보듯, <code>open()</code> 시스템 콜이 실행되면 다음과 같은 일련의 과정이 발생한다.</p>
+<ol>
+<li><strong>VFS 네임스페이스 탐색(Namespace Traversal)</strong>: NuttX 운영체제는(<code>/obj</code>) 디렉토리 이하로 바인딩(Binding)되어 있는 문자 디바이스 드라이버(Character Device Driver) 리스트를 스캔하여 대상 노드를 찾는다.</li>
+<li><strong><code>uORBDeviceNode::open</code> 콜백 실행</strong>: 타겟 노드가 식별되면, OS는 해당 디바이스 드라이버가 등록해 둔 파일 연산 집합(File Operations Table, <code>file_operations</code>)에서 <code>open</code> 포인터에 해당하는 함수를 호출한다. 이는 최종적으로 <code>uORBDeviceNode</code> 클래스의 <code>open()</code> 멤버 함수로 이어진다.</li>
+<li><strong>파일 핸들(<code>struct file</code>) 연동</strong>: 시스템 콜 계층에서 넘어온 <code>struct file *filp</code> 구조체의 내부 포인터에 uORB 노드의 구문 상태나 구독자의 이력 추적용 포인터를 장착하여, 후속 <code>read</code>나 <code>ioctl</code> 호출 시 컨텍스트(Context)를 상실하지 않도록 보장한다.</li>
+</ol>
+<h2>3. OS 레벨 파일 디스크립터(FD) 할당의 이점</h2>
+<p>POSIX 계층을 통과하여 <code>open()</code>이 성공적으로 마무리되면, 프로세스의 파일 디스크립터 테이블에 사용 가능한 가장 작은 양의 정수(예: 3, 4 등)가 할당되어 반환된다. 이 정수값은 곧 <code>orb_subscribe()</code>의 리턴값으로 애플리케이션 계층에 도달한다.</p>
+<p>단순 메모리 포인터를 반환하는 방식이 아니라 파일 시스템 기반 디스크립터를 채택한 구조는 PX4-Autopilot 아키텍처에 다음과 같은 근원적인 이점을 선사한다.</p>
+<ul>
+<li><strong>다중 I/O 동기화 호환성(I/O Multiplexing)</strong>: 파일 디스크립터를 획득함으로써, 시스템 내 다수의 uORB 토픽과 시리얼(UART/USB) 및 네트워크 통신용 소켓 디스크립터를 하나의 <code>poll()</code> 또는 <code>select()</code> 시스템 콜 블록 내에서 모두 묶어 감시할 수 있게 된다. 이는 이벤트 구동 동기화 메커니즘 구축에 필수적인 요소이다.</li>
+<li><strong>보안 및 자원 관리의 통일화(Unified Resource Management)</strong>: 프로세스(태스크)가 예기치 않게 종료될 경우, 운영체제 하위 커널이 미처 반환되지 않은 파일 디스크립터를 자동으로 닫아주어(Garbage Collection 역할), 댕글링 리소스(Dangling Resource)나 메모리 누수(Memory Leak)에 의한 시스템 응답 불능 현상과 패닉 상태를 미연에 원천 봉쇄한다.</li>
+</ul>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

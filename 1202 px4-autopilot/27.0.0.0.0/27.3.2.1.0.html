@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:27.3.2.1. 상태 예측 함수(`predictState`) 내부의 쿼터니언 적분식 코드 흐름</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>27.3.2.1. 상태 예측 함수(`predictState`) 내부의 쿼터니언 적분식 코드 흐름</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.3.2.1. 상태 예측 함수(`predictState`) 내부의 쿼터니언 적분식 코드 흐름</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>27.3.2.1. 상태 예측 함수(<code>predictState</code>) 내부의 쿼터니언 적분식 코드 흐름</h1>
+<p>드론의 상태를 추정하는 거대한 물리 엔진인 EKF의 첫 번째 핵심 톱니바퀴는 ’기체의 기울어짐(자세)’을 계산하는 것이다. 이 연산은 <code>src/lib/ecl/EKF/ekf.cpp</code> (혹은 관련 모듈)의 상태 예측(State Prediction) 블록 내 최상단에서 이루어지며, 오일러 각도(Euler Angles)의 특이점(Gimbal Lock) 문제를 피하기 위해 4차원 복소수 체계인 <strong>쿼터니언(Quaternion)</strong> 을 이용해 수행된다.</p>
+<p>본 절에서는 250Hz 이상의 고속으로 호명되는 <code>predictState()</code> 함수 내부에서 센서 원시 데이터가 어떻게 쿼터니언 상태 변수(인덱스 0~3번)로 적분되는지, 그 C++ 코드의 생리적 흐름을 3단계로 분해하여 해부한다.</p>
+<hr />
+<h2>1. 단계 1. 센서 델타 앵글(Delta Angle) 추출과 바이어스 보상</h2>
+<p>IMU 드라이버는 일정 시간(<span class="math math-inline">\Delta t</span>) 동안 기체가 회전한 총량인 ’델타 앵글(<span class="math math-inline">\Delta \theta</span>)’을 3차원 벡터 형태로 EKF 코어에 밀어 넣는다 (<code>imu_sample.delta_ang</code>). 하지만 앞서 언급했듯, 이 원시 데이터에는 센서 고유의 열팽창/물리적 오차인 바이어스(Bias)가 섞여 있다.</p>
+<p>가장 먼저 수행되는 연산은 이 더러워진 측정치에서 EKF 내부적으로 지난 스텝까지 끈질기게 추정해 온 <strong>자이로스코프 바이어스(<code>delta_ang_bias</code>, 인덱스 10~12번)</strong> 를 빼내어 순수한 물리적 회전량만을 걸러내는 작업이다.</p>
+<pre><code class="language-cpp">// 1. 센서가 측정한 회전량에서 추정된 오차(바이어스) 상쇄 (단위: rad)
+// 예상되는 순수 회전량 = 원시 데이터 - 바이어스
+const matrix::Vector3f delta_angle = imu_sample.delta_ang - _state.delta_ang_bias;
+</code></pre>
+<p>이렇게 정제된 <code>delta_angle</code> 벡터(x, y, z 방향의 회전 라디안)야말로 다음 쿼터니언 회전 연산의 핵심 연료가 된다.</p>
+<hr />
+<h2>2. 단계 2. 델타 앵글의 쿼터니언 변환 및 회전 누적(적분)</h2>
+<p>3차원 벡터로 표현된 요/피치/롤 회전량을 4차원 쿼터니언 공간에 적용하려면, 회전축과 회전각의 성질을 이용해 해당 <span class="math math-inline">\Delta \theta</span> 를 쿼터니언 객체로 캐스팅(Casting)해야 한다.<br />
+ECL(Estimation and Control Library)에 내장된 <code>matrix::Quaternion</code> 클래스는 3차원 축-각(Axis-Angle) 벡터를 입력받으면 내부적으로 매클로린 급수 전개(Taylor series)와 삼각함수를 이용하여 미소 회전 쿼터니언 <span class="math math-inline">\Delta q</span> 로 자동 변환해 준다.</p>
+<p>그 후, 직전 타임스텝의 자세 상태 변수(<code>_state.quat_nominal</code>, 인덱스 0~3번)에 이 미소 회전 쿼터니언을 <strong>행렬 곱셈(*)</strong> 처리한다. 쿼터니언의 곱셈은 곧 3차원 공간에서의 ‘회전의 연속(적분)’ 물리 현상과 완벽히 동치이다.</p>
+<pre><code class="language-cpp">// 2-1. 순수 회전량 벡터(delta_angle)를 미소 회전 쿼터니언 행렬(dq)로 변환
+matrix::Quaternionf dq(delta_angle);
+
+// 2-2. 기존의 자세 쿼터니언에 미소 회전 쿼터니언을 행렬 곱셈하여 상태 업데이트(적분)
+// 수식: q(t) = q(t-1) * dq
+_state.quat_nominal = _state.quat_nominal * dq;
+</code></pre>
+<hr />
+<h2>3. 단계 3. 쿼터니언 정규화(Normalization)를 통한 수치 오차 제거</h2>
+<p>수학적으로 회전을 나타내는 쿼터니언은 4개의 성분(<span class="math math-inline">q_0, q_1, q_2, q_3</span>)의 제곱의 합이 항상 <strong>1.0 (Unit Quaternion)</strong> 이 되어야 한다는 절대적인 제약 조건을 갖는다.<br />
+<span class="math math-display"> q_0^2 + q_1^2 + q_2^2 + q_3^2 = 1 </span></p>
+<p>하지만 32비트 부동소수점(<code>float</code>) 곱셈이 수천, 수만 번 반복되다 보면 미세한 반올림 오차(Truncation Error)가 누적되어 쿼터니언 벡터의 길이(Norm)가 서서히 1.0에서 벗어나게 된다. 이 현상을 방치하면 기체의 형태가 기하학적으로 찌그러지거나 팽창하여 결국 EKF의 방향 코사인 행렬(DCM) 변환 전체가 붕괴한다.</p>
+<p>따라서 쿼터니언 적분의 마지막 줄에는 항상 자기 자신의 크기로 자신을 나누어 강제로 길이를 1.0으로 복구시키는 <strong>정규화(Normalize)</strong> 방어 코드가 뒤따른다.</p>
+<pre><code class="language-cpp">// 3. 부동소수점 연산 누적 오차로 인해 길어진 쿼터니언 벡터를 크기 1로 재정규화
+_state.quat_nominal.normalize(); 
+// 내부 구현 로직: q = q / sqrt(q0^2 + q1^2 + q2^2 + q3^2)
+</code></pre>
+<p>이 세 줄의 짧고 강렬한 코드 블록이 무사히 통과되면, 앞선 틱(Tick) 대비 <span class="math math-inline">\Delta t</span> 시간만큼 미래 좌표로 기체의 머리를 돌려놓은 최신 쿼터니언이 인덱스 0~3번 방에 안착하게 된다. EKF는 이제 이 최신 자세(Heading) 정보를 바탕으로 가속도계 데이터를 중력 축과 분리해 내는 다음 관문에 돌입한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.4.3.1. 큐 사이즈에 따른 `uORBDeviceNode` 내부 메모리 연속 할당 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.4.3.1. 큐 사이즈에 따른 `uORBDeviceNode` 내부 메모리 연속 할당 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.4.3.1. 큐 사이즈에 따른 `uORBDeviceNode` 내부 메모리 연속 할당 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.4.3.1. 큐 사이즈에 따른 <code>uORBDeviceNode</code> 내부 메모리 연속 할당 로직</h1>
+<p>단지 크기가 1인 최신 단일 데이터만 보관하는 평범한 토픽 노드와 판이하게 다르게, 다중 큐(Queue) 이력을 전폭 지원해야 하는 이벤트성 <code>uORBDeviceNode</code> 객체는 태생부터 자신이 최대 몇 개의 메시지 이력(History) 슬롯을 책임지고 유지해야 할지 명시적으로 인자(<code>queue_size</code>)를 하달받고 태어난다. 이 거대한 큐 공간을 확보하기 위해 VFS 노드 생성 초기화 시점에 단 한 번 결정적으로 이루어지는 물리적 메모리 할당(Memory Allocation) 메커니즘은, 픽스호크 보드의 극히 작고 제한된 RAM(고작 수백 KB~1MB 수준) 임베디드 환경에서 치명적인 파편화(Fragmentation) 결함을 막고 중앙 하드웨어 캐시 히트율(Cache Hit Ratio)을 극대화하기 위해 다분히 치밀하게 계산된 시스템 공학적 정수를 담고 있다. 본 절에서는 큐 사이즈 승수에 기반한 연속 메모리 할당 전략과 그 이면에 음험하게 숨겨진 실시간 커널(RTOS)의 절대 생존 설계 철학을 면밀히 분석한다.</p>
+<h2>1. 물리적 ‘연속 할당(Contiguous Allocation)’ 레이아웃의 절대 고집</h2>
+<p>만약 자바(Java)나 파이썬(Python) 환경에서 10개의 변수 이력을 유지하는 큐(Queue) 자료구조를 소프트웨어적으로 구현하라고 미션을 준다고 가정해 보자. 통상적인 웹/앱 어플리케이션 개발자라면 동적 배열(<code>std::vector</code> 류)을 쓰거나, 아니면 링크드 리스트(Linked List)를 만들어 필요할 때마다 방을 하나씩 <code>new</code> 키워드로 동적 객체 생성하여 포인터 사슬(Pointer Chain)로 느슨하게 연결하는 유연한 객체지향적 방식을 택할 것이다.</p>
+<p>그러나 1ms의 딜레이도 용납하지 않는 PX4의 하드 리얼타임 <code>uORBDeviceNode</code> 커널은 이러한 파편화된 <strong>객체 포인터 배열이나 링크드 리스트 구조를 혐오하며 철저히 배제</strong>한다. 대신 오직 통짜로 빈틈없이 이어진 단 하나의 거대한 1차원 바이트 배열 메모리 벽돌 블록을 커널 힙(Heap)에서 통째로 떼어와 할당받는 무식하지만 가장 빠르고 확실한 로우 레벨 방식을 옹고집처럼 고수한다.</p>
+<pre><code class="language-cpp">// uORBDeviceNode 커널 초기화 시점의 링 버퍼 메모리 확보 로직 메커니즘
+bool uORBDeviceNode::init() {
+    // 1. 토픽의 단일 데이터 구조체 1개 크기 파악
+    size_t data_size = _meta-&gt;o_size; 
+    
+    // 2. 외부에서 명시된 큐 사이즈(예: 10개) 승수만큼 곱하여 전체 필요한 총 바이트 단순 계산
+    size_t total_buffer_bytes = data_size * _queue_size;
+
+    // 3. 단 한 번의 커널 힙(Heap) 할당(malloc / new uint8_t[])으로 길게 연속된 통짜 메모리 방을 임대
+    _buffer = new uint8_t[total_buffer_bytes];
+    
+    if (_buffer == nullptr) {
+        // 커널 보드 RAM에 이만한 연속 덩어리가 없다면?
+        return false; // 극단적 OOM(Out-Of-Memory) 시스템 예외 처리 후 부팅 거부
+    }
+    
+    return true; // 할당 성공!
+}
+</code></pre>
+<p>프레임워크가 이토록 거칠고 경직된 구조의 연속된(Contiguous) 바이트 배열을 병적으로 고집하는 진짜 이유는, 하드웨어 CPU 캐시의 <strong>공간적 지역성(Spatial Locality)</strong> 특이점을 극단적으로 뼈끝까지 착취해 내기 위함이다.<br />
+링크드 리스트 노드들은 탄생 시점의 엔트로피 탓에 힙 메모리 여기저기에 흩뿌려져 존재하기 십상이다. CPU 코어가 이를 포인터 하나하나 체인 순회하며 내용을 더듬어 읽어 들일 때마다, 하드웨어 레벨에서 필연적 캐시 미스(Cache Miss)를 빈번히 연쇄 발생시켜 수백 클럭 사이클의 금쪽같은 비행 연산 시간을 허무하게 낭비시킨다.<br />
+반면 하나의 길다란 벽돌 블록처럼 연속 할당된 메모리 풀(Pool Array) 지형은, 센서 백그라운드 스레드가 0번 방부터 9번 방까지의 링 버퍼를 스윕(Sweep)하며 읽어 나갈 때, L1/L2 하드웨어 데이터 캐시 버스 상에 다음 1번, 2번 데이터 방 덩어리가 알아서 통째로 예지(Prefetch)되어 미리 올라가 있어 복사 접근 오버헤드를 기적적으로 제로(0) 레이턴시로 전멸시킨다.</p>
+<h2>2. 시스템 부팅 초기 시점 할당의 절대 원칙 (No Runtie Allocation)</h2>
+<p>여기서 결코 간과해선 안 될 파괴적인 커널 생존 원칙이 하나 더 배후에 도사리고 있다. 저 단일 <code>_buffer</code> 객체 지형을 판화 찍어내기 위한 <code>new</code> 혹은 <code>malloc</code> 메모리 할당 연산은 시스템 전체를 통틀어, 오직 기체의 물리적 프로펠러 모터가 공중에 돌아가기 전인 <strong>최초 시스템 부팅(Booting) 및 모듈 트리 구동 초기화(Initialization) 스크립트 시점</strong>에만 유일하게 성역처럼 허락된다는 점이다.</p>
+<p>비행 중 돌발적으로 알람 로그 데이터가 폭주하여 큐 사이즈가 모자랄 것 같다고 해서, 런타임(Runtime) 펌웨어 로직 중간에 동적으로 메모리 사이즈를 <code>realloc</code>으로 늘리거나 조각조각 노드를 <code>new</code>로 붙이는 여유로운 행위는 가혹한 임베디드 코어 생태계에서는 기체 사형 선고나 다름없는 미친 짓이다.<br />
+수 주에서 수개월 연속 전원 인가로 장시간 강행군 감시 정찰을 뛰어야 하는 산업용 드론의 경우, 비행 중 무분별한 힙 메모리의 동적 할당과 해제가 C++ 계층에서 수만 번 누적 반복되면 돌이킬 수 없는 메모리 파편화(Heap Fragmentation) 부패 현상이 가속화된다. 이는 어느 순간 시스템의 메인 물리적 총 램(RAM) 잔량 수치 기록이 수백 KB 넘게 널널함에도 불구하고, 정작 파편화 탓에 하드웨어 구조적 형상 결합상 “연속된 100바이트 공간 단일 단위“조차 단 하나도 찾지 못해 전체 시스템이 교착 상태(Kernel Panic OOM)에 빠져 무력하게 공중에서 헛돌다 추락하는 가장 악랄하고 재현 불가한 치명적 버그의 근본 원인이 된다.</p>
+<p>결론적으로, <code>uORBDeviceNode</code> 자료구조계가 큐 사이즈에 비례하여 시스템 태동기 영아 시점에 단 한 번, 유일하게 거대한 가상 연속 통짜 블록을 무식하게 영구 선점(Pre-allocation) 해버리는 아키텍처 디자인 구조는, <strong>확장성이라는 달콤한 유연성을 절반쯤 희생하더라도, 그 대가로 런타임 메모리 파편화의 잠재적 셧다운 죽음을 영구 예방하고, 하드웨어 캐시 버스의 속도를 극한까지 빨아들이기 위한</strong>, 현대 하드웨어 제어 시스템 모델 중 가장 하드코어하고 실리적인 임베디드 통신 공학 철학의 피눈물 나는 발현이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

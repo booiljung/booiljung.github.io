@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.7.3.2. 대용량 로깅 시 디스크 I/O 병목으로 인한 uORB 큐 오버플로우 방지용 Ring Buffer 운용 전략</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.7.3.2. 대용량 로깅 시 디스크 I/O 병목으로 인한 uORB 큐 오버플로우 방지용 Ring Buffer 운용 전략</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.7.3.2. 대용량 로깅 시 디스크 I/O 병목으로 인한 uORB 큐 오버플로우 방지용 Ring Buffer 운용 전략</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.7.3.2. 대용량 로깅 시 디스크 I/O 병목으로 인한 uORB 큐 오버플로우 방지용 Ring Buffer 운용 전략</h1>
+<p>PX4-Autopilot의 실시간 비행 환경에서 SD 카드의 순차 쓰기(Sequential Write) 속도는 통상 수 메가바이트(MB/s) 수준으로 어느 정도 보장되지만, 파일 시스템(FAT32 등) 내부의 클러스터 할당 연산이나 운영체제 디스크 컨트롤러 드라이버의 캐싱 한계 여파로 인해 필연적으로 간헐적인 수십~수백 밀리초(ms)에 달하는 치명적인 I/O 블로킹(Blocking) 스파이크(Spike) 현상이 발생한다. 본 절에서는 이러한 거시적 시간 차원의 물리적 하드웨어 지연 파동이 <code>logger</code> 모듈을 극악으로 덮칠 때, 시스템 모듈이 어떻게 거대한 링 버퍼(Ring Buffer)를 탄력적으로 압축 운용하여 uORB 원본 데이터의 유실을 최소화하는 한편 메인 프로세서의 통신 생존 오버플로우(Overflow)를 방어하는지 그 C++ 아키텍처 방어 전략을 해부한다.</p>
+<h2>1. SD 카드 지연과 링 버퍼(Ring Buffer)의 소프트웨어 완충 구간</h2>
+<p><code>logger</code> 모듈 내부의 로깅 데이터 파이프라인(Data Pipeline)은 본질적으로 철저하게 스레드가 분리 결합된 이원화 생산자-소비자(Producer-Consumer) 배분 패턴이다.</p>
+<ul>
+<li><strong>생산자 영역 (Frontend - uORB Subscriber Pool)</strong>: 하드웨어 인터럽트 주기에 맞춰 각 모듈 uORB 토픽의 데이터를 폴링하여 극초고속으로 RAM 내 거대한 링 버퍼(Ring Buffer)에 단지 <code>memcpy()</code>로 부어버리고 밀어 넣는다 (수 나노초 초극단 소요).</li>
+<li><strong>소비자 영역 (Backend - SD Card Writer Thread)</strong>: 링 버퍼에 데이터 덩어리가 임계량 이상 차오르면 별도 스레드로 OS 스케줄링되어 깨어나고, 느릿하고 무거운 디스크 I/O API(<code>write()</code>, <code>fsync()</code>) 래퍼를 연속 호출하여 저장 매체 섹터에 바이트들을 물리적으로 쏟아붓는다.</li>
+</ul>
+<p>이 극한의 양분 구도에서 SD 카드 쓰기 트랜잭션에 100ms의 딜레이 체증이 걸렸다고 가정해 보자. 소비자(SD Writer)가 스토리지에 잠시 제압당해 블로킹된 그 아찔한 100ms 사이, 자비 없는 고주파수 생산자(Subscriber)는 원래 하던 대로 1,000Hz 속도로 링 버퍼에 계속해서 다음 데이터를 물밀듯이 채워 넣으며, 버퍼의 꼬리(Write Tail) 포인터가 읽지 못한 머리(Read Head) 포인터를 맹렬히 추격하게 된다. 이곳 시스템 힙 메모리에 사전에 할당된 링 버퍼(RAM 용량에 따라 다르나 통상 수십 KB ~ 수백 KB)는 바로 이 무시무시한 100ms 파동 쓰나미를 홀로 견뎌내기 위해 (버퍼 사이즈 = 초당 로깅 데이터 최대 누적량 x 최대 I/O 지연 예상 인내 시간) 정교하게 수학적으로 고안된 공간적 방파제이다.</p>
+<h2>2. 버퍼 오버플로우 방어: 선제적 유실(Drop) 판단 다이내믹스</h2>
+<p>만약 불량 SD 카드의 지연(Latency)이 너무 극심하여, 소비자가 링 버퍼 여유 공간을 제때 확보해 주지 못한 나머지 생산자 쓰기 포인터가 소비자 읽기 포인터를 한 바퀴 돌아 뒷덜미에서 확정적으로 덮쳐버리는 랩어라운드 덮어쓰기(Wrap-around Overwrite) 사태가 임박하면 로거 생태계는 어떻게 폭격을 막아낼까?</p>
+<p>가장 하급의 시스템 공학이라면, 읽기 포인터가 움직여 여유 공간을 비워줄 때까지 생산자 데이터 취합 스레드에 무식하게 락(Lock)을 걸어 블로킹 대기시킬 것이다. 하지만 하드 리얼타임 PX4 아키텍처는 이를 엄격히 거부한다.</p>
+<pre><code class="language-cpp">// logger 내부 버퍼 쓰기 진입부에서의 여유 공간 검증 로직 (마이크로 아키텍처 개념화)
+size_t available_space = log_buffer_get_empty_space(_ring_buffer);
+size_t required_space = message_header_size + payload_size;
+
+if (available_space &lt; required_space) {
+    // [시스템 경고] 링 버퍼 100% 포화 상태! 
+    // 하부 디스크 I/O가 느려 터져 공간 확보가 불가능하므로 데이터 기록을 깔끔하고 냉혹하게 포기(Drop)한다.
+    
+    _dropout_count++; // 나중의 통계 보고를 위한 유실 카운터 수치만 1 증가
+    
+    // 블로킹 락 대기 따위 없이 즉시 반환(Early Return)하여 EKF2 등 생산자 스레드의 실시간성을 100% 사수한다.
+    return false; 
+}
+
+// 공간이 충분할 때만 링 버퍼에 데이터를 전격 메모리 복사
+log_buffer_push_data(_ring_buffer, raw_data, required_space);
+</code></pre>
+<p>이 C++ 코드가 명백히 증명하듯, PX4 로거는 “메모리 그릇이 꽉 차면 그냥 미련 없이 허공에 버린다(Drop)“는 매우 쿨하고도 잔혹한 전략 기조를 취한다. 특정 메시지 패키지 수십 개가 아깝게 누락되어 블랙박스 일부분 시야가 날아가더라도, 그 망할 디스크 저장을 대기하느라 메인 비행 제어 버스가 시스템 딜레이 병목(System Stalling)에 빠져 드론 전체가 뒤집히는 거대한 물리적 하드웨어 참사(Crash)를 기회비용 측면에서 압도적으로 예방하기 위함이다.</p>
+<h2>3. Drop 이벤트 스팀 마킹과 복구된 파일 분석 시스템 연동</h2>
+<p>그런데 만약 개발자가 무작정 조용히 데이터가 중간에 버려졌다는 사실조차 눈치채지 못하게 된다면 사고 분석 시 매우 심각한 타임라인 혼선이 우려된다. 이 인지적 부조화를 방지하기 위해 로거 파트는 <code>_dropout_count</code> 변수를 매우 영리하게 사후 활용한다.</p>
+<p>디스크 I/O가 간신히 병목의 숨통을 트여 RAM 링 버퍼에 다시금 조금이라도 쓸 여유 공간이 확보되는 역사적인 순간, 로거는 다음 정상 메시지 구조체를 기록하기 직전에 방금까지 **“총 N 바이트 구간, 혹은 총 M회의 패킷 무더기 드롭 결함이 방금 연속 발생했음”**을 명시적으로 고발하는 <strong>특별한 Drop 이벤트 마커(Event Marker) 규격 구조체</strong>를 ULog 파일 스트림 중간 공백 사이에 끼워 삽입해 넣는다.<br />
+이후 지상국 PC에서 FlightPlot이나 pyulog 같은 고급 파이썬 뷰어 앱으로 로그를 파싱할 때 이 드롭 이벤트 마커를 마주하게 되면, 차트 백그라운드 상에 빨간색 경고 공백 스팬(Red Blank Span)을 명확하게 그래픽 렌더링함으로써 “이 구간은 보드나 SD 카드의 처리 지연 한계로 귀중한 비행 로그가 명백히 유실되었음“을 엔지니어 리서처에게 시각적으로 통보(Notify)한다.</p>
+<p>이러한 설계 철학은 하드웨어 I/O 한계를 소프트웨어 락(Lock) 자원으로 억지 투쟁 없이 유연히 회피하고, 궁극적 기체 물리 생존을 위해 시스템 일말의 전체 성능 파산(Performance Bankruptcy) 없이 자원을 가차 없이 절단해 내버리는, 현대 실시간 시스템(RTOS)의 눈부시고 우아한 운영체제 생존 모델 레시피를 단적으로 보여준다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

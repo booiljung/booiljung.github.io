@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:28.2.1. 모듈 스케줄링 및 운영체제(NuttX) 레벨의 통합 구조</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>28.2.1. 모듈 스케줄링 및 운영체제(NuttX) 레벨의 통합 구조</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>28.2.1. 모듈 스케줄링 및 운영체제(NuttX) 레벨의 통합 구조</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>28.2.1. 모듈 스케줄링 및 운영체제(NuttX) 레벨의 통합 구조</h1>
+<p>PX4는 비행 제어 전용 하드웨어 칩셋(Pixhawk 등)에 탑재된 임베디드 실시간 운영체제(RTOS)인 NuttX 위에서 하나의 거대한 애플리케이션처럼 구동된다. <code>Flight Mode Manager</code> (이하 FMM) 데몬이 200Hz에서 400Hz에 달하는 맹렬한 속도로 비행 모드를 스위칭하고 제어 타겟 궤적을 끊김 없이 산출해 내기 위해서는, 운영체제 커널(Kernel)의 CPU 스케줄러와 매우 긴밀하고 메모리 효율적으로 통합되어야만 한다.</p>
+<h2>1.  구시대적 전용 스레드(Dedicated Thread) 무한 루프의 폐기</h2>
+<p>과거 초창기 멀티콥터 오픈소스 펌웨어 생태계에서는 새로운 추상 모듈을 빌드 추가할 때마다, 독립적인 <code>while(1) { sleep(2ms); ... }</code> 형태의 무한 딜레이 루프를 도는 전용 POSIX 스레드(Task)를 OS 커널에 하나씩 새로 파서 던져넣는 원시적인 방식을 즐겨 사용했다.</p>
+<ul>
+<li><strong>SRAM 컨텍스트 풀의 낭비</strong>: 그러나 스레드를 OS에서 하나 생성할 때마다 커널이 고정 할당해야 하는 스택 메모리(Task Stack Window) 공간 크기는 보통 최소 수 KB를 잡아먹는다. 전체 가용 램 용량이 불과 1~2MB 남짓으로 숨 막히게 협소한 픽스호크 마이크로컨트롤러(MCU) 환경에서는 모듈이 수십 개로 늘어날수록 치명적인 SRAM 낭비와 램 록업(OOM)으로 이어졌다.</li>
+<li><strong>블라인드 이벤트 트리거(Blind Timer Trigger)의 비효율</strong>: 센서의 원본 데이터 패킷이 버스에 채 도착하지도, 즉 변경 갱신되지도 않았는데, CPU가 억지로 강제 세팅된 클럭 타이머에 맞춰 깨어나 무식하게 빈 루프 연산을 공회전(Busy-waiting) 도는 현상은, 전체 타스크들의 컨텍스트 스위칭(Context Switching) 오버헤드 부하를 극심하게 가중시켜 정작 고도 연산에 필요한 사이클을 갉아먹는 적폐였다.</li>
+</ul>
+<h2>2.  uORB 이벤트 반응형 Work Queue (WQ) 스케줄링 아키텍처로의 진화</h2>
+<p>이러한 메모리 리소스 한계를 극복하기 위해 현재의 모던한 PX4 FMM 모듈 아키텍처 구조는, 감히 스스로의 오만한 전용 스레드를 소유하는 것을 깨끗이 포기하고, PX4 시스템이 OS 레벨에서 제공하는 우아한 공용 <strong>워크 큐(Work Queue, WQ)</strong> 스케줄링 풀(Pool) 패턴 객체로 강등 기생하여 통합되는 스마트한 방식을 채택했다.</p>
+<ul>
+<li><strong><code>nav_and_controllers</code> 워크 큐 탑승 대기</strong>: FMM 컴포넌트는 커널 스케줄러 위에서 독립 구동되는 무거운 프로세스가 아니라, 논리적으로 가벼운 C++ 실행 함수 덩어리인 <code>px4::WorkItem</code> 기초 클래스를 모방 상속받아 구현된다. 펌웨어 부팅 시 FMM은 <code>nav_and_controllers</code> 라는 이름이 붙은, 비행 위치 제어 및 항법 전용의 고순위(High Priority) 공용 워크 큐 스레드 풀 배열에 자신의 대기 티켓 번호만 밀어 넣고 즉각 메모리 휴면 대기(Suspend) 상태로 부드럽게 빠져버린다.</li>
+<li><strong>uORB 구독자 철저한 이벤트 인터럽트(Subscription Data Callback)</strong>: FMM 기능이 잠에서 깨어나 귀중한 CPU 연산 사이클 코어를 차지할 수 있는 권한은 오직 철저한 <strong>신규 데이터 도달 이벤트(Data-driven Event)</strong> 수신 기반으로만 부여된다. 하단의 EKF2 칼만 필터가 따끈따끈한 새 상태 추정치인 <code>vehicle_local_position.msg</code> 토픽 데이터를 새롭게 버스 구멍에 밀어 넣거나(Update Publish), 상단 <code>Commander</code>가 <code>vehicle_status</code> 토픽을 강제로 스위치 갱신하는 찰나의 0.001초 순간, uORB 미들웨어는 이 토픽을 구독(Subscription) 중이던 WQ 스케줄러 쪽에 하드웨어 인터럽트 레이블 콜백을 브로드캐스팅격방식으로 일제히 때려버린다.</li>
+<li><strong>본체 <code>Run()</code> 루프의 단발성(One-shot) 쾌속 발동</strong>: uORB 이벤트 마이크로 인터럽트 신호를 받은 WQ 스케줄러 커널 풀은, 티켓을 쥐고 얌전히 대기 중이던 FMM의 심장 본체인 <code>Run()</code> 메인 가상 함수를 그제야 허락하며 단발성으로 호출 트리거해 준다. FMM은 깨어나자마자 무섭게 동적 타스크 핫스와핑과 C++ 가상 함수 궤적 래핑 역학 연산을 0.01밀리초 만에 끝마치고, <code>Run()</code> 함수 스코프 범위를 즉시 <code>return</code> 구문으로 빠져나오며 스스로 완전 종료해 버린다. CPU 하드웨어 점유권은 OS 커널로 즉각 반환되어 타 잡무 스레드(Ex: MAVLink)에게 자비롭게 양보된다.</li>
+</ul>
+<h2>3.  RTOS 레벨 커플링의 궁극적인 아키텍처 이점</h2>
+<p>이러한 고도화된 <strong>이벤트 드리븐(Event-driven) 기반 WQ 스케줄링 체계</strong> 덕분에, FMM 데몬은 상위 센서 입력 버스의 펌핑 데이터 주파수가 200Hz든, 오버클럭된 800Hz이든, 개발자의 <code>sleep()</code> 타이머 수동 하드코딩 튜닝 변경 없이 그저 물 흐르듯 유연하고 완벽하게 주파수 동기화되어 호출 빈도가 자유자재로 자동 적응(Auto-Adaption)된다.</p>
+<p>무엇보다 수백 개가 넘는 PX4의 자잘한 비행 앱 모듈들이 각자 스레드를 낭비하지 않고 불과 3~4개의 메인 파이프라인 워크 큐 스레드 주소 공간 안에서 스택 메모리를 셰어링(Sharing Sharing)하여 순차적으로 얌전하게 번갈아 가며 100% 효율로 실행되므로, 제한된 영세한 임베디드 칩셋 하드웨어 메모리 생태계 안에서도 서버 컴퓨터 못지않은 상상 이상의 거대한 마이크로서비스 확장을 숨통 트이게 가능케 하는 위대한 아키텍처적 기반 초석이 되어주고 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:29.4. 안정화(Stabilized) 모드 제어 루프 소스 코드 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>29.4. 안정화(Stabilized) 모드 제어 루프 소스 코드 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.4. 안정화(Stabilized) 모드 제어 루프 소스 코드 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>29.4. 안정화(Stabilized) 모드 제어 루프 소스 코드 분석</h1>
+<h2>1.  안정화(Stabilized) 모드의 개요 및 철학</h2>
+<p>안정화 모드(Stabilized Mode)는 수동 비행 제어의 가장 기본적인 형태로, 멀티로터 기체 비행 시 조종기(RC) 스틱의 입력을 기체의 목표 자세(Roll, Pitch, Yaw Attitude)로 변환하여 제어하는 시스템이다. 조종기 스틱을 중앙에 놓으면 기체는 수평 자세를 회복(Self-leveling)하여 안정된 상태를 유지하도록 설계되어 있다. 이는 매뉴얼 제어(Manual Control)와 완전 자동 비행 사이의 가교 역할을 하는 핵심 기능이다.</p>
+<p>이 문서에서는 <strong>PX4-Autopilot v1.14</strong> 펌웨어를 기준으로 소스 코드를 분석하며, 지상 관제 시스템(GCS)인 <strong>QGroundControl(이하 QGC) v4.3</strong> 환경에서의 설정과 관제 방법론에 대해 기술한다.</p>
+<h3>1.1 Ardupilot의 Stabilize 모드와의 비교</h3>
+<p>PX4-Autopilot과 Ardupilot의 Stabilize 모드는 본질적인 제어 목적은 동일하나, 내부 아키텍처와 제어 루프(Control Loop) 구현에서 약간의 차이가 존재한다.</p>
+<ul>
+<li><strong>PX4-Autopilot</strong>: <code>mc_att_control</code> (멀티콥터 자세 제어) 모듈이 uORB 트랜잭션을 통해 <code>manual_control_setpoint</code>를 구독하고 이를 목표 자세(<code>vehicle_attitude_setpoint</code>)로 변환한다. 비행 기저의 제어 로직이 쿼터니언(Quaternion) 기반의 엄밀한 수학적 모델을 사용한다.</li>
+<li><strong>Ardupilot</strong>: 모드별 제어 코드가 상속 구조로 강하게 결합되어 있으며(예: <code>ModeStabilize</code> 클래스), P-PID 이중 루프(Double-loop)를 사용하여 외곽 루프(Outer Loop)에서 각도(Angle), 내부 루프(Inner Loop)에서 각속도(Rate)를 제어한다.</li>
+</ul>
+<hr />
+<h2>2.  제어 루프 아키텍처 및 Mermaid 도표</h2>
+<p>PX4의 안정화 모드는 다음과 같은 시스템 파이프라인(System Pipeline)을 통해 동작한다. 수동 입력이 들어오면서 목표 자세가 생성되고, 이를 바탕으로 자세 제어기(Attitude Controller)와 각속도 제어기(Rate Controller)를 거쳐 최종 모터 출력을 생성한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[RC Input / MAVLink Manual Control] --&gt;|uORB: manual_control_setpoint| B(Flight Task Manual Position)
+    B --&gt;|Convert to Attitude Setpoint| C[Attitude Controller &lt;br&gt; mc_att_control]
+    C --&gt;|uORB: vehicle_rates_setpoint| D[Rate Controller &lt;br&gt; mc_rate_control]
+    D --&gt;|uORB: actuator_controls| E[Mixer / Control Allocation]
+    E --&gt;|PWM/DShot| F[Motor ESCs]
+    
+    G[Estimator / EKF2] --&gt;|uORB: vehicle_attitude| C
+    G --&gt;|uORB: vehicle_angular_velocity| D
+</code></pre>
+<hr />
+<h2>3.  소스 코드 상세 분석</h2>
+<h3>3.1  매뉴얼 제어 입력 처리 (<code>manual_control</code>)</h3>
+<p>QGC나 조종기로부터 입력된 스틱 값은 <code>manual_control_setpoint</code> uORB 토픽으로 퍼블리싱(Publishing)된다. 이는 <code>src/modules/manual_control/ManualControl.cpp</code> 등에서 처리된다.<br />
+이 때 <code>MAVLink</code> 메시지 <code>MANUAL_CONTROL</code> 패킷을 파싱하며, QGC(v4.3 기준)에서는 조이스틱 입력을 직접 이 패킷으로 전달할 수 있다.</p>
+<h3>3.2  자세 목표 생성 (<code>FlightTaskManualPosition</code>)</h3>
+<p><code>src/lib/FlightTasks/tasks/ManualPosition/FlightTaskManualPosition.cpp</code> 파일 내부에서 스틱 입력값을 각도로 매핑한다.<br />
+스틱의 Roll/Pitch 입력값([-1.0, 1.0])은 매개변수 <code>MPC_MAN_TILT_MAX</code> (최대 틸트 각도)와 곱해져 목표 이탈도를 설정하게 된다.</p>
+<ul>
+<li>코드 예시:</li>
+</ul>
+<pre><code class="language-cpp">// 스틱 입력을 목표 각도로 변환하는 수식의 개념적 표현
+_tilt_setpoint = _manual_control_setpoint.roll * math::radians(_param_mpc_man_tilt_max.get());
+</code></pre>
+<h3>3.3  자세 제어기 (<code>mc_att_control</code>)</h3>
+<p>외곽루프(Outer Loop)인 자세 제어기는 <code>src/modules/mc_att_control/AttitudeControl/AttitudeControl.cpp</code> 파일에 위치한다.<br />
+현재 추정된 자세(EKF2 제공)와 목표 자세를 비교하여 필요한 3축 각속도(Angular Rates)를 계산한다.</p>
+<ul>
+<li><strong>쿼터니언 기반 계산</strong>: 최단 경로 회전을 결정하기 위해 쿼터니언 스칼라부의 부호를 확인한다.</li>
+</ul>
+<pre><code class="language-cpp">// 쿼터니언 회전 오차 연산 
+matrix::wrap_pi(q_error(0)); 
+float spin_rate = ...; 
+</code></pre>
+<h3>3.4  추력 (Thrust) 계산</h3>
+<p>안정화 모드에서는 조종기의 스로틀(Throttle) 스틱 입력이 직접 추력으로 변환된다. 단, 멀티로터 기체가 기울어지면(Tilt) 수직 추력 성분이 감소하여 고도가 떨어지는 현상이 발생한다. 이를 보상하기 위해 PX4는 뱅크각 보상(Bank Angle Compensation)을 수행한다.</p>
+<p>테이블 기반 보상 수식의 일부는 다음과 같이 적용 될 수 있다:<br />
+<span class="math math-display"> T_{comp} = \frac{T_{manual}}{\cos(\theta)} </span><br />
+이 때 수식의 절댓값 기호는 <span class="math math-inline">\vert x \vert</span> 로 표현되며, 기체의 기울기가 과도해질 경우 추력이 무한대로 가는 것을 방지하기 위해 상한선(Upper bound)을 둔다.</p>
+<hr />
+<h2>29.4.4 ROS2 기반 연동 및 제어</h2>
+<p>최근 자율 무인항공기 연구에서는 ROS2와 uXRCE-DDS 미들웨어를 활용한 오프보드(Offboard) 제어가 학계 트렌드이다. 그러나 안정화 모드 상태에 대한 상태 모니터링이나 보조적 관제 역시 ROS2로 구현 가능하다.</p>
+<ul>
+<li><strong>방법론</strong>: <code>fmu/out/vehicle_attitude</code> 토픽과 <code>fmu/out/manual_control_setpoint</code> 토픽을 서브스크라이빙(Subscribing)하여 사용자의 입력값과 기체의 실제 자세 반응 사이의 지연(Latency) 및 오차를 분석한다.</li>
+<li><strong>안전성 모니터링</strong>: MAVLink를 거치지 않고 직접 ROS2에서 Heartbeat 트래픽과 상태(<code>vehicle_status</code>)를 모니터링함으로써, 시뮬레이터(Gazebo) 환경과 실기체 간의 응답 속도 차이 진단에 매우 유리하다.</li>
+</ul>
+<h2>29.4.5 학술적 참고 자료 및 설정 (References)</h2>
+<ul>
+<li>소스 코드 저장소: <a href="https://github.com/PX4/PX4-Autopilot/tree/v1.14.0">PX4-Autopilot GitHub Repository (v1.14)</a></li>
+<li>QGroundControl 파라미터 설정: QGC의 <strong>Vehicle Setup &gt; Parameters</strong> 화면에서 <code>MC_ROLL_P</code>, <code>MC_PITCH_P</code> 등의 파라미터를 수정함으로써 제어 루프의 비례 제어 이득(Proportional Gain)을 조절할 수 있다. 조절 시 진동(Oscillation)이 발생하지 않는 임계점을 넘지 않도록 유의하라.</li>
+</ul>
+<p>이와 같이 안정화 모드의 소스 코드는 조종자의 의도(RC Input)를 엄밀한 기하학적 목표(Quaternion Attitude)로 변환하고, 물리적 법칙에 입각해 추력 보상까지 수행하는 매우 고도화된 소프트웨어 아키텍처를 자랑한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

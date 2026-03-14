@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.6.4.1.1. 디스크 I/O 대기 발생 시 Work Queue 전체 스레드가 멈추는 데드락(Deadlock) 시나리오 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.6.4.1.1. 디스크 I/O 대기 발생 시 Work Queue 전체 스레드가 멈추는 데드락(Deadlock) 시나리오 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.6.4.1.1. 디스크 I/O 대기 발생 시 Work Queue 전체 스레드가 멈추는 데드락(Deadlock) 시나리오 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.6.4.1.1. 디스크 I/O 대기 발생 시 Work Queue 전체 스레드가 멈추는 데드락(Deadlock) 시나리오 분석</h1>
+<p>Work Queue 아키텍처에서 ’블로킹(Blocking)’을 범죄 취급하는 이유를 뼈저리게 이해하기 위해, 우리는 픽스호크 내부에서 실제로 벌어질 수 있는 가장 끔찍한 데드락(Deadlock) 시나리오 하나를 해부해 볼 것이다.</p>
+<p>이 시나리오는 초보 개발자가 무심코 작성한 단 한 줄의 디스크 I/O 코드(<code>write()</code>)가 어떻게 드론 전체의 자세 제어망을 붕괴시키는지 보여주는 완벽한 교보재이다.</p>
+<h2>1. 무대의 설정 (The Stage)</h2>
+<p>PX4 내부에는 <strong><code>wq_hp_default</code> (High Priority 버스)</strong> 라는 스레드가 돌고 있다. 이 버스 안에는 다음과 같은 세 명의 승객(Work Item)이 타고 있다.</p>
+<ol>
+<li><strong>승객 A (<code>mc_pos_control</code>):</strong> 드론의 물리적 위치(x, y, z)를 계산하여 자세 제어기에게 넘겨주는 매우 중요한 핵심 모듈 (주기: 50Hz, 20ms)</li>
+<li><strong>승객 B (<code>navigator</code>):</strong> 다음 GPS 웨이포인트(Waypoint)를 계산하는 모듈 (주기: 10Hz, 100ms)</li>
+<li><strong>승객 C (<code>CustomApp</code>):</strong> 초보 개발자가 짜넣은, 특수한 로그 데이터를 SD 카드에 텍스트로 적어 넣는 커스텀 모듈 (주기: 10Hz, 100ms)</li>
+</ol>
+<p>기체는 정상적으로 비행 중이며, 세 승객은 커널의 스케줄러 큐 안에서 평화롭게 각자의 순서(Time Slice)를 기다리며 버스 기사가 자신을 호출해 주기만을 기다리고 있다.</p>
+<h2>2. 시한폭탄의 점화 (The Spark)</h2>
+<p>버스 기사(스레드 루프)가 승객 C(<code>CustomApp</code>)의 차례가 되어 <code>CustomApp::Run()</code> 메서드를 호출했다.<br />
+초보 개발자는 이 함수 안에서 C 표준 라이브러리의 파일 쓰기 함수를 무심하게 호출해 두었다.</p>
+<pre><code class="language-cpp">// CustomApp::Run() 내부의 끔찍한 코드
+void CustomApp::Run() {
+    FILE *fp = fopen("/fs/microsd/my_log.txt", "a");
+    // [치명적 오류] SD 카드 컨트롤러에 하드웨어 쓰기 명령 세팅!
+    fprintf(fp, "Current State: %d\n", state); 
+    fclose(fp);
+}
+</code></pre>
+<h2>3. 연쇄 붕괴의 시작 (The Cascade)</h2>
+<p><code>fprintf</code>가 호출되는 순간, 이 문자열 데이터는 SD 카드로 넘어가기 위해 하위 계층인 <strong>SPI 버스 컨트롤러 드라이버</strong>로 내려간다.<br />
+그런데 하필 이 타이밍에 SD 카드가 내부 플래시 메모리(NAND)의 페이지를 지우고 새로 쓰는 이른바 **‘가비지 컬렉션(Garbage Collection)’**을 수행하느라 바쁜 상태(Busy)였다!</p>
+<ol>
+<li><strong>I/O 블로킹 발생:</strong> SPI 드라이버는 “SD 카드가 바쁩니다. 끝날 때까지 여기서 기다리세요“라며 승객 C를 멈춰 세운다. 커널은 승객 C가 속한 스레드 전체(<strong><code>wq_hp_default</code></strong>)를 **수면 상태(Sleep/Blocked)**로 빼버린다.</li>
+<li><strong>버스 운행 정지:</strong> 승객 C 하나가 낮잠에 빠졌을 뿐인데, 승객 C를 태우고 있던 버스(<code>wq_hp_default</code>) 자체가 길바닥에 멈춰 서 버렸다.</li>
+<li><strong>승객 A, B의 볼모화:</strong> 20ms(50Hz)마다 실행되어야 하는 핵심 모듈, 승객 A(<code>mc_pos_control</code>)는 버스 뒷자리에 앉아 발만 동동 굴리며 자신의 차례를 기다린다. 하지만 앞자리의 승객 C가 비켜주지(Return) 않으니 버스 기사는 승객 A를 부를 수 없다.</li>
+<li><strong>치명적 지연 시간(Latency) 돌파:</strong> SD 카드의 가비지 컬렉션은 통상 100ms ~ 200ms 라는 끔찍하게 긴 시간이 소요된다. 승객 A는 무려 200ms 동안 단 한 번도 실행 권한을 얻지 못하게 된다 (Starvation).</li>
+<li><strong>드론의 추락:</strong> 위치 제어기(<code>mc_pos_control</code>)가 0.2초 동안 죽어버리자, 하위 자세 제어기(<code>rate_ctrl</code>)는 낡은 명령값(Old Setpoint)만 바라보며 오작동을 일으킨다. 기체는 순식간에 수평을 잃고 죽음의 나선(Death Spiral)을 그리며 땅으로 꽂힌다.</li>
+</ol>
+<h2>4. 데드락 방어 교훈</h2>
+<p>이 소름 돋는 데드락(Deadlock) 시나리오가 주는 교훈은 단 하나다.</p>
+<p><strong>“Work Queue 내부에서는 내가 1ms를 지체하면, 내 뒤에 서 있는 모든 핵심 모듈들이 그 1ms의 연대 책임을 지며 죽어간다.”</strong></p>
+<p>그렇다면 SD 카드 쓰기나 복잡한 행렬 역산처럼 도저히 1ms 안에 끝낼 수 없는 크고 무거운 연산(Heavy Workload)은 도대체 어떻게 처리해야 할까?<br />
+결코 한입에 베어 물지 않고, 데이터를 잘게 쪼개어 수십 번의 버스 탑승에 걸쳐 조금씩 갉아먹는 궁극의 꼼수, <strong>‘타임 슬라이싱(Time-slicing)과 유한 상태 기계(FSM)’</strong> 기법을 다음 챕터(21.6.4.1.2)에서 구출 작전의 핵심으로 다뤄보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

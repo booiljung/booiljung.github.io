@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:27.3 24상태 EKF 모델 동역학 및 소스 코드 매핑</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>27.3 24상태 EKF 모델 동역학 및 소스 코드 매핑</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.3 24상태 EKF 모델 동역학 및 소스 코드 매핑</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>27.3 24상태 EKF 모델 동역학 및 소스 코드 매핑</h1>
+<p>PX4의 상태 추정 및 제어 라이브러리(Estimation and Control Library, ECL) 내 <code>ekf2</code> 모듈은 수학적으로 24개의 고유한 상태 변수(State Variables)를 가진 확장 칼만 필터(Extended Kalman Filter, EKF) 모델을 기반으로 동작한다. 이 24개의 변수들은 기체의 현재 3차원 위치, 속도, 자세뿐만 아니라, 저가형 MEMS 측정 센서들이 태생적으로 가지고 있는 오차(바이어스)와 주변 환경의 외란(바람, 자기장 왜곡)까지도 실시간으로 추정해 내는 핵심 동력이다.</p>
+<p>본 장에서는 이 24상태 EKF 모델이 어떻게 정의되어 있으며, 이 추상적인 수학 항들이 실제 PX4 C++ 소스 코드 레벨에서 어떠한 구조체 배열 인덱스로 매핑(Mapping)되어 관리되는지 심층적으로 해부한다. 이 추적 과정을 거치고 나면, 단순한 ’필터 연산’을 넘어 동역학 방정식이 코드로 직접 시뮬레이션되는 관성 항법(Inertial Navigation)의 본질을 이해할 수 있다.</p>
+<hr />
+<h2>1.  24상태(24-State) 벡터의 수학적 조감도</h2>
+<p>수학 파트에서 다루었던 EKF의 상태 벡터 <span class="math math-inline">\mathbf{x}</span> 는 24개의 실수(Float) 성분으로 이루어진 <span class="math math-inline">24 \times 1</span> 열벡터(Column Vector)이다. PX4 ECL은 이 벡터를 논리적인 물리 그룹으로 나누어 관리하며, 그 구성은 다음과 같다.</p>
+<ol>
+<li><strong>자세 (Attitude):</strong> 4차원 쿼터니언 (Quaternion)</li>
+<li><strong>속도 (Velocity):</strong> 3차원 NED (North-East-Down) 속도</li>
+<li><strong>위치 (Position):</strong> 3차원 NED 위치</li>
+<li><strong>자이로 바이어스 (Gyro Bias):</strong> 3차원 각속도 센서 오프셋</li>
+<li><strong>가속도 바이어스 (Accel Bias):</strong> 3차원 가속도 센서 오프셋</li>
+<li><strong>지구 자기장 (Earth Magnetic Field):</strong> 3차원 절대 지자기장 벡터</li>
+<li><strong>기체 왜곡 자기장 (Body Magnetic Field):</strong> 3차원 기체 고정축 지자기 측정 왜곡(Hard-iron) 벡터</li>
+<li><strong>바람 속도 (Wind Velocity):</strong> 2차원 수평(North, East) 풍속 벡터</li>
+</ol>
+<p>총합 <span class="math math-inline">4 + 3 + 3 + 3 + 3 + 3 + 3 + 2 = 24</span> 개의 상태가 도출된다.<br />
+이 24개의 변수는 기체가 하늘에 떠 있는 매 순간순간, 고도 수백 미터 상공의 기압 변화, 태양풍에 의한 자기장 뒤틀림, 계절풍의 방향 변화를 수학적 확률로 추론해 내는 생명체의 감각 기관과도 같다.</p>
+<hr />
+<h2>2.  상태 전이 모델(State Transition Model)의 본질</h2>
+<p>EKF 모델 동역학(Dynamics) 코드를 이해하기 위해서는 근본적인 ’예측(Prediction)’의 철학을 짚고 넘어가야 한다.</p>
+<p><span class="math math-inline">k</span> 번째 타임스텝의 상태 <span class="math math-inline">\mathbf{x}_k</span> 는 이전 타임스텝 <span class="math math-inline">\mathbf{x}_{k-1}</span> 와 시스템의 비선형 동적 모델 함수 <span class="math math-inline">f()</span>, 그리고 입력 함수(제어 입력 혹은 자이로/가속도 적분값) <span class="math math-inline">\mathbf{u}_k</span> 에 의해 다음 식으로 전파(Propagate)된다.</p>
+<p><span class="math math-display"> \mathbf{x}_k = f(\mathbf{x}_{k-1}, \mathbf{u}_k) + \mathbf{w}_k </span></p>
+<p>여기서 프로세스 노이즈 <span class="math math-inline">\mathbf{w}_k</span> 를 제외한 결정론적 예측 파트는 <strong>관성 항법 시스템(INS, Inertial Navigation System)</strong> 의 편미분 방정식을 그대로 따른다. 즉, 현재 속도에 시간 변화량(<span class="math math-inline">\Delta t</span>)을 곱해 위치를 더하고, 자이로스코프의 델타 각(<span class="math math-inline">\Delta \theta</span>) 행렬로 쿼터니언을 회전시키는 작업이다.</p>
+<p>이때, 단순 모델과 고도화된 모델(PX4 EKF2)의 차이를 가르는 핵심은 상태 백터 안에 ’센서 바이어스’나 ‘바람’ 모델을 포함시켰는지 여부다.<br />
+바람 속도나 센서 바이어스는 물리적으로 매초 극심하게 변하는 값이 아니므로, 동적 모델 <span class="math math-inline">f()</span> 내에서 이들은 흔히 ’상수(Random Walk)’로 모델링되어 예측식에서는 이전 값을 그대로 가져가고 다음 측정 업데이트(Update) 단계에서 공분산에 의해 오차가 보정되는 메커니즘을 띤다.</p>
+<hr />
+<h2>3. C++ 소스 코드의 <code>StateSample</code>과 Covariance 행렬</h2>
+<p>PX4의 소스 코드 트리 <code>src/lib/ecl/EKF/</code> 폴더 내부로 들어가면, 이 24개의 수학적 기호들은 고정된 크기의 부동소수점 배열과 구조체 안에 단단히 결속되어 있다.</p>
+<p>이 24차원의 상태를 담아두는 버퍼 구조체가 바로 <code>StateSample</code> 이며, 오차 공분산(Error Covariance)을 저장하는 행렬은 크기가 자그마치 <span class="math math-inline">24 \times 24</span> 에 달하는 거대한 정사각 행렬(Square Matrix) 구조를 띈다. EKF가 매 컴퓨팅 틱(Tick)마다 가장 많은 CPU 사이클을 쏟아붓는 작업이 바로 이 <span class="math math-inline">24 \times 24</span> 행렬의 야코비안(Jacobian) 희소 행렬 연산(Sparse Matrix Multiplication)이다.</p>
+<p>이어지는 하위 장들에서는 이 <code>StateSample</code> 구조체가 정확히 배열의 인덱스 몇 번지에 어떤 물리량을 매핑하고 있는지 하나하나 추적하고, 이를 바탕으로 EKF의 예측(Prediction) 함수(<code>predictState</code>, <code>predictCovariance</code>) 내부로 들어가 C++로 구체화된 관성 항법 방정식의 실체를 파헤쳐 본다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.2.2.1.2. `STACK_MAIN` 속성에 따른 NuttX TCB(Task Control Block) 스택 사이즈 런타임 할당 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.2.2.1.2. `STACK_MAIN` 속성에 따른 NuttX TCB(Task Control Block) 스택 사이즈 런타임 할당 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.2.2.1.2. `STACK_MAIN` 속성에 따른 NuttX TCB(Task Control Block) 스택 사이즈 런타임 할당 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.2.2.1.2. <code>STACK_MAIN</code> 속성에 따른 NuttX TCB(Task Control Block) 스택 사이즈 런타임 할당 로직</h1>
+<p><code>px4_add_module()</code> 매크로 블록 안에서 초보 개발자들이 가장 큰 고뇌에 빠지는 파라미터가 하나 있다. 바로 **<code>STACK_MAIN</code>**이다.</p>
+<pre><code class="language-cmake">px4_add_module(
+    # ...
+    MAIN custom_app
+    STACK_MAIN 2000
+    # ...
+)
+</code></pre>
+<p>“내 모듈은 과연 스택(Stack) 메모리 크기를 얼마나 주어야 죽지 않을까?” 이 질문은 PX4 펌웨어가 램(SRAM) 고갈로 허덕이는 근본 원인이자, 반대로 기체 추락(Hard Fault)을 막는 최후의 보루이다. 21.1 단원에서 지겹도록 다루었듯, 이 숫자는 단순한 권장 사항이 아니라 OS 커널(NuttX)과 여러분의 모듈이 체결하는 **‘메모리 리스(Lease) 계약서’**의 절대 금액이다.</p>
+<h2>1. <code>STACK_MAIN</code>이 처리되는 생명주기 파이프라인</h2>
+<p>여러분이 CMakeLists.txt에 적어 넣은 숫자 <code>2000</code>은 모듈 컴파일 과정에서 마법처럼 커널의 테이블로 스며든다.</p>
+<ol>
+<li><strong>매크로 파싱 및 링커 심볼 주입:</strong> CMake는 <code>px4_add_module</code>을 해석하면서, 컴파일러에게 포워딩할 C 매크로를 내부적으로 생성한다. 이 과정에서 링커 심볼 테이블에 이 모듈 전용의 스택 크기 상수(Constant)가 박히게 된다.</li>
+<li><strong>명령어 분석기(Commander)와의 결합:</strong> NSH 콘솔이나 <code>rc.mc_apps</code> 부트 스크립트에서 사용자가 <code>custom_app start</code>를 치면, PX4 내부의 시스템 커맨드 파서가 작동한다. 파서는 1번 단계에서 구워진 앱 이름표와 스택 크기 정보(<code>2000</code>)를 메모리에서 매칭하여 꺼내온다.</li>
+<li><strong>TCB (Task Control Block) 생성:</strong> 파서는 NuttX OS 커널의 <code>task_spawn()</code> 또는 <code>task_create()</code> API를 호출한다. 이때 커널은 전체 힙(Heap) 공간에서 연속된 <strong>2000 Bytes의 조각</strong>을 칼로 도려내어 가져온다.</li>
+<li><strong>스레드 생명 부여:</strong> 도려낸 2000바이트를 갓 태어난 스레드의 전용 스택 공간으로 매핑하고, 이것을 관리할 TCB(Task Control Block) 구조체를 생성하여 최종적으로 모듈을 백그라운드로 띄운다.</li>
+</ol>
+<p>즉, <code>STACK_MAIN</code>은 코드를 번역할 때 적용되는 옵션이 아니라, 모듈이 <strong>런타임(Runtime)에 실행될 때마다(매번 start를 칠 때마다)</strong> OS 커널에게 “내 방 크기를 이만큼 떼어달라“고 요청하는 청구서의 금액이다.</p>
+<h2>2. 스택 크기를 결정하는 공학적 접근법</h2>
+<p>스택을 너무 작게 줘서 스레드가 선을 넘으면(Stack Overflow) 그 즉시 기체가 추락한다. 반대로 불안해서 무식하게 크게(예: 8000) 주면 다른 모듈이 띄워질 메모리가 부족해져(OOM) 펌웨어 부팅 자체가 멈춰버린다. 그렇다면 이 <code>2000</code>이라는 마법의 숫자는 도대체 어떻게 통찰해 내야 하는가?</p>
+<p>감에 의존하는 찍기(Guesswork)를 멈추고 다음과 같은 아키텍처적 추론을 거쳐야 한다.</p>
+<ol>
+<li><strong>함수 호출 깊이(Call Stack Depth)의 추적:</strong><br />
+내 모듈의 <code>main</code> 함수가 호출하는 서브 함수가 얼마나 깊이 내려가는지 파악해야 한다. 함수가 한 번 호출될 때마다 CPU는 돌아올 주소(LR)와 상태 레지스터(수십 바이트)를 스택에 눌러 담는다(Push). 순환문(Recursion)을 쓰면 스택은 순식간에 폭발한다.</li>
+<li><strong>지역 변수(Local Variables) 버퍼 배열의 파악:</strong><br />
+가장 치명적인 부분이다. 함수 내부에서 <code>float matrix[50][50];</code> (10,000 Bytes = 10KB) 같은 거대한 지역 변수를 함부로 선언하면, <code>STACK_MAIN 2000</code>은 호출 즉시 박살 난다. 이런 큰 버퍼는 클래스를 만들 때 <code>new</code>나 <code>malloc</code>을 통해 힙(Heap)에서 미리 빌려오거나(물론 메모리 파편화를 고려해야 함), 모듈이 하나만 돈다면 <code>static</code> 배열로 데이터 영역(BSS)에 박아넣어 스택에서 빼내야 한다.</li>
+<li><strong>문맥 교환(Context Switching) 예비 공간:</strong><br />
+내가 짠 코드가 200바이트만 쓴다 해도 안심할 수 없다. 하드웨어 인터럽트(IRQ)가 터지거나 컨텍스트 스위칭이 일어날 때, 커널은 현재 상태 레지스터 백업을 위해 내 태스크 스택의 꼭대기 여백(보통 150~300 바이트)을 예고 없이 강제로 징발해 사용한다. 따라서 항상 수백 바이트의 마진(Margin)을 두어야 한다.</li>
+</ol>
+<h3>2.1 런타임 스택 추적 도구 (NSH 모니터링)</h3>
+<p>전문 PX4 엔지니어들은 모듈을 짤 때 일단 여유 있게(3000 정도) 빌드해 올린 뒤, 기체를 켜고 NSH 콘솔에 명시적으로 연결하여 테스트한다.<br />
+비행 중이거나 로직이 맹렬하게 도는 상황에서 <strong><code>top</code> 명령어</strong>를 쳐보면 각 모듈별로 현재 **스택 마진(Stack Margin)**이 몇 바이트나 남았는지 실시간으로 출력된다. 만약 마진 버퍼가 <code>100</code> 이하로 위태롭게 남는다면 스택을 증설해야 하고, 마진이 <code>2000</code> 넘게 남아돈다면 공간 낭비이므로 CMake의 <code>STACK_MAIN</code> 숫자를 깎아내려 시스템 메모리를 절약하는 최적화 튜닝(Tuning) 과정을 반드시 거친다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

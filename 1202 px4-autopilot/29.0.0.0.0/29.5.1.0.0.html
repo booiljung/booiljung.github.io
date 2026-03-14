@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:29.5.1. 아크로 모드 스레드 제어 분리 및 자세 제어 루프 우회</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>29.5.1. 아크로 모드 스레드 제어 분리 및 자세 제어 루프 우회</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.5.1. 아크로 모드 스레드 제어 분리 및 자세 제어 루프 우회</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>29.5.1. 아크로 모드 스레드 제어 분리 및 자세 제어 루프 우회</h1>
+<p>PX4-Autopilot에서 수동 비행의 조종 반응성을 극대화하기 위해 아크로(Acro) 모드는 비행 제어 스택 중간에 위치한 자세 제어 루프(Attitude Control Loop)를 과감하게 생략(Bypass)하는 아키텍처를 채택하였다. 본 절에서는 아크로 모드가 인가될 때 커맨더(Commander) 모듈을 통해 어떻게 제어 스레드의 권한이 분리되고 외부 루프 제어가 우회되는지 시스템 소스 코드 수준에서 상세히 분석한다.</p>
+<h2>1. 스레드 제어 분리의 필요성 및 아키텍처 이해</h2>
+<p>멀티로터의 표준 비행 제어 스택은 일반적으로 <strong>위치 제어 루프(Position Control)</strong> → <strong>자세 제어 루프(Attitude Control)</strong> → <strong>각속도 제어 루프(Rate Control)</strong> 의 계층적 구조를 가진다.<br />
+위치 제어나 안정화(Stabilized) 모드에서는 조종기의 스틱 입력이 목표 각도(Angle Setpoint)로 해석되어 자세 제어 루프를 거치지만, 아크로 모드에서는 스틱 입력이 목표 각속도(Rate Setpoint)로 직접 매핑되어야 한다. 이를 위해 PX4는 비행 모드에 따라 특정 제어 스레드가 동작하지 않도록 플래그를 관리하여 불필요한 연산 자원을 절약하고 레이턴시를 최소화한다.</p>
+<h2>2. 시스템 모드 전환 모델(Vehicle Control Mode) 분석</h2>
+<p>PX4에서 제어 루프의 실행 스케줄링은 <code>vehicle_control_mode</code> uORB 토픽을 통해 결정된다. 커맨더(<code>src/modules/commander/Commander.cpp</code>) 모듈은 현재의 비행 모드를 확인하고 활성화해야 할 제어 루프 플래그를 업데이트한다.</p>
+<pre><code class="language-cpp">// src/modules/commander/Commander.cpp 의 제어 루프 활성화 로직 예시
+
+void Commander::update_control_mode()
+{
+    vehicle_control_mode_s control_mode{};
+    
+    // ... 사전 설정 코드 생략 ...
+
+    switch (_internal_flight_mode) {
+        // 안정화(Stabilized) 모드: 자세 제어와 각속도 제어가 모두 켜짐
+        case vehicle_status_s::NAVIGATION_STATE_STAB:
+            control_mode.flag_control_manual_enabled   = true;
+            control_mode.flag_control_attitude_enabled = true;  // &lt;--- 활성화
+            control_mode.flag_control_rates_enabled    = true;
+            break;
+
+        // 아크로(Acro) 모드: 자세 제어는 꺼지고 각속도 제어만 켜짐
+        case vehicle_status_s::NAVIGATION_STATE_ACRO:
+            control_mode.flag_control_manual_enabled   = true;
+            control_mode.flag_control_attitude_enabled = false; // &lt;--- 비활성화(우회 핵심)
+            control_mode.flag_control_rates_enabled    = true;
+            break;
+            
+        // ... 타 모드 설정 생략 ...
+    }
+
+    // uORB 를 통해 전체 시스템으로 모드 전파
+    _control_mode_pub.publish(control_mode);
+}
+</code></pre>
+<p>위 코드에서 볼 수 있듯이, 아크로 모드로 전이되는 순간 <code>flag_control_attitude_enabled</code> 플래그가 <code>false</code>로 설정된다. 이 값이 uORB 네트워크를 타고 제어 모듈들에 전파되면서 스레드 분리 및 우회 로직이 실질적으로 동작하게 된다.</p>
+<h2>3. 자세 제어 루프(Attitude Controller)에서의 우회 처리 로직</h2>
+<p><code>src/modules/mc_att_control/mc_att_control_main.cpp</code> 파일에 위치한 자세 제어기 스레드는 매 루프마다 <code>vehicle_control_mode</code> 토픽을 구독하여 자신이 제어값을 계산해야 하는지 판단한다.</p>
+<pre><code class="language-cpp">// src/modules/mc_att_control/mc_att_control_main.cpp 제어 우회 흐름
+
+void MulticopterAttitudeControl::Run()
+{
+    // ... uORB 폴링 대기 등 생략 ...
+    
+    // 제어 모드 업데이트 확인
+    if (_v_control_mode_sub.updated()) {
+        vehicle_control_mode_s v_control_mode;
+        _v_control_mode_sub.copy(&amp;v_control_mode);
+
+        // 만약 어태튜드 컨트롤(자세 제어) 플래그가 꺼져있다면 연산 없이 스레드 휴면(Return)
+        if (!v_control_mode.flag_control_attitude_enabled) {
+            return; // --- Attitude Loop 바이패스 지점 ---
+        }
+    }
+
+    // 아크로 모드일 경우 이 아래 알고리즘은 단 1비트의 연산도 하지 않음.
+    // ... 일반적인 Euler/Quaternion 연산 및 자세 오차 연산 ...
+    
+    _vehicle_rates_setpoint_pub.publish(rates_sp);
+}
+</code></pre>
+<p>제어 루프의 초기 진입점에서 조건을 검사하여 플래그가 비활성화되어 있으면 함수가 즉시 반환(Return)된다. 이는 아키텍처 관점에서 다음 두 가지 주요한 효과를 가져온다.</p>
+<ol>
+<li><strong>CPU 연산량 대폭 절감</strong>: 삼각함수 연산 및 쿼터니언 변환 등 무거운 수학 연산을 스킵하여 시스템 부하를 줄인다.</li>
+<li><strong>레이턴시 극소화(Minimized Latency)</strong>: 조종기 입력에서 목표 각속도 생성, 내부 제어 루프로 진입하는 경로가 단축되어 스틱 반응성이 물리적 한계점까지 상승하게 된다.</li>
+</ol>
+<h2>4. 조종기 매뉴얼 컨트롤 모듈 연계 (Manual Control)</h2>
+<p>자세 제어기가 비활성화된 빈틈은 <code>src/modules/manual_control/ManualControl.cpp</code> 모듈이 채운다. 이 서브시스템은 아크로 모드 진입 시 스틱 입력을 읽어 직접 <code>vehicle_rates_setpoint</code> 토픽을 계산하고 발행(Publish)한다. 안정화 모드에서는 자세 제어기가 이 토픽을 발행했지만, 아크로 모드에서는 매뉴얼 컨트롤 모듈이 직접 퍼블리셔(Publisher) 역할을 수행함으로써 Ardupilot의 일원화된 제어 체계보다 더 명확하게 분리된 마이크로서비스 형태의 토폴로지를 구축하고 있다.<br />
+이로 인해 특정 비행 동역학 모듈 개발자는 아크로 모드에 특화된 커스텀 로직을 추가할 때 <code>mc_att_control</code>의 코드를 훼손하지 않고 완전히 독립된 구조 위에서 안정적으로 개발을 수행할 수 있게 된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

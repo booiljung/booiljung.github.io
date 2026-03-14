@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:27.3.3. 공분산 예측 소스 코드 분석 (`predictCovariance`)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>27.3.3. 공분산 예측 소스 코드 분석 (`predictCovariance`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.3.3. 공분산 예측 소스 코드 분석 (`predictCovariance`)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>27.3.3. 공분산 예측 소스 코드 분석 (<code>predictCovariance</code>)</h1>
+<p>이전 절들에서 다루었던 상태 예측(State Prediction, <code>predictState()</code>)은 EKF의 ’육체’에 해당한다. 센서가 이끄는 대로 기체의 현재 위치와 속도를 맹목적으로 따라가는 물리 엔진이기 때문이다.<br />
+그러나 진정한 EKF의 ’지능’이자, 칼만 필터가 단순한 저주파 통과 필터(Low-pass Filter)와 궤를 달리하게 만드는 핵심은 바로 <strong>상태 공분산 예측(State Covariance Prediction)</strong> 모듈에 있다.</p>
+<p>본 절에서는 24개 상태 변수들의 상호 신뢰도를 엮어내는 <span class="math math-inline">24 \times 24</span> 차원의 거대한 거미줄, 공분산 예측 함수 <code>predictCovariance</code>의 수학적 당위성과 이를 C++ 언어로 최적화해 낸 소프트웨어 공학적 기법을 분석한다.</p>
+<hr />
+<h2>1.  공분산 행렬(<span class="math math-inline">\mathbf{P}</span>)의 물리적/철학적 의미</h2>
+<p><code>src/lib/ecl/EKF/ekf.cpp</code> 내부를 구동하는 공분산 행렬 <span class="math math-inline">\mathbf{P}</span> 는 <span class="math math-inline">24 \times 24</span> 크기의 대칭 행렬(Symmetric Matrix)로, 총 576개의 실수(<code>float</code>) 엘리먼트로 구성된다. 이 거대한 배열 덩어리는 기체의 물리적 상태가 아니라, <strong>“EKF가 자신이 추정하고 있는 24개의 상태 변수값을 얼마나 의심(Doubt)하고 있는가?”</strong> 에 대한 수치적 자기 평가 보고서다.</p>
+<ul>
+<li><strong>대각 성분(Diagonal Elements, <span class="math math-inline">P_{ii}</span>):</strong> <span class="math math-inline">i</span>번째 상태 변수(예: 인덱스 0번 쿼터니언 <span class="math math-inline">q_0</span>) 스스로에 대한 불확실성(분산). 이 값이 클수록 EKF는 이 변수를 신뢰하지 못한다.</li>
+<li><strong>비대각 성분(Off-diagonal Elements, <span class="math math-inline">P_{ij}</span>):</strong> <span class="math math-inline">i</span>번째 변수와 <span class="math math-inline">j</span>번째 변수 간의 상관관계. 예를 들어 <span class="math math-inline">P_{pos\_North, vel\_North}</span> 값이 크다면, “북쪽 속도 에러가 크면 필연적으로 북쪽 위치 에러도 클 것이다“라는 물리적 연쇄 작용에 대한 통계적 확신을 의미한다.</li>
+</ul>
+<p><code>predictCovariance</code> 함수의 유일한 목적은 타임스텝(<span class="math math-inline">\Delta t</span>)이 지날수록, 혹은 시스템 모델 내에 프로세스 노이즈(Process Noise, <span class="math math-inline">\mathbf{Q}</span>)가 유입될수록 이 불확실성 <span class="math math-inline">\mathbf{P}</span> 행렬을 어떻게 ’확장시켜 나갈 것인가’를 계산하는 것이다.</p>
+<hr />
+<h2>2.  상태 전이 야코비안 행렬(<span class="math math-inline">\mathbf{F}</span>)과 리카티(Riccati) 미분 방정식</h2>
+<p>수학적으로, 연속 시스템 공분산(<span class="math math-inline">\mathbf{P}</span>)의 시간 변화율은 다음과 같은 유명한 리카티 미분 방정식(Riccati Differential Equation) 꼴로 전개된다.</p>
+<p><span class="math math-display"> \dot{\mathbf{P}} = \mathbf{F}\mathbf{P} + \mathbf{P}\mathbf{F}^T + \mathbf{Q} </span></p>
+<ul>
+<li><span class="math math-inline">\mathbf{F}</span>: 상태 전이 행렬의 야코비안 (Jacobian Matrix, <span class="math math-inline">24 \times 24</span>)</li>
+<li><span class="math math-inline">\mathbf{P}</span>: 현재 상태 공분산 행렬 (<span class="math math-inline">24 \times 24</span>)</li>
+<li><span class="math math-inline">\mathbf{Q}</span>: 프로세스 노이즈 행렬 (<span class="math math-inline">24 \times 24</span>, 주로 자이로/가속도의 잡음 스펙트럼 밀도)</li>
+</ul>
+<p>PX4 ECL은 이를 이산 시간(Discrete Time) 시스템으로 영리하게 근사하여, 한 타임스텝 <span class="math math-inline">\Delta t</span> 동안 발생한 공분산의 변화량 <span class="math math-inline">\Delta \mathbf{P}</span> 를 앞서 구한 야코비안과 테일러 급수를 통해 덧셈 연산으로 쪼개서 적분한다.</p>
+<p>문제는 저 어마어마한 <span class="math math-inline">\mathbf{F}</span> (야코비안) 행렬의 정체다. 이 행렬은 앞 절에서 다룬 복잡한 비선형 물리 방정식들(쿼터니언 행렬곱, 방향 코사인 행렬 등)을 <strong>각각의 24개 상태 변수로 편미분(Partial Derivative)</strong> 한 살인적인 상호 작용의 결과물이다.</p>
+<p>만약 <span class="math math-inline">24 \times 24</span> 행렬의 곱셈 3번(<span class="math math-inline">\mathbf{F}\mathbf{P}\mathbf{F}^T</span>)을 반복문을 돌려 <span class="math math-inline">24^3 = 13,824</span> 번의 곱셈 연산으로 수행한다면, 저전력 마이크로컨트롤러(MCU)는 그 틱(Tick)을 버티지 못하고 실시간 제어 타이밍을 놓쳐 드론을 추락시킬 것이다.</p>
+<hr />
+<h2>3. 심볼릭 연산(SymPy)을 통한 희소 행렬(Sparse Matrix) 최적화 코드 자동 생성</h2>
+<p>PX4 개발팀은 이 컴퓨팅 병목 현상을 타개하기 위해 사람이 직접 C++ 행렬 곱셈 코드를 짜는 것을 포기했다.<br />
+대신, <code>ecl/EKF/python</code> 디렉터리에 위치한 파이썬 기반의 수학적 심볼릭 연산 라이브러리인 <strong>SymPy</strong> 를 활용하여 미분 방정식을 자동으로 풀어내고, <span class="math math-inline">0</span>이 곱해지는 모든 불필요한 연산을 가지치기(Pruning)한 뒤 극한으로 최적화된 C++ 코드를 역으로 <strong>자동 생성(Auto-generation)</strong> 하는 방식을 채택했다.</p>
+<p>그 결과 탄생한 것이 바로 수천 줄에 달하는 <code>predictCovariance</code> 파이프라인이다.<br />
+실제 생성된 코드의 단면을 살펴보면, <code>P</code> (기존 공분산 행렬의 복사본 연산자) 배열의 특정 요소들만을 족집게처럼 뽑아내어 곱하고 더하는 기괴하지만 가장 빠른 방식을 띠고 있다.</p>
+<pre><code class="language-cpp">// 자동 생성된 희소 연산 기반의 공분산 예측 코드 (극히 일부 발췌)
+
+// 1. 공통 부분식(Common Sub-expressions) 사전 추출 및 임시 변수 할당
+const float t0 = _state.quat_nominal(0) * _state.quat_nominal(3);
+const float t1 = _state.quat_nominal(1) * _state.quat_nominal(2);
+const float t2 = 2.0f * (t0 - t1);
+// ... 수백 개의 t 변수 선언 ...
+
+// 2. 비선형 야코비안 행렬 연산과 P 행렬 곱셈의 융합 (0 곱셈 완전 배제)
+nextP(0, 4) = P(0, 4) + dt * (t2 * P(0, 7) + t5 * P(0, 8) + t6 * P(0, 9));
+nextP(0, 5) = P(0, 5) + dt * (t7 * P(0, 7) + t8 * P(0, 8) + t9 * P(0, 9));
+// ... 576개의 셀(Cell)에 대한 독립적인 업데이트 수행 ...
+
+// 3. 프로세스 노이즈 행렬(Q)의 대각 성분 직접 주입 (예: 자이로 노이즈)
+nextP(0, 0) += dt * gyro_noise_param;
+nextP(1, 1) += dt * gyro_noise_param;
+</code></pre>
+<blockquote class="markdown-alert-note">
+<p>이러한 심볼릭 자동 생성 기법이 없었다면 24상태 확장 칼만 필터(EKF2)는 Pixhawk 4(STM32F7) 같은 모바일 프로세서에서 250Hz~400Hz로 동작하는 것이 물리적으로 불가능했을 것이다.</p>
+</blockquote>
+<hr />
+<h2>4. 대칭성(Symmetry) 보정과 오버플로우 방어 메커니즘</h2>
+<p><code>predictCovariance</code> 연산의 마지막 관문은 소프트웨어적 자기 치유(Self-healing) 로직이다.<br />
+공분산 행렬 <span class="math math-inline">\mathbf{P}</span> 는 수학의 정의상 무조건 <span class="math math-inline">P(i, j) == P(j, i)</span> 인 대칭 행렬이어야 하며, 대각 성분 <span class="math math-inline">P(i, i)</span> 는 언제나 <span class="math math-inline">0</span>보다 큰 양수(Positive-definite)여야 한다.</p>
+<p>하지만 수천 번의 부동소수점(<code>float</code>) 곱셈이 난무하는 자동 생성 코드 속에서, 반올림 오차로 인해 <span class="math math-inline">\mathbf{P}</span> 행렬은 미세하게 찌그러지며 대칭성을 잃게 된다. 대각 성분이 음수가 되는 순간, 칼만 필터는 수학적 특이점(Singularity)에 빠져 모든 계산 결과가 <span class="math math-inline">NaN</span> (Not a Number)으로 폭발하게 된다.</p>
+<p>이를 막기 위해 함수 마지막 부분에서는 행렬의 상삼각(Upper triangular) 성분과 하삼각(Lower triangular) 성분의 평균을 내어 강제로 덮어씌움으로써 대칭성을 복구하고, 대각 성분이 음수로 떨어지지 않도록 하한선(Lower bound) 필터를 적용한다.</p>
+<pre><code class="language-cpp">// 행렬 대칭성 강제 복구 및 대각선 예외 처리 (방어적 프로그래밍)
+for (unsigned row = 0; row &lt; 24; row++) {
+    for (unsigned col = 0; col &lt; row; col++) {
+        // 상/하 삼각 성분의 평균으로 대칭성 회복
+        const float sym_val = 0.5f * (nextP(row, col) + nextP(col, row));
+        nextP(row, col) = sym_val;
+        nextP(col, row) = sym_val;
+    }
+    // 대각 성분이 수학적으로 파탄 났는지(음수 등) 검토하여 최소 클리핑
+    nextP(row, row) = math::max(nextP(row, row), MIN_VARIANCE_TOLERANCE);
+}
+</code></pre>
+<p>이 고문과도 같은 연산 파이프라인을 통과한 <code>nextP</code> 행렬이야말로, 다음번 GPS나 기압계 센서 데이터가 들어올 때 칼만 게인(Kalman Gain)이라는 이름의 재판관으로 변신하여 기체의 운명을 결정지을 핵심 무기가 된다.</p>
+<p>지금까지 EKF 코어의 예측 동역학과 공분산 팽창 과정을 분석했다. 다음 절에서는 이 완벽해 보이는 물리 엔진 속에 현실 세계의 센서 데이터가 유입될 때 필연적으로 발생하는 <strong>시간축 엇갈림(Time Delay)</strong> 현상을 EKF가 어떻게 극복해 내는지 링 버퍼(Ring Buffer) 메커니즘을 통해 파헤쳐 본다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

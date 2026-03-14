@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.4.3.1. `custom_command()` 내부의 다중 분기 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.4.3.1. `custom_command()` 내부의 다중 분기 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.4.3.1. `custom_command()` 내부의 다중 분기 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.4.3.1. <code>custom_command()</code> 내부의 다중 분기 로직</h1>
+<p><code>ModuleBase</code>가 버리지 않고 넘겨준 커스텀 명령어 스위치(<code>argv</code>)들은 모두 <code>custom_command(int argc, char *argv[])</code> 함수의 입구로 쏟아져 들어온다.</p>
+<p>우리는 이 <code>static</code> 함수 안에서 문자열을 해부하여 적절한 내부 로직으로 연결하는 **분기점(Switching Hub)**을 만들어야 한다.</p>
+<h2>1. 텔레파시(Singleton)로 인스턴스 찾기</h2>
+<p>가장 먼저 짚고 넘어가야 할 거대한 제약 사항이 있다. 앞서 말했듯 <code>custom_command</code>는 <code>static</code> 함수이기 때문에 메모리 구조상 특정 객체 모델에 귀속되지 않는다.<br />
+명령어를 처리하려면 현재 힙(Heap) 메모리에서 맹렬하게 돌아가고 있는 내 모듈의 진짜 몸체(객체 인스턴스) 주소를 먼저 찾아내야만 한다.</p>
+<p>다행히 <code>ModuleBase</code>는 부모 클래스 깊숙한 곳에 자기 자식 객체의 포인터를 몰래 쥐고 있는 <strong>싱글톤(Singleton) 포인터 획득 함수</strong>인 <code>get_instance()</code>를 제공한다.</p>
+<pre><code class="language-cpp">int CustomApp::custom_command(int argc, char *argv[])
+{
+    // 1. 커맨드가 아무것도 안 들어왔는가? (방어 코드)
+    if (argc &lt; 1) {
+        return print_usage("missing command");
+    }
+
+    // 2. 현재 메모리에 떠 있는 내 진짜 객체의 포인터를 가져온다!
+    CustomApp *inst = get_instance();
+
+    // 3. 만약 모듈이 start로 켜지지도 않았는데 커스텀 명령부터 때렸다면?
+    if (inst == nullptr) {
+        PX4_ERR("Module is not running!");
+        return -1; // 가차 없이 거부
+    }
+
+    // 4. 이제부터 본격적인 명령어 텍스트 분기(Branching)를 시작한다.
+    const char *cmd = argv[0];
+    // ...
+}
+</code></pre>
+<p>이 <code>get_instance()</code> 호출은 마법과도 같다. 이제 우리는 <code>inst-&gt;</code> 포인터를 통해 백그라운드 런루프 속에서 돌고 있는 객체의 프라이빗(Private) 멤버 변수와 멤버 함수들에 원격으로 직접(Direct) 접근할 수 있는 통제권을 획득했다.</p>
+<h2>2. <code>strcmp</code> 와의 극한의 눈치 게임</h2>
+<p>통제권을 얻었으니 이제 유저가 입력한 글자(<code>argv[0]</code>)가 무엇인지 판별하여 로직을 갈라치기 할 차례다.<br />
+하지만 C++의 <code>switch-case</code> 문은 문자열(String)을 인자로 받지 못한다. 따라서 우리는 구시대적이고 원시적인 C 표준 라이브러리인 **<code>strcmp(String Compare)</code>**의 무한 <code>if-else</code> 사슬을 엮어낼 수밖에 없다.</p>
+<pre><code class="language-cpp">    // 4. 본격적인 분기 시작
+    const char *cmd = argv[0];
+
+    // CASE 1: 센서 정렬 명령인가?
+    if (!strcmp(cmd, "align_sensor")) {
+        // 객체의 멤버 함수 원격 호출!
+        inst-&gt;force_sensor_alignment(); 
+        return 0; // 명령어 처리 성공
+    }
+
+    // CASE 2: 모터를 강제로 돌려보는 명령인가?
+    if (!strcmp(cmd, "test_motor")) {
+        // 하위 파라미터가 더 필요한 경우 (예: test_motor 2)
+        if (argc &gt;= 2) {
+            int motor_index = atoi(argv[1]); // 위험! atoi 대신 앞서 배운 strtol을 쓸 것
+            inst-&gt;test_single_motor(motor_index);
+            return 0;
+        } else {
+            return print_usage("test_motor requires motor_index");
+        }
+    }
+
+    // CASE 3: 내가 모르는 엉뚱한 명령인가?
+    return print_usage("unrecognized command");
+</code></pre>
+<p>수많은 <code>strcmp</code>의 그물망을 짜다 보면 코드가 지저분해지기 십상이다. 하지만 저 <code>if-else</code> 체인이 길어지는 속도 저하에 대해서는 크게 걱정하지 않아도 된다. 왜냐하면 터미널 명령어는 비행 중에 1000Hz로 미친 듯이 들어오는 제어 루프가 아니라, 인간이 1분에 한두 번 타이핑하는 극도로 느린 이벤트 기반(Event-driven) 루틴이기 때문이다.</p>
+<p>여기서 가장 중요한 것은 <code>else</code> 단락, 즉 <strong>사용자가 오타를 내거나 잘못된 옵션을 주었을 때의 피드백 처리</strong>이다. 코드 블록에 등장한 저 <code>print_usage()</code> 함수가 어떻게 작동하며, 터미널에 아름다운 가이드를 띄어주는지 다음 단원(21.4.3.1.1)에서 디테일을 살펴보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

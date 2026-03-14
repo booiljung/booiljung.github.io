@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:### 0.0.1  관성 센서(IMU) 데이터와의 동기화를 위한 지연 버퍼(Delay Buffer) 및 관측 시간 롤백(Time Machine Rollback) 알고리즘</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>### 0.0.1  관성 센서(IMU) 데이터와의 동기화를 위한 지연 버퍼(Delay Buffer) 및 관측 시간 롤백(Time Machine Rollback) 알고리즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 12. GPS 및 글로벌 포지셔닝 시스템 연동</a> / <span>### 0.0.1  관성 센서(IMU) 데이터와의 동기화를 위한 지연 버퍼(Delay Buffer) 및 관측 시간 롤백(Time Machine Rollback) 알고리즘</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>### 0.0.1  관성 센서(IMU) 데이터와의 동기화를 위한 지연 버퍼(Delay Buffer) 및 관측 시간 롤백(Time Machine Rollback) 알고리즘</h1>
+<p>EKF2 모듈이 400Hz의 맹렬한 속도로 10Hz짜리 굼뜬 GPS 데이터를 포용할 수 있는 가장 극적인 수학적 해법은, 바로 시간을 뒤로 돌리는 <strong>타임머신 롤백(Time Machine Rollback)</strong> 매커니즘이다.<br />
+PX4-Autopilot의 추정기(Estimator) 코드는 단순히 현재 시각의 계산 행렬을 들고 있는 것이 아니라, 과거 수백 밀리초(ms) 동안의 기체 궤적을 고스란히 저장해 둔 거대한 기억 장치(Memory Buffer)를 운용한다.</p>
+<h3>0.1  지연 버퍼(Delay Buffer)의 구조적 설계</h3>
+<p>자이로스코프와 가속도계 등 고속 IMU 센서는 1ms 이하의 지연율로 실시간 유입되므로, EKF2의 ’현재 상태 공간(State Space)’은 항상 이 초고속 IMU 데이터에 의해 지배당하며 끊임없이 미래(Prediction)를 향해 나아간다.</p>
+<ul>
+<li>이때 EKF2 내부에는 배열(Array) 또는 원형 버퍼(Ring Buffer) 형태의 **관측 버퍼(Observation Buffer)**들이 존재한다.</li>
+<li>매 IMU 틱(Tick)마다 예측된 기체의 롤, 피치, 요 각도 및 3차원 위치/속도 벡터 등 핵심 상태(State) 값 뭉텅이를 타임스탬프 꼬리표와 함께 이 버퍼의 맨 앞단(Head)에 차곡차곡 쌓아 넣는다.</li>
+<li>버퍼의 길이가 한계치(예: 과거 500ms 메모리 용량)에 도달하면 가장 오래된 데이터(Tail)부터 메모리에서 영구히 폐기된다. 이 버퍼 공간이 바로 타임머신의 활주로가 된다.</li>
+</ul>
+<h3>0.2  관측 시간 롤백(Time Machine Rollback) 절차</h3>
+<p>수십에서 수백 밀리초를 케이블 안에서 헤매던 GPS 데이터(예: 100ms 지연)가 마침내 파싱을 끝내고 uORB를 거쳐 EKF2의 문을 두드린다.</p>
+<ol>
+<li><strong>시점의 불일치 인식</strong>:<br />
+지금 픽스호크 보드의 시계(System Clock)는 <span class="math math-inline">T_{현재}</span> 이고, 방금 도착한 GPS 메시지에 적힌 측정 시각은 <span class="math math-inline">T_{과거}</span> (<span class="math math-inline">T_{현재} - 100\text{ms}</span>) 임을 인지한다.</li>
+<li><strong>과거로의 회귀 (Rollback)</strong>:<br />
+EKF2는 지금 당장 팽팽하게 돌아가던 400Hz IMU 루프의 행렬 계산을 일시 정지(Suspend)한다. 그리고 지연 버퍼를 뒤져서 방금 가져온 GPS 데이터의 타임스탬프 <span class="math math-inline">T_{과거}</span>와 가장 시간이 근접한 프레임(Frame)을 찾아낸다.<br />
+“아, 100ms 전에 내 IMU 예측 모델은 기체가 <span class="math math-inline">X_{과거}, Y_{과거}, Z_{과거}</span> 위치에 있을 거라고 예상했었군.”</li>
+<li><strong>이노베이션(Innovation) 산출</strong>:<br />
+가져온 “100ms 전의 예상 좌표” 행렬과, 이제 막 도착한 “100ms 전의 실제 GPS 관측 좌표” 수학 행렬을 서로 뺀다. 이 둘 사이의 거리 격차가 바로 필터를 갱신하는 핵심 동력인 <strong>이노베이션(Innovation, 오차)</strong> 벡터가 된다.</li>
+<li><strong>상태 벡터 수정 (Correction)</strong>:<br />
+이 오차에 칼만 게인(Kalman Gain)을 곱하여, 100ms 전 기체가 품고 있었던 가속도계의 편향(Bias)이나 속도 표류(Drift) 누적값을 математически 깨끗하게 도려낸다(Correction).</li>
+<li><strong>현재로의 고속 전진 (Fast Forward)</strong>:<br />
+과거 시점(<span class="math math-inline">T_{과거}</span>)에서 보정이 완료되어 완벽해진 상태 벡터를 들고, 이제 버퍼에 쌓아두었던 <span class="math math-inline">T_{과거}</span> 부터 <span class="math math-inline">T_{현재}</span> 까지의 100ms 치 IMU 데이터를 다시 빛속의 속도로 재적분(Re-integration)하며 현재 시점(<span class="math math-inline">T_{현재}</span>)으로 단숨에 되돌아온다.</li>
+</ol>
+<h3>0.3  구조적 지연 보상의 의의</h3>
+<p>만약 이런 롤백 시스템 없이 100ms 전의 GPS 데이터를 현재 IMU 데이터에 무분별하게 섞어버렸다면 어떨까?<br />
+드론은 100ms 전 위치로 돌아가기 위해 역추진을 시도하고, 다음 순간 다시 IMU를 믿고 전진하는 미친 듯한 전후방 진동(Oscillation) 즉, <strong>토일렛 볼 이펙트(Toilet Bowl Effect)</strong> 현상에 빠지고 말았을 것이다.</p>
+<p>결국 지연 버퍼와 시간 롤백 알고리즘은 센서 퓨전 과정에서 이기종 센서 간의 거대한 시차(Time Gap)를 외과수술처럼 절개하고 봉합해 내는, PX4 비행 안정성의 가장 근원적인 수학적 방어벽이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

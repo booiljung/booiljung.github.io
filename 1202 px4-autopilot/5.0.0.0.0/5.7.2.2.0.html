@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.7.2.2. Ardupilot 내부의 Bendy Ruler 및 Dijkstra 알고리즘 기반 자체 충돌 회피 처리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.7.2.2. Ardupilot 내부의 Bendy Ruler 및 Dijkstra 알고리즘 기반 자체 충돌 회피 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 5. PX4와 Ardupilot의 비행 제어 및 관제 철학 차이</a> / <span>5.7.2.2. Ardupilot 내부의 Bendy Ruler 및 Dijkstra 알고리즘 기반 자체 충돌 회피 처리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.7.2.2. Ardupilot 내부의 Bendy Ruler 및 Dijkstra 알고리즘 기반 자체 충돌 회피 처리</h1>
+<p>ROS와 같은 거대한 외부 운영체제의 힘을 빌리는 PX4와 극명하게 대비되는 지점은, Ardupilot이 오토파일럿 보드의 작은 마이크로컨트롤러(MCU) 안에서 자체적인 경로 계획(Path Planning)을 수행하는 놀라운 임베디드(Embedded) 소프트웨어 공학을 보여준다는 점입니다.</p>
+<h3>0.1  동적 로컬 회피: Bendy Ruler 알고리즘</h3>
+<p>Ardupilot의 대표적인 내장 충돌 회피 알고리즘은 **Bendy Ruler (휘어지는 자)**입니다.</p>
+<p>이름에서 알 수 있듯이, 기체의 현재 위치에서 최종 목적지까지 뻗어 있는 가상의 곧은 ’자(Ruler)’를 상상해 보십시오.</p>
+<ol>
+<li>시리얼 포트에 곧바로 연결된 1채널 핑(Ping) 센서나 2D 라이다(LiDAR)가 MAVLink <code>OBSTACLE_DISTANCE</code> 메시지를 펌웨어로 쏴주어 장애물을 감지합니다.</li>
+<li>가상의 자(Ruler)가 이 장애물에 닿으면, 알고리즘은 이 자를 좌우로 ‘휘어 보면서(Bendy)’ 가장 비용(Cost: 목적지와의 각도 오차, 장애물과의 여유 거리 등)이 적은 새로운 우회 경로를 탐색합니다.</li>
+<li>찾아낸 우회 경로로 기체의 궤적을 부드럽게 변경하여 비행합니다.</li>
+</ol>
+<p>이는 나무나 가로등 같은 단순한 장애물이 갑자기 나타나는 동적 환경에서 매우 가볍고 부드럽게 작동하는 탁월한 실용성을 보여줍니다.</p>
+<h3>0.2  글로벌 미로 탈출: Dijkstra 알고리즘의 결합</h3>
+<p>Bendy Ruler 같은 로컬 플래너의 치명적인 약점은, 거대한 ‘U자형’ 건물 안으로 들어갔을 때 빙빙 돌다가 갇혀버리는 로컬 미니마(Local Minima) 현상입니다.</p>
+<p>Ardupilot은 이를 극복하기 위해 컴퓨터 공학의 고전적인 그래프 탐색 알고리즘인 <strong>다익스트라(Dijkstra) 알고리즘</strong> 역시 펌웨어 내부에 구현해 두었습니다.<br />
+사용자가 GCS(Mission Planner)를 통해 비행 금지 구역(Exclusion Zone, 다각형 폴리곤)을 설정해 기체로 업로드해 두면, Ardupilot은 임무 비행 중 해당 구역을 만났을 때 다익스트라 알고리즘을 돌려 복잡한 폴리곤 모서리들을 타고 넘는 ’절대적으로 가장 짧고 안전한 전역 경로(Global Path)’를 MCU 내부에서 스스로 연산해 냅니다.</p>
+<h3>0.3  MCU 탑재를 위한 해상도(Resolution)의 타협</h3>
+<p>Cortex-M7 급의 연산력(Pixhawk 4/5/6)으로 이 모든 것을 처리하는 비결은 **극단적인 데이터 압축과 2.5D화(Dimensionality Reduction)**에 있습니다.</p>
+<p>ROS 기반의 컴패니언 컴퓨터가 초당 수백만 개의 3차원 복셀(Voxel) 트리를 그리는 동안, Ardupilot은 들어오는 센서 데이터를 단순한 2차원 점유 격자(Occupancy Grid) 지도나 섹터 기반의 1차원 배열로 무자비하게 짓눌러버립니다.<br />
+해상도(Resolution)를 희생한 이 과감한 타협 덕분에 연산량은 MCU가 버틸 수 있는 수준으로 급감했습니다. 만약 수 밀리미터 단위의 정밀한 실내 비행이나 상하좌우가 막힌 복잡한 동굴 탐사를 원한다면 이 해상도로는 부족하겠지만, 일반적인 탁 트인 야외의 산업용 배달, 매핑 파이프라인에서 Ardupilot의 내장 회피 아키텍처는 추가적인 Linux 컴퓨터 세팅 없이도 작동하는 ’가성비와 신뢰성’의 끝판왕이라는 찬사를 받습니다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

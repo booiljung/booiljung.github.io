@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.6. Work Queue 스레드 풀 및 스케줄러(Scheduler) 제어</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.6. Work Queue 스레드 풀 및 스케줄러(Scheduler) 제어</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.6. Work Queue 스레드 풀 및 스케줄러(Scheduler) 제어</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.6. Work Queue 스레드 풀 및 스케줄러(Scheduler) 제어</h1>
+<p>PX4 모듈 해부학의 마지막 퍼즐은 바로 그 모듈을 **‘어디서, 어떻게 굴게 할 것인가(Scheduling)’**에 대한 이야기이다.<br />
+지금까지 우리는 모듈을 생성하는 법(<code>ModuleBase</code>), 파라미터를 얽어매는 법(<code>ModuleParams</code>)을 배웠지만, 이 모듈이 운영체제(NuttX 또는 Linux) 위에서 스스로 CPU 자원을 할당받아 살아 숨 쉬는 생명체(Thread)가 되기 위해서는 마지막 관문이 남아있다.</p>
+<h2>1. 모듈 스레드의 진화: 독고다이(Task)에서 스레드 풀(Work Queue)로</h2>
+<p>과거 초창기 PX4 시절(NuttX 초기 버전), 모든 모듈은 <code>task_spawn</code>이라는 함수를 통해 자신만의 독립적인 프로세스(정확히는 NuttX Task)를 통째로 하나씩 부여받았다.<br />
+센서 모듈 하나에 태스크 하나, 제어 모듈 하나에 태스크 하나… 수십 개의 모듈이 각자의 태스크(스레드)를 가지다 보니 픽스호크 내부에는 순식간에 50~100개의 태스크가 중구난방으로 돌아가기 시작했다.</p>
+<p>이러한 <strong>1 모듈 = 1 태스크</strong> 방식은 치명적인 단점들을 노출했다.</p>
+<ol>
+<li><strong>메모리 낭비:</strong> 1개의 태스크가 생성될 때마다 최소 1~2KB의 스택(Stack) 메모리가 고정적으로 잡힌다. 수십 개의 태스크가 떠 있으면 픽스호크의 256KB 남짓한 소중한 RAM이 순식간에 동난다.</li>
+<li><strong>컨텍스트 스위칭(Context Switching) 오버헤드:</strong> 수십 개의 스레드 사이를 실시간으로 오가며 스케줄링을 해줘야 하는 운영체제(커널)의 부담이 극도로 심해져, 정작 중요한 제어 알고리즘 연산에 쓸 CPU 클럭을 낭비하게 되었다.</li>
+</ol>
+<p>이 거대한 비효율을 타파하기 위해 PX4 코어 아키텍처 팀이 짜낸 혁명적인 아이디어가 바로 <strong>Work Queue (워크 큐) 스레드 풀(Thread Pool)</strong> 시스템이다.</p>
+<h2>2. Work Queue: 버스(Bus)에 올라타라</h2>
+<p>Work Queue 시스템의 핵심 철학은 **“개인 자가용(독립 Task) 구비 금지, 무조건 공공 버스(Work Queue)를 이용할 것!”**으로 요약된다.</p>
+<p>PX4 부팅 시, 시스템은 픽스호크의 RAM 여건에 맞춰 미리 5~6개 남짓의 큼직한 ’작업 버스(Thread)’만 미리 생성해 둔다.</p>
+<ul>
+<li><strong>wq:rate_ctrl</strong> (최고 속도 버스, 자세 제어용)</li>
+<li><strong>wq:nav_and_cmds</strong> (중간 속도 버스, 내비게이션용)</li>
+<li><strong>wq:hp_default</strong> (고우선순위 일반 버스)</li>
+<li><strong>wq:lp_default</strong> (저우선순위 잡일 버스, 로깅 등)</li>
+</ul>
+<p>이제 우리가 만드는 <code>CustomApp</code> 모듈은 스스로 태스크를 생성하여 스택 메모리를 낭비하는 짓을 멈춰야 한다.<br />
+대신, 내 모듈의 <code>Run()</code> 함수(실제 연산 덩어리)를 뜯어서 하나의 예쁜 **작업 보따리(Work Item)**로 포장한 뒤, 내가 원하는 속도의 버스(예: <code>wq:rate_ctrl</code>) 짐칸에 휙 던져 넣기만 하면 된다.</p>
+<p>그러면 그 버스가 목적지(Cycle)를 돌 때마다 멈춰 서서 내 보따리를 끄집어내어 한 번씩 실행시켜 주는 방식이다.</p>
+<p>이 놀라운 C++ 추상화 덕분에 수십 개의 모듈이 단 몇 개의 스레드 공간 안에서 사이좋게(Multiplexing) 돌아가게 되며, 스택 메모리 낭비와 컨텍스트 스위칭 오버헤드가 극적으로 소멸되었다.<br />
+그렇다면 내 C++ 모듈을 이 ’작업 보따리’로 변신시키기 위해 우리가 상속받아야 하는 또 하나의 마법 클래스, **<code>px4::WorkItem</code>**의 구조에 대해 다음 장(21.6.1)에서 디테일하게 알아보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

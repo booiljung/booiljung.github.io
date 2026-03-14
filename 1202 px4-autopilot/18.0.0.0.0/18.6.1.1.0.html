@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.6.1.1 `px4_poll()` 함수와 `pollfd` 구조체 배열의 동작 원리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.6.1.1 `px4_poll()` 함수와 `pollfd` 구조체 배열의 동작 원리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.6.1.1 `px4_poll()` 함수와 `pollfd` 구조체 배열의 동작 원리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.6.1.1 <code>px4_poll()</code> 함수와 <code>pollfd</code> 구조체 배열의 동작 원리</h1>
+<p>PX4 소프트웨어 아키텍처에서 여러 개의 센서 토픽이나 제어 명령 토픽을 동시에 기다려야 하는 다중 구독(Multi-subscription) 모듈이 존재한다면, 앞서 배운 개별 토픽에 대한 <code>orb_check()</code>나 폴링(비지 웨이팅, Busy-waiting) 방식은 CPU 자원을 낭비할 수밖에 없다. 센서 데이터가 언제 들어올지 모르는 상황에서 계속루프를 돌며 상태를 묻는 것은 하드 리얼타임 시스템(Hard Real-time System)에서 절대 금기시되는 안티 패턴(Anti-pattern)이다.</p>
+<p>이를 해결하기 위해 1세대 다중 동기화 기법인 <strong><code>px4_poll()</code></strong> API가 도입되었다.</p>
+<p>18.6절에서는 개별 토픽 수신을 넘어선, 복수의 토픽에 대한 <strong>이벤트 구동(Event-driven) 동기화 메커니즘</strong>의 근간을 해부하며, 그 첫 번째 대상으로 POSIX <code>poll</code> 함수를 감싼 <code>px4_poll()</code>의 원리를 파악한다.</p>
+<h2>1. 다중 디바이스 멀티플렉싱(Multiplexing)의 필요성</h2>
+<p>내비게이터(Navigator) 모듈이나 센서 퓨전(Estimator) 필터를 생각해 보라. 이 모듈들은 가속도계(<code>sensor_accel</code>), 자이로스코프(<code>sensor_gyro</code>), GPS(<code>sensor_gps</code>), 지자기 센서(<code>sensor_mag</code>) 등 수십 개의 토픽 포문을 모두 열어두고(구독하고), 이 중 <em><strong>단 하나라도 새로운 데이터가 도착하면 즉시 깨어나(Wake-up)</strong></em> 퓨전 알고리즘을 한 사이클 돌린 뒤 다시 수면(Sleep) 상태로 들어가야 한다.</p>
+<p>이 “동시에 여러 개의 파일 디스크립터(FD) 낚싯대를 던져놓고, 단 하나라도 찌가 흔들릴 때까지 스레드를 재워달라“는 요구사항을 완벽하게 만족하는 시스템 콜이 바로 POSIX 표준의 <code>poll()</code> 함수이다.</p>
+<h2>2. <code>pollfd</code> 구조체 배열의 세팅</h2>
+<p>PX4 애플리케이션 개발자는 <code>px4_poll()</code>을 호출하기 전, 먼저 운영체제 커널에 제출할 낚싯대의 목록, 즉 <strong><code>pollfd</code> 구조체 배열</strong>을 직접 조립해야 한다.</p>
+<pre><code class="language-cpp">// 다중 토픽 동기화를 위한 pollfd 배열 구성 예시
+struct pollfd fds[3];
+
+// 1번 낚싯대: 가속도 센서
+fds[0].fd = orb_subscribe(ORB_ID(sensor_accel));
+fds[0].events = POLLIN; // 읽을 데이터가 들어오는 이벤트(POLLIN)를 감시
+
+// 2번 낚싯대: 자이로 센서
+fds[1].fd = orb_subscribe(ORB_ID(sensor_gyro));
+fds[1].events = POLLIN;
+
+// 3번 낚싯대: GPS
+fds[2].fd = orb_subscribe(ORB_ID(sensor_gps));
+fds[2].events = POLLIN;
+</code></pre>
+<p><code>pollfd</code> 구조체는 모니터링할 **파일 디스크립터(<code>fd</code>)**와, 어떤 종류의 이벤트를 감시할 것인지(PX4 수신에서는 항상 데이터 유입을 뜻하는 <strong><code>POLLIN</code></strong>)를 묶은 단순한 구조이다.</p>
+<h2>3. <code>px4_poll()</code>의 호출과 스레드 수면(Sleep)</h2>
+<p>낚싯대 배열이 완성되면, 개발자는 타임아웃(Timeout) 시간과 함께 <code>px4_poll()</code>을 호출한다.</p>
+<pre><code class="language-cpp">// 3개의 토픽 중 하나라도 새 데이터가 오거나, 1000ms가 지나면 깨어남
+int pret = px4_poll(fds, 3, 1000);
+
+if (pret &gt; 0) {
+    // 적어도 1개의 토픽에 데이터가 도착함
+    if (fds[0].revents &amp; POLLIN) {
+        // 가속도 센서 데이터가 도착했음을 확인! (orb_copy 실행)
+    }
+    // ... 다른 센서 확인 로직 ...
+} else if (pret == 0) {
+    // 1000ms 동안 아무 데이터도 오지 않아 타임아웃 발생
+}
+</code></pre>
+<p>이 함수가 호출되는 순간, 이 코드를 실행하는 애플리케이션 스레드는 OS 커널 스케줄러 영역으로 이동하며 즉시 <strong>스케줄링 대기 상태(Blocked/Sleeping)</strong> 로 전환된다.</p>
+<p>즉, <code>pret</code>가 반환되어 다음 줄의 <code>if</code>문이 평가되기 전까지, 이 스레드는 CPU 코어를 단 1사이클도 점유하지 않으며 완벽한 절전 및 자원 양보 모드에 돌입한다. 그리고 백그라운드의 uORB 코어 로직이 배열에 등록된 3개의 FD에 매핑된 <code>uORBDeviceNode</code>들 중 단 하나라도 새로운 데이터가 퍼블리싱되었음을 감지했을 때만, OS를 통해 이 스레드를 번개처럼 다시 깨워주는(Wake-up) 것이다.</p>
+<p>이렇게 OS 레벨의 멀티플렉싱 시스템 콜에 기대어 비지 로직을 삭제하는 것이, PX4에서 수많은 모듈들이 서로 얽혀 있으면서도 치명적인 병목 현상 없이 부드럽게 비행을 제어할 수 있는 가장 든든한 동기화 기반 레이어이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

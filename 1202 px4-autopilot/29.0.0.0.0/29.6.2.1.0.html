@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:29.6.2.1. 제어 모드 전환 시 튐(Jerking) 방지: 전환 직전의 EKF 상태 추정치를 목표 자세로 동기화하여 초기 오차율을 영점화(Zeroing)하는 C++ 구현부</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>29.6.2.1. 제어 모드 전환 시 튐(Jerking) 방지: 전환 직전의 EKF 상태 추정치를 목표 자세로 동기화하여 초기 오차율을 영점화(Zeroing)하는 C++ 구현부</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.6.2.1. 제어 모드 전환 시 튐(Jerking) 방지: 전환 직전의 EKF 상태 추정치를 목표 자세로 동기화하여 초기 오차율을 영점화(Zeroing)하는 C++ 구현부</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>29.6.2.1. 제어 모드 전환 시 튐(Jerking) 방지: 전환 직전의 EKF 상태 추정치를 목표 자세로 동기화하여 초기 오차율을 영점화(Zeroing)하는 C++ 구현부</h1>
+<h2>1.  개요 및 튐(Jerking) 방지 원리</h2>
+<p>범플리스 트랜스퍼(Bumpless Transfer)를 달성하기 위한 가장 일차원적이고 강력한 방법은, **새로운 제어루프가 가동되는 바로 첫 번째 사이클(Tick)에서 산출되는 비례 오차(P-Error)를 수학적으로 0으로 덮어쓰는 것(Zeroing)**이다.</p>
+<p>비행 제어기 내부의 오차 방정식은 통상적으로 <code>Error(t) = Setpoint(t) - EKF_Estimate(t)</code> 로 정의된다. 조종자가 아크로(Acro) 모드에서 자세 안정화(Stabilized) 모드로 전환하는 순간(<span class="math math-inline">t_0</span>), 조종기의 스틱은 중앙(0도)을 지시하고 있더라도 기체의 실제 자세 <code>EKF_Estimate(t_0)</code>는 기울어져 있을 수 있다. 이 때 <code>Setpoint(t_0)</code>를 스틱 입력인 0도가 아닌, 기체의 현재 상태 <code>EKF_Estimate(t_0)</code>와 동일하게 임의 셋팅해주면 <span class="math math-inline">Error(t_0) = 0</span>이 되어 P 제어기의 급가속 출력(튐 현상)을 원천적으로 차단할 수 있다. 본 절에서는 PX4-Autopilot의 C++ 구문 내에서 이 로직이 어떻게 구현되는지 추적한다.</p>
+<h2>2.  상태 추정치(EKF)의 목표(Setpoint) 동기화 아키텍처</h2>
+<p>비행 모드가 전환될 때 호출되는 플라이트 태스크(Flight Task)의 <code>activate()</code> 또는 모드 이니셜라이저(Initializer)는 시스템의 <code>vehicle_attitude</code> 토픽(EKF2 모듈 산출물)을 직접 구독(Subscribe)한다. 전환 시나리오에 따른 동기화 전략은 다음과 같다.</p>
+<ol>
+<li><strong>자세/각도 제어(Attitude Control):</strong> 피치(Pitch)와 롤(Roll)의 경우, 보통 조종자가 스틱을 놓은 상태(중앙 복귀)라면 기체의 현재 각도를 캡처하여 새로운 목표값으로 저장하고, 스무딩 로직(Slew Rate Limiting)을 거쳐 0도로 천천히 감쇠시킨다. 헤딩(Yaw)의 경우 현재 각도를 목표 방위로 강제 잠금(Lock)하여 기체가 불필요하게 돌아가는 것을 막는다.</li>
+<li><strong>좌표/위치 제어(Position Control):</strong> 고도(Altitude)와 XY 위치의 경우, 전환 순간의 <code>vehicle_local_position</code> 데이터를 셋포인트 변수에 덮어씌워 기체가 전환 위치에 그대로 정지(Hovering)하도록 만든다.</li>
+</ol>
+<h2>3.  오차 제로잉 흐름도 (Mermaid 설계도)</h2>
+<p>안정화 제어기가 깨어나는 첫 번째 사이클에서 일어나는 오차 영점화의 프로세스 플로우이다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[조종기 Mode 변경 이벤트 발생] --&gt; B[FlightTask::activate 호출]
+    
+    B --&gt; C[EKF2 모듈로부터 실시간 q 쿼터니언 센서 융합 데이터 취득]
+    
+    C --&gt; D[쿼터니언을 오일러 각 Euler Roll/Pitch/Yaw 로 변환]
+    
+    D --&gt; E[조종기 스틱 입력 무시 및 EKF 상태로 표본 캡처]
+    
+    E --&gt; F[내부 Setpoint 변수에 EKF 자세 할당]
+    F --&gt; G(초기 비례 오차 산출: Setpoint - Current_Attitude = 0)
+    
+    G --&gt; H[PID 출력 0으로 초기 기동]
+    H --&gt; I[이후 스틱 입력값으로 전환하는 Smoothing/Easing 함수 동작]
+</code></pre>
+<h2>4.  소스 코드 깊은 분석 (<code>mc_att_control</code> 및 <code>FlightTask</code> 스택)</h2>
+<p>PX4 펌웨어에서 전환 직전의 상태 추정 데이터를 목표 셋포인트로 동기화하는 가장 대표적인 코드 예시는 <code>src/modules/flight_mode_manager/tasks</code> 패키지 내부와, 자세 제어 모듈 단에서 확인할 수 있다.</p>
+<pre><code class="language-cpp">// 수동 지향 위치 제어 태스크 활성화 메서드 (간단화된 의사 코드)
+bool FlightTaskManualAltitude::activate(const vehicle_local_position_setpoint_s &amp;last_setpoint)
+{
+    // ... 부모 메서드 처리 루틴 생략 ...
+
+    // 1. 헤딩(Yaw) 튐 방지
+    // 전환 순간 EKF에서 산출된 현재 요우(Yaw) 각도를 그대로 목표(Setpoint)로 복사한다.
+    // 이는 기체가 전환 직후 엉뚱한 방향을 바라보려 몸을 돌리는 것을 완벽하게 방지한다.
+    _yaw_setpoint = _yaw;
+
+    // 2. 수직 하강/상승 튐 방지 (Altitude Zeroing)
+    // 조종기의 스로틀 스틱이 중앙 데드존에 위치해 있다면 고도를 고정해야 하므로,
+    // EKF의 현재 고도 _position(2)를 고도 셋포인트로 복사한다.
+    if (stick_in_center_deadzone()) {
+        _position_setpoint(2) = _position(2);
+        _velocity_setpoint(2) = 0.0f;
+    } else {
+        // 스틱이 이미 조작 중이라면 현재 하강/상승 속도를 복사하여 속도계 오차를 없앤다
+        _velocity_setpoint(2) = _velocity(2);
+    }
+    
+    return true;
+}
+</code></pre>
+<p>이와 더불어 수동 자세 제어 안정화 로직(<code>ManualControl</code>) 내에서도 각속도와 각도의 매핑을 부드럽게 통합하는 로직이 적용되어 있다. EKF 상태(<code>_yaw</code>, <code>_position</code> 등)를 새로운 세트포인트 멤버 변수(<code>_yaw_setpoint</code>)로 복사(=)하는 단 한 줄의 대입 연산이, 제어 불연속성을 물리 공간에서 차단하는 가장 핵심적인 C++ 구현부이다.</p>
+<h2>5.  Ardupilot 대비 아키텍처 구현 차이</h2>
+<p>상태 추정치 기반의 오차 제로잉(Zeroing) 기법에 있어 두 시스템은 명명법 및 설계 계층에서 차이를 보인다.</p>
+<ul>
+<li><strong>PX4-Autopilot:</strong><br />
+uORB 메시지를 구독하여 EKF 추정 데이터를 획득한 후, <code>FlightTask</code>라는 고급 추상화 객체 내부에서 지역 변수(Setpoint)를 조작하여 덮어쓰는 방식을 취한다. 전환 처리가 제어 코어(Controller Core)가 아닌 태스크 관리자(Task Manager) 레이어에서 독립적으로 이루어진다는 특징이 있다.</li>
+<li><strong>Ardupilot:</strong><br />
+센서 추정 라이브러리인 AHRS 모듈과 제어 코어인 <code>AC_AttitudeControl</code>이 매우 밀접하게 직결되어 있다. Ardupilot은 제어를 이완시킨다는 의미로 <code>relax_attitude_controllers()</code> 또는 <code>relax_bf_rate_controller()</code> 라는 메서드를 모드 단위로 <code>init()</code> 함수에서 직접 호출한다. 이 메서드 내부는 “목표 각도를 현재 AHRS 롤/피치 표본으로 덮어씌운다(target = current)“라는 본질적으로 PX4와 동일한 수학적 과정을 거친다.</li>
+</ul>
+<p>PX4의 Slew Rate 필터와 범플리스 제로잉이 얽힌 <code>FlightTask</code> 기반 아키텍처는, 각 제어 모듈 개발자가 자세한 내부 PID 통제 로직을 신경 쓰지 않아도 되도록 잘 정의된 C++ 상속(Inheritance) 인터페이스를 제공한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

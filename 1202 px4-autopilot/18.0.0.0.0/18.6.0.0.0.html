@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.6 이벤트 구동 동기화 메커니즘: Poll 및 Work Queue 통합</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.6 이벤트 구동 동기화 메커니즘: Poll 및 Work Queue 통합</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.6 이벤트 구동 동기화 메커니즘: Poll 및 Work Queue 통합</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.6 이벤트 구동 동기화 메커니즘: Poll 및 Work Queue 통합</h1>
+<p>비행 제어 소프트웨어의 효율성은 “CPU 사이클을 얼마나 가치 있는 곳에 쓰는가“에 달려 있다. 앞서 살펴본 능동적 폴링(Active Polling) 기법은 타이밍 예측이 가능하고(Deterministic) 코드가 단순하다는 장점이 있지만, 치명적인 단점 하나를 안고 있다.</p>
+<p>아무리 <code>orb_check()</code> 함수가 <span class="math math-inline">O(1)</span>로 초고속이라 할지라도, 의미 없이 무한 루프(<code>while(true)</code>)를 수천 번 돌며 “새 데이터 왔어? 안 왔어?” 를 반복해서 묻는 행위(<strong>바쁜 대기, Busy Waiting</strong>) 자체가 한정된 배터리와 극도로 제한된 마이크로컨트롤러(MCU) 자원을 갉아먹는 주범이 되기 때문이다.</p>
+<h2>1. 동기화 딜레마와 수면(Sleep)의 필요성</h2>
+<p>최적의 센서-제어기 동기화 모델은 다음과 같아야 한다.</p>
+<ol>
+<li>데이터가 없을 때는 제어기 모듈(스레드)이 완전히 <strong>수면(Sleep) 상태</strong>에 빠져 OS 스케줄러 큐에서 빠져나와야 한다. (CPU 점유율 0%)</li>
+<li>센서 모듈이 <code>orb_publish()</code>를 통해 링 버퍼에 데이터를 써넣는 바로 그 찰나의 마이크로초 단위 순간에,</li>
+<li>잠들어 있던 제어기 모듈 머리맡에 ’알람(Event)’이 울려 즉시 <strong>깨어나고(Wake-up)</strong> 밀린 복사(<code>orb_copy</code>) 작업을 재개해야 한다.</li>
+</ol>
+<p>이를 구현하기 위해 PX4 설계자들은 단순한 메시지 큐였던 uORB에 운영체제(NuttX/POSIX) 깊숙이 뿌리내린 동기화 프리머티브(Synchronization Primitive)와 이벤트 구동 아키텍처를 결합하는 마개조(Refactoring)를 단행했다.</p>
+<h2>2. 푸시(Push)와 풀(Pull)의 하이브리드: Publish-WakeUp-Consume</h2>
+<p>현대의 uORB 생태계는 지연 시간(Latency) 최소화와 CPU 효율성 극대화를 위해 두 가지 메커니즘을 긴밀하게 엮어 사용한다.</p>
+<ul>
+<li><strong>1단계. <code>poll()</code> 파일 시스템 연동:</strong> 과거 POSIX 소켓 프로그래밍에서 쓰이던 <code>poll()</code> 시스템 콜 메커니즘을 uORB VFS 노드에 완벽하게 오버라이딩(Overriding) 하였다. 모듈은 여러 개의 토픽(fd)을 한데 묶어 <code>poll()</code>을 호출한 채 영면에 빠지며, 퍼블리셔가 데이터를 쓰는 순간 OS 레벨의 시그널링이 발생해 스레드를 즉각 깨워낸다 (18.6.1절 상세 설명).</li>
+<li><strong>2단계. Work Queue (WQ) 스케줄러 통합:</strong> 수백 개의 묵직한 스레드(Thread)를 띄워두는 것은 메모리 낭비가 심하다. 이를 타파하기 위해 PX4는 소수의 작업자 스레드(Worker Thread) 풀(Pool)을 운영하는 Work Queue 아키텍처를 도입했다. 최근의 uORB는 토픽 업데이트 시그널을 곧바로 WQ 스케줄러에 통보하여 큐에 등록된 태스크(Task)를 실행시키는 진정한 콜백/이벤트 구동 하이브리드 모델로 진화하였다 (18.6.2절 상세 설명).</li>
+</ul>
+<p>이러한 <strong>‘발행-기상-소비(Publish-WakeUp-Consume)’</strong> 트라이앵글은 PX4가 수백만 줄의 복잡한 연산을 수행하면서도 CPU 점유율을 한 자릿수로 억제할 수 있게 해주는 핵심 심장(Heart) 역할을 하고 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

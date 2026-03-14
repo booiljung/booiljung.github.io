@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:13.5.1. MAVLink 프로토콜의 RTCM 단편화(Fragmentation) 및 전송 스레드(Thread) 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>13.5.1. MAVLink 프로토콜의 RTCM 단편화(Fragmentation) 및 전송 스레드(Thread) 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 13. RTK GPS 시스템의 이해 및 베이스/로버 구성</a> / <span>13.5.1. MAVLink 프로토콜의 RTCM 단편화(Fragmentation) 및 전송 스레드(Thread) 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>13.5.1. MAVLink 프로토콜의 RTCM 단편화(Fragmentation) 및 전송 스레드(Thread) 분석</h1>
+<p>고정밀 RTK(Real-Time Kinematic) 시스템의 베이스 스테이션(Base Station)이 뱉어내는 RTCM3 보정 데이터는 가변 길이를 가지며, 위성의 개수와 관측 주기에 따라 수백 바이트(Bytes)에서 길게는 <span class="math math-inline">1\text{ KB}</span>에 육박하는 거대한 바이너리 블록(Binary Block)으로 생성된다. 반면, 드론과 지상 관제소(GCS)를 잇는 텔레메트리(Telemetry) 무선 링크의 핵심 프로토콜인 MAVLink v1.0/v2.0은 단일 패킷의 최대 페이로드(Payload)를 약 <span class="math math-inline">255\text{ Bytes}</span> 내외로 철저히 제한하고 있다.</p>
+<p>이러한 **거대한 RTCM 블록과 협소한 MAVLink 터널 간의 크기 불일치(Size Mismatch)**를 해결하기 위해, 비행 제어기(FC)와 QGroundControl(QGC) 양단에는 정교한 데이터를 잘게 쪼개어 보내고 다시 조립하는 <strong>단편화(Fragmentation)</strong> 메커니즘이 강제된다. 본 절에서는 이 단편화가 네트워크 계층에서 어떻게 수학적으로 쪼개어지며, QGC 내의 백그라운드 전송 스레드(Thread)가 이를 어떻게 비동기적으로 스케줄링하여 무선 링크의 병목 현상(Bottleneck)을 최소화하는지 심도 있게 다룬다.</p>
+<h2>1.  RTCM 데이터의 단편화(Fragmentation) 필요성</h2>
+<p>MAVLink 프로토콜 규격 상, 드론에게 보내는 수많은 상태 제어 메시지(Heartbeat, Attitude 등)가 한정된 대역폭(통상 <span class="math math-inline">57600\text{ bps}</span>) 안에서 공평하게 전송 기회를 가져야 한다. 만약 RTCM 메시지 하나가 무선 채널을 <span class="math math-inline">1\text{초}</span> 이상 독점(Monopolize)해버린다면, 조종사의 스틱 입력(Manual Control) 명령이나 비상 정지(Kill Switch) 명령이 밀리게 되어 치명적인 추락 사고로 직결될 수 있다.</p>
+<p>따라서 QGC는 베이스 안테나가 쏟아내는 거대한 RTCM 메시지를 MAVLink의 전용 컨테이너인 <code>GPS_RTCM_DATA</code> (메시지 ID 233) 규격에 맞추어 강제적으로 <span class="math math-inline">180\text{ Bytes}</span> 단위의 청크(Chunk)로 잘라낸다(Slice).</p>
+<ul>
+<li>예시: <span class="math math-inline">500\text{ Bytes}</span>의 RTCM 메시지 발생 시 <span class="math math-inline">\rightarrow</span> <span class="math math-inline">180\text{ Bytes}</span>, <span class="math math-inline">180\text{ Bytes}</span>, <span class="math math-inline">140\text{ Bytes}</span>의 3개 패킷으로 분할 전송.</li>
+</ul>
+<h2>2.  QGroundControl 측의 전송 스레드(Thread) 스케줄링 워크플로우</h2>
+<p>단편화된 패킷 3개를 수 밀리초(<span class="math math-inline">\text{ms}</span>) 만에 무선 모뎀으로 무식하게 부어버리면, 버퍼 오버런(Buffer Overrun)이 발생하여 데이터가 공중에서 증발해 버린다. 이를 방지하기 위해 QGC의 <code>GPSManager</code> 백그라운드 모듈은 영리한 큐잉(Queueing) 및 스케줄링 스레드를 가동한다.</p>
+<h3>2.1  큐(Queue) 기반의 생산자-소비자(Producer-Consumer) 패턴</h3>
+<ol>
+<li><strong>생산자(Base GPS)</strong>: USB 포트를 통해 RTCM 데이터를 QGC 백엔드 스레드의 버퍼 큐에 밀어 넣는다.</li>
+<li><strong>소비자(MAVLink 전송 스레드)</strong>: 큐에 데이터가 쌓여 있는지 확인하고, 한 번에 <span class="math math-inline">180\text{ Bytes}</span>씩 꺼내어 패키징한 후 일정한 딜레이(지연)를 둔 채로 라디오 트랜시버에 내보낸다.</li>
+</ol>
+<pre><code class="language-cpp">// QGC C++ 백엔드의 유사한 링 버퍼 퍼블리싱 로직
+void RTCMMavlink::sendMessage() {
+    while (_rtcmBuffer.size() &gt; 0) {
+        int chunk_size = std::min(_rtcmBuffer.size(), (size_t)180);
+        
+        // chunk_size 만큼 읽어내어 GPS_RTCM_DATA 메시지 생성
+        mavlink_message_t msg = build_rtcm_message(&amp;_rtcmBuffer[0], chunk_size);
+        
+        // MAVLink 링크로 송신
+        _link-&gt;sendMessage(msg);
+        
+        // 전송한 만큼 버퍼에서 소거
+        _rtcmBuffer.remove(0, chunk_size);
+        
+        // 라디오 모뎀 포화를 방지하기 위한 강제 스레드 지연 (예: 5ms)
+        QThread::msleep(5); 
+    }
+}
+</code></pre>
+<p>이러한 생산자-소비자 모델에 LPF(Low-pass Filtering) 개념의 ‘스레드 수면(<code>msleep</code>)’ 코드를 추가함으로써, QGC는 텔레메트리 하드웨어의 전파 송출 타이밍을 압도하지 않고 적당한 페이스로 RTCM 스트림의 연속성(Continuity)을 보장하게 된다.</p>
+<h2>3.  PX4 펌웨어 측의 역단편화(De-fragmentation)와 주입(Injection)</h2>
+<p>지상에서 쪼개진 패킷들이 무선 링크를 너머 PX4의 MAVLink 수신기(<code>mavlink_receiver.cpp</code>)에 도착하면, 펌웨어는 굳이 이 <span class="math math-inline">180\text{ Bytes}</span>짜리 조각들을 하나의 큰 버퍼로 온전히 재조립(Re-assemble)하려고 기다리지 않는다.</p>
+<p>RTCM 보정 프로토콜 시스템 자체가 스트림 지향적(Stream-oriented)이기 때문에, 쪼개진 조각이 들어오는 족족 직렬 포트(UART)를 통해 u-blox 등의 GPS 하드웨어 RX 핀으로 밀어(Inject) 넣는다. 그러면 GPS 하드웨어 칩셋 내부에 내장된 RTCM 파서가 바이트 스트림을 실시간으로 추적하다가 완전한 프레임(Frame)이 닫히는 순간 자체적으로 보정 계산에 돌입한다.</p>
+<p>이러한 <strong>조기 주입(Early Injection)</strong> 아키텍처는 PX4 펌웨어 내부에 거대한 역단편화 메모리 버퍼를 유지할 필요를 없애주며, 극한의 시스템 메모리(SRAM) 절약과 처리 지연시간(Latency) 단축이라는 두 마리 토끼를 잡는다.</p>
+<p>결론적으로 MAVLink의 RTCM 프로토콜 체계는 파편화된 패킷 전파를 통해 무선 링크의 실시간성을 침해하지 않으면서도, 송신 측(QGC)의 비동기 큐 스케줄링과 수신 측(PX4)의 무결점 스트림 통과 시스템을 통해 완벽한 분산 병렬 통로를 구축하고 있는 모범적인 공학 설계 규격이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

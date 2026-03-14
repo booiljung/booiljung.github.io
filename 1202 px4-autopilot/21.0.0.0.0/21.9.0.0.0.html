@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.9. 펌웨어 부트 시퀀스 연동 및 프로세스 데몬화(Daemonization) 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.9. 펌웨어 부트 시퀀스 연동 및 프로세스 데몬화(Daemonization) 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.9. 펌웨어 부트 시퀀스 연동 및 프로세스 데몬화(Daemonization) 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.9. 펌웨어 부트 시퀀스 연동 및 프로세스 데몬화(Daemonization) 로직</h1>
+<p>지금까지 긴 여정에 걸쳐 우리는 <strong>“페이로드 자동 투하 모듈(<code>payload_autodrop</code>)”</strong> 이라는 하나의 완벽한 C++ 애플리케이션(Application)을 완성했다. uORB로 센서를 읽고, FSM으로 상태를 쪼개고, MAVLink 명령을 발송하는 이 훌륭한 두뇌는 현재 우리의 소스 코드 폴더(<code>src/modules/payload_autodrop</code>) 안에 다소곳이 잠들어 있다.</p>
+<p>하지만 PX4 컴파일러(NuttX/CMake)를 돌려서 펌웨어를 빌드하고 픽스호크에 플래싱(flashing) 연 후 배터리를 꽂는다고 해서, 이 모듈이 알아서 살아 움직일까?<br />
+절대 그렇지 않다. 컴퓨터를 켰다고 해서 내 하드디스크에 깔려있는 ‘스타크래프트’ 게임이 바탕화면에서 알아서 켜지지 않는 것과 같은 이치다.</p>
+<p>이 모듈이 비행 제어기(FC)의 전원이 켜지는 그 순간, <strong>안드로이드의 시스템 서비스나 리눅스의 백그라운드 데몬(Daemon)</strong> 처럼 아무도 모르게 조용히 깨어나 영원히 루프를 돌게 만들려면, 우리는 픽스호크의 심연 깊숙이 자리 잡은 **‘ROMFS 부트 스크립트 트리’**에 우리 모듈의 이름을 깎아 넣어야 한다.</p>
+<h2>1. NuttX OS와 부팅의 철학</h2>
+<p>PX4가 얹혀 돌아가는 실시간 운영체제인 NuttX RTOS는 리눅스(Linux)의 철학을 뼛속까지 닮아있다.<br />
+픽스호크에 배터리 전원이 인가되고 최소한의 하드웨어 커널 초기화가 끝나면, NuttX는 가장 먼저 ROM(Read-Only Memory) 구간에 저장된 텍스트 파일 더미들, 즉 <strong>ROMFS 시스템</strong>을 뒤지기 시작한다.</p>
+<p>그리고 그 안에 숨겨져 있는 <code>init.d</code> 폴더를 찾아가, 그곳에 나열된 수백 줄짜리 쉘(Shell) 스크립트들을 위에서부터 아래로 한 줄 한 줄 맹목적으로 실행(Execution)해 나간다.</p>
+<p>이 스크립트 실행 과정(부트 시퀀스)이 진행되는 몇 초의 찰나 동안, 다음과 같은 거대한 생태계 판짜기가 순식간에 일어난다.</p>
+<ol>
+<li><strong>드라이버 로딩:</strong> I2C, SPI 버스에 묶인 자이로/기압계 센서들을 깨운다.</li>
+<li><strong>uORB 버스 개통:</strong> 메시지가 오갈 수 있는 통신망 도로를 깐다.</li>
+<li><strong>코어 데몬 실행:</strong> <code>ekf2</code>(위치 추정기), <code>commander</code>(사령관), <code>navigator</code>(자율비행) 등 핵심 장관들을 임명한다.</li>
+<li><strong>사용자 데몬 실행:</strong> (바로 이 시점에 우리가 만든 모듈을 깨워야 한다!)</li>
+</ol>
+<p>우리가 짜맞춘 <code>payload_autodrop</code> 모듈도 이 성스러운 의식의 한 자리를 차지하기 위해, <code>init.d</code> 스크립트의 거대한 톱니바퀴 중 정확히 어느 시점에 타이밍을 맞춰 끼어들어야 시스템과 충돌 없이 안전하게 데몬화(Daemonization)될 수 있는지, 그 진입 경로(Execution Tree)를 21.9.1장에서 본격적으로 탐험해 보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

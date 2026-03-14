@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:19.3.4.1. `orb_unadvertise()`를 통한 메모리 릭(Memory Leak) 방지</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>19.3.4.1. `orb_unadvertise()`를 통한 메모리 릭(Memory Leak) 방지</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 19. uORB 토픽(Topic) 발행 및 구독 구현 실습</a> / <span>19.3.4.1. `orb_unadvertise()`를 통한 메모리 릭(Memory Leak) 방지</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>19.3.4.1. <code>orb_unadvertise()</code>를 통한 메모리 릭(Memory Leak) 방지</h1>
+<p>백그라운드로 100Hz로 미친 듯이 회전하던 워커 스레드의 무자비한 <code>while (!thread_should_exit)</code> 무한 루프 블록이 드디어 통제 변수에 의해 파괴되어 깨지고, 코드 실행 제어권이 루프 바깥 하단부로 툭 하고 떨어졌다면, 이는 시스템 커널 스케줄러가 데몬 모듈에게 **“즉각 미들웨어 동작을 멈추고 짐 싸서 죽어라(Stop)”**라는 사형 선고를 내렸음을 의미한다.<br />
+이 찰나의 치명적인 순간에 입문 초심자 코더들은 아무런 죄의식도 없이 그대로 메인 함수 끄트머리에 <code>return 0;</code>를 날려버리고 프로세스 함수를 강제 셧다운(Shutdown)시키는 돌이킬 수 없는 만행을 저지른다. 진정한 코어 아키텍트는 죽는 그 마지막 순간 점멸조차도 자신이 링커에 빌려 쓴 모든 가혹한 커널 자원을 완벽하게 반납해야 할 시스템적 의무가 있다.</p>
+<h2>1. 광고(Advertisement) 파괴: <code>orb_unadvertise()</code>의 가혹한 의무 호출</h2>
+<p>당신이 앞선 19.3.3 단원에서 메인 루프 진입 직전 <code>orb_advertise()</code> 함수를 때려서 VFS 링 버퍼망의 파이프 한 줄기를 억지로 열어젖히고 권력을 쥐었던 행위를 똑똑히 기억하는가? 그 무자비한 광고(Advertisement) 대가로 우리는 <code>sensor_pub_handle</code>이라는 VFS 마스터 키 포인터 덩어리를 힙 메모리에 쥐고 있었다. 스레드의 커널 라이프사이클이 셧다운(Shutdown) 되며 죽기 직전, 우리는 오직 우리 손으로 이 핸들을 단독 파괴하여 커널에게 소중한 파일 디스크립터(FD) 메모리를 고스란히 돌려주어야만 한다.</p>
+<pre><code class="language-cpp">// ... (무자비한 while(!thread_should_exit) 무한 루프가 드디어 종료됨) ...
+
+// 루프를 무사히 빠져나온 직후, 미들웨어에 오만하게 열어두었던 파이프라인의 강제 폭파(Unadvertise) 파멸 시퀀스
+if (sensor_pub_handle != nullptr) {
+    // 커널 스케줄러에게 "이 핸들이 불법 점유하던 링 버퍼 메모리를 당장 토해내라"고 청소 명령을 때린다
+    orb_unadvertise(sensor_pub_handle);
+    
+    // (선택적이지만 필수적인 안정성 방벽) 
+    // 나중에 누가 이 변수를 또 잘못 건드려 댕글링 포인터(Dangling Pointer) 에러 타격을 
+    // 유발하지 않도록, 확실하게 nullptr 쓰레기로 덮어씌워 매립해 버린다.
+    sensor_pub_handle = nullptr; 
+}
+</code></pre>
+<p>이 <code>orb_unadvertise()</code> C 코어 API 매크로 함수를 단 한 번 코드상에서 정확하게 타격하는 순간, 커널 시스템은 이 스레드 퍼블리셔가 쏘아대던 <code>sensor_test_data</code> 토픽을 위해 억지로 쥐고 수용하고 있던 <code>o_size</code> 바운더리의 링 버퍼 배열 메모리와 뮤텍스(Mutex) 락 제어 장치들을 지체 없이 힙(Heap) 공간에서 산산이 박살 내버리고, OS 시스템의 다음 행동을 위한 가용 자유 램(Free RAM) 캐시 공간으로 즉각 무자비하게 환수 조치시킨다.</p>
+<h2>2. 단 한 줄의 메모리 릭(Memory Leak)이 초래하는 끔찍한 추락 나비효과</h2>
+<p>만약 이 치명적인 클린업 코드 한 줄을 까먹고 데몬이 종료된다면 픽스호크 보드에 어떤 끔찍한 잠재적 참사가 들이닥칠까?<br />
+코드 개발자가 NSH 터미널 콘솔 디버깅 쉘에서 <code>px4_uorb_example stop</code>과 <code>px4_uorb_example start</code> 명령을 그저 디버깅이랍시고 10번만 미친 듯이 껐다 켜보자. 스레드가 파괴되어 죽을 때마다, 이 시스템 링 버퍼 파이프는 같이 파괴되어 닫히지 않고 주인 읽은 고아(Orphan Object) 상태로 메모리에 버려져 널브러져 방치된다.<br />
+그리고 새로 켜진 다음 데몬 스레드는 메인 루프 진입 전 <code>orb_advertise()</code>를 때리며 또다시 완전히 새롭고 거대한 새로운 링 버퍼 통로를 시스템 힙에서 무식하게 뜯어내어 강탈해 간다. 결국 단 10번의 재실행만으로 10개의 거대한 유령(Ghost) 파일 디스크립터 파이프라인이 픽스호크 보드 VFS에 무자비하게 그어지는 것이다.</p>
+<p>단 몇 분, 몇 시간의 비행 만에 픽스호크의 작디작은 1MB SRAM 칩셋 공간은 OOM(Out of Memory) 폭탄의 직격탄을 그대로 처맞게 되고, 센서 통합 EKF 비행 코어 데몬들이 메모리를 더 이상 할당받지 못해 기체는 그 즉시 수십 미터 상공에서 모터를 끄고 추락 궤도로 곤두박질치게 될 것이다.</p>
+<p>따라서 <code>orb_unadvertise()</code> 객체 매립 행위는 개발자의 나태한 선택이 아닌, 전체 시스템 드론 생태계 생존을 위한 절대적인 핏빛 철칙이라는 점을 뼛속에 새겨야 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

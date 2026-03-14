@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:13.4. PX4 펌웨어 파라미터 튜닝 및 EKF2(Estimator) 통합(Fusion) 소스 코드 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>13.4. PX4 펌웨어 파라미터 튜닝 및 EKF2(Estimator) 통합(Fusion) 소스 코드 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 13. RTK GPS 시스템의 이해 및 베이스/로버 구성</a> / <span>13.4. PX4 펌웨어 파라미터 튜닝 및 EKF2(Estimator) 통합(Fusion) 소스 코드 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>13.4. PX4 펌웨어 파라미터 튜닝 및 EKF2(Estimator) 통합(Fusion) 소스 코드 분석</h1>
+<p>RTK GNSS 하드웨어와 관제 통신망(NTRIP 등)이 완벽하게 구축되어 밀리미터 단위의 정밀 좌표가 드론 안으로 인입(Inject)되더라도, 비행 제어기(FC) 펌웨어가 이 고급 데이터를 소화하지 못하면 한낱 무용지물에 불과하다.</p>
+<p>PX4-Autopilot 생태계의 두뇌 역할을 하는 상태 추정기(Estimator)인 <strong>EKF2(Extended Kalman Filter)</strong> 는 단순히 GPS 좌표를 맹신하는 모듈이 아니다. 자이로스코프, 가속도계, 기압계, 지자기 센서, 그리고 RTK GPS라는 서로 다른 대역폭과 노이즈 특성을 가진 다중 센서 데이터를 통계학적으로 ’융합(Fusion)’하여 가장 확률이 높은 현재 상태(<span class="math math-inline">X, Y, Z</span>, 속도, 자세 각도)를 추론해 낸다.</p>
+<p>본 절에서는 단일/듀얼 RTK 시스템을 PX4 기체에 이식했을 때 반드시 선행되어야 하는 핵심 파라미터(Parameter)의 튜닝 기법을 살펴고, EKF2 인스턴스가 C++ 소스 코드 레벨에서 GPS 관측치(Observation)를 어떻게 비트마스크(Bitmask)로 파싱하고 필터에 태우는지 그 아키텍처를 심도 있게 분석한다.</p>
+<h2>1.  EKF2 (Extended Kalman Filter) GPS 융합의 철학</h2>
+<p>기본적으로 EKF2는 ’예측(Prediction)’과 ‘보정(Correction)’ 사이클로 무한히 회전한다.</p>
+<ul>
+<li><strong>예측</strong>: 주파수가 매우 빠른(<span class="math math-inline">400\text{Hz} \sim 800\text{Hz}</span>) 관성 측정 장치(IMU)를 이용해 찰나의 기체 움직임을 적분하여 현재 위치를 예상한다.</li>
+<li><strong>보정</strong>: 주파수는 느리지만(<span class="math math-inline">5\text{Hz} \sim 10\text{Hz}</span>) 절대적인 참값에 가까운 GPS 데이터를 받아, 앞서 예측한 위치와 비교하여 오차(Innovation)를 추출하고 필터의 상태 벡터(State Vector)를 갱신한다.</li>
+</ul>
+<p>일반 GPS는 오차가 수 미터에 달하므로 필터 업데이트의 가중치(Kalman Gain)가 낮지만, RTK Fixed 모드의 보정 데이터는 가중치가 매우 강력하게 부여되어 IMU의 드리프트(Drift)를 칼같이 잡아낸다.</p>
+<h2>2.  RTK 인프라 통합 단계별 파라미터(Parameter) 튜닝 가이드</h2>
+<p>최신 버전(예: PX4 v1.14 이상)에서 EKF2를 RTK 모드에 맞게 튜닝한다는 것은 단순히 스위치를 “On“으로 켜는 것이 아니다. 각 센서의 기하학적 배치 좌표를 정의하고, 센서 간의 신뢰도(Weight)를 계량하는 작업이다.</p>
+<h3>2.1  GPS 포트 및 프로토콜 기본 인터페이스</h3>
+<p>가장 먼저 PX4 내장 <code>gps</code> 드라이버 데몬이 하드웨어를 인식하게 만들어야 한다.</p>
+<ul>
+<li><code>GPS_1_CONFIG</code>: 1번 GPS가 연결된 시리얼 포트(예: <code>GPS 1</code> 또는 <code>TELEM 1</code>)를 할당한다. 만약 포트가 열리지 않으면 부팅 과정에서 드라이버 자체가 실행되지 않는다.</li>
+<li><code>GPS_1_PROTOCOL</code>: 패킷 파서(Parser)를 지정한다. u-blox 칩셋 기반이면 <code>1</code> (UBX)를 선택한다. NMEA 포맷으로 파싱할 경우 <code>2</code> 로 둔다.</li>
+</ul>
+<h3>2.2  기구학적 레버암 (Lever Arm) 보상</h3>
+<p>FC(Pixhawk) 모듈의 중심점(Center of Gravity, CoG)과 안테나의 위상 중심점(Phase Center)이 물리적으로 떨어져 있을 때, 기체가 롤(Roll)을 치면 안테나의 궤적은 FC 중심점 궤적보다 크게 요동친다. 이를 수학적으로 무효화하는 것을 레버암 보상이라 한다.</p>
+<ul>
+<li><code>EKF2_GPS_POS_X</code>: FC 중심점 대비 GPS 안테나의 X축(전방) 거리 벡터.</li>
+<li><code>EKF2_GPS_POS_Y</code>: Y축(우측) 거리 벡터.</li>
+<li><code>EKF2_GPS_POS_Z</code>: Z축(하단) 거리 벡터. <strong>주의</strong>: 항구적 Z축 기준은 하단(Down) 방향이 (+)이므로, 안테나가 FC보다 “위“에 설치되어 있으면 이 값은 반드시 <strong>음수(Negative)</strong> 값(예: <span class="math math-inline">-0.15\text{ m}</span>)을 가져야 한다.</li>
+</ul>
+<h3>2.3  RTK 위상 데이터(Phase Data) 활성화 체계</h3>
+<p>정밀 측위를 위해 EKF2가 3D 위치뿐만 아니라 GPS 모듈이 도출해 낸 반송파 위상(Carrier-phase) 기반의 고정밀 속도 벡터마저 필터에 삼키도록 세팅한다.</p>
+<ul>
+<li><code>EKF2_GPS_CTRL</code>: GPS 데이터의 어떠한 특성을 EKF 상태 보정에 사용할지 32비트 비트마스크(Bitmask)로 결정하는 가장 핵심적인 파라미터이다.</li>
+<li>비트 0: 3D 위치 융합(Position Fusion)</li>
+<li>비트 1: 3D 속도 융합(Velocity Fusion)</li>
+<li>비트 2: 단일 안테나 전방 향상(Heading) 융합</li>
+<li>비트 3: 듀얼 안테나 요(Yaw) 융합 - Moving Base 관련 설정 시 활성화</li>
+</ul>
+<p>전형적인 고성능 싱글 RTK 체계 구성을 위해서는 위치와 속도를 모두 수용하기 위해 해당 파라미터에 값을 부여해야 한다.</p>
+<h2>3.  C++ 레벨의 EKF2 센서 데이터 인입(Injection) 루틴</h2>
+<p>그렇다면 QGC나 QML UI에서 파라미터를 세팅했을 때, 코드에서는 어떤 일이 벌어지는가?</p>
+<p>PX4 소스 체인망에서 센서 데이터가 EKF2의 칼만 필터 수학 논리 코어까지 전달되는 파이프라인의 핵심은 <code>uORB</code> (Micro Object Request Broker) 통신망과 <code>ekf2</code> 모듈 폴더 내에 위치한 인스턴스 인터페이스 클래스들이다.</p>
+<ol>
+<li>
+<p><strong>드라이버 계층 (src/drivers/gps/)</strong>:<br />
+드론의 Serial 포트로 아스키코드와 헥스(Hex) 바이트들이 들어오면, <code>gps/devices/src/ubx.cpp</code> (UBX 드라이버 기준) 클래스가 동작한다. 이곳에서 UBX-NAV-RELPOSNED, UBX-NAV-PVT 패킷 파싱 구문이 돌면서 <span class="math math-inline">\text{cm}</span> 단위 오차반경, 3D 속도 행렬들을 뽑아낸 뒤 이를 uORB 주제인 <code>sensor_gps</code> 구조체 메시지로 Publish 한다.</p>
+</li>
+<li>
+<p><strong>수광부 및 딜레이 보상 계층 (src/modules/ekf2/Ekf2.cpp)</strong>:<br />
+EKF2 인스턴스의 Main 루프는 <code>sensor_gps</code> 데이터를 Subscribe 한다. 여기서 곧장 Kalman Equation으로 진입하지 않는 것이 중요하다. GPS 데이터는 필연적으로 연산/전송 지연(<span class="math math-inline">\approx 100\text{ ms}</span>)이 깔려 있으므로, EKF 핵심 엔진 속의 <code>링 버퍼(Ring Buffer)</code>에 과거 타임스탬프로 밀어 넣은 다음(Delayed Insertion), IMU 데이터를 통한 상태 벡터를 ’타임머신’처럼 뒤로 감아 재추정하고(Rewound) 현재 시점까지 다시 적분하여 가져오는 <strong>시간 일치성(Time-synchronization)</strong> 연산을 수행한다.</p>
+</li>
+<li>
+<p><strong>메인 융합 방정식 (src/lib/ecl/EKF/gps_control.cpp)</strong>:<br />
+이곳이 EKF2 수학 방정식의 심장부이다. <code>EKF2_GPS_CTRL</code> 비트마스크 변수를 확인하여 해당 관측치(<span class="math math-inline">Z</span> 행렬)의 사용 처리가 허가되어있다면, GPS 고도 분산(<code>epv</code>)과 수평 분산(<code>eph</code>) 수치를 기반으로 측정 노이즈 공분산 행렬(<span class="math math-inline">R</span>)을 역산한다. 이후 잔차(Residual)인 <span class="math math-inline">y = z - Hx</span> 를 구성하고, 칼만 이득(Kalman Gain) <span class="math math-inline">K</span> 를 획득함으로써 최종 오차를 억제한다.</p>
+</li>
+</ol>
+<p>요약하자면, PX4에 정밀 GPS를 올린다는 것은 “하드웨어를 달았으니 성능이 좋아진다“라는 결과론적 행위가 아니다. 엔지니어는 기계학적 레버암 편차를 <code>EKF2_GPS_POS</code> 파라미터로 상쇄시키고, 통계학적 노이즈를 <code>EKF2_GPS_CTRL</code> 비트 연산으로 필터링하도록 펌웨어의 수학적 인지계를 튜닝(Tuning)하는 정교한 외과 수술을 집도하는 것이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.4.2. 메시지 발행(`orb_publish`) 시의 동기화 및 락프리(Lock-free) 데이터 복사</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.4.2. 메시지 발행(`orb_publish`) 시의 동기화 및 락프리(Lock-free) 데이터 복사</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.4.2. 메시지 발행(`orb_publish`) 시의 동기화 및 락프리(Lock-free) 데이터 복사</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.4.2. 메시지 발행(<code>orb_publish</code>) 시의 동기화 및 락프리(Lock-free) 데이터 복사</h1>
+<p>PX4-Autopilot 생태계에서 초당 수천 번 깨어나는 센서 드라이버나 복잡한 EKF 제어기 모듈이 자신의 소중한 연산 결괏값을 전체 시스템망에 전파하기 위해 수없이 가장 빈번하게 반복 호출하는 API가 바로 <code>orb_publish</code>이다. 다형적인 다수의 구독 모듈들이 과연 언제 어느 타이밍에 데이터를 읽어갈지 일일이 스케줄링 예측을 할 수 없는 비동기적(Asynchronous) 실시간 OS(RTOS) 환경에서, <code>orb_publish</code>가 무거운 상호 배제(Mutex/Semaphore) 락을 일절 쓰지 않고 어떻게 확정적이고 결함 없는 무결성(Integrity) 데이터 쓰기를 관철해 내는지 그 락프리(Lock-free) 꼬리표 배후의 영리한 로직을 파헤친다.</p>
+<h2>1. <code>orb_publish</code> 호출의 C++ VFS 계층 구조 파이프라인</h2>
+<p>유저 스페이스 제어 모듈에서 <code>orb_publish(ORB_ID(topic), handle, &amp;data)</code>가 호출되는 역사적 순간, 이는 앞서 살펴본 <code>orb_copy</code>의 읽기 경로와 정확히 대척되는 하향 <code>write()</code> 시스템 콜 파이프라인 스트림을 타고 지하로 내려간다.</p>
+<ol>
+<li><strong>디바이스 노드 핸들 바인딩</strong>: 매개변수로 건네진 정수형 <code>handle</code>은 최초 <code>orb_advertise</code> 시점에 이 발행자가 독점적으로 쥐게 된 <code>uORBDeviceNode</code> 객체의 고유 파일 디스크립터(fd)이다.</li>
+<li><strong><code>uORBDeviceNode::write</code> 종단 진입</strong>: NuttX OS의 견고한 가상 파일 시스템(VFS) 함수 링키지를 브릿지로 타고 넘어, 최종적으로 물리적 메모리를 관장하는 코어 노드 깊숙한 곳의 <code>write</code> 핸들러 C++ 메서드가 사용자 데이터 버퍼의 주소를 안전하게 인계받는다.</li>
+</ol>
+<h2>2. 쓰기(Write) 구역의 동시성 동기화 딜레마</h2>
+<p>구독자의 잦디잦은 읽기 작업(<code>read</code> 메서드)은 세대 카운터를 이용한 낙관적 이중 락프리 검증 알고리즘(Generation Double-Check)으로 아름답게 회피 해결했지만, 발행자의 쓰기 작업(<code>write</code>)은 본질적으로 **“물리적인 메모리 영역 자체의 파괴적 변형(Destructive Mutation)”**을 동반하므로 딜레마의 차원이 아예 다르다.</p>
+<ul>
+<li>만약 두 구조체 노드의 쓰기 포인터가 겹치는 다중 퍼블리셔(Multi-publisher)가 혼재하는 기이한 토픽 생태계(예: 듀얼 리던던트 GPS 환경에서의 통합 센서 토픽)의 경우, 둘이 동시에 <code>memcpy</code>를 갈기 시작하면 메모리 버퍼 배열이 끔찍하게 꼬여 프랑켄슈타인 데이터가 탄생하게 된다.</li>
+<li>또한 하드웨어 인터럽트(IRQ) ISR 문맥에서 극단적으로 짧은 시간에 발동하는 가장 높은 최상위 우선순위의 무자비한 SPI 센서 쓰기 태스크는, OS 스케줄러의 소프트웨어 락(Lock) 대기를 얌전히 기다려 줄 나노초의 인내심 자체가 결여되어 있다.</li>
+</ul>
+<h2>3. 인터럽트 마스킹(Interrupt Masking) 기반의 국소적 하드웨어 동기화</h2>
+<p>수천 수만 클럭 사이클을 낭비하는 무겁고 느린 상위 OS 레벨의 뮤텍스(Mutex) 시스템 콜 대신, uORB는 픽스호크 메인 프로세서(ARM Cortex-M 시리즈)의 가장 로우 레벨(Low-level) 하드웨어적 제어권에 직접 의존한 <strong>인터럽트 마스킹(Interrupt Masking, <code>irqsave</code>)</strong> 전술을 과감히 사용하여 쓰기 전용 임계 구역(Critical Section)의 철통 방어를 사수한다.</p>
+<pre><code class="language-cpp">// orb_publish의 코어를 찌르는 uORBDeviceNode::write 내부의 동기화 축약 로직
+ssize_t uORBDeviceNode::write(const void *buffer, size_t buflen) {
+    // 1. 하드웨어 인터럽트 전면 중지(마스킹) 및 기존 상태 강제 백업
+    // (CPU 코어의 외부 방해를 원천 차단하여 시간의 흐름을 멈춘다)
+    irqstate_t flags = px4_enter_critical_section();
+
+    // ================= [임계 구역 (Critical Section) 결계 진입] =================
+    // 이 구역이 끝나고 마스킹이 풀릴 때까지는, 이 우주(프로세서 환경)의 그 어떤 알람이나 화급한 EKF 스레드도 감히 이 코드 흐름을 선점(Preemption)할 수 없다.
+
+    // 2. 링 버퍼 헤드 논리 포인터 위치 계산
+    unsigned head = _generation % _queue_size;
+
+    // 3. 물리적 메모리 데이터 배열 덮어쓰기 (가장 짧고 굵은 핵심 연산)
+    memcpy(&amp;_buffer[head * _o_size], buffer, _o_size);
+
+    // 4. 전역 세대 카운터(Generation) 원자적(Atomic) 1 증가 (Tearing 방어의 핵)
+    _generation++;
+
+    // ================= [임계 구역 (Critical Section) 봉인 해제] =================
+    
+    // 5. 정지했던 인터럽트 레지스터 상태 원복(복구)
+    px4_leave_critical_section(flags);
+
+    // 6. 대기 중인 VFS 구독자(poll/select 감시 스레드)들에게 "신규 데이터가 도달했음"을 시그널 방송(Broadcast)
+    notify_subscribers();
+
+    return _o_size;
+}
+</code></pre>
+<p>이 압도적으로 컴팩트한 코드는 PX4 발행 파이프라인 설계 철학의 엑기스를 대변한다. 운영체제 커널에게 “나 지금부터 데이터 안전하게 쓸 건데 여유로운 자물쇠(Lock) 좀 줄래?” 하고 한가롭게 물어보며 스케줄링을 양보하는 대신, “내가 딱 수십 바이트 <code>memcpy</code> 복사하는 나노초 찰나(수십 ns) 동안에는 그냥 <strong>프로세서 외부 시스템 인터럽트를 싹 다 귀를 막고 숨죽이고 있어라(마스킹)</strong>“고 하드웨어 코어에 직접적으로 무식하지만 가장 확실하고 빠른 권위적 명령을 하달하는 것이다.</p>
+<h2>4. 락프리(Lock-free) 철학의 아찔한 줄타기와 그 완벽한 종착점</h2>
+<p><code>px4_enter_critical_section</code> 매크로를 악용한 극단적 IRQ 마스킹은 그 어떠한 문맥 교환도 불허하는 100% 완벽한 상호 배제를 공간적으로 제공하지만, 만약 그 결계 내부로 진입한 C++ 코드가 수백 라인으로 길어지면 시스템 전체의 실시간 인터럽트 응답 파이프라인을 연쇄적으로 파괴단절시키는 치명적 시스템 독약(<code>Watchdog Timeout System Halt</code>)이 되어버린다.</p>
+<p>그러나 신의 한 수를 둔 <code>orb_publish</code> 내부 로직 구역은 오로지 단지 캐시 친화적인 <code>memcpy</code> 구문 한 줄과 변수 정수 덧셈(<code>_generation++</code>)이라는 극한의 마이크로 인스트럭션 코드 조각으로만 디자인되어 있기 때문에, 마스킹이 지속되는 블로킹 물리 시간이 하드웨어 모터 제어 시스템에 인지가 전혀 불가능할 만큼 나노 단위로 짧아 성능 응답성 오버헤드를 기적적으로 제로화한다.<br />
+이처럼 벼랑 끝에서 줄 타듯 아슬아슬하고 영리한 핀셋형 IRQ 인터럽트 제어야말로, 수십에서 수백 마이크로초 틱(Tick) 단위로 호흡하는 PX4 비행 제어기 코어 시스템이 병목 하나 없이 다방향 멀티 태스킹 통신을 영위하는 가장 위대하고도 아름다운 백엔드 비밀 병기이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

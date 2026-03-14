@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:27.2.1. 펌웨어 독립적 ECL 코어 설계</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>27.2.1. 펌웨어 독립적 ECL 코어 설계</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.2.1. 펌웨어 독립적 ECL 코어 설계</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>27.2.1. 펌웨어 독립적 ECL 코어 설계</h1>
+<p>PX4의 상태 추정 알고리즘을 담당하는 ECL(Estimation and Control Library)이 펌웨어 운영체제(NuttX) 및 무인기 미들웨어(uORB)와 완벽하게 분리되어 있다는 사실은, 단순한 코드 정리를 넘어선 고도의 소프트웨어 공학적 설계 철학을 내포하고 있다.</p>
+<p>본 절에서는 <strong>펌웨어 독립적 코어 설계(Firmware-Independent Core Design)</strong> 가 무엇을 의미하며, PX4 아키텍처가 어떠한 방식으로 수학 로직을 물리적 하드웨어의 파편화로부터 지켜내는지 분석한다.</p>
+<hr />
+<h2>1.  펌웨어 종속성의 위험성과 독립 설계의 필요성</h2>
+<p>비행 제어 소프트웨어에서 확장 칼만 필터(EKF)는 기압계, GPS, IMU 등 수십 개의 센서 인터페이스와 맞물려 돌아간다. 만약 EKF 수학 공식이 센서 드라이버의 API(<code>read_sensor()</code>)를 직접 호출하거나, 운영체제의 스레드 잠금 메커니즘(<code>pthread_mutex_lock()</code>)을 행렬 연산 중간에 섞어 쓴다면 어떤 일이 벌어질까?</p>
+<ol>
+<li><strong>플랫폼 이식의 불가:</strong> 새로운 칩셋(예: STM32에서 NXP로 변경)을 도입하거나 OS를 교체할 때마다 수천 줄의 수학 코드를 뜯어고쳐야 한다.</li>
+<li><strong>테스트의 물리적 제약:</strong> EKF 알고리즘에 작은 수학적 수정(예: 자이로 바이어스 모델 변경)을 가하더라도, 이를 검증하기 위해서는 무조건 드론 하드웨어에 펌웨어를 굽고(Flashing) 운동장을 뛰며 실제 비행 테스트를 수행해야 한다.</li>
+</ol>
+<p>이러한 고질적인 문제를 근본적으로 해결하기 위해 PX4 개발진은 ECL 코어를 <strong>‘모든 IO(Input/Output)와 타임키핑(Timekeeping) 체계로부터 격리된 순수 수학 연산기(Pure Math Calculator)’</strong> 로 재설계하였다.</p>
+<hr />
+<h2>2.  의존성 역전(Dependency Inversion)과 데이터 푸시(Data Push) 모델</h2>
+<p>ECL 코어는 절대 스스로 센서 데이터를 ‘가져오지(Pull)’ 않는다. 반대로 펌웨어 래퍼(Wrapper)가 uORB 네트워크에서 센서 데이터를 수집한 뒤, 이를 평범한 C++ 구조체(<code>struct</code>)에 담아 ECL 코어의 인터페이스 함수로 ‘밀어 넣는(Push)’ 철저한 <strong>수동적 수신 모델</strong>을 따른다.</p>
+<h3>2.1  인터페이스 명세 (C++ 순수 구조체)</h3>
+<p>ECL 코어(<code>lib/ecl/EKF/</code>)가 외부로부터 받아들이는 유일한 통로는 다음과 같은 추상화된 데이터 구조체들뿐이다. 여기에는 MAVLink나 uORB 같은 통신 프로토콜의 헤더나 흔적이 전혀 묻어있지 않다.</p>
+<pre><code class="language-cpp">// 펌웨어와 상관없는 순수 이종 데이터 구조체 예시 (ecl/EKF/common.h)
+struct imuSample {
+    uint64_t time_us;         // 유닉스 타임이 아닌 가상 스텝 타임
+    Vector3f delta_ang;       // 각속도 적분값 (자이로)
+    Vector3f delta_vel;       // 가속도 적분값 (가속도계)
+    float    delta_ang_dt;    // 각속도 적분 시간 (초)
+    float    delta_vel_dt;    // 가속도 적분 시간 (초)
+};
+
+struct gpsSample {
+    uint64_t time_us;
+    Vector2f pos;             // 위도/경도를 미터(m) 단위로 변환한 값
+    float    hgt;             // 고도
+    Vector3f vel;             // NED 속도 벡터
+    // ... 오차 공분산 등
+};
+</code></pre>
+<h3>2.2  메인 루프 시그니처 (Main Loop Signature)</h3>
+<p>외부 펌웨어가 위의 <code>imuSample</code> 데이터를 넣어주면 그제야 ECL 내부의 시간(<code>time_us</code>)이 흐른다. 즉, ECL 코어는 보드의 실제 하드웨어 클럭(RTC)을 조회할 권한이 없으며, 오직 펌웨어가 주입해 주는 타임스탬프 스칼라 변수에 의존하여 적분과 미분을 수행한다.</p>
+<pre><code class="language-cpp">// EKF 펌웨어 모듈(ekf2)이 코어 루틴을 돌리는 방식
+Ekf _ekf; // 독립된 EKF 코어 인스턴스
+
+// 1. 데이터 주입 (Push)
+_ekf.setIMUData(imu_sample);
+_ekf.setGpsData(gps_sample);
+
+// 2. 엔진 가동 (Tick)
+_ekf.update(); 
+
+// 3. 결과 수확 (Pull)
+_ekf.get_position(position_result);
+</code></pre>
+<hr />
+<h2>3.  다중 플랫폼(Cross-Platform) 배치와 이식성(Portability)</h2>
+<p>이러한 완벽한 펌웨어 독립적 설계를 통해 PX4 ECL은 드론 하드웨어를 벗어나 다음과 같은 극단적으로 다양한 환경에 <span class="math math-inline">100\%</span> 동일한 바이너리 동작을 제공할 수 있게 되었다.</p>
+<h3>3.1  SITL (Software In The Loop) 시뮬레이션</h3>
+<p>가제보(Gazebo)나 제이마브심(jMAVSim) 같은 3D 물리 엔진이 가상의 드론을 띄운 뒤 수집한 가상 센서 데이터를 ECL 구조체로 포장해 던져주면, ECL은 자신이 지금 현실 세계의 하늘을 날고 있는지, 아니면 리눅스 데스크톱 메모리 위를 날고 있는지 전혀 구분하지 못한 채 완벽히 동일한 회전 행렬을 내뱉는다.</p>
+<h3>3.2  리플레이(Replay) 및 로그 기반 분석 기법</h3>
+<p>가장 압도적인 활용 분야다. 실제 비행 중 추락 사고가 났다고 가정해 보자. 조종사는 기체에서 SD 카드를 뽑아 <code>.ulog</code> 형태의 센서 원시 데이터 로그를 데스크톱으로 가져온다.<br />
+이후 데스크톱용으로 컴파일된 ECL Replay 툴에 이 로그를 주입하면, 파라미터나 필터 소스 코드를 조금씩 수정해 가며 <strong>“만약 이때 EKF_GPS_NOISE 파라미터가 0.5였다면 추락을 막을 수 있었을까?”</strong> 에 대한 대답을 오차 없이 완벽하게 시뮬레이션(Post-processing)해 낼 수 있다.</p>
+<p>이 모든 것이 단일한 수학엔진(ECL)을 펌웨어 인터페이스로부터 분리해냈기 때문에 가능한 엔지니어링의 성과다. 요약하자면, PX4 ECL은 수단과 방식을 가리지 않고 입에 센서 데이터 구조체만 넣어주면 묵묵히 쿼터니언과 공분산 행렬을 뱉어내는 완벽한 <strong>‘블랙박스형 오라클(Oracle)’</strong> 로 설계되어 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

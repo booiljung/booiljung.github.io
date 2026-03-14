@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.6.3.1 데이터 수신 시 인터럽트/폴링 의존 없이 Work Item을 워크 큐(WQ)에 등록(`work_queue()`)하는 아키텍처</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.6.3.1 데이터 수신 시 인터럽트/폴링 의존 없이 Work Item을 워크 큐(WQ)에 등록(`work_queue()`)하는 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.6.3.1 데이터 수신 시 인터럽트/폴링 의존 없이 Work Item을 워크 큐(WQ)에 등록(`work_queue()`)하는 아키텍처</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.6.3.1 데이터 수신 시 인터럽트/폴링 의존 없이 Work Item을 워크 큐(WQ)에 등록(<code>work_queue()</code>)하는 아키텍처</h1>
+<p>18.6.1절과 18.6.2절에서 다룬 <code>poll</code> 메커니즘은 매우 직관적이고 훌륭한 동기화 방식이지만, 각 모듈마다 이 폴링을 전담하며 무한 루프(<code>while(!_should_exit)</code>)를 도는 전용 메인 스레드(Main Thread)가 항상 뒷받침되어야 한다는 단점이 있다. 모듈이 수십 개로 늘어나면 스레드 개수도 무한정 늘어나 시스템 스택 메모리를 갉아먹게 된다.</p>
+<p>이를 극복하기 위해 최신 PX4 아키텍처는 운영체제 수준의 스레드 폴링을 넘어서, <strong>PX4 자체적인 워크 큐(Work Queue, WQ)</strong> 시스템과 타이트하게 결합된 완전히 분리된(Decoupled) 비동기 수신 아키텍처인 <code>uORB::SubscriptionCallback</code>을 도입했다.</p>
+<h2>1. 스레드(Thread) 대기에서 워크 아이템(Work Item) 스케줄링으로의 패러다임 전환</h2>
+<p>기존 방식이 스레드 자신이 직접 잠들고 깨어나는 주체였다면, 워크 큐 기반 방식에서는 개별 모듈이 스레드를 갖지 않는다. 대신 백그라운드에 미리 만들어 둔 몇 개의 거대한 <strong>공용 워커 스레드 묶음(Work Queue, 예: <code>wq:nav_and_controllers</code>, <code>wq:hp_default</code>)</strong> 이 존재하며, 모듈들은 자신이 해야 할 일(함수 포인터와 데이터)을 포장한 <strong>워크 아이템(Work Item)</strong> 트레이를 이 공용 컨베이어 벨트에 던져놓기만 하면 된다.</p>
+<p><code>uORB::SubscriptionCallback</code>을 사용하면, 새로운 uORB 데이터가 퍼블리싱되는 순간 구독자 측에서 별도의 스레드 인터럽트 대기나 <code>poll()</code> 시스템 콜 없이, 곧바로 이 워크 큐 컨베이어 벨트에 <em>미리 약속된 자신의 콜백 실행 아이템</em>을 스케줄링(<code>work_queue()</code>) 해버린다.</p>
+<h2>2. 동작 메커니즘: VFS 콜백(Callback) 후크</h2>
+<p>이 자동화된 마법은 uORB 노드(<code>uORBDeviceNode</code>) 내부 깊숙이 심어진 커스텀 콜백 리스트 덕분에 가능하다.</p>
+<ol>
+<li><strong>구독 시점 (Setup):</strong> 클래스가 생성될 때, 내부적으로 현재 디바이스 노드를 찾아가 자신의 워크 아이템(Work Item) 제어 블록과 실행되어야 할 람다 함수(또는 멤버 함수 포인터)를 콜백 리스트에 등록해 둔다.</li>
+<li><strong>발행 시점 (Trigger):</strong> 퍼블리셔가 <code>orb_publish</code>를 호출하여 링 버퍼에 데이터를 복사한 후, 앞서 본 <code>poll_notify</code>뿐만 아니라 이 노드에 꽂혀 있는 모든 <strong>등록된 콜백 함수들을 순차적으로 실행(Invoke)</strong> 한다.</li>
+<li><strong>워크 큐 스케줄링 (<code>work_queue()</code>):</strong> 여기서 호출되는 uORB 내부의 콜백 함수 본체는 매우 짧고 단순하다. 즉시 데이터를 복사하는 것이 아니라, 구조체 포인터를 이용해 <strong>PX4 워크 큐 API인 <code>work_queue(ID, &amp;work_item, 0)</code>를 호출</strong>하는 것으로 끝난다.</li>
+</ol>
+<pre><code class="language-cpp">// 퍼블리셔의 발행 동작 직후 트리거되는 콜백 로직 흐름 (슈도코드)
+void SubscriptionCallback::call() {
+    // 1. 이미 큐에 스케줄링되어 실행 대기 중이라면 무시
+    if (work_pending(&amp;_work)) return;
+    
+    // 2. PX4 워크 큐 시스템에 현재 이 객체의 Run() 메서드 스케줄링 예약 완료
+    work_queue(_wq_id, &amp;_work, (worker_t)&amp;SubscriptionCallback::Run_trampoline, this, 0);
+}
+</code></pre>
+<p>이 일련의 과정 속에는 어떠한 커널 스레드의 인위적인 블로킹(Blocking)이나 수면(Sleep)이 개입하지 않는다. 퍼블리셔 스레드의 마지막 여력을 약간 빌려, 대기 중인 구독자의 워크 아이템을 큐의 맨 뒷줄로 던져놓고(Dispatch) 사라질 뿐이다.</p>
+<p>결과적으로 공용 워커 스레드는 자신의 차례가 올 때마다 큐에서 워크 아이템을 하나씩 뽑아 실행(<code>Run()</code>)하며, 이 <code>Run()</code> 내부에서 비로소 <code>orb_copy</code>를 통해 신규 데이터를 받아와 비즈니스 로직을 수행하게 된다. 이는 수평적 확장이 유리한 마이크로서비스 아키텍처나 비동기 Node.js의 이벤트 루프와 맞닿아 있는 PX4의 핵심 최신 아키텍처이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

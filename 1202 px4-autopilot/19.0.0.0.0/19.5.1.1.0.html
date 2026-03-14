@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:19.5.1.1. POSIX `poll()` 개념과 PX4 RTOS(NuttX) 환경에서의 추상화(`px4_poll`)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>19.5.1.1. POSIX `poll()` 개념과 PX4 RTOS(NuttX) 환경에서의 추상화(`px4_poll`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 19. uORB 토픽(Topic) 발행 및 구독 구현 실습</a> / <span>19.5.1.1. POSIX `poll()` 개념과 PX4 RTOS(NuttX) 환경에서의 추상화(`px4_poll`)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>19.5.1.1. POSIX <code>poll()</code> 개념과 PX4 RTOS(NuttX) 환경에서의 추상화(<code>px4_poll</code>)</h1>
+<p>흔해 빠진 리눅스 데스크탑 C/C++ 개발 서버에서 TCP/UDP 소켓 통신(Socket)이나 무거운 비동기 파일 입출력(File I/O) 백엔드 코어를 한 번이라도 짜본 개발자라면 누구나 가슴속에 새겨둔 너무나 유명한 유닉스 POSIX 표준 시스템 콜(System Call)이 하나 있다. 바로 <strong><code>poll()</code></strong> 함수이다.<br />
+이 위대한 함수의 마법 같은 설계 철학은 “수신 서버 스레드를 미친 듯이 빙글빙글 도는 빈루프(Busy-waiting)로 태워 CPU를 혹사시키지 말고 완전히 기절시켜라. 대신, 내가 감시 카메라로 지정한 N개의 네트워크 소켓이나 파일 핸들 중, 단 하나라도 외부의 물리적 개입으로 인해 데이터가 들어와 ‘읽기 가능(Data Ready)’ 상태가 되면 OS 커널이 즉각 하드웨어 인터럽트를 걸어 가장 번개처럼 스레드를 깨워주겠다“는 것에 완벽한 뿌리를 두고 있다.</p>
+<p>우리가 코딩하고 있는 PX4 펌웨어가 이식되어 구동되는 픽스호크 보드는 자원이 펑펑 남아도는 거대한 우분투 리눅스가 결코 아니며, 임베디드 코어 전용의 극한으로 메마른 초소형 실시간 운영체제(RTOS)인 <strong>NuttX</strong> 코어 커널 위에서 위태롭게 돌아간다.<br />
+하지만 위대한 PX4 코어 아키텍트들은 이 NuttX의 열악하고 척박한 보드 환경에서도, 수백 개의 텔레메트리 파일 시스템(VFS) 링 버퍼들을 유닉스의 <code>poll()</code>처럼 극도로 우아하고 반응성 높게 감시할 수 있도록, 이 표준 C API 기능을 커널단에서 완벽히 크로스 컴파일(Cross-compile) 래핑(Wrapping)하여 <strong><code>px4_poll</code></strong> 이라는 이름의 전처리 추상화 매크로로 창조해 내었다.</p>
+<h2>1. “Everything is a file“에 기반한 <code>px4_poll</code>의 VFS 렌더링 아키텍처</h2>
+<p>앞선 19.4 단원의 하드코어한 여정에서 우리가 건너편 미들웨어를 향해 <code>orb_subscribe()</code>를 냅다 타격하여 얻어냈던 최종 물리적 결과물이 무엇이었던가? 바로 고작 스레드 메모리에 떨어진 단순한 <strong>파일 디스크립터(File Descriptor), 텍스트 양수 핸들러 인덱스(<code>int fd</code>)</strong> 하나였다.</p>
+<p>NuttX 운영체제의 관점에서 볼 때, 이 링 버퍼 <code>fd</code>는 단순히 SD카드 디스크에 정적으로 저장된 죽어있는 텍스트 파일이 절대 아니다. 저 건너편 스레드의 퍼블리셔가 데이터를 미친 듯이 코어에서 쓸어 담을 때마다 메모리 크기가 동적으로 늘어나며 상태가 1000Hz로 요동치는 ’살아 숨 쉬는 특수 인터럽트 읽기/쓰기 커널 노드 파이프’이다.</p>
+<p><code>px4_poll</code> 매크로는 이 파일 시스템 VFS 노드의 블로킹/논블로킹(Blocking/Non-blocking) 상태 기계(State Machine)를 커널 최심층부에서 모니터링한다. 우리가 퍼블리셔의 링 버퍼 <code>fd</code>를 구조체 배열에 정교하게 담아 <code>px4_poll</code> 시스템 콜에 통째로 던져 넣고 무한 루프 감방 문을 밖에서 걸어 잠그면, VFS 커널 스케줄러는 그 해당 <code>fd</code> 포인터 주소가 가리키는 실제 링 버퍼 꼬리단(Tail) 메모리를 고정 감시 카메라처럼 노려보게 된다.</p>
+<h2>2. 퍼블리셔의 타격(Publish)과 상태 점핑(Trigger Jumping) 인터럽트</h2>
+<p>감시가 이어지다 퍼블리셔 스레드 데몬이 드디어 메인 루프에서 <code>orb_publish()</code>를 실행하여 <code>memcpy</code>로 새로운 단 1바이트라도 데이터를 버퍼에 내려쓰는 폭력을 행사하는 바로 그 찰나의 순간, VFS 노드의 하드웨어 상태는 <code>데이터 없음(Empty, Blocking)</code>에서 **<code>지금 당장 읽기 가능(POLLIN: Poll-In Event)</code>**으로 트리거 점핑(Trigger Jumping)한다.<br />
+커널은 이 상태 퀀텀 점프(Jump) 이벤트를 L1 버스에서 포착하자마자 즉시 모든 우선순위를 무시하고 하드웨어 인터럽트를 날려, 블로킹 수면 큐(Wait Queue)에 처박혀 송장처럼 숨만 쉬고 있던 우리의 구독자 스레드의 멱살을 잡아채 강제 기상(Wake-up Signal)시켜 버리는 것이다.</p>
+<p>이 추상화 래퍼 매크로의 존재 덕분에, 모듈 개발자는 수백 밀리초의 오차가 기체의 즉각적 자유 낙하 추락으로 이어지는 비행 제어 이너 루프의 극한의 실시간성(Real-time Constraints)을 커널단에서 완벽히 보장(Guarantee)받으면서도, 정작 픽스호크 CPU 코어 점유율은 데몬당 0.01% 바닥 레벨로 무자비하게 폭락시킬 수 있는 신의 권능 통제권을 쥐게 된 것이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

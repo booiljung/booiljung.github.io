@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.5.3.3. 데이터 읽기 중 발행자(Publisher)에 의한 덮어쓰기 감지 시 재시도(Retry) 루프 구현체</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.5.3.3. 데이터 읽기 중 발행자(Publisher)에 의한 덮어쓰기 감지 시 재시도(Retry) 루프 구현체</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.5.3.3. 데이터 읽기 중 발행자(Publisher)에 의한 덮어쓰기 감지 시 재시도(Retry) 루프 구현체</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.5.3.3. 데이터 읽기 중 발행자(Publisher)에 의한 덮어쓰기 감지 시 재시도(Retry) 루프 구현체</h1>
+<p>PX4-Autopilot의 uORB 통신 매커니즘 내에서 구독자(Subscriber)가 구현하는 락프리(Lock-free) 읽기 로직은 필연적으로 “데이터 불일치 혹은 데이터 티어링(Tearing) 발생“이라는 예외 케이스를 잠재적으로 수반한다. 본 절에서는 <code>uORBDeviceNode::read()</code> 블록 내부에서 메모리 복사 작업 도중 발행자 태스크에 의해 데이터 버퍼가 강제로 덮어씌워졌음이 사후 감지(<code>generation_before != generation_after</code>)된 경우, 시스템이 어떻게 재시도(Retry) 루프를 타장하게 되며 이 루프가 무한 경쟁 상태(Starvation)에 빠질 위험은 없는지 소스 코드의 제어 흐름 관점에서 심층 분석한다.</p>
+<h2>1. 재시도(Retry) 루프의 C++ 구현체 구조</h2>
+<p>PX4 시스템의 uORB 구독자 수신 함수 내부는 전통적인 <code>do-while</code> 루프 구조를 응용하여 재시도를 강제 처리(Force Handle)한다.</p>
+<pre><code class="language-cpp">// uORBDeviceNode 데이터 원자적 페치(Fetch) 함수 내 Retry Loop 추상화
+unsigned gen_before;
+unsigned gen_after;
+bool success = false;
+int retry_count = 0;
+const int MAX_RETRIES = 3;  // 임계 컷오프
+
+do {
+    // 1. 읽기 시작: 현재 시점 세대 카운터 확인
+    gen_before = this-&gt;generation;
+    
+    // 2. 물리적 페치(Fetch): 메모리 복사 연산 수행 (블로킹 없음)
+    memcpy(destination, source_buffer_address, data_size);
+    
+    // 3. 읽기 종료: 직후 시점 세대 카운터 재확인
+    gen_after = this-&gt;generation;
+    
+    // 4. 무결성 성립 판단 알고리즘
+    if (gen_before == gen_after) {
+        success = true;
+    } else {
+        // [예외 상황 발생] 복사 도중 발행자의 선점 및 덮어쓰기 감지
+        retry_count++;
+    }
+} while (!success &amp;&amp; retry_count &lt; MAX_RETRIES); // 무한 루프 낭비 방어를 위한 안전장치
+</code></pre>
+<p>이 루프에서 가장 눈여겨보아야 할 아키텍처적 결단은, 데이터가 훼손된 것으로 파악된 즉시 롤백(Rollback)이나 운영체제 차원의 무거운 시그널 알람을 전혀 발생시키지 않고 조용하고도 신속하게 루프 선두로 복귀하여 다시 한번 메모리를 퍼올린다는 사실이다.</p>
+<h2>2. 무한 경쟁 상태(Starvation) 극복 다이내믹스</h2>
+<p>이러한 낙관적 통제(Optimistic Concurrency Control) 중심의 락프리 루프 설계에서는 이론적으로 “발행자가 비정상적으로 너무 빠르게 데이터를 쏟아내어 읽기 스레드가 영원히 온전한 데이터 복사에 실패하고 루프를 탈출하지 못하는 기아(Starvation) 상태“에 봉착할 우려가 제기될 수 있다. 그러나 PX4-Autopilot 아키텍처는 다음 세 가지 물리적, 소프트웨어적 특성을 근거로 이 우려를 완벽히 종식시킨다.</p>
+<ol>
+<li><strong>압도적인 비대칭 속도 격차 (Asymmetrical Speed Gap)</strong>:</li>
+</ol>
+<ul>
+<li>uORB 버퍼 토픽의 메시지 페이로드 크기는 커팅 엣지 센서들을 기준으로 하더라도 수십 바이트에서 최대 수백 바이트 내외에 불과하다.</li>
+<li>현대 픽스호크(Pixhawk) MCU(예: STM32H7 시리즈) 아키텍처에서 L1 캐시 내 수백 바이트의 <code>memcpy</code> 연산은 불과 수십 나노초(ns) 만에 초고속으로 완수된다.</li>
+<li>반면 가장 빠른 하드웨어 SPI 버스 센서 데이터 갱신 속도라 할지라도 통상 밀리초(ms) 단위, 빨라야 4,000Hz~8,000Hz (약 125us) 수준이므로, 발행 주기가 복사 자체에 소요되는 시간 윈도우에 비해 최소 1,000배 이상의 압도적인 여유를 지닌다.</li>
+</ul>
+<ol start="2">
+<li><strong>경합 충돌의 희소성 (Extreme Rarity of Contention)</strong>:</li>
+</ol>
+<ul>
+<li>구독자가 하필 <code>read</code> 구역에 진입하여 정확히 물리적 <code>memcpy</code>를 하고 있는 그 짧은 나노 단위의 찰나에 발행자 태스크의 하드웨어 인터럽트가 스레드를 선점해 들어올 확률은 통계적으로 극도로 희박하다.</li>
+<li>확률적으로 발생하더라도 단 1회의 재시도(<code>retry_count = 1</code>) 만으로 두 번째 복사에는 온전히 성공할 확률이 99.999%에 수렴한다.</li>
+</ul>
+<ol start="3">
+<li><strong>한계 임계치 컷오프 프로텍션 (Bounded Retries)</strong>:</li>
+</ol>
+<ul>
+<li>만에 하나 하드웨어 센서 결함 등으로 발행 모듈 루프가 폭주하여 무한 덮어쓰기가 연쇄적으로 일어날 경우, 읽기 루틴이 무한 루프에 빠져 와치독 메커니즘(Watchdog Task Monitoring)을 건드려 시스템 강제 재부팅을 유발하지 않아야 한다. 이를 위해 내부적으로 최대 재시도 임계값(Max Retries Boundary) 안전망이 구현되어 작동한다. 루프 회전수가 특정 상한 횟수를 초과하면 제어 로직은 <code>false</code>를 뱉으며 해당 주기에서의 데이터 페치를 완전히 포기하고 그 프레임(Frame)은 드롭(Drop)하는 방식으로 애플리케이션의 응답성을 최일선에서 방어한다.</li>
+</ul>
+<h2>3. 통신 알고리즘 관점에서의 결론</h2>
+<p>결과적으로 PX4-Autopilot의 <code>orb_copy</code> 내부 재시도(Retry) 매커니즘은 매우 드물게 발생하는 티어링(Tearing) 예외 케이스를 가장 저렴한 비용(시스템 락 미사용)으로 수습하는 최선의 공학적 전략이다. 에러를 시스템 데들리(Fatal Error)로 격상시키지 않고 단순히 <code>memcpy</code> 루프 1회전 오버헤드만으로 부드럽게 치환한 이 구조적 유연성은 제어 계층의 파이프라인이 부주의한 리얼타임 스케줄링 지연(Context Latency)의 함정에 빠지지 않도록 견인하는 일등 공신이라 할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

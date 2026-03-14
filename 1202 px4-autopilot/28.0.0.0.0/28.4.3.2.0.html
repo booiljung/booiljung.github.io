@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:28.4.3.2. 위치 제어기 내부의 Slew Rate Limiter 및 궤적 생성기(Trajectory Generator) 동기화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>28.4.3.2. 위치 제어기 내부의 Slew Rate Limiter 및 궤적 생성기(Trajectory Generator) 동기화</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>28.4.3.2. 위치 제어기 내부의 Slew Rate Limiter 및 궤적 생성기(Trajectory Generator) 동기화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>28.4.3.2. 위치 제어기 내부의 Slew Rate Limiter 및 궤적 생성기(Trajectory Generator) 동기화</h1>
+<p><code>FlightTask</code>의 <code>activate()</code> 함수를 통해 초기 오차를 0으로 강제 세팅하는 것이 수학적 ’1차 방어막’이었다면, 기체가 원래 가고자 했던 최종 목표점(True Target)을 향해 다시 가속 페달을 밟아야 하는 ’2차 구간’의 부드러움을 무식하게 책임지는 것은 하위 위치 제어기(<code>mc_pos_control</code>) 내부에 진을 치고 있는 <strong>Slew Rate Limiter</strong>와 <strong>궤적 생성기(Trajectory Generator)</strong> 모듈이다.</p>
+<p>FMM(Flight Mode Manager)에서 다듬어 뽑아낸 위치/속도 목표값조차도, 모드 전환 순간에는 결국 이산적(Discrete)이고 거친 거리가 존재하는 디지털 데이터 단차일 수밖에 없다. 이 거칠고 가파른 계단을 모터가 감당할 수 있는 부드러운 아날로그 미끄럼틀 곡선으로 깎아내는 과정이 핵심이다.</p>
+<h2>1.  Slew Rate Limiter의 필터링 철학</h2>
+<p>Slew Rate(슬루 레이트)란 ’단위 시간당 최대 변화율’을 뜻한다. 비행 중 조종사가 조종기 스틱을 중앙(0%)에서 끝(100%)으로 불과 0.1초 만에 튕겼을 때(Step Input), 수동 모드의 목표 속도값은 수학적으로 순간 0m/s에서 10m/s로 점프한다.</p>
+<p>이때 하위 제어기에 내장된 Slew Rate Limiter 모듈은 이 10m/s라는 충격적인 계단 입력값을 그대로 등 뒤의 PID 제어기에 통과시키지 않는다. 대신 내부의 가속도 한계치 하드 리미트 파라미터(예: <code>MPC_ACC_HOR_MAX</code> = 5m/s²)를 조회하여, 속도가 0에서 10까지 도달하는 데 최소 2초의 물리적 시간이 소비되도록 궤적 구간을 강제로 비틀어 늘어뜨려 버린다.</p>
+<p>즉, <span class="math math-inline">t=0</span>일 때 전송하는 목표 속도는 0m/s, <span class="math math-inline">t=1</span>일 때는 5m/s, <span class="math math-inline">t=2</span>일 때 비로소 10m/s로 입력값을 잘게 쪼개어 등가속도 램프(Ramp) 필터 함수로 변환해 내는 것이다. 모드 전환 시 타협된 초기 상태값에서 새로운 목표값으로 이동할 때, 기체는 결단코 덜컹거리는 범프(Bump) 없이 부드러운 가속 이륙 선상에 오르게 된다.</p>
+<h2>2.  궤적 생성기(Trajectory Generator)의 동적 리셋(Dynamic Reset)</h2>
+<p>자율 비행(Auto)이나 위치 제어(Position) 계열 모드에서는 단순한 1차원 Slew Rate 제한 필터를 넘어, 3차원 물리 법칙(Kinematics)을 엄격하게 준수하는 고차원 궤적 플래너(Jerk-limited Trajectory)가 본격 가동된다.</p>
+<p>기체가 공중에 떠서 모드가 파격적으로 전환되는 찰나(예: Position <span class="math math-inline">\rightarrow</span> Mission), <code>mc_pos_control</code>은 FMM으로부터 날아온 <code>vehicle_control_mode</code> 토픽의 플래그 변경(<code>timestamp</code> 갱신)을 인터럽트로 감지한다. 이 순간 궤적 플래너는 즉각적으로 다음과 같은 극한의 동기화 리셋 프로시저를 단행한다.</p>
+<ol>
+<li><strong>과거 궤적의 잔재 폭파</strong>: 이전 모드가 남겨둔 내부 위치/속도 가상 궤적의 적분된 상태(State) 캐시를 일말의 미련 없이 삭제(Flush)한다.</li>
+<li><strong>초기값의 동기화(Sync)</strong>: 곡선 궤적의 출발점(Start Point)을 <span class="math math-inline">t=t_0</span> 찰나 시점의 EKF2 실제 추정(Actual) 위치, 속도, 가속도로 강제 주입(Injection)하여 오차를 메운다.</li>
+<li><strong>물리적 제약 기반 곡선 플래닝</strong>: 그 시점부터 새로운 최종 목표점(Target)까지 잇는 수학적 폴리놈(Polynomial) 곡선을 마이크로초 단위로 실시간 계산한다. 이때 사용자 파라미터인 최대 가속도(<code>MPC_ACC_MAX</code>)와 최대 저크(<code>MPC_JERK_MAX</code>)의 상한선을 절대 넘지 않도록 궤적 곡률의 목줄을 강하게 죈다.</li>
+</ol>
+<p>결론적으로 PX4의 범프리스 트랜스퍼 아키텍처는 상위 레벨(FlightTask)의 <strong>선제적 오차 0(Zero)화 타협 주입</strong>과 하위 레벨(위치 제어 컨트롤러)의 <strong>가속도/저크 한계치 기반 스무딩 곡선 파생</strong>이라는 입체적인 양동 작전(Two-track strategy)을 통해, 어떠한 돌발 스위칭 조작 상황에서도 드론의 물리적인 기구학적 한계를 철벽 보호하고 소프트웨어적 추락 요인을 완벽에 가깝게 방어하고 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

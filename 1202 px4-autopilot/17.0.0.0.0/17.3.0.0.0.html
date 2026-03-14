@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:# 1.  PX4 부팅 시퀀스(Boot Sequence) 및 초기화 과정</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1># 1.  PX4 부팅 시퀀스(Boot Sequence) 및 초기화 과정</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 17. NuttX RTOS 기반 PX4 시스템 동작 원리 및 스케줄링</a> / <span># 1.  PX4 부팅 시퀀스(Boot Sequence) 및 초기화 과정</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1># 1.  PX4 부팅 시퀀스(Boot Sequence) 및 초기화 과정</h1>
+<p>배터리의 XT60 커넥터가 꽂히면서 전기가 픽스호크 보드로 밀려 들어가는 그 찰나의 순간(0.000초), 아무 생각 없는 차가운 돌덩어리(실리콘)가 거대한 비행 시스템으로 환골탈태하기까지의 <strong>부트스트랩(Bootstrap)</strong> 서사시를 분해한다. 1 밀리초 단위로 벌어지는 이 극비 스크립트 시퀀스를 장악하지 못하면, 시스템 먹통(Hang)이나 센서 인식 불가 오류 앞에서 하염없이 LED 불빛만 바라보며 저주를 퍼붓게 될 것이다.</p>
+<p><strong>Phase 1: Bootloader의 황금 시간 (0s ~ 5s)</strong><br />
+가장 밑바닥 플래시 메모리(0x08000000)에서 조그마한 PX4 부트로더가 눈을 뜬다. 가장 먼저 기초적인 클럭(PLL)만을 인가한 뒤, USB 포트롤 열고 약 5초간 침묵 모드(Waiting State)로 방어 태세를 취한다. 이 시간에 호스트 컴퓨터 텔레메트리에서 <code>upload</code> 패킷 핑거프린트가 날아오면 펌웨어 강제 플래싱 모드로 전환된다. 5초가 지나도 신호가 없으면, 부트로더는 제어권(PC, Program Counter)을 쿨하게 메인 펌웨어의 시작 주소로 던져버린다(Jump).</p>
+<p><strong>Phase 2: NuttX 커널의 빙의 (OS Bring-up)</strong><br />
+제어권을 넘겨받은 메인 펌웨어의 시작점은 C++ 이 아니라 어셈블리어 초기화 벡터 테이블이다. 스택 포인터(SP)를 램(RAM) 끝자락에 꽂고 곧바로 <code>nx_start()</code> 함수를 호출한다. 이때 비로소 <strong>운영체제(OS)가 탄생</strong>한다.</p>
+<ol>
+<li>RAM 영역의 쓰레기 공간(.bss 섹션)을 0으로 싹 밀어버린다.</li>
+<li>인터럽트 처리기(NVIC)를 활성화한다.</li>
+<li>힙(Heap) 메모리 매니저를 가동한다. 이제부터 <code>malloc()</code> 이 생명력을 얻는다.</li>
+<li>OS가 최초의 심장 박동(Idle Task) 스레드를 가동하면서 뼈대 공사가 끝난다.</li>
+</ol>
+<p><strong>Phase 3: 무자비한 rc.S 가동 (PX4 Initialization)</strong><br />
+커널 공사가 끝나는 순간, OS는 <code>/etc/init.d/rc.S</code> 파일에 적혀있는 텍스트 셸 스크립트(NuttShell)를 한 줄씩 라인 바이 라인으로 읽어 들이며 시스템 앱(모듈)들을 강제 기상시키기 시작한다.</p>
+<ol>
+<li><strong>장기 이식 (Mount)</strong>: SD 카드를 VFS 트리 <code>/fs/microsd</code> 에 마운트한다.</li>
+<li><strong>uORB 혈맥 개통</strong>: 버스 통신망인 <code>uorb start</code> 데몬을 올려 메시징 버스 트래픽을 오픈한다.</li>
+<li><strong>신경망 확장 (Parameters &amp; I2C/SPI)</strong>: 배터리에 절여져 있던 플래시에서 파라미터 트리를 RAM으로 캐싱(Caching)해 온다. 그리고 I2C 버스를 스캔하여 <code>bmp388</code>(기압계), <code>bmi088</code>(IMU) 등의 센서 드라이버 스레드를 줄줄이 백그라운드로 띄운다 <code>bmi088 start -s &amp;</code>.</li>
+<li><strong>DNA 결합 (Airframe)</strong>: 매직 파라미터 <code>SYS_AUTOSTART</code> (예: 4001) 를 참조하여 쿼드콥터 전용 서브스크립트 <code>rc.mc_apps</code> 분기점으로 뛰어들어 모터 믹서(Mixer) 파일을 로드해 채널 맵핑을 마무리한다.</li>
+<li><strong>두뇌 가동 (Commander &amp; Estimator)</strong>: 마지막으로 최후미에 대기하고 있던 최고 자아인 <code>commander</code>(의사결정) 와 <code>ekf2</code>(데이터 융합 추정기)에 전원을 투입한다.</li>
+</ol>
+<p>이 방대한 스크립트 실행이 단 한 줄의 세그멘테이션 폴트(Segmentation Fault)도 없이 메모리에 안착하는 그 순간, 비로소 부저(Buzzer)에서 웅장한 시그니처 멜로디 3단 콤보가 울려 퍼진다. 부팅 승리 선언이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:6.2 RoPE (Rotary Positional Embedding) - 회전 변환을 통한 상대적 위치 학습</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>6.2 RoPE (Rotary Positional Embedding) - 회전 변환을 통한 상대적 위치 학습</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">트랜스포머 싱귤래리티 (The Transformer Singularity)</a> / <span>6.2 RoPE (Rotary Positional Embedding) - 회전 변환을 통한 상대적 위치 학습</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>6.2 RoPE (Rotary Positional Embedding) - 회전 변환을 통한 상대적 위치 학습</h1>
+<p>2025-12-21, G30DR</p>
+<h2>1.  서론: 인공신경망과 위치 정보의 기하학적 난제</h2>
+<p>자연어 처리(Natural Language Processing, NLP)의 역사에서 ’순서(Order)’와 ’위치(Position)’를 어떻게 다룰 것인가는 언제나 핵심적인 난제였다. 인간의 언어는 시간의 흐름에 따라 순차적으로 발화되는 본질을 가지며, 단어의 배열 순서는 문장의 의미를 결정짓는 절대적인 요소다. “철수가 영희를 때렸다“와 “영희가 철수를 때렸다“는 단어 구성이 동일함에도 불구하고, 그 순서의 차이로 인해 정반대의 의미를 갖는다. 초기 신경망 아키텍처인 순환 신경망(RNN)은 데이터를 순차적으로 처리함으로써 이러한 시간적 순서 정보를 모델 구조 자체에 내재화했다. RNN의 은닉 상태(Hidden State)는 이전 시점의 정보를 누적하여 현재로 전달하는 구조를 취하므로, 별도의 위치 표기 없이도 <span class="math math-inline">t</span> 시점의 입력은 <span class="math math-inline">t-1</span> 시점의 입력 다음에 온다는 사실이 보장되었다. 그러나 이러한 순차적 처리 방식은 병렬 연산을 불가능하게 만들어 학습 속도의 저하를 가져왔고, 긴 시퀀스에서 정보가 소실되는 장기 의존성(Long-term Dependency) 문제를 야기했다.1</p>
+<p>2017년 등장한 트랜스포머(Transformer) 아키텍처는 이러한 순차적 처리의 제약을 타파하고 병렬 처리를 극대화하기 위해 셀프 어텐션(Self-Attention) 메커니즘을 도입했다. 셀프 어텐션은 문장 내 모든 단어 간의 관계를 동시에 계산함으로써 탁월한 성능과 속도를 달성했지만, 치명적인 구조적 결함을 안고 있었다. 바로 ’순열 불변성(Permutation Invariance)’이다. 어텐션 메커니즘 <span class="math math-inline">Attention(Q, K, V) = softmax(\frac{QK^T}{\sqrt{d_k}})V</span> 수식 그 어디에도 입력 토큰의 위치를 나타내는 항은 존재하지 않는다. 즉, 트랜스포머의 관점에서는 “철수가 영희를“이라는 문장이나 “영희를 철수가“라는 문장이 입력되었을 때, 이를 구성하는 단어들의 집합(Bag of Words)으로서의 특성만 인식할 뿐, 그 순서는 구분할 수 없는 것이다. 따라서 트랜스포머가 언어 모델로서 기능하기 위해서는 입력 임베딩에 위치 정보를 인위적으로 주입(Inject)하는 과정이 필수불가결하다.2</p>
+<p>이러한 배경 속에서 다양한 위치 인코딩(Positional Encoding) 기법들이 제안되었다. 초기 연구들은 각 위치에 고유한 벡터를 더해주는 절대적 위치 인코딩(Absolute Positional Encoding, APE)에 집중했다. Vaswani 등은 사인(Sine)과 코사인(Cosine) 함수를 이용한 고정된 주파수의 위치 인코딩을 제안했고, BERT와 같은 모델들은 학습 가능한 위치 임베딩(Learned Positional Embedding)을 사용했다. 이 방식들은 구현이 간단하고 초기 트랜스포머 모델들의 성능을 견인하는 데 크게 기여했으나, 근본적인 한계에 봉착했다. 인간은 문장을 이해할 때 단어의 절대적인 좌표(예: 105번째 단어)보다는 단어 간의 상대적인 거리(예: 주어 바로 뒤에 오는 동사)를 통해 문맥을 파악한다. 그러나 절대적 위치 인코딩은 이러한 상대적 관계를 명시적으로 표현하지 못하며, 무엇보다 훈련 데이터보다 긴 시퀀스가 입력될 때 성능이 급격히 저하되는 ‘길이 외삽(Length Extrapolation)’ 문제에 취약했다.4</p>
+<p>이에 대한 대안으로 T5나 ALiBi(Attention with Linear Biases)와 같은 상대적 위치 인코딩(Relative Positional Encoding, RPE) 방식들이 등장했다. 이들은 입력 임베딩을 수정하는 대신 어텐션 스코어 계산 시 토큰 간의 거리에 따른 편향값(Bias)을 더해주는 방식을 취했다. 이는 문맥 길이 확장에 강건함을 보였으나, 어텐션 메커니즘을 수정해야 하므로 구현의 복잡도가 증가하고 계산 효율성이 떨어지는 경우가 있었다.6</p>
+<p>이러한 기술적 흐름 속에서 2021년 Su 등에 의해 제안된 **로터리 위치 임베딩(Rotary Positional Embedding, RoPE)**은 기존의 패러다임을 뒤흔드는 혁신적인 접근법을 제시했다. RoPE는 절대적 위치 정보를 주입하는 방식(임베딩 변환)을 취하면서도, 수학적으로는 상대적 위치 정보가 자연스럽게 유도되도록 설계되었다. 즉, “절대적 위치로 인코딩하고, 상대적 위치로 디코딩한다“는 철학을 바탕으로, 덧셈(Addition)이 아닌 곱셈(Multiplication), 정확히는 ’회전(Rotation)’이라는 기하학적 연산을 도입한 것이다. 본 장에서는 현대 거대 언어 모델(LLM)의 사실상 표준(De Facto Standard)으로 자리 잡은 RoPE의 수학적 원리부터 구현, 그리고 최신 확장 기술에 이르기까지 그 모든 것을 심층적으로 분석한다.1</p>
+<pre><code class="language-mermaid">graph TD
+    A["자연어 처리의 핵심 난제"] --&gt; B{"순서(Order)와 위치(Position) 처리"}
+
+    B --&gt;|과거의 접근| C["RNN (순환 신경망)"]
+    C --&gt; C1["데이터를 순차적(Sequential) 처리"]
+    C1 --&gt; C2["은닉 상태(Hidden State)에 위치 정보 내재화"]
+    C2 --&gt; C3["문제점: 병렬 연산 불가, 장기 의존성 문제"]
+
+    B --&gt;|현대의 혁신| D["Transformer (트랜스포머)"]
+    D --&gt; D1["Self-Attention (셀프 어텐션) 도입"]
+    D1 --&gt; D2["병렬 처리 극대화 &amp; 성능 향상"]
+    D2 --&gt; D3["치명적 결함: 순열 불변성 (Permutation Invariance)"]
+    D3 --&gt;|"철수가 영희를 vs 영희를 철수가 구분 불가"| E["위치 인코딩(Positional Encoding) 주입 필수"]
+</code></pre>
+<h2>2.  기존 위치 인코딩 방식의 한계와 RoPE의 등장 배경</h2>
+<p>RoPE의 가치를 온전히 이해하기 위해서는 이전 세대 기술들이 겪었던 한계를 명확히 짚고 넘어가야 한다. 위치 정보를 다루는 방식은 크게 가산적(Additive) 방식과 편향(Bias) 기반 방식으로 나뉜다.</p>
+<p><strong>Approaches Comparison</strong></p>
+<pre><code class="language-mermaid">graph TB
+    Start["위치 정보 주입 전략"]
+
+    Start --&gt; APE["절대적 위치 인코딩 (APE)"]
+    APE --&gt;|"방식: 덧셈 (Addition)"| APE_Mech["E = x + p"]
+    APE_Mech --&gt; APE_Prob["문제: 의미 정보와 위치 정보의 혼재&lt;br/&gt;길이 외삽(Extrapolation) 취약"]
+
+    Start --&gt; RPE["상대적 위치 인코딩 (RPE)"]
+    RPE --&gt;|"방식: 편향 더하기 (Bias Addition)"| RPE_Mech["Score + b_(i-j)"]
+    RPE_Mech --&gt; RPE_Prob["문제: 연산 비용 증가&lt;br/&gt;KV 캐시 구현 복잡성"]
+
+    Start --&gt; RoPE["RoPE (Rotary Positional Embedding)"]
+    RoPE --&gt;|"방식: 곱셈/회전 (Multiplication/Rotation)"| RoPE_Mech["x * R_theta"]
+    RoPE_Mech --&gt; RoPE_Adv["장점: 절대 위치로 인코딩하여&lt;br/&gt;상대 위치로 디코딩"]
+    RoPE_Adv --&gt; RoPE_Res["의미 정보 크기(Norm) 보존"]
+</code></pre>
+<h3>2.1  절대적 위치 인코딩(APE)의 구조적 한계</h3>
+<p>Vaswani et al. (2017)이 제안한 사인파 위치 인코딩(Sinusoidal Positional Encoding)은 다음과 같은 수식으로 정의된다.<br />
+<span class="math math-display">
+PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{model}})
+</span></p>
+<p><span class="math math-display">
+PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{model}})
+</span></p>
+<p>이 벡터는 단어 임베딩 <span class="math math-inline">E</span>에 더해져(<span class="math math-inline">E + PE</span>) 모델에 입력된다. 이 방식의 가장 큰 문제는 ’위치 정보’와 ’의미 정보(Semantic Information)’가 덧셈 연산에 의해 서로 섞인다는 점이다. 임베딩 벡터 공간에서 위치 정보 벡터가 더해지면, 원래 단어 벡터가 가지고 있던 고유의 방향과 크기가 왜곡된다. 물론 신경망은 학습을 통해 이 둘을 분리해내는 법을 배우지만, 수학적으로 볼 때 이는 쿼리(Query)와 키(Key)의 내적 연산에서 불필요한 교차 항들을 생성한다.10<br />
+<span class="math math-display">
+\langle q+p_m, k+p_n \rangle = q^Tk + q^Tp_n + p_m^Tk + p_m^Tp_n
+</span><br />
+위 식에서 우리가 원하는 것은 <span class="math math-inline">q</span>와 <span class="math math-inline">k</span>의 내용적 연관성(<span class="math math-inline">q^Tk</span>)과 위치적 관계인데, <span class="math math-inline">q^Tp_n</span>이나 <span class="math math-inline">p_m^Tk</span>와 같은 항들은 쿼리의 내용과 키의 위치, 혹은 쿼리의 위치와 키의 내용이 결합된 항들이다. 이러한 항들이 어텐션 메커니즘에 노이즈로 작용할 가능성이 있으며, 특히 위치 벡터 <span class="math math-inline">p_m, p_n</span>이 절대 좌표에 기반하고 있어 <span class="math math-inline">m, n</span>의 값이 커질수록(즉, 문장이 길어질수록) 학습되지 않은 영역에서의 동작을 보장하기 어렵다. 실제로 GPT-2나 BERT와 같은 모델들은 최대 문맥 길이(예: 512, 1024 토큰)를 초과하는 입력을 처리하지 못하며, 이를 억지로 확장하려 할 때 성능이 급격히 붕괴된다.5</p>
+<h3>2.2  상대적 위치 인코딩(RPE)의 딜레마</h3>
+<p>이러한 문제를 해결하기 위해 등장한 상대적 위치 인코딩은 두 토큰 사이의 거리 <span class="math math-inline">m-n</span>을 직접 모델링한다. Shaw et al. (2018)이나 T5에서 사용된 방식은 어텐션 행렬에 거리별로 학습된 편향값 <span class="math math-inline">b_{m-n}</span>을 더하는 방식이다.<br />
+<span class="math math-display">
+Attention(i, j) = \frac{q_i^T k_j + b_{i-j}}{\sqrt{d_k}}
+</span><br />
+이 방식은 일반화 성능이 우수하고 문맥 길이가 길어져도 어느 정도 대응이 가능하다. 하지만, 모든 쌍(Pair)에 대해 상대 거리를 계산하고 편향값을 조회(Lookup)해야 하므로 연산 비용이 증가하고, KV 캐시(Key-Value Cache)를 활용하는 추론 단계에서 구현이 까다로워질 수 있다. 또한 ALiBi와 같은 방식은 거리에 따라 선형적으로 페널티를 주는 단순한 구조로 인해 표현력(Expressiveness)에 한계가 있다는 지적도 있다.7</p>
+<h3>2.3  RoPE의 제안: 곱셈을 통한 통합</h3>
+<p>RoPE는 이러한 딜레마를 해결하기 위해 ’회전’이라는 개념을 도입했다. 벡터 공간에서 회전 변환은 벡터의 크기(Norm)를 보존하면서 방향(Direction)만을 변화시킨다. 이는 의미 정보의 강도(Magnitude)를 훼손하지 않으면서 위치 정보를 주입할 수 있는 이상적인 방법이다. 또한, 뒤에서 자세히 유도하겠지만, 회전 변환된 두 벡터의 내적은 자연스럽게 두 회전각의 차이, 즉 상대적 위치 정보만을 남기게 된다. 이는 가산적 방식(APE)의 구현 단순성과 상대적 방식(RPE)의 강건함을 동시에 취하는 전략이다. RoPE는 별도의 학습 파라미터 없이 수학적으로 정의된 회전 행렬을 사용하므로 파라미터 효율성 또한 극대화된다.10</p>
+<h2>3.  RoPE의 수학적 정립: 복소수에서 회전 행렬까지</h2>
+<p>RoPE의 핵심은 쿼리 벡터 <span class="math math-inline">q</span>와 키 벡터 <span class="math math-inline">k</span>의 내적이 오직 두 토큰의 상대적 거리 <span class="math math-inline">(m-n)</span>에 의존하는 함수가 되도록 만드는 변환을 찾는 것이다. 이 과정을 엄밀한 수학적 유도를 통해 살펴보자.</p>
+<p><strong>Mathematical Derivation</strong></p>
+<pre><code class="language-mermaid">graph TD
+    Input["입력 벡터 x_m, x_n"] --&gt; Complex["2차원 복소수 평면 매핑"]
+
+    Complex --&gt; Rotation["회전 변환 (Rotation)"]
+    Rotation --&gt;|"위치 m 인코딩"| Q["Query: q * e^(imθ)"]
+    Rotation --&gt;|"위치 n 인코딩"| K["Key: k * e^(inθ)"]
+
+    Q &amp; K --&gt; InnerProd["내적 (Inner Product)"]
+    InnerProd --&gt;|"Hermitian Inner Product"| Calc["Re[ q * conj(k) * e^(i(m-n)θ) ]"]
+
+    Calc --&gt; Result["최종 결과"]
+    Result --&gt;|"결론"| Final["g(x_m, x_n, m-n)"]
+    Final --&gt;|"의미"| Interp["절대 위치 m, n은 사라지고&lt;br/&gt;상대 거리 m-n만 남음"]
+</code></pre>
+<h3>3.1  문제 정의 및 복소수 공간에서의 유도</h3>
+<p>우리의 목표는 다음 조건을 만족하는 함수 <span class="math math-inline">f(\cdot, \cdot)</span>를 찾는 것이다. 여기서 <span class="math math-inline">x_m</span>은 위치 <span class="math math-inline">m</span>에서의 입력 임베딩, <span class="math math-inline">W_q, W_k</span>는 어텐션 가중치 행렬이다.16<br />
+<span class="math math-display">
+\langle f_q(x_m, m), f_k(x_n, n) \rangle = g(x_m, x_n, m-n)
+</span><br />
+즉, 변환된 쿼리와 키의 내적 결과인 함수 <span class="math math-inline">g</span>가 절대 위치 <span class="math math-inline">m, n</span> 각각에 의존하는 것이 아니라, 오직 그 차이인 <span class="math math-inline">m-n</span>에만 의존해야 한다는 것이다. 이를 위해 Su et al. (2021)은 2차원 공간에서의 벡터를 복소수로 해석하는 접근법을 취했다. 2차원 벡터 <span class="math math-inline">(x, y)</span>를 복소수 <span class="math math-inline">z = x + iy</span>로 생각해보자.</p>
+<p>오일러 공식(Euler’s Formula) <span class="math math-inline">e^{i\theta} = \cos\theta + i\sin\theta</span>는 복소평면에서의 회전을 표현하는 가장 강력한 도구다. 위치 <span class="math math-inline">m</span> 정보를 인코딩하기 위해, 우리는 입력 벡터에 해당하는 복소수에 각도 <span class="math math-inline">m\theta</span>만큼의 회전을 가하는 함수를 정의할 수 있다.<br />
+<span class="math math-display">
+f_q(x_m, m) = (W_q x_m) e^{im\theta}
+</span></p>
+<p><span class="math math-display">
+f_k(x_n, n) = (W_k x_n) e^{in\theta}
+</span></p>
+<p>여기서 <span class="math math-inline">W_q x_m</span>과 <span class="math math-inline">W_k x_n</span>은 위치 정보가 없는 상태의 쿼리, 키 벡터를 복소수 형태로 표현한 것이다. 이제 이 두 변환된 복소수의 내적(Hermitian inner product의 실수부)을 계산해 보자. 복소수 내적 <span class="math math-inline">\langle z_1, z_2 \rangle</span>은 <span class="math math-inline">Re(z_1 \cdot \overline{z_2})</span>로 정의된다.19<br />
+<span class="math math-display">
+\begin{aligned} \langle f_q, f_k \rangle &amp;= Re \left[ (W_q x_m e^{im\theta}) \overline{(W_k x_n e^{in\theta})} \right] \\ &amp;= Re \left[ (W_q x_m) \overline{(W_k x_n)} e^{im\theta} e^{-in\theta} \right] \\ &amp;= Re \left[ (W_q x_m \overline{W_k x_n}) e^{i(m-n)\theta} \right] \end{aligned}
+</span><br />
+위 식의 마지막 항을 보면, <span class="math math-inline">e^{i(m-n)\theta}</span>가 등장한다. 이는 두 위치의 차이인 <span class="math math-inline">m-n</span>에 해당하는 회전 성분이다. 즉, 내적의 결과값은 절대 위치 <span class="math math-inline">m, n</span>이 사라지고 오직 상대적 거리 <span class="math math-inline">(m-n)</span>과 두 벡터의 내용적 유사도에 의해서만 결정된다. 이것이 RoPE가 ’상대적 위치 학습’을 달성하는 수학적 원리의 핵심이다. 절대적 위치 정보를 주입했음에도 불구하고, 상호작용(내적) 단계에서는 상대적 정보로 환원되는 것이다.19</p>
+<h3>3.2  2차원 회전 행렬(Rotation Matrix)로의 변환</h3>
+<p>복소수 연산은 개념적으로 우아하지만, 실제 딥러닝 모델은 실수(Real Number) 행렬 연산을 기반으로 한다. 따라서 위 복소수 식을 2차원 실수 벡터 공간의 선형 대수학으로 번역해야 한다. 복소수 <span class="math math-inline">z</span>에 <span class="math math-inline">e^{i\theta}</span>를 곱하는 것은 2차원 벡터에 회전 행렬 <span class="math math-inline">R_{\theta}</span>를 곱하는 것과 등가이다.<br />
+<span class="math math-display">
+R_{\theta, m} = \begin{pmatrix} \cos m\theta &amp; -\sin m\theta \\ \sin m\theta &amp; \cos m\theta \end{pmatrix}
+</span><br />
+따라서 위치 <span class="math math-inline">m</span>의 쿼리 벡터 <span class="math math-inline">q_m</span>에 대한 RoPE 변환은 다음과 같다.<br />
+<span class="math math-display">
+\begin{pmatrix} q_m^{(1)} \\ q_m^{(2)} \end{pmatrix} \leftarrow \begin{pmatrix} \cos m\theta &amp; -\sin m\theta \\ \sin m\theta &amp; \cos m\theta \end{pmatrix} \begin{pmatrix} q_m^{(1)} \\ q_m^{(2)} \end{pmatrix}
+</span><br />
+이 행렬 연산은 벡터의 기하학적 회전을 의미하며, 회전 행렬의 특성상 전치 행렬(Transpose)은 역행렬(역회전)과 같다. 즉, <span class="math math-inline">R_{\theta, m}^T = R_{\theta, -m} = R_{\theta, m}^{-1}</span>이다. 이를 이용해 내적을 다시 써보면 다음과 같이 상대적 위치 정보가 유도됨을 확인할 수 있다.14<br />
+<span class="math math-display">
+\langle R_{\theta, m}q, R_{\theta, n}k \rangle = (R_{\theta, m}q)^T (R_{\theta, n}k) = q^T R_{\theta, m}^T R_{\theta, n} k = q^T R_{\theta, n-m} k
+</span><br />
+여기서 <span class="math math-inline">R_{\theta, n-m}</span>은 거리 <span class="math math-inline">n-m</span>만큼의 회전을 의미하는 행렬이다. 이로써 우리는 2차원 공간에서의 RoPE 정의를 완료했다.</p>
+<h3>3.3  고차원으로의 확장: 블록 대각 행렬(Block Diagonal Matrix)</h3>
+<p>트랜스포머의 임베딩 차원 <span class="math math-inline">d</span>는 보통 512 이상으로 2차원보다 훨씬 크다. RoPE는 이를 해결하기 위해 차원 <span class="math math-inline">d</span>를 <span class="math math-inline">d/2</span>개의 2차원 부분 공간(Subspace)으로 분할한다. 즉, 벡터의 원소들을 두 개씩 짝지어 각각의 쌍(Pair)에 대해 독립적인 2차원 회전을 적용하는 것이다.17</p>
+<p>전체 <span class="math math-inline">d</span>차원 공간에 대한 회전 행렬 <span class="math math-inline">\mathbf{R}_{\Theta, m}^d</span>는 <span class="math math-inline">d/2</span>개의 2차원 회전 행렬들이 대각선에 배치된 블록 대각 행렬(Block Diagonal Matrix) 형태를 띤다.<br />
+<span class="math math-display">
+\mathbf{R}_{\Theta, m}^d = \begin{pmatrix} M_1 &amp; 0 &amp; \cdots &amp; 0 \\ 0 &amp; M_2 &amp; \cdots &amp; 0 \\ \vdots &amp; \vdots &amp; \ddots &amp; \vdots \\ 0 &amp; 0 &amp; \cdots &amp; M_{d/2} \end{pmatrix}
+</span><br />
+여기서 각 블록 <span class="math math-inline">M_j</span>는 다음과 같이 정의된다.<br />
+<span class="math math-display">
+M_j = \begin{pmatrix} \cos m\theta_j &amp; -\sin m\theta_j \\ \sin m\theta_j &amp; \cos m\theta_j \end{pmatrix}
+</span><br />
+이때 중요한 것은 각 부분 공간마다 서로 다른 회전 주파수(Frequency) <span class="math math-inline">\theta_j</span>를 사용한다는 점이다. RoPE는 Vaswani et al. (2017)의 사인파 위치 인코딩에서 사용된 것과 동일한 지수적 주파수 감소 수열을 채택한다.1<br />
+<span class="math math-display">
+\theta_j = 10000^{-2(j-1)/d}, \quad j \in [1, 2, \dots, d/2]
+</span><br />
+이 수열에 따르면, 첫 번째 차원 쌍(<span class="math math-inline">j=1</span>)의 회전 각도는 <span class="math math-inline">\theta_1 = 1</span> (라디안)로 가장 빠르게 회전하며, 마지막 차원 쌍(<span class="math math-inline">j=d/2</span>)의 회전 각도는 <span class="math math-inline">\theta_{d/2} = 1/10000</span>로 매우 느리게 회전한다. 이러한 <strong>다중 해상도(Multi-resolution)</strong> 구조는 모델이 매우 국소적인 위치 정보(빠른 회전)부터 문장 전체를 아우르는 전역적인 위치 정보(느린 회전)까지 동시에 학습할 수 있게 한다. 이는 신호 처리에서의 웨이블릿 변환(Wavelet Transform)이나 푸리에 변환과 유사한 원리로, 다양한 주파수 대역을 통해 위치 정보를 풍부하게 인코딩하는 전략이다.5</p>
+<h2>4.  기하학적 직관과 해석: 회전하는 시공간</h2>
+<p>RoPE의 수학적 유도 과정을 넘어, 이것이 실제로 모델 내부에서 어떤 기하학적 의미를 갖는지 직관적으로 이해해보자. 이를 위해 ’시계(Clock)’의 비유를 확장해 볼 수 있다.</p>
+<p><strong>High Dimensional Extension</strong></p>
+<pre><code class="language-mermaid">graph TD
+    Vector["전체 임베딩 벡터 (차원 d)"] --&gt; Divide["2개씩 짝지어 분할 (Subspaces)"]
+
+    Divide --&gt; Pair1["쌍 1 (x_0, x_1)"]
+    Divide --&gt; Pair2["쌍 2 (x_2, x_3)"]
+    Divide --&gt; PairN["쌍 d/2 (x_d-2, x_d-1)"]
+
+    Pair1 --&gt;|"회전 행렬 M_1"| Rot1["고주파수 (빠른 회전)&lt;br/&gt;θ_1 = 1"]
+    Pair2 --&gt;|"회전 행렬 M_2"| Rot2["중주파수"]
+    PairN --&gt;|"회전 행렬 M_d/2"| RotN["저주파수 (매우 느린 회전)&lt;br/&gt;θ_d/2 = 1/10000"]
+
+    Rot1 &amp; Rot2 &amp; RotN --&gt; Matrix["블록 대각 행렬 (Block Diagonal Matrix)"]
+
+    Matrix --&gt; Effect["효과: 다중 해상도(Multi-resolution)"]
+    Effect --&gt;|"Local"| Short["국소적 문맥 포착 (빠른 바늘)"]
+    Effect --&gt;|"Global"| Long["전역적 문맥 포착 (느린 바늘)"]
+</code></pre>
+<h3>4.1  시계 바늘의 비유</h3>
+<p><span class="math math-inline">d</span>차원의 임베딩 벡터를 <span class="math math-inline">d/2</span>개의 시계 바늘들의 집합이라고 상상해 보자. 각 시계 바늘은 서로 다른 속도로 회전하는 시계판 위에 놓여 있다.</p>
+<ul>
+<li><strong>토큰의 이동:</strong> 문장에서 단어의 위치가 <span class="math math-inline">m</span>에서 <span class="math math-inline">m+1</span>로 이동한다는 것은, 시간 <span class="math math-inline">t</span>가 흘러 시계 바늘들이 일제히 회전하는 것과 같다.</li>
+<li><strong>회전 속도의 차이:</strong> <span class="math math-inline">j=1</span>번 시계(첫 번째 차원 쌍)는 매우 빠르게 돌아간다. 단 한 칸의 이동에도 바늘의 각도가 크게 변한다. 반면, <span class="math math-inline">j=d/2</span>번 시계(마지막 차원 쌍)는 거의 멈춰있는 것처럼 아주 미세하게 움직인다.</li>
+</ul>
+<p>이제 두 단어(토큰) 간의 관계를 파악하려는 어텐션 메커니즘을 생각해 보자. 어텐션 점수(내적)는 두 벡터의 방향이 얼마나 일치하는지(Cosine Similarity)를 측정한다. RoPE가 적용된 상태에서 두 단어의 내적은, 각 차원 쌍에 해당하는 시계 바늘들의 각도 차이의 합으로 귀결된다.</p>
+<p>만약 두 단어가 서로 인접해 있다면(상대 거리 <span class="math math-inline">m-n</span>이 작음), 느리게 도는 시계 바늘들은 물론이고 빠르게 도는 시계 바늘들도 각도 차이가 크지 않을 것이다. 따라서 높은 내적값(높은 유사도)을 가질 가능성이 크다.</p>
+<p>반면 두 단어가 멀리 떨어져 있다면(상대 거리 <span class="math math-inline">m-n</span>이 큼), 느리게 도는 바늘들은 여전히 비슷한 방향을 가리킬 수 있지만, 빠르게 도는 바늘들은 이미 수십 바퀴를 돌아 서로 완전히 다른 방향(심지어 반대 방향)을 가리키고 있을 것이다. 이 경우 내적값은 각 차원들의 기여분이 서로 상쇄되거나(Constructive/Destructive Interference) 감소하여 전체적으로 낮은 값을 갖게 된다.15</p>
+<h3>4.2  장거리 의존성 감쇠(Long-term Decay)와 진동</h3>
+<p>이러한 기하학적 특성은 RoPE가 별도의 학습 없이도 <strong>장거리 의존성 감쇠(Long-term Decay)</strong> 효과를 갖게 만든다. 즉, 거리가 멀어질수록 어텐션 점수의 기대값이 자연스럽게 줄어드는 것이다. 이는 언어 모델링에서 매우 중요한 귀납적 편향(Inductive Bias)이다. 일반적으로 문장에서 가까운 단어끼리 더 강한 문법적, 의미적 연결성을 갖기 때문이다.</p>
+<p>하지만 RoPE의 감쇠는 단조 감소(Monotonic Decay)가 아니다. 코사인 함수의 특성상 거리에 따라 값이 진동(Oscillation)하며 줄어든다. 이는 ALiBi와 같이 강제로 선형적 페널티를 주는 방식과는 근본적으로 다르다. RoPE의 진동하는 감쇠는 모델이 필요에 따라 먼 거리의 정보도 ’위상(Phase)’이 맞는 경우 강하게 참조할 수 있는 유연성을 제공한다. 최근 연구에 따르면, 이러한 특성 덕분에 RoPE는 특정 정보 검색(Retrieval) 태스크나 긴 문맥 내에서 특정 키워드를 찾는 능력(Needle in a Haystack)에서 단순 감쇠 방식보다 우수한 성능을 보인다.25</p>
+<h3>4.3  기저 주파수(Base Frequency)의 의미</h3>
+<p>RoPE에서 사용하는 기저 주파수 <span class="math math-inline">b=10000</span>은 경험적으로 설정된 값이다. 이 값은 주파수의 스펙트럼 범위를 결정한다. <span class="math math-inline">b</span>가 클수록 가장 느린 주파수(파장)가 길어져, 더 긴 문맥을 커버할 수 있는 이론적 여지가 생긴다. 예를 들어 LLaMA 1, 2는 <span class="math math-inline">b=10000</span>을 사용했지만, 훨씬 긴 문맥(100k 토큰)을 다루는 Code LLaMA는 이 값을 <span class="math math-inline">b=1,000,000</span>으로 대폭 상향 조정했다. 이는 “더 큰 시계“를 준비하여 바늘이 한 바퀴를 다 돌기 전에 더 많은 단어를 담으려는 시도로 해석할 수 있다. 반면 <span class="math math-inline">b</span>를 너무 키우면 고주파수 대역의 해상도가 떨어져 국소적인 위치 정보를 놓칠 위험이 있으므로, 이는 모델의 목적(긴 문맥 이해 vs 정밀한 단기 문맥 파악)에 따라 조절해야 하는 중요한 하이퍼파라미터이다.23</p>
+<h2>5.  구현과 최적화: 이론에서 실제 코드로</h2>
+<p>이론적으로 RoPE는 거대한 회전 행렬을 곱하는 연산이지만, 실제 딥러닝 프레임워크(PyTorch, TensorFlow, JAX 등)에서 이를 그대로 구현하면 치명적인 비효율을 초래한다. <span class="math math-inline">d \times d</span> 크기의 행렬은 대부분이 0인 희소 행렬(Sparse Matrix)이기 때문에, 이를 밀집 행렬(Dense Matrix) 곱셈으로 처리하는 것은 계산 자원 낭비다. 따라서 현업에서는 요소별(Element-wise) 연산을 활용한 최적화된 구현을 사용한다.</p>
+<p><strong>Efficient Implementation</strong></p>
+<pre><code class="language-mermaid">graph TD
+    Input["입력 벡터 x"] --&gt; Path1["원본 유지 경로"]
+    Input --&gt; Path2["변형 경로 (-x_2i+1, x_2i)"]
+
+    subgraph "Pre-computed Cache"
+        CosTable["Cos Table (C_m)"]
+        SinTable["Sin Table (S_m)"]
+    end
+
+    Path1 --&gt; Op1["x ⊙ C_m"]
+    CosTable --&gt; Op1
+
+    Path2 --&gt;|"부호 반전 및 Swap"| TildeX["x_tilde"]
+    TildeX --&gt; Op2["x_tilde ⊙ S_m"]
+    SinTable --&gt; Op2
+
+    Op1 &amp; Op2 --&gt; Sum["최종 덧셈 (+)"]
+    Sum --&gt; Output["RoPE 적용된 벡터"]
+
+    Output --&gt;|"특징"| Perform["O(d) 복잡도&lt;br/&gt;메모리 효율적"]
+</code></pre>
+<h3>5.1  효율적인 연산 알고리즘</h3>
+<p>RoPE의 회전 연산은 인접한 두 원소 <span class="math math-inline">(x_{2i}, x_{2i+1})</span> 간의 상호작용만으로 이루어진다. 이를 벡터화하여 표현하면 다음과 같다. 입력 벡터 <span class="math math-inline">x</span>에 대해, 짝수 인덱스와 홀수 인덱스 성분을 분리하여 생각해보자.<br />
+<span class="math math-display">
+\begin{pmatrix} x_{2i}&#39; \\ x_{2i+1}&#39; \end{pmatrix} = \begin{pmatrix} \cos \theta_i &amp; -\sin \theta_i \\ \sin \theta_i &amp; \cos \theta_i \end{pmatrix} \begin{pmatrix} x_{2i} \\ x_{2i+1} \end{pmatrix}
+</span><br />
+이를 전체 벡터 <span class="math math-inline">x</span>에 대한 연산으로 확장하면 다음과 같은 절차로 구현된다.</p>
+<ol>
+<li>벡터 분할 및 변형:</li>
+</ol>
+<p>벡터 <span class="math math-inline">x</span>를 두 부분으로 나누지 않고, 다음과 같이 짝수/홀수 인덱스를 교차하고 부호를 바꾼 새로운 벡터 <span class="math math-inline">\tilde{x}</span>를 생성한다.</p>
+<p><span class="math math-display">
+   \tilde{x} = [-x_1, x_0, -x_3, x_2, \dots, -x_{d-1}, x_{d-2}]
+</span></p>
+<p>(여기서 인덱스는 0부터 시작한다고 가정)</p>
+<ol start="2">
+<li>삼각함수 테이블 캐싱(Caching):</li>
+</ol>
+<p>매번 <span class="math math-inline">\sin, \cos</span> 값을 계산하는 것은 GPU 연산 비용을 소모하므로, 최대 시퀀스 길이(Max Sequence Length)만큼의 <span class="math math-inline">\cos(m\theta_j)</span>와 <span class="math math-inline">\sin(m\theta_j)</span> 값을 미리 계산하여 GPU 메모리에 버퍼(Buffer)로 저장해 둔다. 이를 각각 <span class="math math-inline">C, S</span> 텐서라고 하자.20</p>
+<ol start="3">
+<li>최종 연산 (Hadamard Product):</li>
+</ol>
+<p>행렬 곱셈 대신 단순한 요소별 곱셈(Element-wise multiplication, <span class="math math-inline">\odot</span>)과 덧셈으로 회전을 수행한다.</p>
+<p><span class="math math-display">
+   \text{RoPE}(x, m) = x \odot C_m + \tilde{x} \odot S_m
+</span></p>
+<p>이 방식은 연산 복잡도가 <span class="math math-inline">O(d^2)</span>에서 <span class="math math-inline">O(d)</span>로 획기적으로 줄어들며, 메모리 대역폭(Memory Bandwidth) 효율도 매우 높다. EleutherAI의 <code>gpt-neox</code> 라이브러리나 Hugging Face의 <code>transformers</code> 라이브러리 내 LLaMA 모델 구현체들은 모두 이 방식을 따르고 있다.20</p>
+<h3>5.2  메모리 및 하드웨어 고려사항</h3>
+<p>RoPE 구현 시 주의해야 할 점은 <strong>캐시 테이블의 크기</strong>와 **정밀도(Precision)**다.</p>
+<ul>
+<li><strong>메모리:</strong> 문맥 길이가 수십만 토큰(예: 128k)으로 늘어나면, 미리 계산해둔 <span class="math math-inline">\sin/\cos</span> 테이블의 크기도 무시할 수 없게 된다. 하지만 이는 모델 가중치(Weights)나 KV 캐시(KV Cache)의 크기에 비하면 여전히 미미한 수준이므로, 대부분의 경우 미리 계산하여 캐싱하는 전략이 유효하다.</li>
+<li><strong>정밀도:</strong> RoPE 연산은 회전을 다루므로 부동소수점 오차에 민감할 수 있다. 특히 반정밀도(FP16, BF16)를 사용할 때, 위치 인덱스 <span class="math math-inline">m</span>이 매우 커지면(예: 100만 이상) 삼각함수 입력값의 정밀도가 떨어져 회전 각도가 부정확해질 수 있다. 따라서 일부 구현에서는 RoPE 연산 부분만 일시적으로 FP32(Single Precision)로 캐스팅하여 계산한 뒤 다시 FP16/BF16으로 변환하는 혼합 정밀도(Mixed Precision) 기법을 사용하여 수치적 안정성을 확보한다.28</li>
+<li><strong>하드웨어 가속:</strong> 최신 GPU 아키텍처나 전용 AI 가속기에서는 RoPE와 같은 요소별 연산을 커널 퓨전(Kernel Fusion)을 통해 어텐션 커널 내부로 통합하여 메모리 I/O를 더욱 줄이는 최적화가 진행되고 있다.30</li>
+</ul>
+<h2>6.  장기 문맥과 외삽(Extrapolation)의 역설</h2>
+<p>LLM의 발전 방향은 명확히 ’더 긴 문맥(Long Context)’을 향하고 있다. 책 한 권을 통째로 입력하거나, 수천 줄의 코드를 한 번에 분석해야 하기 때문이다. 여기서 RoPE의 가장 큰 쟁점인 <strong>길이 외삽(Length Extrapolation)</strong> 문제가 대두된다. “훈련 때 4,096 토큰까지만 본 모델이, 추론 때 8,192 토큰을 처리할 수 있는가?”</p>
+<p><strong>Length Extrapolation</strong></p>
+<pre><code class="language-mermaid">graph LR
+    Context["긴 문맥&lt;br&gt;(Long Context)&lt;br&gt;요구"] --&gt; Challenge{"훈련 길이 &lt; 추론 길이"}
+
+    Challenge --&gt;|그대로 사용| OOD["OOD 문제 발생"]
+    OOD --&gt; Collapse["Perplexity 폭발&lt;br/&gt;성능 붕괴"]
+
+    Challenge --&gt;|해결책 1| PI["위치 보간&lt;br&gt;(Position Interpolation)"]
+    PI --&gt; PI_Mech["위치 인덱스를 압축 (L/L')"]
+    PI --&gt; PI_Cons["고주파수 해상도 저하"]
+
+    Challenge --&gt;|해결책 2| NTK["NTK-Aware Scaled RoPE"]
+    NTK --&gt; NTK_Mech["기저 주파수 b 조정"]
+    NTK --&gt; NTK_Pros["고주파 유지, 저주파 보간&lt;br/&gt;Fine-tuning 불필요"]
+
+    Challenge --&gt;|해결책 3| YaRN["YaRN"]
+    YaRN --&gt; YaRN_Mech["주파수 대역별 차등 적용 + 온도 스케일링"]
+    YaRN --&gt; YaRN_Best["LLaMA 2 128k 확장 등&lt;br/&gt;최신 표준 기술"]
+</code></pre>
+<h3>6.1  OOD(Out-Of-Distribution) 문제</h3>
+<p>이론적으로 RoPE는 <span class="math math-inline">m</span> 값에 제한이 없으므로 임의의 길이에 대해 계산 가능하다. 그러나 실제 성능은 훈련 길이를 벗어나는 순간 급격히 하락한다. 이를 주파수 관점에서 분석해보면 OOD(Out-Of-Distribution) 문제로 귀결된다.</p>
+<p>훈련 중 모델은 각 주파수별로 특정 범위의 회전 각도들만 학습했다. 고주파수 차원들은 훈련 데이터 내에서도 이미 수없이 회전하므로 전체 주기(<span class="math math-inline">0 \sim 2\pi</span>)를 고루 학습하지만, 저주파수 차원(파장이 매우 긴 차원)들은 훈련 길이(4k) 내에서 채 한 바퀴도 돌지 못했을 수 있다. 그런데 테스트 시 길이가 8k로 늘어나면, 저주파수 차원들이 훈련 때 보지 못한 각도(위상)를 가리키게 된다. 모델 입장에서 이것은 본 적 없는 데이터 패턴이므로, 어텐션 스코어가 예측 불가능한 값으로 튀게 되고, 결과적으로 언어 생성 능력이 붕괴(Perplexity Explosion)하는 것이다.26</p>
+<h3>6.2  해결책 1: 위치 보간(Position Interpolation, PI)</h3>
+<p>Meta의 연구진은 이 문제를 해결하기 위해 ’외삽(Extrapolation)’을 ’보간(Interpolation)’으로 치환하는 영리한 방법을 제안했다. 훈련 길이가 <span class="math math-inline">L</span>이고 추론 길이가 <span class="math math-inline">L&#39;</span> (<span class="math math-inline">L&#39; &gt; L</span>)일 때, 위치 인덱스 <span class="math math-inline">m</span>을 그대로 사용하는 대신 비율 <span class="math math-inline">s = L/L&#39;</span>만큼 축소하여 <span class="math math-inline">s \cdot m</span>을 사용하는 것이다.</p>
+<p>예를 들어 4k로 훈련된 모델에 8k 입력을 넣을 때, 위치 인덱스 0~8191을 0~4095.5 범위의 실수로 압축하여 매핑한다. 이렇게 하면 모든 회전 각도가 훈련 시 학습했던 범위(<span class="math math-inline">[0, L]</span>) 내에 들어오게 된다. 비록 정수 인덱스가 실수로 바뀌어 위상이 미세하게 어긋나지만, 모델은 완전히 새로운 범위(OOD)를 만나는 것보다는 익숙한 범위 내에서 조밀해진 데이터를 처리하는 것에 훨씬 잘 적응한다. 실험 결과, PI를 적용하고 아주 적은 양의 추가 학습(Fine-tuning)만 거치면 문맥 길이를 수십 배까지 효과적으로 확장할 수 있음이 입증되었다.9</p>
+<h3>6.3  해결책 2: NTK-Aware Scaled RoPE</h3>
+<p>하지만 단순 선형 보간(PI)은 단점이 있다. 모든 주파수를 일괄적으로 압축해버리면, 고주파수 대역(국소적 위치 정보)의 해상도가 떨어져 모델이 인접한 단어들의 순서를 헷갈리게 된다. 이를 해결하기 위해 Neural Tangent Kernel (NTK) 이론에 기반한 비선형 보간법이 등장했다.</p>
+<p>NTK 이론에 따르면 딥러닝 모델은 고주파수 정보를 학습하는 데 어려움을 겪는다. 따라서 이미 잘 학습된 고주파수 정보는 건드리지 않고(외삽 유지), 학습이 덜 된 저주파수 정보만 보간하는 것이 최적이다. 이를 위해 RoPE의 기저 주파수 <span class="math math-inline">b</span> 자체를 조정하는 수식을 사용한다.<br />
+<span class="math math-display">
+\theta&#39;_j = (b \cdot \lambda)^{-2(j-1)/d}
+</span><br />
+이 방식은 별도의 파라미터 튜닝(Fine-tuning) 없이도(Zero-shot) 모델의 문맥 길이를 확장할 수 있는 놀라운 성능을 보여주었다. 이는 오픈소스 커뮤니티(Reddit LocalLLaMA 등)에서 먼저 발견되어 학계로 역수입된 흥미로운 사례이기도 하다.23</p>
+<h3>6.4  해결책 3: YaRN (Yet another RoPE for Transformers)</h3>
+<p>NTK-Aware 방식을 더욱 정교하게 다듬은 것이 <strong>YaRN</strong>이다. YaRN은 주파수 대역을 세 구간(고주파, 중주파, 저주파)으로 나누어, 고주파는 외삽(회전 유지), 저주파는 보간(PI 적용), 중간 대역은 부드럽게 혼합(Smoothing)하는 전략을 취한다. 또한 보간으로 인해 줄어드는 어텐션 점수의 크기(Magnitude)를 보정하기 위해 온도(Temperature) 스케일링을 도입했다. YaRN은 LLaMA 2 모델을 128k 토큰까지 확장하는 데 성공하며 현재 가장 진보된 RoPE 확장 기술 중 하나로 평가받는다.32</p>
+<h2>7.  현대 LLM 생태계에서의 RoPE: 비교와 분석</h2>
+<p>RoPE는 이제 선택이 아닌 필수가 되었다. 주요 LLM들이 왜 RoPE를 선택했는지, 다른 대안들과 비교를 통해 그 위상을 확인해보자.</p>
+<table><thead><tr><th><strong>특성</strong></th><th><strong>RoPE (Rotary PE)</strong></th><th><strong>ALiBi (Attention with Linear Biases)</strong></th><th><strong>Sinusoidal (Original)</strong></th></tr></thead><tbody>
+<tr><td><strong>방식</strong></td><td><strong>승법적 (Multiplicative/Rotation)</strong></td><td>가산적 (Additive Bias to Score)</td><td>가산적 (Additive Embedding)</td></tr>
+<tr><td><strong>핵심 원리</strong></td><td>상대적 위치를 회전각 차이로 인코딩</td><td>거리 비례 페널티 <span class="math math-inline">m|i-j</span> 부여</td><td>절대 위치 벡터 합산</td></tr>
+<tr><td><strong>외삽 성능</strong></td><td>중간 (PI, NTK 등 기법 필요)</td><td><strong>최상 (구조적으로 내재됨)</strong></td><td>낮음 (거의 불가능)</td></tr>
+<tr><td><strong>표현력 (Expressiveness)</strong></td><td><strong>높음 (진동 및 감쇠)</strong></td><td>낮음 (단조 감쇠로 제한됨)</td><td>중간</td></tr>
+<tr><td><strong>주요 채택 모델</strong></td><td><strong>LLaMA 1/2/3, PaLM, GPT-NeoX, Mistral</strong></td><td>BLOOM, MPT</td><td>GPT-3, Original Transformer</td></tr>
+</tbody></table>
+<pre><code class="language-mermaid">mindmap
+  root(("RoPE의 위상과 비교"))
+    ("vs APE (Sinusoidal/Learned)")
+      ::icon(fa fa-minus)
+      ("단점: 덧셈으로 인한 정보 혼재")
+      ("단점: 길이 확장성 부족")
+      ::icon(fa fa-plus)
+      ("RoPE 우위: 내적 시 깔끔한 수식 정리")
+    ("vs ALiBi")
+      ::icon(fa fa-minus)
+      ("ALiBi 장점: 압도적인 외삽 성능")
+      ::icon(fa fa-exclamation)
+      ("ALiBi 단점: 표현력 부족 (단조 감쇠)")
+      ::icon(fa fa-plus)
+      ("RoPE 우위: 진동(Oscillation)을 통한 유연한 어텐션")
+      ("RoPE 우위: 일반 성능(In-distribution) 더 우수")
+    ("핵심 철학")
+      ("기하학적 해석")
+      ("회전하는 시공간")
+      ("상대적 위치의 자연스러운 유도")
+    ("채택 모델")
+      ("LLaMA Series")
+      ("PaLM")
+      ("Mistral")
+      ("GPT-NeoX")
+</code></pre>
+<h3>7.1  RoPE vs. ALiBi: 왜 LLaMA는 ALiBi를 버렸나?</h3>
+<p>ALiBi는 외삽 성능면에서 압도적이다. 훈련하지 않은 길이에 대해서도 성능 저하가 거의 없다. 그럼에도 불구하고 현재 가장 강력한 성능을 보여주는 LLaMA 시리즈와 구글의 PaLM은 모두 RoPE를 선택했다. 그 이유는 무엇일까?</p>
+<p>첫째, **표현력(Expressiveness)**의 차이다. ALiBi는 거리가 멀어지면 무조건 어텐션 점수를 깎는다. 하지만 언어적 맥락에서는 멀리 떨어진 단어가 매우 중요할 수도 있다(예: 긴 글의 서론과 결론의 관계). RoPE는 내적값이 코사인 함수를 따라 진동하므로, 멀리 있어도 위상(Phase)이 맞으면 높은 연관성을 가질 수 있는 여지를 남겨둔다.</p>
+<p>둘째, **일반 성능(In-distribution Performance)**이다. 다수의 벤치마크에서 RoPE를 적용한 모델이 ALiBi 모델보다 Perplexity나 QA 성능이 미세하게 더 우수한 경향을 보였다. 외삽은 PI나 YaRN 같은 후처리 기술로 보완할 수 있지만, 기본 성능은 아키텍처에서 결정되므로 LLaMA 팀은 기본 성능이 더 높은 RoPE를 택하고 외삽 문제는 별도의 기법으로 해결하는 전략을 취한 것으로 분석된다.7</p>
+<h3>7.2  RoPE vs. 가산적 위치 인코딩</h3>
+<p>기존의 가산적 방식(Sinusoidal, Learned)과 비교했을 때 RoPE의 우위는 ’상호작용의 순수성’에 있다. 가산적 방식은 <span class="math math-inline">q+p</span> 형태로 위치 정보가 더해지므로 내적 시 교차 항(<span class="math math-inline">q^Tp</span> 등)이 발생하여 노이즈로 작용할 수 있다. 반면 RoPE는 회전 변환을 통해 <span class="math math-inline">q^T R^T R k = q^T k</span> (상대적 위치 포함) 형태로 깔끔하게 정리된다. 또한 RoPE는 절대 위치 인코딩의 장점(구현 편의성, 토큰별 고유성)과 상대 위치 인코딩의 장점(거리 불변성)을 모두 취했다는 점에서 진정한 ‘하이브리드’ 솔루션이라 할 수 있다.10</p>
+<h2>8.  결론: 기하학으로 푼 언어의 순서</h2>
+<p>6.2절에서 우리는 로터리 위치 임베딩(RoPE)이 어떻게 현대 언어 모델의 핵심 엔진으로 자리 잡았는지 살펴보았다. RoPE의 성공은 단순히 성능이 좋아서가 아니다. 그것은 “언어의 순서 정보를 벡터 공간에 어떻게 표현할 것인가?“라는 근원적인 질문에 대해, <strong>복소수와 회전 행렬</strong>이라는 수학적으로 가장 우아하고 자연스러운 해답을 제시했기 때문이다.</p>
+<p>RoPE는 절대적 좌표를 회전각으로 변환함으로써, 두 단어의 상호작용(내적) 속에서 상대적 거리 정보가 저절로 드러나게 만들었다. 이는 인공신경망이 인간의 언어 처리 방식(상대적 문맥 중시)을 기하학적으로 모사한 훌륭한 사례다. 또한 NTK-Aware Scaling이나 YaRN과 같은 후속 연구들을 통해, RoPE는 고정된 훈련 길이를 넘어 무한한 문맥을 탐색할 수 있는 유연한 프레임워크로 진화하고 있다. 앞으로 등장할 차세대 트랜스포머 모델들 역시, 이 ’회전하는 시공간’의 기하학 위에서 더욱 깊고 넓은 문맥을 이해하게 될 것이다.</p>
+<p>다음 절에서는 이러한 위치 정보가 실제 어텐션 헤드 내부에서 어떻게 시각화되고, 모델이 이를 통해 어떤 패턴(국소적 vs 전역적)을 학습하는지 구체적인 히트맵(Heatmap) 분석을 통해 알아볼 것이다.</p>
+<h2>9. 참고 자료</h2>
+<ol>
+<li>RoFormer: Enhanced Transformer with Rotary Position Embedding - arXiv, https://arxiv.org/pdf/2104.09864</li>
+<li>[D] Different Position Encodings, How they work and the ideas behind them - Reddit, https://www.reddit.com/r/learnmachinelearning/comments/1dojth5/d_different_position_encodings_how_they_work_and/</li>
+<li>Beyond Attention: How Advanced Positional Embedding Methods Improve upon the Original Approach in Transformer Architecture | by Elahe Aghapour - Medium, https://medium.com/data-science/beyond-attention-how-advanced-positional-embedding-methods-improve-upon-the-original-transformers-90380b74d324</li>
+<li>Compared to the baseline, how much does RoPE improve LLMs? - ResearchGate, https://www.researchgate.net/post/Compared_to_the_baseline_how_much_does_RoPE_improve_LLMs</li>
+<li>Inside RoPE: Rotary Magic into Position Embeddings - Learn OpenCV, https://learnopencv.com/rope-position-embeddings/</li>
+<li>Rotary Position Embedding for Vision Transformer - arXiv, https://arxiv.org/html/2403.13298v1</li>
+<li>Positional Embeddings in Transformers: A Math Guide to RoPE &amp; ALiBi, https://towardsdatascience.com/positional-embeddings-in-transformers-a-math-guide-to-rope-alibi/</li>
+<li>[2104.09864] RoFormer: Enhanced Transformer with Rotary Position Embedding - arXiv, https://arxiv.org/abs/2104.09864</li>
+<li>Extending Context Window in Large Language Models with Segmented Base Adjustment for Rotary Position Embeddings - MDPI, https://www.mdpi.com/2076-3417/14/7/3076</li>
+<li>Inside Sinusoidal Position Embeddings: A Sense of Order - Learn OpenCV, https://learnopencv.com/sinusoidal-position-embeddings/</li>
+<li>Additive Rotary Embedding - A Competitive Alternative to RoPE – Jonathan Chang’s Blog, https://jonathanc.net/blog/additive-rotary-embedding</li>
+<li>You could have designed state of the art positional encoding - Hugging Face, https://huggingface.co/blog/designing-positional-encoding</li>
+<li>A Comprehensive Overview of Large Language Models - arXiv, https://arxiv.org/html/2307.06435v9</li>
+<li>Decoding Rotary Positional Embeddings (RoPE): The Secret Sauce for Smarter Transformers | by Sambit Kumar Barik | Medium, https://medium.com/@DataDry/decoding-rotary-positional-embeddings-rope-the-secret-sauce-for-smarter-transformers-193cbc01e4ed</li>
+<li>Understanding Rotary Position Embeddings (RoPE): A Visual Guide | by Saeed Mehrang, https://medium.com/@saeed.mehrang/understanding-rotary-position-embeddings-rope-a-visual-guide-ef8319353ddb</li>
+<li>(PDF) RoFormer: Enhanced Transformer with Rotary Position Embedding - ResearchGate, https://www.researchgate.net/publication/351019664_RoFormer_Enhanced_Transformer_with_Rotary_Position_Embedding</li>
+<li>Rotary Embeddings: A Relative Revolution | EleutherAI Blog, https://blog.eleuther.ai/rotary-embeddings/</li>
+<li>A gentle introduction to Rotary Position Embedding - Martin …, http://krasserm.github.io/2022/12/13/rotary-position-embedding/</li>
+<li>Position Embedding 1 Sinusoidal Embedding 2 Rotary Position Embeddings (RoPE) - Karl Stratos, https://karlstratos.com/notes/position_emb.pdf</li>
+<li>A Deep Dive into Rotary Positional Embeddings (RoPE): Theory and Implementation | by Parul Sharma | Medium, https://medium.com/@parulsharmmaa/understanding-rotary-positional-embedding-and-implementation-9f4ad8b03e32</li>
+<li>Euler’s Formula Proof | Alan Dao’s personal blog, https://alandao.net/posts/eulers-formula-proof/</li>
+<li>Efficient Implementation of Rotary Positional Embedding - Yi Wang, https://wangkuiyi.github.io/rope.html</li>
+<li>Scaling Laws of RoPE-based Extrapolation - arXiv, https://arxiv.org/html/2310.05209v2</li>
+<li>Rotary Positional Embeddings (RoPE) - Emergent Mind, https://www.emergentmind.com/topics/rotary-positional-embeddings-rope</li>
+<li>Round and Round We Go! What makes Rotary Positional Encodings useful? - arXiv, https://arxiv.org/html/2410.06205v1</li>
+<li>Base of RoPE Bounds Context Length - NIPS papers, https://proceedings.neurips.cc/paper_files/paper/2024/file/9f12dd32d552f3ad9eaa0e9dfec291be-Paper-Conference.pdf</li>
+<li>The hanging Rope #3214 - ggml-org llama.cpp - GitHub, https://github.com/ggml-org/llama.cpp/discussions/3214</li>
+<li>Rotary Position Embeddings (RoPE) | ML &amp; CV Consultant - Abhik Sarkar, https://www.abhik.xyz/concepts/attention/rotary-position-embeddings</li>
+<li>ALiBi Deep Dive: Interpolation vs. Extrapolation - SambaNova, https://sambanova.ai/blog/alibi-interpolation-vs-extrapolation</li>
+<li>Efficient Hardware Architecture Design for Rotary Position Embedding of Large Language Models - IEEE Xplore, https://ieeexplore.ieee.org/document/10946150/</li>
+<li>Contiguous RoPE for Extended Transformer Context - Emergent Mind, https://www.emergentmind.com/topics/contiguous-rope</li>
+<li>Resonance RoPE: Improving Context Length Generalization of Large Language Models - ACL Anthology, https://aclanthology.org/2024.findings-acl.32.pdf</li>
+<li>Extending the RoPE - EleutherAI Blog, https://blog.eleuther.ai/yarn/</li>
+<li>Why people use RoPE instead of Alibi when buliding their models? : r/LocalLLaMA - Reddit, https://www.reddit.com/r/LocalLLaMA/comments/165b0tw/why_people_use_rope_instead_of_alibi_when/</li>
+</ol>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

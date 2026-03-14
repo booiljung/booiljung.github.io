@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.10. 커스텀 모듈의 딥(Deep) 성능 분석, 프로파일링 및 GDB 트러블슈팅</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.10. 커스텀 모듈의 딥(Deep) 성능 분석, 프로파일링 및 GDB 트러블슈팅</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.10. 커스텀 모듈의 딥(Deep) 성능 분석, 프로파일링 및 GDB 트러블슈팅</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.10. 커스텀 모듈의 딥(Deep) 성능 분석, 프로파일링 및 GDB 트러블슈팅</h1>
+<p>아마추어 코딩과 범용 상용 항공 소프트웨어를 가르는 가장 큰 장벽은 <strong>‘내 코드가 얼마나 빠른가(Performance)’,</strong> 그리고 **‘내 자원을 얼마나 적게 먹는가(Resource Footprint)’**를 수학적으로 증명할 수 있느냐에 달려 있다.</p>
+<p>우리는 앞선 21.1장에서부터 21.9장에 걸쳐 완벽한 ’정답 위주’의 C++ 모듈 하나를 조립해 냈다.<br />
+“잘 돌아가네! 투하도 잘 되네!” 하고 기뻐하며 짐을 싸기엔 아직 이르다. 비행 제어 시스템의 진짜 적은 겉으로 드러나는 에러 로그가 아니라, 수백 마이크로초(us) 단위로 소리 없이 쌓여가는 **지연 라우팅(Latency Routing)**과 보이지 않는 곳에서 피를 흘리는 **메모리 누수(Memory Leak)**다.</p>
+<h2>1. 하위 1%의 병목(Bottleneck)을 찾는 여정</h2>
+<p>수억 원짜리 라이더(LiDAR)를 장착한 드론이 나무에 부딪혀 박살 났다고 가정해보자. 블랙박스를 뜯어보니 장애물 회피 모듈이 장애물을 보고 회피 명령을 내리기까지 <strong>단 2밀리초(ms)</strong> 늦었을 뿐이다. 그 2ms의 딜레이가 어디서 생겼을까? CPU가 느려서? 아니다. 개발자가 생각 없이 짜놓은 <code>for</code> 루프 하나, 혹은 습관적으로 찍어댄 <code>PX4_INFO</code> 한 줄이 다른 데몬들과 락 버퍼(Lock Buffer)를 다투느라 발생한 ‘병목(Bottleneck)’ 현상이다.</p>
+<p>본 장(21.10장)에서는 우리가 작성한 코드를 가혹한 시험대 위에 올릴 것이다. 단순히 작동하는 것을 넘어, **“내 코드는 한 바퀴 도는 데 정확히 32us가 걸리며, CPU 점유율은 0.1%를 넘지 않는다”**고 숫자로 증명하는 딥(Deep) 프로파일링 기술을 배울 것이다.</p>
+<p>우리가 해체해 볼 PX4의 치명적인 디버깅 무기들은 다음과 같다.</p>
+<ol>
+<li><strong><code>perf_counter</code> API:</strong> 내 루프가 돌아가는데 걸린 시간(Latency)을 마이크로초(us) 단위로 도려내어 집계하는 실시간 스탑워치 기술. (21.10.1장)</li>
+<li><strong><code>top</code> 커맨드와 RAM 점유율:</strong> 백그라운드 데몬화된 내 모듈이 픽스호크의 심폐 기능(CPU Load)과 램(Stack Memory)을 얼마나 좀먹고 있는지 해부하는 기술. (21.10.2장)</li>
+<li><strong>GDB 하드웨어 디버거:</strong> 기체가 수십 미터 상공에서 커널 패닉(Kernel Panic)을 일으키며 추락했을 때, 그 폭발 직전의 CPU 레지스터(Register) 상태를 멈춰 세워 범인(Faulting Instruction)을 색출하는 JTAG/SWD 하드웨어 디버깅 기법. (21.10.3장)</li>
+</ol>
+<p>엔지니어의 직감이나 “잘 될 거야“라는 믿음은 다 쓰레기통에 버리자. 오직 터미널에 찍히는 차가운 숫자들만이 드론의 추락을 막을 수 있다. 가장 먼저, 내 코드의 실행 지연 시간(Execution Delay)을 발가벗기는 <code>perf_counter</code>의 칼날 속으로 21.10.1장에서 진입해 보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

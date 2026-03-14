@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.1.2.2.1. 스레드 풀(Thread Pool) 공유를 통한 메모리 풋프린트(Footprint) 최소화 원리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.1.2.2.1. 스레드 풀(Thread Pool) 공유를 통한 메모리 풋프린트(Footprint) 최소화 원리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.1.2.2.1. 스레드 풀(Thread Pool) 공유를 통한 메모리 풋프린트(Footprint) 최소화 원리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.1.2.2.1. 스레드 풀(Thread Pool) 공유를 통한 메모리 풋프린트(Footprint) 최소화 원리</h1>
+<p>임베디드 시스템, 특히 픽스호크(Pixhawk)와 같은 비행 제어기(FC)에서 가장 비싼 자원은 CPU 클록도, 플래시 메모리도 아닌 **가용 램(SRAM)**이다. 펌웨어에 새로운 센서 모듈이나 사용자 정의 수학 알고리즘을 추가할 때, 가장 먼저 부딪히는 1차 저지선이 바로 “메모리(RAM)가 꽉 차서 펌웨어가 안 올라간다” 혹은 “비행 중 Out Of Memory(OOM)가 발생했다“는 절망적인 에러 메시지이다.</p>
+<p>과거 독립 태스크(<code>task_create</code>) 방식이 이러한 메모리 기근 현상의 주범이었다면, 현대 PX4의 <strong>워크 큐(Work Queue) 아키텍처</strong>는 ’스레드 풀(Thread Pool) 공유’라는 기법을 통해 이 문제를 마법처럼 해결해 냈다. 그 원리를 해부해보자.</p>
+<h2>1. 스택(Stack) 메모리 낭비의 덫</h2>
+<p>이전 단원(21.1.2.1.1)에서 언급했듯, 독립적인 스레드(태스크)를 50개 띄우려면 OS는 50개의 개별적인 스택(Stack) 덩어리를 힙(Heap)에서 떼어주어야 한다.<br />
+예를 들어, 평균적으로 태스크 하나당 안전하게 2KB의 스택 크기를 요구한다고 치자.</p>
+<blockquote>
+<p><span class="math math-inline">50 \times 2\text{KB} = 100\text{KB}</span></p>
+</blockquote>
+<p>픽스호크 v2의 전체 가용 SRAM이 약 256KB 남짓인 것을 감안하면, <strong>단지 “50개의 태스크를 띄울 준비“를 하는 것만으로 전체 메모리의 40% 이상이 흔적도 없이 증발해 버리는 셈</strong>이다. 게다가 50개의 스레드가 2KB를 꽉꽉 채워 쓰는 것도 아니며, 평상시에는 고작 100~200바이트만 깔짝거릴 뿐 나머지 1.8KB의 공간은 텅텅 빈 채 영원히 낭비된다.</p>
+<h2>2. 메인 워커(Worker) 스레드의 ‘스택 돌려쓰기’</h2>
+<p>워크 큐 모델은 이 멍청한 공간 낭비를 근본적으로 혁파했다. PX4는 시스템 부팅 시점에 11개의 서로 다른 우선순위와 주기를 가진 ‘공용 렌터카’ 같은 메인 워커 스레드(Worker Thread)들만을 딱 정해진 개수만큼 띄워놓는다.</p>
+<ul>
+<li><code>wq_rate_ctrl</code> (초고우선순위, 1000Hz급 자세 제어용) -&gt; 스택 4KB 할당</li>
+<li><code>wq_hp_default</code> (고우선순위, 센서 드라이버용) -&gt; 스택 2KB 할당</li>
+<li><code>wq_lp_default</code> (저우선순위, 백그라운드 로깅용) -&gt; 스택 2KB 할당 등…</li>
+</ul>
+<p>우리가 새롭게 작성한 50개의 센서 드라이버나 커스텀 앱(WorkItem)들은 더 이상 OS 커널에게 “내 전용 2KB 스택을 내놔!“라고 떼를 쓰지 못한다. 대신 그들은 그저 4KB짜리 통합 스택 공간을 가진 메인 워커 스레드(예: <code>wq_hp_default</code>)의 큐(Queue)에 한 줄로 나란히 매달릴 뿐이다.</p>
+<ol>
+<li><strong>WorkItem A 실행:</strong> 메인 스레드가 <code>WorkItem A</code>의 <code>Run()</code> 함수를 호출한다. A는 메인 스레드의 4KB 통합 스택을 신나게 쓴다. (예: 500바이트 소모)</li>
+<li><strong>WorkItem A 반환:</strong> A가 실행을 마치고 <code>return</code>하면, 메인 스레드의 스택 포인터는 제자리로 깨끗이 돌아가고, A가 썼던 500바이트의 스택 공간은 다시 깔끔한 백지상태가 된다.</li>
+<li><strong>WorkItem B 실행:</strong> 메인 스레드가 즉시 <code>WorkItem B</code>의 <code>Run()</code> 함수를 호출한다. B는 **방금 전 A가 썼다 반납한 똑같은 메모리 주소(통합 스택)**를 덮어쓰며 자신의 로컬 변수를 펼친다.</li>
+</ol>
+<h2>3. 공간 효율(Footprint) 단축의 기적</h2>
+<p>이러한 <strong>‘스레드 스택 시분할 렌탈(Time-sharing Stack Rental)’</strong> 아키텍처 덕분에 50개의 개별 모듈이 스택을 요구하던 시절의 하드웨어 리소스 지형도가 완전히 뒤바뀌었다.</p>
+<p>과거에는 모듈 개수(N)만큼 비례하여 증가하던 낭비 메모리( <span class="math math-inline">O(N)</span> )가, Work Queue 세계에서는 단 몇 개의 대장 워커 스레드의 최대 스택 크기 값 상수( <span class="math math-inline">O(1)</span> ) 안으로 수렴해 버린 것이다.<br />
+이제 개발자들은 십수 개의 새로운 C++ 커스텀 제어 알고리즘 모듈을 펌웨어에 우겨넣더라도 메모리 OOM(Out of Memory)의 공포에 시달릴 필요가 없어졌다. 어차피 그 코드들은 순차적으로 호출되며 메인 워커의 공용 스택 위를 아주 잠깐 스쳐 지나갈 뿐이기 때문이다.</p>
+<p>하지만 이 눈부신 마법은 **“모든 WorkItem이 순식간에 일을 끝내고 공용 렌터카(스택)에서 내려준다”**는 가혹한 암묵적 계약을 전제로 한다. 다음 장인 21.1.2.2.2 단원에서는 누군가 이 공용 스택을 빌려 탄 채로 대여 시간을 넘겨버리는(Blocking) ’큐 지연(Queue Starvation) 현상’의 부작용을 경고한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

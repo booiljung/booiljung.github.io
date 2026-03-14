@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.4.1. CRTP(Curiously Recurring Template Pattern) 다형성 최적화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.4.1. CRTP(Curiously Recurring Template Pattern) 다형성 최적화</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.4.1. CRTP(Curiously Recurring Template Pattern) 다형성 최적화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.4.1. CRTP(Curiously Recurring Template Pattern) 다형성 최적화</h1>
+<p>PX4의 <code>ModuleBase</code> 코드를 열어보면 가장 먼저 눈을 의심하게 만드는 문장이 바로 클래스의 상속 선언부이다.</p>
+<pre><code class="language-cpp">class CustomApp : public ModuleBase&lt;CustomApp&gt; 
+{
+    // ...
+};
+</code></pre>
+<p>자식이 부모를 상속받는데, 부모에게 제물(템플릿 파라미터)로 다름 아닌 자기 자신(<code>CustomApp</code>)의 고유한 타입을 바치고 있다. 마치 시간을 거슬러 올라가 할아버지에게 손자의 유전자를 주입하는 듯한 이 기괴하고 꼬리를 무는 문법을 설계 패턴 용어로 **CRTP(Curiously Recurring Template Pattern, 기묘하게 재귀하는 템플릿 패턴)**라고 부른다.</p>
+<p>왜 PX4 코어 개발진은 널리 알려진 평범한 C++ 가상 함수(<code>virtual</code>) 상속을 놔두고, 이런 난해한 템플릿 흑마술을 시스템 코어 설계에 도입한 것일까?</p>
+<h2>1. 전통적인 ’런타임 다형성(Virtual)’의 치명적 속도 저하</h2>
+<p>일반적인 객체지향 프로그래밍(OOP)에서 여러 모듈의 공통 부모를 설계할 때, 우리는 흔히 추상 클래스와 가상 함수(Virtual Function)를 사용한다.</p>
+<pre><code class="language-cpp">// 전통적인 OOP 방식 (PX4가 쓰지 않는 방식)
+class ModuleBase {
+public:
+    virtual void Run() = 0; // 자식아, 알아서 구현해라
+};
+
+class CustomApp : public ModuleBase {
+public:
+    void Run() override { /* 실제 로직 */ }
+};
+</code></pre>
+<p>이 방식은 코딩하기엔 편하지만, 200~400MHz로 돌아가는 픽스호크의 가난한 MCU(Micro Controller Unit) 환경에서는 <strong>성능의 극악한 죄악</strong>을 낳는다.</p>
+<p>C++ 컴파일러가 가상 함수(<code>virtual</code>)를 처리하기 위해 프로그램 내부 메모리에 **가상 함수 테이블(V-Table: Virtual Table)**이라는 거대한 룩업(Lookup) 지도를 몰래 만들어버리기 때문이다.<br />
+나중에 운영체제가 <code>module-&gt;Run()</code>을 호출하려고 할 때, CPU는 곧바로 <code>Run()</code>의 기계어 주소로 점프하지 못한다.<br />
+대신 CPU는 메모리 어딘가에 있는 V-Table 지도를 찾아가서(1차 메모리 접근), “지금 이 <code>module</code> 포인터 안의 실제 알맹이가 <code>CustomApp</code>인가, <code>EKF2</code>인가?“를 런타임(Runtime)에 뒤져본 다음(2차 계산), 비로소 진짜 함수의 주소를 알아내어 점프한다(3차 점프).</p>
+<p>이러한 <strong>동적 바인딩(Dynamic Binding)</strong> 과정은 1초에 1000번씩(1000Hz) 자세 제어 알고리즘을 쳐내는 비행 컨트롤러의 런루프 속에서 엄청난 명령 주기(Instruction Cycle) 오버헤드와 CPU 파이프라인 버블(Pipeline Bubble)을 유발한다.</p>
+<h2>2. CRTP: 컴파일 타임(Compile-Time)에 다형성을 확정 짓다</h2>
+<p>위의 V-Table 런타임 지연을 0(Zero)으로 만들어 버리기 위해 고안된 천재적인 트릭이 바로 CRTP이다.</p>
+<p>CRTP 패턴을 적용한 <code>ModuleBase</code>의 부모 클래스 내부 구현을 살짝 들여다보자.</p>
+<pre><code class="language-cpp">template&lt;class T&gt;
+class ModuleBase {
+public:
+    void RunWrapper() {
+        // 자식 클래스의 Run()을 호출하기 위한 무시무시한 캐스팅
+        static_cast&lt;T*&gt;(this)-&gt;Run();
+    }
+};
+</code></pre>
+<p>이 기기묘묘한 코드의 작동 원리는 다음과 같다.</p>
+<ol>
+<li><strong>컴파일러의 타입 숙지:</strong> 우리가 <code>class CustomApp : public ModuleBase&lt;CustomApp&gt;</code> 이라고 적는 순간, C++ 컴파일러는 <code>ModuleBase</code> 템플릿의 <code>T</code> 자리에 <code>CustomApp</code>을 쾅 하고 박아 넣어 <strong>세상에 단 하나뿐인 <code>ModuleBase_CustomApp</code> 이라는 맞춤형 부모 클래스</strong>를 컴파일 타임에 찍어낸다.</li>
+<li><strong><code>static_cast</code>의 분노의 질주:</strong> 부모 클래스의 메서드 안에서 <code>this</code> 포인터를 무조건 자식 타입(<code>T*</code>)으로 강제 캐스팅(<code>static_cast</code>)한 뒤 <code>Run()</code> 함수를 부른다.</li>
+<li><strong>V-Table의 증발:</strong> 컴파일러는 이미 <code>T</code>가 정확히 <code>CustomApp</code>이라는 사실을 컴파일(번역) 시점에 100% 확신하고 있다. 따라서 런타임에 V-Table을 뒤져볼 필요가 아예 사라진다.</li>
+</ol>
+<p>결과적으로 컴파일러는 방해물 없이 <code>CustomApp::Run()</code> 함수의 진짜 메모리 번지를 기계어 코드 뎁스에 সরাসরি(직접) 하드코딩(Static Binding) 해버린다.<br />
+PX4는 CRTP 패턴을 통해 우아한 객체지향의 상속(코드 재사용) 이점은 그대로 챙기면서, 런타임 속도는 C 언어의 로우 레벨 매크로 함수를 호출하는 것과 완벽하게 똑같은 **‘Zero-Overhead(오버헤드 제로)’ 다형성(Polymorphism)**을 달성하게 된 것이다.</p>
+<p>이제 컴파일 타임에 타입이 확정된다는 것이 코드 레벨에서 어떤 치명적인 검증(Validation) 마법을 부리는지, 다음 단원 21.4.1.1에서 더 딥(Deep)하게 파고들어 보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

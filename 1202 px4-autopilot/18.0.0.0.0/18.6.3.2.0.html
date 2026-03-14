@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:18.6.3.2 람다(Lambda) 및 멤버 함수 포인터를 활용한 비동기 콜백(Callback) 스케줄링 및 컨텍스트 스위칭 최소화 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>18.6.3.2 람다(Lambda) 및 멤버 함수 포인터를 활용한 비동기 콜백(Callback) 스케줄링 및 컨텍스트 스위칭 최소화 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 18. uORB 메시징 아키텍처 구조 및 통신 메커니즘</a> / <span>18.6.3.2 람다(Lambda) 및 멤버 함수 포인터를 활용한 비동기 콜백(Callback) 스케줄링 및 컨텍스트 스위칭 최소화 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>18.6.3.2 람다(Lambda) 및 멤버 함수 포인터를 활용한 비동기 콜백(Callback) 스케줄링 및 컨텍스트 스위칭 최소화 기법</h1>
+<p>18.6.3.1절에서 설명한 <code>uORB::SubscriptionCallback</code> 아키텍처는 개별 스레드의 Sleep/Wake-up 오버헤드를 완전히 걷어내고, 공용 워커 스레드(Worker Thread) 하나가 수십 개의 콜백 플로우를 비동기적으로(Asynchronously) 처리하게 만들어준다.</p>
+<p>이러한 이벤트 주도형(Event-driven) 패러다임을 사용자(모듈 개발자) 입장에서 극한의 편의성과 최고 수준의 C++ 모던 코드로 다룰 수 있게 해주는 마무리가 바로 <strong>람다 표현식(Lambda Expression)</strong> 과 <strong>멤버 함수 포인터(Member Function Pointer)</strong> 의 적극적 활용이다.</p>
+<h2>1. <code>SubscriptionCallbackWorkItem</code>과 템플릿의 결합</h2>
+<p>C++11 이상의 모던 C++ 기능을 십분 활용한 <code>uORB::SubscriptionCallbackWorkItem</code> 클래스는 콜백을 등록하는 인터페이스를 매우 직관적으로 제공한다. 이 클래스는 앞서 설명한 워크 아이템(<code>work_item</code>) 구조체와 구독자(<code>Subscription</code>) 메커니즘을 상속과 템플릿을 통해 하나로 결합한 결정체이다.</p>
+<p>모듈 개발자는 <code>SubscriptionCallbackWorkItem</code> 인스턴스를 생성할 때, 생성자의 인자로 **자신이 실행되길 원하는 큐(Queue ID)**와 <strong>데이터 도착 시 실행될 멤버 함수의 포인터</strong>를 넘겨주기만 하면 된다.</p>
+<pre><code class="language-cpp">// 모던 C++ 멤버 함수 포인터를 이용한 콜백 등록 예제
+class MyModule {
+public:
+    MyModule() : _sub_accel(this, ORB_ID(sensor_accel), &amp;MyModule::sensor_accel_updated) {}
+
+private:
+    // 토픽 업데이트 시 자동으로 이 멤버 함수가 워커 스레드 위에서 실행됨
+    void sensor_accel_updated() {
+        if (_sub_accel.update(&amp;_accel_data)) {
+            // 이 곳에서는 언제나 100% 최신 데이터가 보장됨 (비지 웨이팅 없음!)
+            process_data();
+        }
+    }
+
+    // 워크 아이템과 구독 기능이 결합된 콜백 구독자 템플릿 선언
+    uORB::SubscriptionCallbackWorkItem&lt;sensor_accel_s&gt; _sub_accel;
+    sensor_accel_s _accel_data{};
+};
+</code></pre>
+<h2>2. <code>Run()</code> 트램펄린(Trampoline)과 컨텍스트 스위칭(Context Switching)의 소멸</h2>
+<p>위 코드를 보면, 어디에도 <code>while(1)</code> 메인 루프나 <code>px4_poll</code>이 없다. 시스템의 거대한 톱니바퀴인 <code>nav_and_controllers</code> 워커 스레드가 끊임없이 워크 큐를 비우면서 루프를 돌고 있고, 센서 인터럽트가 발생하여 퍼블리셔가 데이터를 밀어넣을 때마다 <code>MyModule::sensor_accel_updated()</code> 함수가 해당 워커 스레드의 컨텍스트 위에서(On the context of worker thread) 대리 실행된다.</p>
+<p>내부적으로 워커 스레드는 순수 C 구조체인 <code>work_ptr</code>를 매개변수로 받아 C++ 객체 지향 세계로 진입하기 위해 이른바 <strong>트램펄린 함수(Trampoline Function, 징검다리 함수)</strong> 를 거친다.</p>
+<pre><code class="language-cpp">// C Callback을 C++ 멤버 함수로 연결하는 트램펄린 로직의 뼈대
+static void Run_trampoline(void *arg) {
+    // 1. void* 로 넘어온 포인터를 원래의 C++ 객체 포인터로 다운캐스팅
+    SubscriptionCallbackWorkItem *self = static_cast&lt;SubscriptionCallbackWorkItem *&gt;(arg);
+    
+    // 2. 가상 함수(Virtual function)가 아닌, 사용자가 등록한 멤버 함수 직접 호출 (오버헤드 제로)
+    (self-&gt;_instance-&gt;*(self-&gt;_callback_func))();
+}
+</code></pre>
+<p>이 고도의 비동기 아키텍처 진화를 통해 PX4는 치명적인 두 가지 오버헤드를 완벽히 제거해냈다.</p>
+<ol>
+<li><strong>스레드 컨텍스트 스위칭(Context Switching) 극소화:</strong> 개별 모듈이 스레드를 갖지 않으므로, 수십 개의 센서 타스크가 깨어나고 잡들 때마다 발생하던 무거운 CPU 레지스터 백업/복원(OS 스케줄링) 비용이 완전히 소멸했다.</li>
+<li><strong>동적 메모리 할당 방지:</strong> 큐에 들어가는 워크 아이템 노드는 <code>MyModule</code> 클래스 내부에 고정(Static/Composition) 크기로 런타임 전에 이미 할당되어 있다(<code>_sub_accel</code> 객체 자체). 따라서 매번 이벤트가 터질 때마다 <code>malloc</code> 이나 <code>new</code>를 호출하는 비결정적인(Non-deterministic) 커널 지연 시간 패널티를 전혀 물지 않는다.</li>
+</ol>
+<p>이 결과 최신 PX4 비행 제어 루프 아키텍처는 극한의 하드 리얼타임 레이턴시를 유지하면서도 무한한 확장성을 품게 되었다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

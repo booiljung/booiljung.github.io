@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.7.4.1.1. `poll()` 타임아웃을 이용하여 GPS, Baro, IMU 데이터의 타임스탬프를 동기화하고 누락(Drop)된 프레임을 보간(Interpolation)하는 처리 방법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.7.4.1.1. `poll()` 타임아웃을 이용하여 GPS, Baro, IMU 데이터의 타임스탬프를 동기화하고 누락(Drop)된 프레임을 보간(Interpolation)하는 처리 방법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.7.4.1.1. `poll()` 타임아웃을 이용하여 GPS, Baro, IMU 데이터의 타임스탬프를 동기화하고 누락(Drop)된 프레임을 보간(Interpolation)하는 처리 방법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.7.4.1.1. <code>poll()</code> 타임아웃을 이용하여 GPS, Baro, IMU 데이터의 타임스탬프를 동기화하고 누락(Drop)된 프레임을 보간(Interpolation)하는 처리 방법</h1>
+<p>다중 투망(<code>px4_poll</code>)을 던져놓고 낚시를 하다 보면 필연적으로 겪게 되는 문제가 있다.<br />
+IMU 센서 물고기는 1초에 250마리(250Hz)씩 그물에 걸려드는데, GPS 물고기는 1초에 고작 5마리(5Hz)만 걸려든다는 사실이다.</p>
+<p>만약 EKF 모듈 설계자가 이 주파수의 불균형을 무시하고, 단순히 “그물이 흔들릴 때(아무 센서나 도착했을 때)마다 모든 값을 새로 읽어와서 계산을 때려야지!” 라고 코딩했다면 끔찍한 위상 꼬임(Phase Shift) 현상에 직면하게 된다.</p>
+<h2>1. 타임스탬프 불일치로 인한 차원 왜곡</h2>
+<p>가속도(IMU)가 순간적으로 급변하여 드론이 확 기울어진 찰나(T=1.004초)의 상태 공간(State Space)을 계산하려 한다고 가정해 보자.<br />
+하지만 가장 최근에 그물망에 걸려있던 GPS의 위치 데이터는 무려 0.2초 전인 T=0.8초에 찍힌 낡은 타임스탬프를 가지고 있다.</p>
+<p>이 둘의 데이터를 섞어서(Fusion) <code>현재 속도 = 현재_GPS_위치 - 과거_GPS_위치</code> 따위의 계산을 돌리면, 0.2초라는 거대한 시간의 왜곡 속에서 드론은 자신이 역주행하고 있다고 착각하게 된다. 수학적으로는 X축과 Y축이 시공간을 넘나들며 틀어져버리는 것이다.</p>
+<h2>2. 타임아웃(Timeout) 꼼수를 활용한 시간 정렬 (Time Alignment)</h2>
+<p>이 파편화된 시간의 간극을 한 줄로 정렬하기 위해, 노련한 설계자들은 <code>px4_poll</code> 함수의 3번째 인자인 <strong><code>timeout</code></strong> 값을 교묘하게 조작한다.<br />
+그리고 ’기준 주파수(예: IMU 250Hz)’를 베이스 드럼으로 삼아 나머지 저주파 센서들의 호흡을 맞춘다.</p>
+<pre><code class="language-cpp">void SyncFusion::Run() {
+    // 1. 기준 주파수 센서(IMU)의 도착 주기(250Hz -&gt; 4ms)를 기반으로 
+    //    매우 타이트한 타임아웃(예: 5ms)을 잡는다.
+    int ret = px4_poll(fds, 3, 5); 
+
+    if (ret &gt; 0) {
+        // [IMU 데이터 도착 방] 
+        // 2. 가장 빠른 IMU 데이터는 실시간으로 무조건 뽑아낸다 (절대 시간의 기준점)
+        if (fds[0].revents &amp; POLLIN) {
+            orb_copy(ORB_ID(sensor_imu), _imu_fd, &amp;_imu);
+            _last_imu_timestamp = _imu.timestamp; 
+        }
+
+        // [저주파 센서 수집 방]
+        // 3. 기압계(20Hz)나 GPS(5Hz)가 이때 마침 도착했다면 운 좋게 복사해 둔다.
+        if (fds[1].revents &amp; POLLIN) {
+            orb_copy(ORB_ID(sensor_baro), _baro_fd, &amp;_baro);
+        }
+        if (fds[2].revents &amp; POLLIN) {
+            orb_copy(ORB_ID(sensor_gps), _gps_fd, &amp;_gps);
+        }
+
+        // 4. [가장 중요한 융합 로직]
+        // 방금 뽑아온 짱짱한 IMU 타임스탬프(_last_imu_timestamp)를 기준으로 삼는다.
+        // 그리고 낡은 GPS 데이터(_gps)가 이 기준 시간으로부터 얼마나 뒤처져 있는지 
+        // 델타 타임(dt)을 계산한다.
+        float dt_gps = (_last_imu_timestamp - _gps.timestamp) / 1e6f;
+
+        // 5. GPS 데이터가 너무 낡았다면 보간법(Interpolation)을 쓴다!
+        // "0.2초 전 위도/경도가 여기였고, 방금 가속도가 이만큼 변했으니까 
+        //  현재 시점의 추정 궤도는 대충 저기쯤이겠구나" 라고 수학적으로 끌어당겨 쓴다.
+        Vector3f current_estimated_pos = interpolate_position(_gps.pos, _imu.accel, dt_gps);
+
+        // 6. 비로소 모든 차원이 정렬된 깔끔한 데이터로 EKF 코어를 돌린다.
+        run_ekf(current_estimated_pos);
+    }
+}
+</code></pre>
+<p>이 방식의 핵심은, 저주파 센서(GPS)의 데이터가 새로 들어오지 않았더라도(<code>fds[2].revents</code>가 안 떴더라도), IMU가 들어올 때마다 <strong>기존에 저장되어 있던 낡은 GPS 복사본의 ’시간차(<code>dt_gps</code>)’를 계산하여 가속도 기반으로 점을 찍어대며(보간, Interpolation) 빈 공간을 메우는 것</strong>이다.</p>
+<h2>3. 누락 프레임(Drop) 방어와 데드 레코닝(Dead Reckoning)</h2>
+<p>더욱이 <code>px4_poll</code>의 타임아웃이 발생(<code>ret == 0</code>)했다면, 그것은 IMU 센서조차 5ms 동안 죽어버린 치명적인 드롭(Drop) 상황이다.<br />
+이때 모듈이 얼어붙는 것이 아니라, **“타임아웃 블록으로 빠져나와 억지로라도 코루틴을 돌린다”**는 것이 중요하다.</p>
+<pre><code class="language-cpp">    if (ret == 0) { // Timeout 발생!
+        // 센서가 다 죽었다면, 마지막 속도와 방향을 관성으로 곱해서 
+        // 억지로라도 현재 위치를 밀어붙이는 '추측 항법(Dead Reckoning)' 코어를 가동!
+        run_dead_reckoning_ekf();
+    }
+</code></pre>
+<p>이 타임아웃 꼼수 덕분에 폭우나 충돌로 인해 센서 배선이 물리적으로 뽑히더라도, 드론의 수뇌부(EKF)는 <code>poll</code> 문맥에 영원히 갇히지(Blocking) 않는다. 그저 관성 데이터의 파편들을 끌어모아 마지막 남은 힘으로 추측 항법 제어기를 돌리며 기체를 안전하게 불시착시킬 수 있게 되는 것이다.</p>
+<hr />
+<p><strong>[ 21.7.장 요약 ]</strong><br />
+uORB 통신망은 더 이상 단순한 우체국이 아니다. C++ <code>Subscription</code> 래퍼에 의한 완벽한 메모리 타입 체크, 템플릿 마법(<code>SubscriptionData&lt;T&gt;</code>)에 빛나는 페이지 폴트 원천 차단, 콜백 인터럽트를 엮어낸 제로 레이턴시 스케줄링, 그리고 락프리(Lock-Free) 하드웨어 캐시 방어망까지 구축된 커널 스케줄러의 살아있는 확장판이다.<br />
+심지어 <code>px4_poll</code>을 이용해 여러 토픽의 시공간 차원까지 비틀어 맞추는 기법을 통해 다중 센서 융합 모듈의 극한을 맛보았다.</p>
+<p>이제 우리가 배운 모든 커널 지식, 타이머 지식, uORB 지식을 총동원하여, 실제로 상용 드론에 들어갈 법한 거대한 **“응용 설계: 다중 상태(FSM) 기반 페이로드 자동 제어 모듈”**을 처음부터 끝까지 코딩해 보는 21.8장으로 당당히 넘어갈 준비가 끝났다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

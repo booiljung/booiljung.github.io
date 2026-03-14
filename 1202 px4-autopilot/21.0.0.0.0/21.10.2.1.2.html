@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:21.10.2.1.2. `work_queue status` 명령어에서 큐 대기 시간(Waiting Queue Time)이 길어지는 워커를 찾아 별도의 독립 스레드로 분리(Offloading)하는 리팩토링 전략</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>21.10.2.1.2. `work_queue status` 명령어에서 큐 대기 시간(Waiting Queue Time)이 길어지는 워커를 찾아 별도의 독립 스레드로 분리(Offloading)하는 리팩토링 전략</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 21. 사용자 정의 앱(Custom Application) 및 모듈 개발</a> / <span>21.10.2.1.2. `work_queue status` 명령어에서 큐 대기 시간(Waiting Queue Time)이 길어지는 워커를 찾아 별도의 독립 스레드로 분리(Offloading)하는 리팩토링 전략</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>21.10.2.1.2. <code>work_queue status</code> 명령어에서 큐 대기 시간(Waiting Queue Time)이 길어지는 워커를 찾아 별도의 독립 스레드로 분리(Offloading)하는 리팩토링 전략</h1>
+<p>스택 오버플로우는 약과다. 임베디드 코딩에서 겪을 수 있는 가장 악랄하고 추적하기 힘든 버그는 바로 <strong>‘다른 녀석 때문에 내가 피해를 보는’ 스케줄링 간섭(Scheduling Interference)</strong> 이다.</p>
+<p>PX4의 모듈 아키텍처는 효율성을 위해 기본적으로 여러 모듈을 하나의 거대한 공용 방(Work Queue)에 몰아넣고, 하나의 코어 스레드(Thread)가 이 방을 순회하며 각 방에 있는 모듈들의 <code>Run()</code> 함수를 순서대로 한 번씩 쳐주는 <strong>협력적 멀티태스킹(Cooperative Multitasking)</strong> 방식을 쓴다.</p>
+<h2>1. 대기 시간(Waiting Queue Time)의 함정</h2>
+<p>터미널에서 <code>work_queue status</code>를 쳤을 때 나타나는 로그를 다시 한번 소환해보자.</p>
+<pre><code>nsh&gt; work_queue status
+...
+Work Queue: wq:nav_and_controllers (priority: 250)
+  Threads: 1
+  Tasks:
+    fw_pos_control_l1 (1)
+    navigator (1)
+    payload_autodrop (1) --&gt; Waiting: 12000 us (WARNING!)
+...
+</code></pre>
+<p>나의 <code>payload_autodrop</code> 모듈의 소요 시간(Elapsed Time)은 앞서 <code>perf</code> 명령어 측정에서 단 <strong>24us</strong>에 불과한 아주 날쌘 코드임이 증명되었다.<br />
+그런데 이 모듈이 이 거대한 공용 방(<code>wq:nav_and_controllers</code>)에 들어오는 순간, <code>Waiting</code>(대기 시간)이 무려 <strong>12,000us (12ms)</strong> 나 찍혀있다.</p>
+<p>이것은 내 앞에 줄 서 있는 뚱뚱한 데몬(예: 복잡한 수학 연산을 하는 <code>fw_pos_control</code> 이나 <code>navigator</code>)이 CPU를 잡아먹고 놔주지 않아서, 내 날쌘 모듈이 무려 12ms 동안이나 실행되지 못하고 손가락만 빨고 있었다는 뜻이다.<br />
+이렇게 되면 내 FSM 루프는 12ms 늦게 트리거를 쏘게 되고, 시속 60km로 날아가는 드론은 12ms 동안 무려 0.2m나 엉뚱한 곳으로 날아가서 페이로드를 투하해 버리게 된다.</p>
+<h2>2. 스레드 오프로딩(Thread Offloading) 수술</h2>
+<p>이 부당한 처사를 견디다 못한 시스템 엔지니어가 내릴 수 있는 최후의 통첩은 코드를 뒤엎어버리는 ’스레드 오프로딩(Offloading)’이다. “저 뚱뚱한 녀석들과 같은 방을 쓰지 않겠다!” 며 내 모듈만의 독방(Custom Work Queue)을 따로 차려버리는 것이다.</p>
+<p>우리가 처음에 정의했던 헤더 파일(hpp)의 <code>ModuleBase</code> 템플릿 호출부로 돌아가자.</p>
+<pre><code class="language-cpp">// [기존 방식: 공용 방에 기생하기 - src/modules/payload_autodrop/PayloadAutoDrop.hpp]
+class PayloadAutoDrop : public ModuleBase&lt;PayloadAutoDrop&gt;, public ModuleParams {
+    ...
+};
+</code></pre>
+<p>우리는 저주받은 공용 워크 큐에서 탈출하기 위해 펌웨어를 재설계한다.<br />
+모듈이 실행될 때 자신만을 위한 전용 워커(Custom Worker) 스레드를 통째로 하나 판 뒤 거기에 기생하도록 C++ 소스 코드 최상단 속성을 비틀어버릴 수 있다.</p>
+<pre><code class="language-cpp">// [오프로딩 방식: 나홀로 독방 쓰기 - src/modules/payload_autodrop/PayloadAutoDrop.cpp]
+
+// [변경 전] 
+// int PayloadAutoDrop::task_spawn(int argc, char *argv[]) {
+//     return px4_task_spawn_cmd("payload_autodrop",
+//                               SCHED_DEFAULT, SCHED_PRIORITY_DEFAULT, 1200, // 스택 크기
+//                               (px4_main_t)&amp;run_trampoline, (char *const *)argv);
+// }
+
+// [변경 후: 워크 큐 생성 함수 자체를 우회]
+int PayloadAutoDrop::task_spawn(int argc, char *argv[]) {
+    
+    // px4_work_queue 모듈군에 편입되는 대신,
+    // 아예 리눅스/NuttX 스레드를 하나 새로 창조(Spawn)해서 그 안에 나를 박아 넣는다.
+    
+    // * 주의: 스레드 하나를 파는 행위는 픽스호크에 엄청난 리소스(SRAM) 오버헤드를 가져온다.
+    // 정말로 1ms 단위의 타이밍이 중요한 하드 리얼타임 비전/페이로드에만 이 칼을 빼 들어야 한다.
+    
+    _task_id = px4_task_spawn_cmd("payload_autodrop",
+                               SCHED_DEFAULT, 
+                               SCHED_PRIORITY_CONTROLLER, // 티어를 무려 컨트롤러 급으로 올려버림!
+                               1500, // 전용 스택 할당
+                               (px4_main_t)&amp;PayloadAutoDrop::custom_trampoline,
+                               (char *const *)argv);
+    // ...
+}
+</code></pre>
+<p>이 엄청난 수술(Offloading Refactoring)을 마치고 펌웨어를 다시 굽게 되면, <code>work_queue status</code> 출력창 어딘가에 <code>wq:payload_autodrop</code> 이라는 나만의 위풍당당한 방(Queue)이 생겨난 것을 볼 수 있다.<br />
+이제 내 모듈 앞에는 아무도 줄 서 있지 않다. 센서가 트리거 되는 그 찰나의 순간, 즉시 0ms 지연으로 FSM 코드가 불타오른다.</p>
+<p>단일 모듈의 성능 영점 조절까지 끝났다.<br />
+그렇다면 비행기가 멀쩡히 비행하다가 커널이 멈추어서 추락해 버렸을 때, 그 처참한 기체의 무덤(MicroSD 카드)에서 최후의 순간을 기록한 엑셀 파일(크래시 덤프)을 복원해 JTAG 디버거로 원인을 부검하는 마지막 여정 21.10.3장으로 넘어가 보자.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

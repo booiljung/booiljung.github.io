@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:8.4 Ring Attention - 수백만 토큰 처리를 위한 분산 처리 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>8.4 Ring Attention - 수백만 토큰 처리를 위한 분산 처리 기법</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">트랜스포머 싱귤래리티 (The Transformer Singularity)</a> / <span>8.4 Ring Attention - 수백만 토큰 처리를 위한 분산 처리 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>8.4 Ring Attention - 수백만 토큰 처리를 위한 분산 처리 기법</h1>
+<p>2025-12-21, G30DR</p>
+<h2>1.  서론: 인지 지평의 확장과 메모리 장벽 (The Horizon of Cognition and the Memory Wall)</h2>
+<p>인공지능, 특히 거대 언어 모델(LLM)의 발전사는 곧 ‘문맥(Context)’ 확장의 역사와 궤를 같이한다. 초기 트랜스포머 모델들이 512개의 토큰이라는 협소한 창을 통해 세상을 바라보았다면, 2023년을 기점으로 문맥의 길이는 32K, 128K를 넘어 100만(1M) 토큰, 나아가 1,000만(10M) 토큰을 지향하는 ’거대 세계 모델(Large World Model, LWM)’의 시대로 진입했다.1 이는 단순히 더 긴 텍스트를 처리한다는 기술적 의미를 넘어, 인공지능이 책 한 권을 넘어 도서관 전체를, 짧은 클립 영상을 넘어 장편 영화 전체를 하나의 호흡으로 이해하고 추론할 수 있게 됨을 시사한다.</p>
+<p>그러나 이러한 인지 지평의 확장은 물리적인 ’메모리 장벽(Memory Wall)’이라는 거대한 도전에 직면한다. 트랜스포머의 핵심 기제인 셀프 어텐션(Self-Attention)은 입력 시퀀스 길이(<span class="math math-inline">N</span>)의 제곱(<span class="math math-inline">O(N^2)</span>)에 비례하는 연산량과 메모리를 요구한다. FlashAttention 3과 같은 혁신적인 커널 최적화 기술이 등장하여 GPU의 SRAM과 HBM(High Bandwidth Memory) 사이의 입출력 병목을 해소하고 메모리 사용량을 선형(<span class="math math-inline">O(N)</span>)에 가깝게 억제했음에도 불구하고, 단일 가속기가 가진 물리적 메모리 용량(H100 기준 80GB)은 수백만 토큰의 KV 캐시(Key-Value Cache)와 활성화 함수(Activation)를 담아내기에는 턱없이 부족하다.4</p>
+<p>모델 파라미터를 여러 GPU에 나누는 텐서 병렬화(Tensor Parallelism)나 파이프라인 병렬화(Pipeline Parallelism)는 모델의 깊이나 너비를 확장하는 데에는 유효했으나, 시퀀스 길이 자체를 확장하는 데에는 구조적인 한계를 보였다. 시퀀스 길이가 길어질수록 활성화 메모리(Activation Memory)가 기하급수적으로 증가하여, 파라미터가 아무리 작아도 긴 문맥을 처리할 수 없는 상황이 발생하기 때문이다.</p>
+<p>이러한 배경에서 등장한 <strong>Ring Attention</strong>은 단일 디바이스의 메모리 제약을 근본적으로 타파하기 위해 고안된 시퀀스 병렬화(Sequence Parallelism) 기법의 정점이다. Ring Attention은 입력 시퀀스를 여러 디바이스에 분산시키고, 논리적인 링(Ring) 토폴로지를 통해 키(Key)와 밸류(Value) 블록을 순환시킴으로써, 이론적으로 <strong>디바이스 수에 비례하여 컨텍스트 길이를 무한히 확장</strong>할 수 있는 길을 열었다.5 본 장에서는 Ring Attention의 수학적 원리, 블록 단위 연산과 통신의 오버랩(Overlap) 메커니즘, 분산 환경에서의 온라인 소프트맥스(Online Softmax) 처리, 그리고 최신 하드웨어 인프라에서의 성능 특성을 심층적으로 분석한다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph "기존 트랜스포머의 한계 (Memory Wall)"
+        A["입력 시퀀스 길이 (N) 증가"] --&gt; B["메모리 사용량 O(N^2) 급증"]
+        B --&gt; C{"단일 GPU 메모리 초과?"}
+        C -- "Yes" --&gt; D["OOM (Out of Memory) 발생"]
+        C -- "No" --&gt; E["처리 가능 (단, 짧은 문맥)"]
+    end
+
+    subgraph "Ring Attention의 해결책"
+        F["입력 시퀀스 분산 (Sequence Parallelism)"] --&gt; G["시퀀스를 P개의 디바이스에 분할"]
+        G --&gt; H["메모리 사용량 O(N/P)로 감소"]
+        H --&gt; I["디바이스 추가 시 선형적 확장"]
+        I --&gt; J["1M ~ 10M 토큰 처리 (무한 문맥 지향)"]
+    end
+
+    D -.-&gt; F
+    style D fill:#ffcccc,stroke:#333
+    style J fill:#ccffcc,stroke:#333
+</code></pre>
+<h2>2.  블록 단위 병렬 트랜스포머의 기원 (Origins of Blockwise Parallel Transformers)</h2>
+<p>Ring Attention을 이해하기 위해서는 먼저 트랜스포머 연산을 ‘블록(Block)’ 단위로 재해석하는 과정이 선행되어야 한다. 기존의 표준 어텐션 연산은 쿼리(<span class="math math-inline">Q</span>), 키(<span class="math math-inline">K</span>), 밸류(<span class="math math-inline">V</span>) 행렬 전체가 메모리에 준비되어야 수행 가능했다. 이는 <span class="math math-inline">N \times N</span> 크기의 어텐션 스코어 행렬을 한 번에 계산하려 했기 때문이다.</p>
+<pre><code class="language-mermaid">graph LR
+    subgraph "Global View (전체 시퀀스)"
+        GlobalQ["전체 Query (Q)"]
+        GlobalK["전체 Key (K)"]
+        GlobalV["전체 Value (V)"]
+    end
+
+    GlobalQ --&gt; SplitQ1["Device 1: Q_local"]
+    GlobalQ --&gt; SplitQ2["Device 2: Q_local"]
+    GlobalQ --&gt; SplitQ3["Device 3: Q_local"]
+
+    GlobalK --&gt; SplitK1["Device 1: K_local"]
+    GlobalK --&gt; SplitK2["Device 2: K_local"]
+    GlobalK --&gt; SplitK3["Device 3: K_local"]
+
+    GlobalV --&gt; SplitV1["Device 1: V_local"]
+    GlobalV --&gt; SplitV2["Device 2: V_local"]
+    GlobalV --&gt; SplitV3["Device 3: V_local"]
+
+    subgraph "Sharding (분산 저장)"
+        SplitQ1
+        SplitQ2
+        SplitQ3
+        SplitK1
+        SplitK2
+        SplitK3
+        SplitV1
+        SplitV2
+        SplitV3
+    end
+    
+    style GlobalQ fill:#f9f,stroke:#333
+    style GlobalK fill:#bbf,stroke:#333
+    style GlobalV fill:#bfb,stroke:#333
+</code></pre>
+<h3>2.1  어텐션의 분해와 재구성</h3>
+<p>Liu et al. 4은 어텐션 연산이 본질적으로 결합 법칙이 성립하는 누적 연산(Accumulative Operation)임에 주목했다. 전체 시퀀스 길이가 <span class="math math-inline">N</span>이고 헤드 차원이 <span class="math math-inline">d</span>인 상황에서, <span class="math math-inline">Q, K, V \in \mathbb{R}^{N \times d}</span>라고 하자. 이를 크기 <span class="math math-inline">c</span>인 블록들로 분할하면 <span class="math math-inline">Q = [Q_1, Q_2, \dots, Q_m]</span>와 같이 표현할 수 있다(단, <span class="math math-inline">m=N/c</span>).</p>
+<p>특정 쿼리 블록 <span class="math math-inline">Q_i</span>에 대한 어텐션 출력 <span class="math math-inline">O_i</span>는 전체 <span class="math math-inline">K, V</span>를 필요로 하지만, 이를 한 번에 볼 필요는 없다. <span class="math math-inline">Q_i</span>와 <span class="math math-inline">K_1, V_1</span> 블록 간의 연산을 수행하여 부분 결과(Partial Output)를 얻고, 이를 <span class="math math-inline">Q_i</span>와 <span class="math math-inline">K_2, V_2</span>의 연산 결과와 순차적으로 결합하여 최종 <span class="math math-inline">O_i</span>를 완성할 수 있다. 이 아이디어는 FlashAttention의 타일링(Tiling) 기법과 유사하지만, Ring Attention은 이를 <strong>단일 칩 내부가 아닌 다중 칩 간의 데이터 이동</strong>으로 확장했다는 점에서 결정적인 차이가 있다.7</p>
+<h3>2.2  시퀀스 차원의 샤딩 (Sharding)</h3>
+<p>Ring Attention의 핵심 전제는 입력 시퀀스를 여러 디바이스에 나누어 저장(Sharding)하는 것이다. <span class="math math-inline">P</span>개의 디바이스가 있을 때, 전체 시퀀스 <span class="math math-inline">S</span>는 <span class="math math-inline">P</span>개의 서브 시퀀스 <span class="math math-inline">S_1, S_2, \dots, S_P</span>로 분할되어 각 디바이스에 할당된다. 이에 따라 각 디바이스는 전체 <span class="math math-inline">Q, K, V</span>의 <span class="math math-inline">1/P</span>에 해당하는 로컬 블록만을 보유하게 된다.</p>
+<p>이 상태에서 단순한 로컬 어텐션(Local Attention)만을 수행한다면 모델은 자신의 디바이스에 할당된 좁은 문맥만을 볼 수 있다. 전역적인 문맥(Global Context)을 학습하기 위해서는 다른 디바이스에 있는 <span class="math math-inline">K, V</span> 블록들을 가져와야 한다. 여기서 가장 단순한 접근법은 모든 디바이스가 서로의 데이터를 교환하는 All-to-All 통신(예: DeepSpeed Ulysses 방식)을 사용하는 것이지만, 이는 네트워크 대역폭에 막대한 부하를 주며 확장성에 제약이 있다. Ring Attention은 대신 인접한 디바이스끼리만 데이터를 주고받는 링 구조를 채택하여 통신 효율성을 극대화한다.4</p>
+<h2>3.  Ring Attention의 메커니즘과 알고리즘 (Mechanism and Algorithm)</h2>
+<p>Ring Attention의 작동 원리는 컨베이어 벨트 시스템에 비유할 수 있다. 각 디바이스(작업자)는 자신의 쿼리 블록(<span class="math math-inline">Q_i</span>, 고정된 작업물)을 가지고 있고, 키-밸류 블록(<span class="math math-inline">K_j, V_j</span>, 부품)들이 컨베이어 벨트(링 네트워크)를 타고 디바이스들을 순환한다.</p>
+<pre><code class="language-mermaid">graph LR
+    Title["Ring Attention 데이터 흐름 (순환 구조)"]
+    
+    subgraph "Device 1 (Rank 1)"
+        D1_Q["고정: Q1"]
+        D1_KV["수신: K, V 블록"]
+        D1_Calc["연산: Attention(Q1, K, V)"]
+    end
+
+    subgraph "Device 2 (Rank 2)"
+        D2_Q["고정: Q2"]
+        D2_KV["수신: K, V 블록"]
+        D2_Calc["연산: Attention(Q2, K, V)"]
+    end
+
+    subgraph "Device 3 (Rank 3)"
+        D3_Q["고정: Q3"]
+        D3_KV["수신: K, V 블록"]
+        D3_Calc["연산: Attention(Q3, K, V)"]
+    end
+
+    D1_KV -- "Send K1, V1" --&gt; D2_KV
+    D2_KV -- "Send K2, V2" --&gt; D3_KV
+    D3_KV -- "Send K3, V3" --&gt; D1_KV
+
+    style D1_KV fill:#fff2cc,stroke:#d6b656
+    style D2_KV fill:#fff2cc,stroke:#d6b656
+    style D3_KV fill:#fff2cc,stroke:#d6b656
+</code></pre>
+<h3>3.1  알고리즘의 단계적 분석</h3>
+<p>Ring Attention의 수행 과정은 다음과 같이 정형화할 수 있다 5:</p>
+<ol>
+<li><strong>초기화 (Initialization)</strong>: 총 <span class="math math-inline">P</span>개의 디바이스가 링 토폴로지로 연결된다. 각 디바이스 <span class="math math-inline">rank</span>는 전체 시퀀스의 해당 부분에 대한 <span class="math math-inline">Q_{rank}, K_{rank}, V_{rank}</span>를 로컬 메모리에 가지고 시작한다.</li>
+<li><strong>순환 루프 (Rotation Loop)</strong>: 총 <span class="math math-inline">P</span>번의 반복 단계(Step)를 수행한다.</li>
+</ol>
+<ul>
+<li><strong>내부 연산 (Inner Computation)</strong>: 현재 디바이스가 가지고 있는 <span class="math math-inline">K, V</span> 블록과 자신의 고정된 <span class="math math-inline">Q</span> 블록을 사용하여 어텐션 연산을 수행한다. 이때 FlashAttention 커널을 사용하여 메모리 효율을 높인다.</li>
+<li><strong>통신과 연산의 오버랩 (Overlap)</strong>: 다음 단계에서 사용할 <span class="math math-inline">K, V</span> 블록을 준비하기 위해, 현재 가지고 있는 <span class="math math-inline">K, V</span> 블록을 링의 <strong>다음</strong> 디바이스(<span class="math math-inline">rank+1</span>)로 전송(Send)하고, 동시에 <strong>이전</strong> 디바이스(<span class="math math-inline">rank-1</span>)로부터 새로운 <span class="math math-inline">K, V</span> 블록을 수신(Receive)한다. 이 통신 과정은 내부 연산이 수행되는 동안 백그라운드에서 비동기적으로 진행된다.</li>
+</ul>
+<ol start="3">
+<li><strong>최종 집계</strong>: <span class="math math-inline">P</span>번의 단계가 모두 끝나면, 각 디바이스의 <span class="math math-inline">Q</span> 블록은 시퀀스 전체의 모든 <span class="math math-inline">K, V</span> 블록과 한 번씩 상호작용을 마친 상태가 된다. 누적된 결과값은 최종 어텐션 출력 <span class="math math-inline">O_{rank}</span>가 된다.</li>
+</ol>
+<p>이 방식의 가장 큰 장점은 메모리 사용량이 시퀀스 전체 길이 <span class="math math-inline">N</span>이 아닌, 분할된 블록 크기 <span class="math math-inline">N/P</span>에 비례한다는 점이다. 즉, 디바이스를 추가할수록 처리 가능한 시퀀스 길이가 선형적으로 늘어난다. 이론적으로 디바이스를 무한히 연결하면 무한한 길이의 시퀀스를 처리할 수 있게 되는 것이다.5</p>
+<h3>3.2  통신-연산 오버랩의 수학적 조건 (Conditions for Overlap)</h3>
+<p>Ring Attention이 성능 저하 없이 작동하기 위한 핵심 조건은 <strong>통신 시간(Communication Time)이 연산 시간(Computation Time) 내에 완전히 숨겨져야(Hidden) 한다</strong>는 것이다. 만약 통신이 연산보다 오래 걸리면 GPU는 데이터가 도착할 때까지 유휴 상태(Idle)가 되어 효율이 급감한다. 이를 수식으로 분석해 보자.5</p>
+<ul>
+<li><strong>변수 정의</strong>:</li>
+<li><span class="math math-inline">c</span>: 블록 크기 (토큰 수)</li>
+<li><span class="math math-inline">d</span>: 히든 차원 (Hidden Dimension)</li>
+<li><span class="math math-inline">B</span>: 디바이스 간 인터커넥트 대역폭 (Byte/s)</li>
+<li><span class="math math-inline">F</span>: 디바이스의 연산 처리 속도 (FLOPs/s)</li>
+</ul>
+<p>각 단계에서 전송해야 하는 데이터 양은 <span class="math math-inline">K</span>와 <span class="math math-inline">V</span> 블록이므로, FP16(2바이트) 기준 <span class="math math-inline">2 \times 2 \times c \times d = 4cd</span> 바이트이다.</p>
+<p>각 단계에서 수행하는 연산량은 어텐션 스코어 계산(<span class="math math-inline">QK^T</span>)과 가중합(<span class="math math-inline">AV</span>)을 포함하여 약 <span class="math math-inline">4c^2d</span> FLOPs이다 (순수 행렬 곱셈 기준).</p>
+<p>오버랩이 완벽히 이루어지기 위한 조건은 다음과 같다:<br />
+<span class="math math-display">
+T_{comp} \ge T_{comm}
+</span></p>
+<p><span class="math math-display">
+\frac{4c^2d}{F} \ge \frac{4cd}{B}
+</span></p>
+<p>이를 블록 크기 <span class="math math-inline">c</span>에 대해 정리하면 다음과 같은 중요한 부등식이 도출된다:<br />
+<span class="math math-display">
+c \ge \frac{F}{B}
+</span><br />
+이 식은 블록 크기(처리하는 토큰 청크의 크기)가 시스템의 연산 성능 대 대역폭 비율(Arithmetic Intensity)보다 커야 한다는 것을 의미한다.</p>
+<p>예를 들어, NVIDIA A100 GPU의 경우 FP16 연산 성능 <span class="math math-inline">F \approx 312</span> TFLOPS, NVLink 대역폭 <span class="math math-inline">B \approx 600</span> GB/s이다. 이를 대입하면 대략 수천 토큰 수준의 블록 크기가 필요하다. 만약 대역폭이 낮은 PCIe나 이더넷으로 연결된 경우(<span class="math math-inline">B</span>가 작음), <span class="math math-inline">F/B</span> 값이 커지므로 더 큰 블록 크기 <span class="math math-inline">c</span>가 요구된다. 즉, 네트워크가 느릴수록 한 번에 더 많은 연산을 수행하여 통신 시간을 벌어야 한다.5</p>
+<p>최신 TPU v4/v5나 H100 NVLink 환경에서는 대역폭이 충분히 넓어 비교적 작은 블록 크기에서도 완벽한 오버랩이 가능하며, 이는 Ring Attention이 고성능 클러스터에서 매우 효율적임을 증명한다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant Compute as "GPU 연산 유닛 (Tensor Core)"
+    participant Comm as "통신 유닛 (NVLink/Interconnect)"
+    
+    Note over Compute, Comm: "Step N: 병렬 실행"
+    
+    par Parallel Execution
+        Compute-&gt;&gt;Compute: "Attention 계산 (Q_i x K_recv)"
+        Comm-&gt;&gt;Comm: "다음 블록 수신 (Recv K_next, V_next)"
+        Comm-&gt;&gt;Comm: "현재 블록 전송 (Send K_curr, V_curr)"
+    end
+    
+    Note over Compute, Comm: "조건: 연산 시간 &gt;= 통신 시간"
+    
+    Compute-&gt;&gt;Compute: "Block N 완료 &amp; 결과 누적"
+    
+    Note over Compute, Comm: "Step N+1: 다음 반복"
+    par Parallel Execution
+        Compute-&gt;&gt;Compute: "Attention 계산 (Q_i x K_next)"
+        Comm-&gt;&gt;Comm: "다음 블록 수신..."
+    end
+</code></pre>
+<h2>4.  분산 온라인 소프트맥스 (Distributed Online Softmax)</h2>
+<p>Ring Attention 구현의 기술적 난이도는 대부분 <strong>소프트맥스(Softmax)</strong> 계산에서 비롯된다. 소프트맥스 함수 <span class="math math-inline">\text{softmax}(x_i) = \frac{e^{x_i}}{\sum e^{x_j}}</span>는 분모에 전체 시퀀스에 대한 합(Sum)을 필요로 하는 전역 의존성(Global Dependency)을 가진다. 그러나 Ring Attention 환경에서 각 디바이스는 전체 <span class="math math-inline">K, V</span>를 한 번에 볼 수 없으며, 순차적으로 들어오는 블록 데이터만 볼 수 있다.</p>
+<p>이를 해결하기 위해 Milakov와 Gimelshein(2018)이 제안하고 FlashAttention에서 채택된 <strong>온라인 소프트맥스(Online Softmax)</strong> 기법이 분산 환경으로 확장 적용된다.10</p>
+<pre><code class="language-mermaid">graph TD
+    Start["새로운 블록 (K_j, V_j) 도착"] --&gt; CalcLocal["로컬 Attention Score 계산 (Q_i * K_j^T)"]
+    CalcLocal --&gt; LocalStats["로컬 통계 산출 (m_local, l_local)"]
+    
+    LocalStats --&gt; LoadPrev["기존 누적 값 로드 (O_prev, m_prev, l_prev)"]
+    
+    LoadPrev --&gt; UpdateM["새로운 최대값 갱신: m_new = max(m_prev, m_local)"]
+    UpdateM --&gt; Rescale["기존 O_prev 및 l_prev 재조정 (Rescaling)"]
+    
+    Rescale --&gt; Accumulate["새로운 값 누적 합산"]
+    Accumulate --&gt; SaveState["상태 저장 (O_new, m_new, l_new)"]
+    
+    SaveState --&gt; CheckDone{"모든 블록 순회 완료?"}
+    CheckDone -- "No" --&gt; Start
+    CheckDone -- "Yes" --&gt; Finalize["최종 출력: O_final / l_final"]
+    
+    style Rescale fill:#ffeb3b,stroke:#333,stroke-width:2px
+</code></pre>
+<h3>4.1  수치적 안정성과 재조정 (Rescaling)</h3>
+<p>일반적인 소프트맥스 구현에서는 수치적 오버플로우를 막기 위해 입력 벡터의 최댓값 <span class="math math-inline">m</span>을 찾아 빼주는 과정을 거친다(<span class="math math-inline">e^{x_i - m}</span>). 온라인 소프트맥스는 데이터가 스트리밍되는 상황에서 이 최댓값 <span class="math math-inline">m</span>과 지수 합 <span class="math math-inline">L</span>을 동적으로 업데이트한다.</p>
+<p>두 개의 블록 <span class="math math-inline">A</span>와 <span class="math math-inline">B</span>가 있고, 각각의 로컬 최댓값 <span class="math math-inline">m_A, m_B</span>와 비정규화된 지수 합 <span class="math math-inline">l_A, l_B</span>를 계산했다고 가정하자. 이 둘을 병합한 전체 최댓값 <span class="math math-inline">m_{new}</span>와 합 <span class="math math-inline">l_{new}</span>는 다음과 같이 유도된다:<br />
+<span class="math math-display">
+m_{new} = \max(m_A, m_B)
+</span></p>
+<p><span class="math math-display">
+l_{new} = l_A \cdot e^{m_A - m_{new}} + l_B \cdot e^{m_B - m_{new}}
+</span></p>
+<p>여기서 중요한 점은 기존의 누적된 어텐션 출력값 <span class="math math-inline">O_A</span>도 새로운 최댓값 <span class="math math-inline">m_{new}</span>에 맞춰 재조정(Rescaling)해주어야 한다는 것이다.<br />
+<span class="math math-display">
+O_{new} = O_A \cdot e^{m_A - m_{new}} + O_B \cdot e^{m_B - m_{new}}
+</span></p>
+<h3>4.2  Ring Attention 내에서의 흐름</h3>
+<p>각 디바이스는 링을 순회하며 다음과 같은 상태 변수(State Variables)를 유지한다 12:</p>
+<ol>
+<li><strong><span class="math math-inline">m_i</span></strong>: 현재 단계까지 관측된 <span class="math math-inline">QK^T</span> 값 중 행별 최댓값.</li>
+<li><strong><span class="math math-inline">l_i</span></strong>: 현재 단계까지 관측된 지수 합 (Denominator).</li>
+<li><strong><span class="math math-inline">O_i</span></strong>: 현재 단계까지 누적된 비정규화 어텐션 출력 값.</li>
+</ol>
+<p>새로운 <span class="math math-inline">K, V</span> 블록이 도착할 때마다, 디바이스는 해당 블록에 대한 로컬 어텐션 스코어를 계산하고, 위 공식에 따라 기존 <span class="math math-inline">O_i</span>에 보정 계수를 곱한 뒤 새로운 블록의 기여분을 더한다. 모든 순환이 끝난 후, 최종적으로 <span class="math math-inline">O_i</span>를 <span class="math math-inline">l_i</span>로 나누어줌으로써 수학적으로 정확한(Exact) 소프트맥스 결과를 얻는다. 이 과정은 근사(Approximation)가 전혀 없기 때문에, Ring Attention은 표준 어텐션과 비트 단위까지 동일한 결과를 보장할 수 있다.3</p>
+<h2>5.  구현: JAX에서 PyTorch, 그리고 Ring FlashAttention까지</h2>
+<p>Ring Attention의 개념은 이론적으로는 명쾌하지만, 실제 하드웨어 상에서 효율적으로 구현하는 것은 또 다른 차원의 문제다. 초기 연구와 최신 구현체들은 프레임워크별 특성을 활용하여 최적화를 진행해왔다.</p>
+<h3>5.1  JAX와 <code>jax.lax.ppermute</code></h3>
+<p>Ring Attention이 처음 제안된 Liu et al.의 연구는 Google의 JAX 프레임워크를 기반으로 했다.5 JAX는 <code>jax.lax.ppermute</code>라는 강력한 집합 통신(Collective Communication) 연산자를 제공한다. 이 연산자는 다차원 배열을 인접한 장치로 순열(Permutation) 이동시키는 기능을 수행하는데, Ring Attention의 데이터 순환 구조와 정확히 일치한다.</p>
+<p>구현 코드는 놀라울 정도로 간결하다. 외부 루프에서 <code>ppermute</code>를 호출하여 <span class="math math-inline">K, V</span>를 이동시키고, 내부에서는 JAX의 JIT(Just-In-Time) 컴파일러가 로컬 연산과 통신을 자동으로 융합(Fusion)하고 오버랩하도록 최적화한다. 이는 연구진이 복잡한 통신 코드를 직접 작성하지 않고도 TPU 클러스터의 성능을 최대한 끌어낼 수 있었던 핵심 요인이다.14</p>
+<h3>5.2  PyTorch와 Ring FlashAttention</h3>
+<p>오픈 소스 LLM 생태계의 주류인 PyTorch 환경에서는 <code>torch.distributed</code> 패키지의 P2P 통신 프리미티브(<code>Isend</code>, <code>Irecv</code>)를 사용하여 링 구조를 구현한다. 하지만 Python 레벨의 오버헤드를 줄이고 GPU 커널 레벨의 최적화를 달성하기 위해, <strong>Ring FlashAttention</strong>이라는 하이브리드 접근법이 등장했다.15</p>
+<p>Ring FlashAttention은 두 가지 레벨의 루프를 결합한다:</p>
+<ol>
+<li><strong>Outer Loop (Device Level)</strong>: Ring Attention 알고리즘에 따라 디바이스 간 <span class="math math-inline">K, V</span> 블록을 교환한다. 이는 HBM 용량 한계를 극복한다.</li>
+<li><strong>Inner Loop (Kernel Level)</strong>: 각 디바이스 내부에서는 수신된 블록에 대해 FlashAttention v2/v3 커널을 호출한다. 이는 SRAM-HBM 간의 I/O 병목을 해결한다.</li>
+</ol>
+<p>특히 최신 구현체(예: <code>ring-attention-pytorch</code>, Megatron-LM)에서는 순방향(Forward) 패스뿐만 아니라 역전파(Backward) 패스에서도 통신과 연산의 오버랩을 구현하고, <code>logsumexp</code> 값을 효율적으로 관리하여 학습 속도를 비약적으로 향상시켰다.13</p>
+<h3>5.3  인과적 마스킹과 부하 균형 (Causal Masking &amp; Load Balancing)</h3>
+<p>GPT와 같은 인과적 언어 모델(Causal LM)을 학습할 때는, 현재 토큰이 미래의 토큰을 참조하지 못하게 하는 마스킹(Masking)이 적용된다. 이는 어텐션 행렬의 상삼각(Upper Triangular) 부분을 0으로 만드는 것인데, Ring Attention 분산 환경에서는 이것이 <strong>부하 불균형(Load Imbalance)</strong> 문제를 야기할 수 있다.</p>
+<p>시퀀스 앞부분을 담당하는 디바이스는 마스킹으로 인해 연산할 부분이 적은 반면, 뒷부분을 담당하는 디바이스는 모든 토큰을 봐야 하므로 연산량이 많아진다. 단순한 링 구조에서는 앞쪽 디바이스들이 작업을 일찍 마치고 유휴 상태(Idle)로 대기하는 현상이 발생하여 전체 효율(MFU)을 떨어뜨린다.</p>
+<p>이를 해결하기 위해 <strong>Zigzag Ring Attention</strong> 또는 <strong>Striped Attention</strong> 기법이 도입되었다.13 이 기법들은 시퀀스 블록을 디바이스에 순차적으로(<span class="math math-inline">1, 2, \dots, P</span>) 할당하지 않고, 순환적으로(<span class="math math-inline">1, P, 2, P-1, \dots</span>) 할당하거나 인터리빙(Interleaving)하여 모든 디바이스가 마스킹된 영역과 유효 영역을 골고루 처리하도록 만든다. 이를 통해 모든 디바이스가 항상 연산에 참여하게 되어 병렬화 효율을 극대화할 수 있다.</p>
+<h2>6.  비교 분석: Ring Attention vs DeepSpeed Ulysses</h2>
+<p>현재 초거대 문맥 처리를 위한 시퀀스 병렬화 기술의 양대 산맥은 <strong>Ring Attention</strong>과 <strong>DeepSpeed Ulysses</strong>이다. 두 기술은 목표는 같지만 접근 방식과 특성에서 뚜렷한 대조를 이룬다.18</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph "Ring Attention (P2P)"
+        R_Node1((Device 1)) --&gt; R_Node2((Device 2))
+        R_Node2 --&gt; R_Node3((Device 3))
+        R_Node3 --&gt; R_Node4((Device 4))
+        R_Node4 --&gt; R_Node1
+        
+        R_Note["인접 노드 간 통신&lt;br/&gt;네트워크 토폴로지 유연&lt;br/&gt;통신량 = 선형 증가"]
+    end
+
+    subgraph "DeepSpeed Ulysses (All-to-All)"
+        U_Node1((Device 1)) &lt;--&gt; U_Node2((Device 2))
+        U_Node1 &lt;--&gt; U_Node3((Device 3))
+        U_Node1 &lt;--&gt; U_Node4((Device 4))
+        U_Node2 &lt;--&gt; U_Node3
+        U_Node2 &lt;--&gt; U_Node4
+        U_Node3 &lt;--&gt; U_Node4
+        
+        U_Note["모든 노드 간 통신&lt;br/&gt;높은 Bisection 대역폭 필요&lt;br/&gt;Head 개수 제약"]
+    end
+    
+    style R_Node1 fill:#e1f5fe
+    style U_Node1 fill:#fce4ec
+</code></pre>
+<h3>6.1  통신 패턴: P2P vs All-to-All</h3>
+<table><thead><tr><th><strong>비교 항목</strong></th><th><strong>Ring Attention</strong></th><th><strong>DeepSpeed Ulysses</strong></th></tr></thead><tbody>
+<tr><td><strong>통신 방식</strong></td><td><strong>P2P (Point-to-Point)</strong></td><td><strong>All-to-All (Collective)</strong></td></tr>
+<tr><td><strong>토폴로지</strong></td><td>링(Ring) 구조 (인접 노드 통신)</td><td>완전 연결 (Full Mesh) 필요</td></tr>
+<tr><td><strong>데이터 분할</strong></td><td>시퀀스 차원 분할, <span class="math math-inline">K/V</span> 순환</td><td><span class="math math-inline">Q/K/V</span>를 헤드(Head) 차원으로 재분배</td></tr>
+<tr><td><strong>통신량 특성</strong></td><td>디바이스 수 증가 시 총 통신량 선형 증가</td><td>디바이스 수 증가 시 통신량 일정 (이론상)</td></tr>
+<tr><td><strong>네트워크 요구</strong></td><td>대역폭만 충분하면 토폴로지 무관</td><td>낮은 지연시간(Latency)과 높은 Bisection 대역폭 필수</td></tr>
+</tbody></table>
+<p><strong>DeepSpeed Ulysses</strong>는 어텐션 연산 전에 입력 텐서를 ‘헤드(Head)’ 차원으로 쪼개어(Scatter) 모든 디바이스에 분배하고, 연산 후 다시 모으는(Gather) All-to-All 방식을 취한다. 이는 통신 횟수가 적고 구현이 간단하다는 장점이 있지만, <strong>병렬화 가능한 디바이스 수가 어텐션 헤드의 개수(Head Count)를 초과할 수 없다</strong>는 치명적인 제약이 있다.17 예를 들어, 헤드가 32개인 모델은 최대 32개의 GPU로만 병렬화할 수 있어, 시퀀스 길이를 무한정 늘리는 데 한계가 있다.</p>
+<p>반면, <strong>Ring Attention</strong>은 시퀀스 자체를 블록으로 나누기 때문에 <strong>헤드 수와 무관하게 디바이스를 수백, 수천 개로 확장</strong>할 수 있다. 100만 토큰 이상의 시퀀스를 처리하기 위해 수백 개의 GPU가 필요한 상황에서 Ring Attention이 유일한 대안이 되는 이유다.4</p>
+<h3>6.2  확장성과 효율성</h3>
+<p>벤치마크 결과에 따르면, 헤드 수가 충분하고 시퀀스 길이가 적당히 긴(32K~128K) 구간에서는 Ulysses가 더 빠른 속도를 보이기도 한다. All-to-All 통신이 단일 노드 내부(NVLink)에서 매우 효율적이기 때문이다.20</p>
+<p>하지만 시퀀스 길이가 수십만, 수백만 토큰으로 늘어나고, GPU가 여러 노드에 걸쳐 분산되는(Multi-Node) 환경에서는 Ring Attention이 우위를 점한다. All-to-All 통신은 노드 간 통신에서 스위치 병목현상을 일으키기 쉬운 반면, Ring Attention의 P2P 통신은 네트워크 토폴로지에 덜 민감하며 통신-연산 오버랩을 통해 오버헤드를 효과적으로 숨길 수 있기 때문이다. 최근에는 두 기술의 장점을 결합하여, 노드 내부에서는 Ulysses를, 노드 간에는 Ring Attention을 사용하는 <strong>하이브리드 병렬화(Hybrid Parallelism)</strong> 방식도 제안되고 있다.19</p>
+<h2>7.  하드웨어 인프라와 1000만 토큰의 실현 (Hardware Infrastructure and Realizing 10M Tokens)</h2>
+<p>Ring Attention의 진가는 대규모 하드웨어 클러스터에서 발휘된다. 특히 Google의 TPU와 NVIDIA의 GPU 클러스터는 각기 다른 네트워크 특성을 가지며, Ring Attention은 이에 맞춰 최적화된다.</p>
+<pre><code class="language-mermaid">graph LR
+    subgraph "TPU Pod (3D Torus)"
+        TPU1[TPU] --- TPU2[TPU]
+        TPU2 --- TPU3[TPU]
+        TPU3 --- TPU1
+        TPU_Desc["물리적 링 구조 내장&lt;br/&gt;스위치 없는 직접 연결&lt;br/&gt;Ring Attention 최적"]
+    end
+
+    subgraph "GPU Cluster (NVLink + InfiniBand)"
+        G_Node1[Node 1: 8 GPU]
+        G_Node2[Node 2: 8 GPU]
+        
+        G_Node1 -- "InfiniBand (느림)" --&gt; G_Node2
+        
+        subgraph "Node Internal"
+            NVLink["NVLink (빠름)"]
+        end
+        
+        GPU_Desc["계층적 대역폭 차이&lt;br/&gt;블록 크기 조절 필요&lt;br/&gt;(c &gt;= F/B 조건)"]
+    end
+    
+    style TPU_Desc fill:#eee,stroke:#333,stroke-dasharray: 5 5
+    style GPU_Desc fill:#eee,stroke:#333,stroke-dasharray: 5 5
+</code></pre>
+<h3>7.1  TPU Pod와 Torus 네트워크의 시너지</h3>
+<p>Google의 TPU(v4, v5e) 시스템은 칩들이 고속 인터커넥트(ICI)를 통해 <strong>3D Torus</strong> 구조로 직접 연결되어 있다. 이는 물리적으로 링 구조를 포함하고 있어 Ring Attention의 데이터 흐름과 완벽하게 일치한다.5 별도의 이더넷 스위치를 거치지 않고 칩끼리 데이터를 패스하는 구조 덕분에, Ring Attention을 사용할 경우 수천 개의 TPU 칩으로 확장하더라도 통신 병목이 거의 발생하지 않는다.</p>
+<p>Berkeley와 Google의 연구진은 이러한 특성을 활용하여 TPU v4-1024 팟(Pod)에서 **Large World Model (LWM)**을 학습시켰다. 이들은 Ring Attention을 통해 최대 <strong>1,000만(10M) 토큰</strong>의 컨텍스트 윈도우를 달성했으며, 이는 기존 기술 대비 512배 더 긴 시퀀스를 처리한 기록이다.1 실험 결과, 시퀀스 길이가 늘어나도 모델의 FLOPs 활용률(MFU)이 급격히 떨어지지 않고 안정적으로 유지됨이 확인되었다.</p>
+<h3>7.2  GPU 클러스터와 대역폭의 경제학</h3>
+<p>NVIDIA GPU 기반 클러스터(A100/H100)에서는 NVLink와 InfiniBand가 핵심이다. 단일 노드(8 GPU) 내에서는 NVLink가 900GB/s(H100 기준)의 광대역을 제공하므로 Ring Attention의 오버랩 조건(<span class="math math-inline">c \ge F/B</span>)을 쉽게 만족시킨다. 그러나 노드 간 통신(InfiniBand)은 대역폭이 상대적으로 낮아 병목이 될 수 있다.</p>
+<p>따라서 GPU 클러스터에서 수백만 토큰을 처리하기 위해서는 노드 간 통신을 최소화하거나, Ring Attention 블록 크기를 키워 연산 밀도를 높이는 전략이 필요하다. 최근에는 H100의 Transformer Engine과 FP8 연산을 결합하여 메모리 사용량을 더욱 줄이고, 남는 메모리를 컨텍스트 확장에 할당하는 연구가 활발하다.23 비용 측면에서 볼 때, Ring Attention은 100만 토큰 모델 학습을 위해 필요한 GPU 시간을 선형적으로 예측 가능하게 만들어주며, 이는 거대 모델 학습의 경제적 타당성을 확보하는 데 중요한 역할을 한다.24</p>
+<h2>8.  실제 적용 사례와 미래 전망 (Use Cases and Future Outlook)</h2>
+<p>Ring Attention은 단순한 이론적 탐구를 넘어, 2024년과 2025년 최신 AI 모델들의 핵심 경쟁력인 ’Long Context’를 뒷받침하는 기술적 근간이 되었다.</p>
+<h3>8.1  Large World Model (LWM)과 멀티모달</h3>
+<p>LWM 프로젝트 1는 Ring Attention을 사용하여 1시간 분량의 유튜브 비디오(약 100만 토큰)를 통째로 입력받아, 비디오 내의 특정 장면이나 대사를 정확히 찾아내고 답변하는 능력을 보여주었다. 이는 기존의 RAG(검색 증강 생성) 방식이 가질 수밖에 없는 정보 손실 문제를 해결하고, 모델이 전체 맥락을 온전히 ’기억’하고 ’이해’하는 수준에 도달했음을 의미한다. 텍스트뿐만 아니라 비디오, 오디오, 코드를 아우르는 멀티모달 데이터는 본질적으로 길이가 길기 때문에, Ring Attention은 멀티모달 에이전트 개발의 필수 요소로 자리 잡았다.</p>
+<h3>8.2  무한 문맥과 에이전틱 AI (Agentic AI)</h3>
+<p>에이전틱 AI 시대에 ’기억(Memory)’은 곧 ’지능’이다. 에이전트가 수일, 수주에 걸친 사용자와의 상호작용 로그, 수천 개의 API 문서, 복잡한 프로젝트 코드를 모두 컨텍스트 윈도우에 담을 수 있다면, 그 에이전트의 추론 능력과 일관성은 비약적으로 향상된다. Ring Attention은 이러한 <strong>In-Context Learning</strong>의 한계를 물리적 메모리 너머로 확장함으로써, 스스로 계획하고 행동하는 자율 에이전트의 실현을 앞당기고 있다.</p>
+<h3>8.3  결론: 트랜스포머의 특이점을 향해</h3>
+<p>Ring Attention은 트랜스포머 아키텍처가 가진 태생적 한계인 <span class="math math-inline">O(N^2)</span> 메모리 장벽을 <strong>분산 시스템의 힘</strong>을 빌려 허물어뜨린 기술이다. 이는 하드웨어의 물리적 제약에 갇혀 있던 AI의 인지 범위를 네트워크로 연결된 거대한 컴퓨팅 자원 전체로 확장시켰다. FlashAttention이 단일 칩의 효율성을 극대화했다면, Ring Attention은 그 효율성을 클러스터 전체로 확장하여 **무한 문맥(Infinite Context)**이라는 꿈을 현실로 만들었다.</p>
+<p>2025년 현재, Ring Attention은 FlashAttention-3, DeepSpeed Ulysses와 융합하며 진화하고 있다. 우리는 이제 유한한 메모리의 제약에서 벗어나, 세상의 모든 데이터를 하나의 문맥으로 엮어내는 진정한 의미의 ’트랜스포머 싱귤래리티’를 목격하고 있다.</p>
+<h2>9. 참고 자료</h2>
+<ol>
+<li>LargeWorldModel/LWM: Large World Model – Modeling Text and Video with Millions Context - GitHub, https://github.com/LargeWorldModel/LWM</li>
+<li>WORLD MODEL ON MILLION-LENGTH VIDEO AND LANGUAGE WITH BLOCKWISE RINGATTENTION - OpenReview, https://openreview.net/pdf/097eee532bf14539451d65b4a72a5fe9e6d2ab6d.pdf</li>
+<li>FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness - arXiv, https://arxiv.org/abs/2205.14135</li>
+<li>RingAttention with Blockwise Transformers for Near-Infinite Context - OpenReview, https://openreview.net/forum?id=WsRHpHH4s0</li>
+<li>Ring Attention with Blockwise Transformers for Near-Infinite Context - arXiv, https://arxiv.org/html/2310.01889v1</li>
+<li>RingAttention with Blockwise Transformers for Near-Infinite Context - ICLR Proceedings, https://proceedings.iclr.cc/paper_files/paper/2024/file/1119587863e78451f080da2a768c4935-Paper-Conference.pdf</li>
+<li>Breaking the Context Barrier: An Architectural Deep Dive into Ring Attention and the Era of Million-Token Transformers | Uplatz Blog, https://uplatz.com/blog/breaking-the-context-barrier-an-architectural-deep-dive-into-ring-attention-and-the-era-of-million-token-transformers/</li>
+<li>UC Berkeley - eScholarship, https://escholarship.org/content/qt1kv5f0kw/qt1kv5f0kw.pdf</li>
+<li>Ring Attention with Blockwise Transformers for Near-Infinite Context - OpenReview, https://openreview.net/pdf?id=fXugVDtCQO</li>
+<li>FLASH-D: FlashAttention with Hidden Softmax Division - arXiv, https://arxiv.org/html/2505.14201v1</li>
+<li>Online Softmax to Flash Attention — and Why it Matters | by Matthew Gunton - Medium, https://medium.com/data-science-collective/online-softmax-to-flash-attention-and-why-it-matters-9d676e7c50a8</li>
+<li>Ring Attention: Shedding Light on the Dark Art of Attention Sharding - AKASA, https://akasa.com/blog/ring-attention/</li>
+<li>Ultra-Long Sequence Parallelism: Ulysses + Ring-Attention Technical Principles and Implementation - Hugging Face, https://huggingface.co/blog/exploding-gradients/ulysses-ring-attention</li>
+<li>Ring Attention with Blockwise Transformers for Near-Infinite Context - arXiv, https://arxiv.org/pdf/2310.01889</li>
+<li>Dao-AILab/flash-attention: Fast and memory-efficient exact attention - GitHub, https://github.com/Dao-AILab/flash-attention</li>
+<li>A ring attention with flash attention kernel implementation · Issue #4 - GitHub, https://github.com/lucidrains/ring-attention-pytorch/issues/4</li>
+<li>USP: Unified (a.k.a. Hybrid, 2D) Sequence Parallel Attention for Long Context Transformers Model Training and Inference - GitHub, https://github.com/feifeibear/long-context-attention</li>
+<li>Sequence parallel in accelerate - Hugging Face, https://huggingface.co/docs/accelerate/concept_guides/sequence_parallelism</li>
+<li>USP: A Unified Sequence Parallelism Approach for Long Context Generative AI - arXiv, https://arxiv.org/pdf/2405.07719</li>
+<li>README.md - feifeibear/long-context-attention - GitHub, https://github.com/feifeibear/long-context-attention/blob/main/README.md</li>
+<li>USP: A Unified Sequence Parallelism Approach for Long Context Generative AI - arXiv, https://arxiv.org/html/2405.07719v5</li>
+<li>TPU v4 - Google Cloud Documentation, https://docs.cloud.google.com/tpu/docs/v4</li>
+<li>FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision - Tri Dao, https://tridao.me/publications/flash3/flash3.pdf</li>
+<li>Cloud TPU v4 Pods, large model training, MLPerf v1.1 | Google Cloud Blog, https://cloud.google.com/blog/topics/tpus/google-showcases-cloud-tpu-v4-pods-for-large-model-training</li>
+<li>World Model on Million-Length Video And Language With RingAttention - arXiv, https://arxiv.org/html/2402.08268v1</li>
+</ol>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

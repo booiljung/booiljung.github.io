@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:7.2 RMSNorm - 간소화된 정규화와 성능 향상</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>7.2 RMSNorm - 간소화된 정규화와 성능 향상</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">트랜스포머 싱귤래리티 (The Transformer Singularity)</a> / <span>7.2 RMSNorm - 간소화된 정규화와 성능 향상</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>7.2 RMSNorm - 간소화된 정규화와 성능 향상</h1>
+<p>2025-12-21, G30DR</p>
+<h3>0.1  서론: 딥러닝 최적화의 미니멀리즘과 정규화의 진화</h3>
+<p>현대 인공지능, 특히 트랜스포머(Transformer) 아키텍처 기반의 거대언어모델(Large Language Model, LLM)이 직면한 가장 큰 도전 과제는 ’규모(Scale)’와 ‘효율성(Efficiency)’ 사이의 줄타기이다. 모델의 파라미터 수가 수십억(Billion)을 넘어 수조(Trillion) 단위로 확장됨에 따라, 학습 과정에서 발생하는 계산 비용과 수치적 불안정성(Numerical Instability)은 기하급수적으로 증가하였다. 이러한 배경 속에서 심층 신경망의 학습을 가능케 했던 핵심 기술인 정규화(Normalization) 기법 또한 새로운 진화의 압력을 받게 되었다.</p>
+<p>초기 딥러닝의 부흥을 이끌었던 배치 정규화(Batch Normalization)는 미니 배치(Mini-batch)의 통계량에 의존한다는 특성 때문에, 배치 크기에 제약을 받는 순환 신경망(RNN)이나 트랜스포머와 같은 시퀀스 모델에는 적합하지 않았다. 이에 대한 대안으로 등장한 레이어 정규화(Layer Normalization, LayerNorm)는 배치 크기와 무관하게 개별 샘플의 특징 차원(Feature Dimension)에서 정규화를 수행함으로써 자연어 처리(NLP) 분야의 표준(De Facto Standard)으로 자리 잡았다.1 LayerNorm은 입력 데이터의 평균과 분산을 계산하여 분포를 재조정함으로써 ’내부 공변량 변화(Internal Covariate Shift)’를 완화하고 학습 속도를 높이는 데 기여하였다.2</p>
+<p>그러나 2019년 이후, 모델의 깊이가 깊어지고 학습 데이터의 양이 폭증하면서 연구자들은 근본적인 질문을 던지기 시작했다. “과연 정규화 과정에서 평균을 0으로 맞추는 중심화(Mean Centering) 작업이 필수불가결한가?” 이 질문은 계산 효율성을 극대화하기 위한 미니멀리즘적 접근으로 이어졌고, 그 결과 탄생한 것이 바로 **RMSNorm(Root Mean Square Normalization)**이다. RMSNorm은 불필요한 연산을 과감히 제거하고 오직 스케일링(Scaling)에만 집중함으로써, LayerNorm에 버금가는 학습 안정성을 유지하면서도 계산 비용을 획기적으로 절감하는 성과를 거두었다.1</p>
+<p>본 장에서는 LayerNorm의 대안으로 부상하여 T5, Gopher, Chinchilla, 그리고 LLaMA와 같은 최신 LLM의 핵심 구성 요소가 된 RMSNorm을 심층적으로 분석한다. RMSNorm의 수학적 본질과 불변성(Invariance) 이론, GPU 하드웨어 레벨에서의 커널 최적화 이점, 그리고 최근 경량화 트렌드인 양자화(Quantization) 과정에서 드러난 구조적 한계와 이를 극복하기 위한 최신 연구 동향(Outlier-Safe Pre-training 등)까지 포괄적으로 논의한다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph "배경: 딥러닝의 확장 (Scale &amp; Efficiency)"
+        A["초기 딥러닝"] --&gt; B["트랜스포머 &amp; LLM 등장"]
+        B --&gt; C["모델 규모 폭증 (Billions to Trillions)"]
+        C --&gt; D["계산 비용 &amp; 수치 불안정성 증가"]
+    end
+
+    subgraph "정규화의 진화 (Evolution)"
+        N1["배치 정규화 (Batch Normalization)"] --"부적합 (RNN/Seq 모델)"--&gt; N2["레이어 정규화 (LayerNorm)"]
+        N2 --"NLP 표준 정립"--&gt; N2_Feature["특징: 평균 중심화 + 분산 스케일링"]
+        N2 --"미니멀리즘 질문: 중심화가 필수인가?"--&gt; N3["RMSNorm"]
+        N3 --"혁신"--&gt; N3_Feature["특징: 평균 제거, 스케일링 집중, 속도 향상"]
+    end
+
+    D -.-&gt; N2
+    D -.-&gt; N3
+
+    style N3 fill:#f9f,stroke:#333,stroke-width:2px,color:black
+    style N3_Feature fill:#fff,stroke:#f9f,stroke-width:2px,color:black
+</code></pre>
+<h3>0.2  RMSNorm의 이론적 토대와 수학적 본질</h3>
+<h4>0.2.1  LayerNorm의 메커니즘과 계산 비용의 재해석</h4>
+<p>RMSNorm의 혁신성을 이해하기 위해서는 먼저 기존 LayerNorm이 수행하는 연산의 비용과 그 효용성을 해체해 볼 필요가 있다. 전통적인 LayerNorm은 입력 벡터 <span class="math math-inline">x</span>에 대하여 두 가지의 통계적 처리를 수행한다.</p>
+<p>첫째는 **평균 중심화(Mean Centering)**이다. 이는 입력 데이터의 분포를 0을 중심으로 이동(Shift)시키는 과정으로, 데이터 전체의 합을 구하여 평균 <span class="math math-inline">\mu</span>를 계산하고, 이를 각 원소에서 빼는 연산(<span class="math math-inline">x - \mu</span>)을 포함한다. 둘째는 **분산 스케일링(Variance Scaling)**으로, 데이터의 퍼짐 정도를 정규화하여 표준편차 <span class="math math-inline">\sigma</span>로 나누는 과정이다. 최종적으로 학습 가능한 파라미터인 게인(Gain, <span class="math math-inline">\gamma</span>)과 바이어스(Bias, <span class="math math-inline">\beta</span>)를 적용하여 모델의 표현력을 복원한다.1<br />
+<span class="math math-display">
+\text{LayerNorm}(x) = \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} \cdot \gamma + \beta
+</span><br />
+여기서 <span class="math math-inline">\mu = \frac{1}{d} \sum_{i=1}^d x_i</span>, <span class="math math-inline">\sigma^2 = \frac{1}{d} \sum_{i=1}^d (x_i - \mu)^2</span>이다.</p>
+<p>이 과정에서 평균을 계산하고 이를 빼는 연산은 전체 정규화 비용의 상당 부분을 차지한다. 더욱이 하드웨어 관점에서 보면, 평균을 구하기 위해 데이터를 한 번 순회하고(Reduction), 분산을 구하기 위해 다시 순회해야 하는(혹은 Welford 알고리즘 등을 사용하여 복잡도를 높이는) 메모리 접근 패턴이 발생한다.</p>
+<p>Zhang과 Sennrich(2019)는 그들의 선구적인 논문 “Root Mean Square Layer Normalization“에서, 심층 신경망의 학습 안정화에 기여하는 핵심 요인은 분포의 이동(Re-centering)이 아니라 스케일의 조정(Re-scaling)이라는 가설을 제기하였다.3 즉, 입력 데이터의 평균을 0으로 맞추는 과정은 모델의 수렴 성능에 결정적인 영향을 미치지 않으며, 오히려 계산적 오버헤드만 가중시킨다는 것이다. 이는 정규화의 본질이 ’데이터의 크기(Magnitude) 제어’에 있음을 시사한다.</p>
+<p><strong>LayerNorm vs RMSNorm 메커니즘 비교</strong></p>
+<pre><code class="language-mermaid">graph TD
+    subgraph "Layer Normalization (전통적 방식)"
+        L_In["입력 벡터 x"] --&gt; L_Step1["1. 평균(μ) 계산"]
+        L_Step1 --&gt; L_Step2["2. 중심화 (x - μ)"]
+        L_Step2 --&gt; L_Step3["3. 분산(σ²) 및 표준편차 계산"]
+        L_Step3 --&gt; L_Step4["4. 정규화 (Division)"]
+        L_Step4 --&gt; L_Step5["5. 파라미터 적용 (γ, β)"]
+        L_Step5 --&gt; L_Out["출력: Shift &amp; Scale 보정됨"]
+    end
+
+    subgraph "RMSNorm (간소화된 방식)"
+        R_In["입력 벡터 x"] --&gt; R_Step1["1. RMS(제곱평균제곱근) 계산"]
+        R_Step1 --"평균 중심화(μ) 생략"--&gt; R_Step2["2. 정규화 (x / RMS)"]
+        R_Step2 --"편향(β) 제거"--&gt; R_Step3["3. 스케일 파라미터 적용 (γ)"]
+        R_Step3 --&gt; R_Out["출력: Scale만 보정됨"]
+    end
+
+    style R_Step1 fill:#ff9,stroke:#333,color:black
+    style R_Step2 fill:#ff9,stroke:#333,color:black
+    style R_Step3 fill:#ff9,stroke:#333,color:black
+    style L_Step2 fill:#faa,stroke:#333,color:black
+    style L_Step5 fill:#faa,stroke:#333,color:black
+</code></pre>
+<h4>0.2.2  RMSNorm의 정의와 간소화된 수식</h4>
+<p>RMSNorm은 LayerNorm의 가설을 바탕으로 평균 중심화 단계를 과감히 생략하고, 오직 제곱평균제곱근(Root Mean Square, RMS)만을 사용하여 입력을 정규화한다. 이는 벡터의 노름(Norm)에 기반한 정규화 방식으로, 입력 벡터의 방향(Direction)은 유지한 채 그 크기만을 조절하여 수치적 안정성을 확보하는 전략이다.1</p>
+<p>입력 벡터 <span class="math math-inline">x \in \mathbb{R}^d</span>에 대한 RMSNorm의 수식은 다음과 같이 정의된다:<br />
+<span class="math math-display">
+\bar{x}_i = \frac{x_i}{\text{RMS}(x)} \cdot \gamma_i
+</span><br />
+여기서 <span class="math math-inline">\text{RMS}(x)</span>는 다음과 같이 계산된다:<br />
+<span class="math math-display">
+\text{RMS}(x) = \sqrt{\frac{1}{d} \sum_{i=1}^{d} x_i^2 + \epsilon}
+</span><br />
+<span class="math math-inline">\gamma_i</span>는 학습 가능한 스케일 파라미터이며, <span class="math math-inline">\epsilon</span>은 분모가 0이 되는 것을 방지하기 위한 작은 상수(Epsilon)이다. 주목할 점은 LayerNorm에 필수적으로 존재했던 학습 가능한 바이어스 파라미터 <span class="math math-inline">\beta</span>가 RMSNorm에서는 제거되었다는 것이다.1 평균을 제거하지 않았으므로, 굳이 분포를 다시 이동시킬 바이어스 항이 불필요하다는 논리적 귀결이다. 이는 모델 전체의 파라미터 수를 미세하게 줄이는 효과도 가져온다.</p>
+<p>LLaMA 3 등의 최신 구현에서는 <span class="math math-inline">\epsilon</span> 값을 <span class="math math-inline">10^{-5}</span> 또는 <span class="math math-inline">10^{-6}</span>으로 설정하여 수치적 안정성을 극대화한다. 이 작은 상수는 FP16(Half Precision)이나 BF16(BFloat16)과 같은 저정밀도 연산 환경에서 언더플로우(Underflow)를 방지하는 중요한 역할을 한다.7</p>
+<h4>0.2.3  불변성(Invariance) 이론과 학습 안정성</h4>
+<p>RMSNorm이 단순한 계산 절감 이상의 가치를 가지는 이유는 그것이 제공하는 <strong>재스케일링 불변성(Re-scaling Invariance)</strong> 때문이다. 딥러닝 모델의 학습이 불안정한 이유 중 하나는 가중치 행렬(Weight Matrix)의 스케일이나 입력 데이터의 스케일이 레이어를 통과하며 급격히 증폭되거나 축소되는 현상 때문이다.</p>
+<p>RMSNorm은 선형적 특성(Linearity Property)을 가진다. 입력 <span class="math math-inline">x</span>가 임의의 스칼라 <span class="math math-inline">\alpha</span>만큼 스케일링되더라도 그 출력은 변하지 않는다.3<br />
+<span class="math math-display">
+\text{RMSNorm}(\alpha x) = \frac{\alpha x}{\text{RMS}(\alpha x)} \cdot \gamma = \frac{\alpha x}{\alpha \text{RMS}(x)} \cdot \gamma = \frac{x}{\text{RMS}(x)} \cdot \gamma = \text{RMSNorm}(x)
+</span><br />
+이러한 특성은 가중치 행렬 <span class="math math-inline">W</span>가 <span class="math math-inline">\delta</span>만큼 스케일링(<span class="math math-inline">W&#39; = \delta W</span>)되더라도 최종 레이어 출력에는 영향을 미치지 않음을 의미한다.<br />
+<span class="math math-display">
+y&#39; = f(\text{RMSNorm}(W&#39;x)) = f(\text{RMSNorm}(\delta Wx)) = f(\text{RMSNorm}(Wx)) = y
+</span><br />
+이것은 신경망이 가중치의 절대적인 크기보다는 방향에 집중하여 학습하도록 유도한다. 결과적으로 이는 자동적인 학습률 조정(Implicit Learning Rate Adaptation) 효과를 가져온다. 가중치의 크기가 커지면 정규화된 출력에 대한 그래디언트는 작아지게 되어, 마치 학습률을 낮추는 것과 같은 안정화 효과를 낸다.9 LayerNorm은 시프트(Shift)에 대한 불변성도 가지지만, RMSNorm은 시프트 불변성을 포기하는 대신 계산의 단순함을 취했다. 연구 결과에 따르면, 이러한 시프트 불변성의 포기는 트랜스포머 모델의 성능에 부정적인 영향을 미치지 않으며, 오히려 스케일 불변성만이 학습 안정화의 핵심 요인임이 입증되었다.10</p>
+<p><strong>RMSNorm의 재스케일링 불변성과 효과</strong></p>
+<pre><code class="language-mermaid">graph TD
+
+    subgraph "입력 및 가중치 변화"
+        Input["입력 x"] --"스케일링 (α * x)"--&gt; ScaledInput["증폭된 입력"]
+        Weight["가중치 W"] --"스케일링 (δ * W)"--&gt; ScaledWeight["증폭된 가중치"]
+    end
+
+    subgraph "RMSNorm의 선형적 처리"
+        Calc["RMSNorm 연산"]
+        ScaledInput --&gt; Calc
+        Eq["수식: (α * x) / RMS(α * x) * γ"]
+        Calc --&gt; Eq
+        Result["결과: RMSNorm(x)와 동일"]
+        Eq --&gt; Result
+    end
+
+    subgraph "학습 안정화 효과 (Implicit Learning Rate)"
+        Effect1["가중치 크기(Norm) 증가"] --&gt; Effect2["출력에 대한 그래디언트 감소"]
+        Effect2 --&gt; Effect3["실질적 학습률(Effective LR) 자동 하향"]
+        Effect3 --&gt; Effect4["발산 방지 및 수렴 안정성 확보"]
+    end
+
+    Result --&gt; Effect4
+    ScaledWeight -.-&gt; Effect1
+
+    style Result fill:#bbf,stroke:#333,stroke-width:2px,color:black
+    style Effect3 fill:#bfb,stroke:#333,stroke-width:2px,color:black
+</code></pre>
+<h3>0.3  LayerNorm 대 RMSNorm: 성능과 효율성의 비교 분석</h3>
+<h4>0.3.1  계산 복잡도와 속도 향상</h4>
+<p>RMSNorm 도입의 가장 직접적인 이점은 계산 속도의 향상이다. 이론적으로 RMSNorm은 LayerNorm 대비 연산량(FLOPs)을 줄여준다. 평균(<span class="math math-inline">\mu</span>) 계산과 뺄셈 연산이 제거됨으로써, 벡터 요소당 필요한 산술 연산의 수가 감소한다.1</p>
+<p>초기 연구인 Zhang과 Sennrich(2019)의 실험에 따르면, RMSNorm은 다양한 네트워크 아키텍처(RNN, Transformer 등)에서 LayerNorm 대비 7%에서 최대 64%까지의 수행 시간 단축을 달성하였다.6 물론 트랜스포머 모델 전체에서 정규화 레이어가 차지하는 연산 비중은 행렬 곱(Matrix Multiplication)이나 어텐션(Attention) 연산에 비해 작아 보일 수 있다(약 1% 미만이라는 주장도 존재한다).13 그러나 모델의 규모가 커지고 레이어 수가 수십, 수백 개로 증가함에 따라, 그리고 학습이 수 개월간 지속되는 초대규모 모델(LLM) 학습 환경에서는 이 작은 차이가 누적되어 수백 시간의 GPU 시간을 절약하는 결과로 이어진다.</p>
+<p>더욱 중요한 것은 <strong>메모리 대역폭(Memory Bandwidth)</strong> 효율성이다. 현대 GPU에서 연산 속도(Compute-bound)보다 더 큰 병목은 메모리에서 데이터를 가져오는 속도(Memory-bound)이다. LayerNorm은 평균을 구하기 위해 데이터를 읽고, 분산을 구하기 위해 다시 데이터를 읽어야 하는 경우가 많다. 반면 RMSNorm은 제곱합(Sum of Squares)만을 계산하면 되므로 단일 패스(Single Pass) 구현이 용이하며, 메모리 접근 횟수를 줄여 대역폭 효율을 극대화한다.4</p>
+<h4>0.3.2  성능 비교와 수렴 속도</h4>
+<p>RMSNorm이 속도만 빠르고 성능이 떨어진다면 채택되지 않았을 것이다. 그러나 다수의 실험 결과는 RMSNorm이 LayerNorm과 동등하거나, 특정 조건에서는 더 우수한 성능을 보임을 증명한다.</p>
+<ul>
+<li><strong>번역 및 언어 모델링:</strong> 기계 번역(Machine Translation) 및 언어 모델링 작업에서 RMSNorm은 LayerNorm과 유사한 BLEU 점수와 Perplexity를 기록하면서도 학습 시간은 단축시켰다.10</li>
+<li><strong>학습 안정성:</strong> DeepMind의 Gopher(280B) 연구에서는 RMSNorm이 LayerNorm보다 깊은 모델에서의 학습 안정성이 뛰어남을 확인했다. 특히 그래디언트의 크기를 적절히 조절하여 발산(Divergence)을 막는 데 효과적이었다.6</li>
+</ul>
+<p><strong>[표 7.2.1] LayerNorm과 RMSNorm의 주요 특성 비교</strong></p>
+<table><thead><tr><th><strong>특성 (Feature)</strong></th><th><strong>Layer Normalization (LayerNorm)</strong></th><th><strong>RMS Normalization (RMSNorm)</strong></th></tr></thead><tbody>
+<tr><td><strong>정규화 기준</strong></td><td>평균(<span class="math math-inline">\mu</span>)과 분산(<span class="math math-inline">\sigma^2</span>)</td><td>제곱평균제곱근(RMS)</td></tr>
+<tr><td><strong>중심화 (Re-centering)</strong></td><td>수행함 (평균을 0으로 이동)</td><td><strong>수행하지 않음</strong> (평균 유지)</td></tr>
+<tr><td><strong>학습 파라미터</strong></td><td>게인(<span class="math math-inline">\gamma</span>), 바이어스(<span class="math math-inline">\beta</span>)</td><td><strong>게인(<span class="math math-inline">\gamma</span>)</strong> (바이어스 <span class="math math-inline">\beta</span> 없음)</td></tr>
+<tr><td><strong>불변성 (Invariance)</strong></td><td>스케일(Scale) &amp; 시프트(Shift) 불변</td><td><strong>스케일(Scale) 불변</strong> (시프트 불변성 없음)</td></tr>
+<tr><td><strong>연산 복잡도</strong></td><td>높음 (평균 계산 및 뺄셈 필요)</td><td><strong>낮음</strong> (제곱합 계산만 필요)</td></tr>
+<tr><td><strong>메모리 효율</strong></td><td>보통 (2-pass 접근 가능성)</td><td><strong>높음</strong> (1-pass 구현 용이)</td></tr>
+<tr><td><strong>주요 채택 모델</strong></td><td>BERT, GPT-2, RoBERTa</td><td><strong>LLaMA, T5, Gopher, Chinchilla, Mistral</strong></td></tr>
+</tbody></table>
+<p><strong>메모리 접근 패턴: LayerNorm vs RMSNorm</strong></p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant GPU as "GPU Cores (SM)"
+    participant Mem as "HBM (Global Memory)"
+
+    note over GPU, Mem: LayerNorm (일반적 구현)
+    GPU-&gt;&gt;Mem: 1. 데이터 읽기 (Load x)
+    GPU-&gt;&gt;GPU: 평균(Mean) 계산
+    GPU-&gt;&gt;Mem: 2. 데이터 다시 읽기 (Reload x) - *병목 발생*
+    GPU-&gt;&gt;GPU: 분산(Var) 계산 및 정규화
+    GPU-&gt;&gt;Mem: 3. 결과 쓰기 (Store y)
+
+    rect rgb(240, 255, 240)
+    note over GPU, Mem: RMSNorm (Fused Kernel / Triton)
+    GPU-&gt;&gt;Mem: 1. 데이터 스트리밍 읽기 (Load x)
+    GPU-&gt;&gt;GPU: 제곱합(SumSq) 계산 (단일 패스)
+    note right of GPU: 평균 계산/뺄셈 없음\n레지스터 압박 감소
+    GPU-&gt;&gt;GPU: 역제곱근 곱셈 (Scaling)
+    GPU-&gt;&gt;Mem: 2. 결과 즉시 쓰기 (Store y)
+    end
+    
+    note over GPU, Mem: 결과: 메모리 대역폭 절약 및 속도 향상
+</code></pre>
+<h3>0.4  현대 하드웨어와 RMSNorm: 커널 융합과 Triton 최적화</h3>
+<p>RMSNorm의 진가는 최신 GPU 하드웨어 가속 기술과 만났을 때 비로소 극대화된다. NVIDIA GPU 등을 위한 저수준 프로그래밍인 CUDA나 OpenAI의 Triton 언어를 사용하여 커널(Kernel)을 작성할 때, RMSNorm의 단순성은 최적화의 강력한 무기가 된다.</p>
+<h4>0.4.1  Fused Kernel 구현의 용이성</h4>
+<p>LayerNorm을 단일 커널로 구현(Fused LayerNorm)하려면, 병렬 처리를 위해 데이터를 공유 메모리(Shared Memory)에 올리고, 워프(Warp) 간의 동기화를 통해 평균과 분산을 순차적으로 리덕션(Reduction)해야 한다. 이 과정은 레지스터 압박(Register Pressure)을 높이고 구현 난이도를 상승시킨다.</p>
+<p>반면, RMSNorm은 단일 리덕션(제곱합 계산)만 수행하면 된다. 이는 레지스터 사용량을 줄이고 공유 메모리 활용을 단순화한다. 최근 연구에 따르면, Triton으로 구현된 Fused RMSNorm 커널은 PyTorch의 기본 구현(Native Implementation) 대비 메모리 요구량을 획기적으로 줄이고 실행 속도를 높일 수 있다. 특히 메모리 접근을 합치고(Coalesced Access) 불필요한 중간 텐서 생성을 막음으로써, 메모리 대역폭이 제한적인 상황에서 LayerNorm 대비 훨씬 높은 처리량(Throughput)을 보여준다.14</p>
+<h4>0.4.2  AllReduce-RMSNorm 융합</h4>
+<p>최신 분산 학습 환경에서는 통신과 연산을 융합하는 기술이 중요해지고 있다. 여러 GPU 간의 데이터를 합치는 AllReduce 연산 직후에 정규화를 수행하는 패턴은 매우 빈번하다. RMSNorm의 단순한 구조는 <strong>Fused AllReduce-RMSNorm</strong> 커널의 구현을 가능하게 한다.</p>
+<p>이 기술은 통신이 완료되기를 기다렸다가 정규화를 수행하는 것이 아니라, 데이터가 도착하는 즉시 정규화 연산을 파이프라이닝(Pipelining)하여 수행한다. 연구에 따르면, 이러한 융합 커널은 단 2~8개의 SM(Streaming Multiprocessor)만을 사용하여 효율적으로 실행될 수 있으며, 기존 방식 대비 최대 40%의 성능 향상을 이끌어낼 수 있다.18 이는 LayerNorm의 복잡한 통계량 계산 구조에서는 구현하기 매우 까다로운 최적화 기법이다.</p>
+<h3>0.5  LLM 아키텍처의 표준화: T5에서 LLaMA까지의 계보</h3>
+<p>RMSNorm은 단순한 이론적 제안에 그치지 않고, 2020년대 이후 등장한 거의 모든 SOTA(State-of-the-Art) 모델의 표준 부품으로 채택되었다.</p>
+<pre><code class="language-mermaid">timeline
+    title [7.2.5] LLM 아키텍처의 표준화: RMSNorm 채택 역사
+    2019 : "T5 (Google)" : "Pre-Norm 방식 도입" : "Bias 없는 RMSNorm 원형 사용"
+    2021 : "Gopher (DeepMind)" : "280B 대규모 모델 적용" : "LayerNorm 대비 학습 안정성 입증"
+    2022 : "Chinchilla (DeepMind)" : "컴퓨팅 최적화(Compute-optimal)" : "PaLM 등에도 영향"
+    2023 : "LLaMA 1, 2 (Meta)" : "오픈소스 LLM의 사실상 표준(De Facto)" : "Epsilon 1e-6 설정"
+    2024 : "LLaMA 3 &amp; Mistral" : "SwiGLU, RoPE와 결합된 표준 아키텍처 완성"
+</code></pre>
+<h4>0.5.1  T5: 조용한 혁신의 시작</h4>
+<p>RMSNorm이 대규모 모델에 처음 도입된 주요 사례는 구글의 **T5 (Text-to-Text Transfer Transformer, 2019)**이다. T5 논문은 정규화 방식의 변경을 크게 강조하지 않았으나, 공개된 소스 코드와 아키텍처 분석에 따르면 T5는 LayerNorm 대신 편향(Bias) 항이 제거된 RMSNorm 형태의 정규화를 채택하였다.6 T5는 입력 임베딩 직후 정규화를 수행하는 <strong>Pre-Norm</strong> 방식을 사용하면서 RMSNorm을 결합하였는데, 이는 이후 “T5 스타일” 또는 “LLaMA 스타일“로 불리는 현대적 트랜스포머 아키텍처의 원형이 되었다. T5의 성공은 “학습된 편향(Learned Bias)이 정규화 층에 반드시 존재할 필요는 없다“는 사실을 실증적으로 보여주었다.</p>
+<h4>0.5.2  Gopher와 Chinchilla: 규모의 확장을 위한 선택</h4>
+<p>DeepMind의 **Gopher(280B)**와 <strong>Chinchilla(70B)</strong> 모델은 RMSNorm이 초대형 모델(Super-large Scale Models) 학습에 필수적임을 입증한 사례이다. 모델이 수백 개의 레이어로 깊어질수록 LayerNorm의 평균 중심화 과정에서 발생하는 미세한 노이즈나 그래디언트 불안정성이 증폭될 우려가 있다. Gopher 연구팀은 RMSNorm을 사용함으로써 이러한 발산 위험을 줄이고, 대규모 학습 시 수렴 안정성을 확보할 수 있었다고 보고하였다.16 특히 Chinchilla는 “컴퓨팅 최적화(Compute-optimal)” 모델로서, 주어진 연산 예산 내에서 최상의 성능을 내기 위해 불필요한 연산을 제거하는 것이 중요했는데, RMSNorm은 이러한 철학에 완벽히 부합하는 선택이었다.</p>
+<h4>0.5.3  LLaMA 시리즈: 사실상의 표준(De Facto Standard) 정립</h4>
+<p>Meta의 <strong>LLaMA(Large Language Model Meta AI)</strong> 시리즈(1, 2, 3)는 RMSNorm을 현대 오픈소스 LLM의 표준으로 확고히 하였다. LLaMA는 GPT-3의 아키텍처를 기반으로 하되, 효율성을 극대화하기 위해 정규화 기법으로 RMSNorm을 채택하였다.20</p>
+<p>LLaMA 1, 2, 3의 기술적 상세를 살펴보면, RMSNorm의 <span class="math math-inline">\epsilon</span> 값을 <span class="math math-inline">10^{-6}</span> (LLaMA 1, 2) 또는 <span class="math math-inline">10^{-5}</span> (LLaMA 3)로 설정하여 BF16 학습 환경에서의 안정성을 보장하고 있다.7 또한, LLaMA는 활성화 함수로 SwiGLU를 사용하고 위치 임베딩으로 RoPE(Rotary Positional Embeddings)를 사용하는 등 최신 기법들을 집대성하였는데, 이 모든 구성 요소들이 RMSNorm과 결합하여 시너지를 내고 있다. LLaMA가 동급 파라미터의 다른 모델 대비 탁월한 성능과 학습 효율을 보여준 배경에는, 수조 토큰의 학습 과정에서도 손실 스파이크(Loss Spike) 없이 안정적으로 학습을 지속하게 해 준 RMSNorm의 기여가 절대적이다.21</p>
+<h3>0.6  변종과 확장: pRMSNorm</h3>
+<p>RMSNorm의 효율성을 더욱 극한으로 끌어올리려는 시도 중 하나로 **부분 RMSNorm (Partial RMSNorm, pRMSNorm)**이 있다. Zhang과 Sennrich(2019)는 RMSNorm 논문에서 전체 입력 벡터의 RMS를 계산하는 대신, 벡터의 일부(예: 6.25% ~ 50%)만을 샘플링하여 RMS를 추정하고 이를 기반으로 정규화를 수행하는 pRMSNorm을 제안하였다.3</p>
+<p>pRMSNorm의 가설은 “입력 벡터의 요소들이 독립적이고 동일한 분포(i.i.d)를 따른다면, 일부만으로도 전체의 스케일을 충분히 근사할 수 있다“는 것이다. 이론적으로 이는 RMS 계산 비용을 더욱 줄일 수 있다. 그러나 실제 구현과 하드웨어 효율성 측면에서 pRMSNorm은 널리 채택되지 못했다. 부분적인 메모리 접근은 GPU의 메모리 정렬(Memory Alignment)과 병렬 처리 효율을 떨어뜨릴 수 있으며, 전체 RMS를 계산하는 비용 자체가 이미 충분히 낮아졌기 때문에 추가적인 이득이 미미했기 때문이다. 따라서 현재 대부분의 LLM은 전체 벡터를 사용하는 표준 RMSNorm을 사용한다.</p>
+<h3>0.7  RMSNorm의 역설: 양자화와 이상치(Outlier) 문제</h3>
+<p>RMSNorm이 학습 효율성과 안정성 면에서 승리를 거두었지만, 모델의 배포와 경량화를 위한 <strong>양자화(Quantization)</strong> 단계에서는 예상치 못한 난관을 초래하고 있다. 이는 RMSNorm의 핵심 특징인 ’비(非)중심화’에서 기인한다.</p>
+<p><strong>RMSNorm의 역설: 양자화 문제와 해결</strong></p>
+<pre><code class="language-mermaid">graph TD
+    subgraph "원인: RMSNorm의 구조적 특성"
+        Feat1["비(非)중심화&lt;br&gt;(No Mean Centering)"]
+        Feat2["스케일 불변성&lt;br&gt;(Scale Invariance)"]
+    end
+
+    subgraph "현상: 이상치 발생 (Outliers)"
+        Drift["평균 드리프트&lt;br&gt;(Mean Drift)&lt;br&gt;발생"]
+        Spike["특정 채널의 거대 활성화 값&lt;br&gt;(Massive Outliers)"]
+        Feat1 --&gt; Drift
+        Feat2 --&gt; Spike
+    end
+
+    subgraph "결과: 양자화 난관"
+        Quant["INT8 / INT4&lt;br&gt;양자화 시도"]
+        Loss["작은 값들의 정밀도 손실&lt;br&gt;(Precision Loss)"]
+        PerfDrop["모델 성능&lt;br&gt;(Perplexity)&lt;br&gt;급격한 저하"]
+        
+        Spike --&gt; Quant
+        Drift --&gt; Quant
+        Quant --"스케일이 이상치에 맞춰짐"--&gt; Loss
+        Loss --&gt; PerfDrop
+    end
+
+    subgraph "대응 전략 (Solutions)"
+        Sol1["Outlier-Safe&lt;br&gt;Pre-training&lt;br&gt;(OSP)"] --"학습 단계 억제"--&gt; Spike
+        Sol2["SmoothQuant /&lt;br&gt;스무딩"] --"활성화 평탄화"--&gt; Quant
+        Sol3["FlashNorm /&lt;br&gt;고정밀도 유지"] --"하드웨어 접근"--&gt; Loss
+    end
+
+    style Spike fill:#f99,stroke:#333,color:black
+    style PerfDrop fill:#f99,stroke:#333,color:black
+    style Sol1 fill:#9f9,stroke:#333,color:black
+    style Sol2 fill:#9f9,stroke:#333,color:black
+    style Sol3 fill:#9f9,stroke:#333,color:black
+</code></pre>
+<h4>0.7.1  평균 드리프트(Mean Drift) 현상</h4>
+<p>LayerNorm은 강제적으로 출력을 0 중심으로 맞추기 때문에(Mean Centering), 활성화 값(Activation)의 분포가 0 주변에 안정적으로 형성된다. 반면, RMSNorm은 평균을 제거하지 않으므로, 레이어를 거듭할수록 활성화 값의 평균이 0에서 멀어지거나 예측할 수 없는 방향으로 이동하는 <strong>평균 드리프트(Mean Drift)</strong> 현상이 발생할 수 있다.22</p>
+<p>0을 중심으로 대칭적인 분포는 INT8과 같은 정수형 양자화 포맷에 유리하다. 대부분의 정보가 0 주변에 밀집해 있어 표현 범위를 효율적으로 사용할 수 있기 때문이다. 그러나 평균이 이동한 분포는 양자화 시 비트 낭비를 초래하고, 유효한 정보를 표현하는 데 제약을 준다.</p>
+<h4>0.7.2  거대 활성화 이상치(Massive Activation Outliers)</h4>
+<p>더욱 심각한 문제는 **활성화 이상치(Activation Outliers)**의 발생이다. LLaMA와 같이 RMSNorm을 사용한 깊은 모델들에서는 특정 채널(Feature Dimension)의 활성화 값이 다른 값들보다 수백 배 이상 커지는 현상이 관찰된다. 예를 들어, LLaMA-2-7B 모델의 경우 특정 차원의 값이 100을 넘어가는데, 나머지 값들은 1 미만인 경우가 발생한다.23</p>
+<p>LayerNorm에서는 평균 중심화 과정이 이러한 특정 차원의 독주를 어느 정도 상쇄하는 역할을 했지만, RMSNorm은 전체적인 스케일만 줄일 뿐 특정 차원이 튀는 것을 구조적으로 막지 않는다. 이러한 이상치는 모델의 추론 성능에는 큰 영향을 주지 않으나(가중치가 이에 적응하여 학습되었으므로), 양자화 시에는 치명적이다.</p>
+<h4>0.7.3  양자화의 딜레마와 대응 전략</h4>
+<p>이상치가 존재하면 양자화 스케일(Quantization Scale)이 이 거대한 값에 맞춰 설정되어야 한다. 이로 인해 실제 정보의 대부분을 담고 있는 작은 값들이 양자화 과정에서 0으로 뭉개지거나 구별 불가능해지는 정밀도 손실(Precision Loss)이 발생한다. 이는 RMSNorm 기반 모델을 4비트나 8비트로 양자화할 때 성능(Perplexity)이 급격히 저하되는 주원인이다.22 “LayerNorm은 역사적 우연(Historical Accident)으로 인해 양자화 친화적이었다“는 재평가가 나오는 이유이다.</p>
+<p>이를 해결하기 위해 최신 연구들은 다음과 같은 전략을 제시한다:</p>
+<ol>
+<li><strong>Outlier-Safe Pre-training (OSP):</strong> 학습 단계에서부터 이상치 발생을 억제하는 방법이다. <strong>Muon 옵티마이저</strong>를 사용하여 특정 파라미터 방향으로의 쏠림을 막거나, RMSNorm의 스케일링 방식을 수정하여 채널 간 증폭을 억제하는 기법이 제안되었다. 이를 통해 4비트 양자화 시에도 성능 저하를 최소화하는 모델(예: Outlier-Safe LLaMA)을 만들 수 있다.23</li>
+<li><strong>스무딩(Smoothing) 기법:</strong> SmoothQuant와 같이, 활성화 값의 이상치를 수학적으로 가중치(Weight) 쪽으로 넘겨주어 활성화 분포를 평탄하게 만드는 후처리 기법이 필수적으로 사용된다.25</li>
+<li><strong>FlashNorm:</strong> 추론 시 RMSNorm 연산 자체는 높은 정밀도(FP32)로 수행하고, 그 직후에 양자화를 수행하는 융합 커널을 사용하여 정밀도 손실을 줄이는 하드웨어적 접근이다.26</li>
+</ol>
+<h3>0.8  결론: 단순함의 승리와 새로운 과제</h3>
+<p>RMSNorm의 등장은 딥러닝 아키텍처 설계에 있어 “복잡한 통계적 보정이 항상 최선은 아니다“라는 중요한 교훈을 남겼다. 평균 중심화라는 관성적인 연산을 제거함으로써 얻은 계산 효율성과, 스케일 불변성이 가져다준 학습 안정성은 RMSNorm을 LLaMA, Gopher, Mistral 등 현대 최첨단 LLM의 표준으로 자리 잡게 하였다. 이는 트랜스포머 싱귤래리티를 가속화하는 핵심 엔진 중 하나로 작동하고 있다.</p>
+<p>그러나 모든 기술적 진보에는 트레이드오프가 존재한다. 학습 효율을 위해 희생한 분포의 중심화는 양자화라는 후처리 과정에서 새로운 기술적 부채로 돌아왔다. 이는 모델의 설계가 단순히 학습(Training) 단계의 성능뿐만 아니라, 추론(Inference) 및 배포(Deployment), 그리고 하드웨어 특성(Hardware-aware Design)까지 고려하여 전방위적으로 이루어져야 함을 시사한다.</p>
+<p>향후 연구는 RMSNorm의 효율성을 유지하면서도 양자화 친화적인(Quantization-friendly) 특성을 회복하는 방향, 혹은 하드웨어 자체가 비정형 분포를 효율적으로 처리하도록 진화하는 방향으로 전개될 것이다. RMSNorm은 정규화 기술의 종착역이 아니라, 더 효율적이고 강건한 모델을 향한 진화의 중요한 이정표이다.</p>
+<h2>1. 참고 자료</h2>
+<ol>
+<li>The No-Nonsense Guide to Neural Network Normalization … - Medium, https://medium.com/@shovonsharma/the-no-nonsense-guide-to-neural-network-normalization-batchnorm-layernorm-and-rmsnorm-37d080e58421</li>
+<li>LayerNorm and RMS Norm in Transformer Models - MachineLearningMastery.com, https://machinelearningmastery.com/layernorm-and-rms-norm-in-transformer-models/</li>
+<li>Root Mean Square Layer Normalization - arXiv, https://arxiv.org/pdf/1910.07467</li>
+<li>Why Modern Transformers Use RMSNorm Instead of LayerNorm | by ashutosh - Medium, https://medium.com/@ashutoshs81127/why-modern-transformers-use-rmsnorm-instead-of-layernorm-5f386be7156c</li>
+<li>[PDF] Root Mean Square Layer Normalization - Semantic Scholar, https://www.semanticscholar.org/paper/Root-Mean-Square-Layer-Normalization-Zhang-Sennrich/10eda4521c032adabaa8e70d6569e17370b29dcd</li>
+<li>Normalization Techniques in Transformer-Based LLMs: LayerNorm, RMSNorm, and Beyond, https://sushant-kumar.com/blog/normalization-in-transformer-based-llms</li>
+<li>LLMs-from-scratch/ch05/07_gpt_to_llama/converting-llama2-to-llama3.ipynb at main, https://github.com/rasbt/LLMs-from-scratch/blob/main/ch05/07_gpt_to_llama/converting-llama2-to-llama3.ipynb</li>
+<li>Decoding Llama3: Part 3 - Normalisation - Hasgeek, https://hasgeek.com/simrathanspal/the-llama3-guide/sub/decoding-llama3-part-3-normalisation-Jsq1C4pV8w2eG3Mj2uk9tZ</li>
+<li>Boosting Llama 2 Performance with RMSNorm: PyTorch and TensorFlow Implementations, https://medium.com/@jiangmen28/boosting-llama-2-performance-with-rmsnorm-pytorch-and-tensorflow-implementations-95d3b1c1d451</li>
+<li>Root Mean Square Layer Normalization, https://arxiv.org/abs/1910.07467</li>
+<li>Releasing Tri-RMSNorm: Yielding Speed-up for Training Stabilization + [Let’s Review] Root Mean Square Layer Normalization | by Dogukan Tuna | Medium, https://medium.com/@dtunai/releasing-tri-rmsnorm-yielding-speed-up-for-training-stabilization-lets-review-root-mean-8e699eab947c</li>
+<li>Root Mean Square Layer Normalization - NIPS papers, https://papers.nips.cc/paper/9403-root-mean-square-layer-normalization</li>
+<li>[D] Why does it matter that RMSNorm is faster than LayerNorm in transformers? - Reddit, https://www.reddit.com/r/MachineLearning/comments/1apb3th/d_why_does_it_matter_that_rmsnorm_is_faster_than/</li>
+<li>Triton Kernels - RMS Norm | Kapil Sharma, http://www.kapilsharma.dev/posts/triton-kernels-rms-norm/</li>
+<li>bzhangGo/rmsnorm: Root Mean Square Layer Normalization - GitHub, https://github.com/bzhangGo/rmsnorm</li>
+<li>Pre-RMSNorm and Pre-CRMSNorm Transformers: Equivalent and Efficient Pre-LN Transformers, https://proceedings.neurips.cc/paper_files/paper/2023/file/8f1bacee31caf990a4f08d84f0ccb322-Paper-Conference.pdf</li>
+<li>agostini01/rms-norm-exercise - GitHub, https://github.com/agostini01/rms-norm-exercise</li>
+<li>TokenWeave: Efficient Compute-Communication Overlap for Distributed LLM Inference, https://arxiv.org/html/2505.11329v1</li>
+<li>Large Language Models: A Survey - arXiv, https://arxiv.org/html/2402.06196v2</li>
+<li>Meta Heats Up the AI Race With Their State-Of-The-Art Foundation Language Model LLaMA, https://syncedreview.com/2023/02/27/meta-heats-up-the-ai-race-with-their-state-of-the-art-foundation-language-model-llama/</li>
+<li>A Survey on Large Language Models with some Insights on their Capabilities and Limitations - arXiv, https://arxiv.org/html/2501.04040v2</li>
+<li>Revisiting LayerNorm: aka Norms are Important - Ceramic.ai, https://ceramic.ai/blog/revisiting-layernorm</li>
+<li>Outlier-Safe Pre-Training for Robust 4-Bit Quantization of Large Language Models - ACL Anthology, https://aclanthology.org/2025.acl-long.618.pdf</li>
+<li>Outlier-Safe Pre-Training for Robust 4-Bit Quantization of Large Language Models - arXiv, https://arxiv.org/html/2506.19697v1</li>
+<li>Rethinking the Outlier Distribution in Large Language Models: An In-depth Study - arXiv, https://arxiv.org/html/2505.21670v1</li>
+<li>Flash normalization: fast RMSNorm for LLMs - arXiv, https://arxiv.org/html/2407.09577v1</li>
+</ol>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

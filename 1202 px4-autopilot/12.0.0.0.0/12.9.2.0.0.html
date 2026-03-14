@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:### 0.0.1  EKF2 센서 융합 중단(Rejection) 및 폴백(Fallback) 메커니즘</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>### 0.0.1  EKF2 센서 융합 중단(Rejection) 및 폴백(Fallback) 메커니즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 12. GPS 및 글로벌 포지셔닝 시스템 연동</a> / <span>### 0.0.1  EKF2 센서 융합 중단(Rejection) 및 폴백(Fallback) 메커니즘</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>### 0.0.1  EKF2 센서 융합 중단(Rejection) 및 폴백(Fallback) 메커니즘</h1>
+<p>비행 중 특정 센서가 EKF2의 혁신 게이트(Innovation Gate)를 통과하지 못하고 지속적으로 에러를 뱉어낼 때, PX4는 해당 센서를 무작정 껴안고 같이 추락하는 대신 과감하게 그 센서를 시스템에서 ’절단(Rejection)’해버리는 냉혹한 생존 논리를 펼친다.</p>
+<p>본 절에서는 EKF2가 융합 불가능 판정(Rejection)을 내리기까지의 과정과, 주력 센서를 잃어버린 기체가 추락을 면하기 위해 차선책으로 갈아타는 <strong>폴백(Fallback)</strong> 메커니즘의 아키텍처를 분석한다.</p>
+<h3>0.1  Rejection(기각/거부)의 상태 천이(State Transition) 모델</h3>
+<p>EKF2 알고리즘은 센서의 건강 상태를 단순히 “OK“와 “Fail“이라는 이분법으로 관리하지 않는다. 이는 일시적인 다중 경로(Multipath) 에러와 영구적인 하드웨어 고장을 구분하기 위함이다.</p>
+<ol>
+<li><strong>Transient Rejection (일시적 튕겨냄)</strong>:</li>
+</ol>
+<ul>
+<li>GPS 좌표가 갑자기 튀어 위치 혁신(Position Innovation) 값이 게이트(예: <span class="math math-inline">5\sigma</span>)를 넘겼다. EKF2는 이번 <em>단일 샘플</em>을 무시하고, IMU 적분값만으로 현재 상태를 유지(Coasting)한다. 아직 경고 알람은 울리지 않는다.</li>
+</ul>
+<ol start="2">
+<li><strong>Timeout / Persistent Rejection (영구적 거부 확정)</strong>:</li>
+</ol>
+<ul>
+<li>기각되는 현상이 파라미터(예: <code>EKF2_REQ_VDRIFT</code>에서 연계된 시간 제한)로 지정된 임계 시간 이상 지속된다. EKF2는 해당 센서가 회복 불가능한 상태(스푸핑, 재밍 등)에 빠졌다고 확정한다.</li>
+<li>비로소 시스템 플래그(<code>gps_check_fail_flags</code>)가 세팅되며, QGroundControl 메인 화면에 <strong>“GPS REJECTED”</strong> 라는 섬뜩한 붉은 글씨가 점등된다.</li>
+<li>상태 벡터 행렬에서 이 GPS의 가중치(Weight)는 완전히 0으로 소멸(Decoupling)한다.</li>
+</ul>
+<h3>0.2  센서 폴백(Fallback)의 3단계 생존 전략</h3>
+<p>메인 나침반이나 메인 GPS가 영구적으로 기각(Rejected)되었을 때, PX4 커맨더(Commander) 모듈은 기체의 자세와 위치를 잃지(Navigation Loss) 않기 위해 즉각적인 후속 조치, 즉 ’폴백(Fallback)’을 지시한다.</p>
+<p><strong>1단계: 하드웨어 이중화(Redundancy) 폴백</strong><br />
+기체에 물리적으로 여러 개의 센서가 장착되어 있다면 가장 환상적인 시나리오다.</p>
+<ul>
+<li>듀얼 GPS 환경에서 1번 GPS가 거부당하면, EKF2의 센서 셀렉터(Sensor Selector) 블록은 지체 없이 건강한 2번 GPS 타겟으로 필터의 신뢰도를 넘겨준다(Primary Sensor Switch). 이 과정은 보통 조종사가 눈치채지 못할 만큼 빠르고 부드럽게(Blending) 이루어진다.</li>
+</ul>
+<p><strong>2단계: 이기종 센서(Heterogeneous Sensor) 보완 폴백</strong><br />
+같은 종류의 백업 센서(2번 GPS)마저 없거나 같이 죽어버렸을 때 발동한다.</p>
+<ul>
+<li><strong>나침반(Compass) 상실 시</strong>: 주변에 거대한 철골 크레인이 있어 자력계가 미쳐버렸다면(Mag Rejected), EKF2는 즉각 자력계 업데이트를 멈춘다. 대신 GPS가 이동하는 궤적(Course Over Ground) 벡터와 IMU의 융합을 통해 기체의 기수 방향(Heading)을 가상으로 역산(Kinematic Alignment)해 내는 모드로 폴백한다.</li>
+</ul>
+<p><strong>3단계: 비행 모드 강등(Flight Mode Downgrade) 폴백</strong><br />
+모든 GPS 소셜록(Lock)을 잃어 위치 추측(Position Estimate) 자체가 불가능해진 최악의 상황이다.</p>
+<ul>
+<li>기체가 자동 임무(Mission)나 포지션 모드(Position)로 비행 중이었다면, 시스템은 “나는 지금 내가 어디 있는지 모르기 때문에 경로를 따라갈 수 없다“라고 판단한다.</li>
+<li>결과적으로 커맨더는 파일럿의 명령을 강제로 덮어쓰고(Override), 현재 고도만 기압계(Baro)로 간신히 유지하는 <strong>고도 모드(Altitude Mode)</strong> 로 비행 모드를 수직 강등시킨다. 조종사는 놀란 가슴을 쓸어내리며 즉각 수동 개입(Manual Takeover) 스틱을 쳐야만 한다.</li>
+</ul>
+<p>이 폴백 아키텍처는 “어떻게든 임무를 완수하겠다“는 공격성이 아니라, <strong>“무슨 짓을 해서든 기체가 통제 불능 상태(Fly-away)에 빠져 지면과 곤두박질치는 것만은 막겠다”</strong> 는 PX4의 극단적인 방어적 코딩 철학을 가장 잘 보여주는 대목이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
