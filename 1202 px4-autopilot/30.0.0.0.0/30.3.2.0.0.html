@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.3.2 비동기 임무 항목 로드 시의 데드락(Deadlock) 방지 및 타임아웃(Timeout) 예외 처리</title>
+    <title>BIJUNG:30.3.2. 비동기 임무 항목 로드 시의 데드락(Deadlock) 방지 및 타임아웃(Timeout) 예외 처리</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,90 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.3.2 비동기 임무 항목 로드 시의 데드락(Deadlock) 방지 및 타임아웃(Timeout) 예외 처리</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.3.2 비동기 임무 항목 로드 시의 데드락(Deadlock) 방지 및 타임아웃(Timeout) 예외 처리</span></nav>
+                    <h1>30.3.2. 비동기 임무 항목 로드 시의 데드락(Deadlock) 방지 및 타임아웃(Timeout) 예외 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.3.2. 비동기 임무 항목 로드 시의 데드락(Deadlock) 방지 및 타임아웃(Timeout) 예외 처리</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.3.2 비동기 임무 항목 로드 시의 데드락(Deadlock) 방지 및 타임아웃(Timeout) 예외 처리</h1>
+                <h1>30.3.2. 비동기 임무 항목 로드 시의 데드락(Deadlock) 방지 및 타임아웃(Timeout) 예외 처리</h1>
+<p>PX4-Autopilot의 자동 비행 시스템에서 가장 치명적인 잠재적 결함 포인트 중 하나는 지상 관제 시스템(GCS)으로부터 전달받은 대용량 임무 항목(Mission Item) 데이터를 메모리로 불러오는 과정에서 발생할 수 있는 스레드 블로킹(Thread Blocking) 현상이다. 이 장에서는 <code>navigator</code> 모듈이 SD 카드 기반의 데이터 관리 데몬(<code>dataman</code>)과 통신할 때, 메인 제어 루프의 실행을 지연시키지 않으면서(비동기적, Asynchronous) 데드락(Deadlock)을 방지하고 타임아웃(Timeout) 예외를 처리하는 아키텍처를 심층적으로 분석한다.</p>
+<h2>1.  비동기 데이터 룩업(Data Lookup) 아키텍처의 필요성</h2>
+<p>전통적인 항공기 제어 시스템(예: Ardupilot의 과거 아키텍처 모델)은 한정된 RAM 용량을 보존하기 위해 EEPROM이나 SD 카드 등 비휘발성 저장소로부터 웨이포인트(Waypoint)를 수시로 읽어오는 구조를 가졌다. PX4는 고도화된 마이크로컨트롤러(MCU) 성능을 기반으로 하되, 여전히 수백~수천 개의 경유지를 처리하기 위해 <code>dataman</code> 데몬을 활용한 캐싱(Caching) 및 온디맨드 로딩(On-demand Loading) 방식을 취한다.</p>
+<p>문제는 파일 시스템 접근(File System I/O)이 본질적으로 비결정론적(Non-deterministic)인 지연(Latency)을 동반한다는 점이다. 만일 <code>navigator</code> 스레드가 50Hz(20ms 간격)의 주기로 비행 경로점 생성(Setpoint Generation)을 수행하는 도중에, SD 카드의 특정 블록을 읽기 위해 대기(Wait) 상태에 빠진다면 어떨까?<br />
+메인 제어기가 목표점(Setpoint) 업데이트를 받지 못해 자세 제어기(Attitude Controller)로 향하는 제어 흐름이 끊기게 되고, 이는 곧 기체의 급격한 고도 침하 또는 추락(Crash)으로 직결된다.</p>
+<h2>2.  PX4의 비동기 임무 로드 메커니즘 (Non-blocking Architecture)</h2>
+<p>이러한 데드락(Deadlock, 교착 상태)을 방지하기 위해 PX4의 <code>mission.cpp</code>는 임무 항목 도달판별(<code>is_mission_item_reached()</code>) 직후 다음 임무를 불러올 때(<code>advance_mission()</code>), 동기적 함수 호출로 데이터를 가져오지 않고 비동기 메시징 콜백 구조를 채택한다.</p>
+<h3>2.1 ) 구조적 해결책: 분리된 스레드와 uORB 인터페이스</h3>
+<p><code>dataman</code>은 독립된 스레드에서 백그라운드로 실행된다. <code>navigator</code> 모듈이 다음 임무 항목 번호(<code>Mission Item Index</code>)가 필요해지면, <code>dataman</code> 모듈을 향해 데이터를 요청하는 서비스 콜(Service Call) 또는 uORB 플래그를 세팅한 뒤, 결과가 수신될 때까지 자신의 메인 루프 연산을 계속해서 진행한다(Return immediately).</p>
+<pre><code class="language-cpp">// src/modules/navigator/mission.cpp 기반 로직 추상화
+void Mission::advance_mission()
+{
+    // 다음 인덱스 설정
+    _current_mission_index++;
+    
+    // 비동기 읽기 요청 스케줄링 (스레드 블로킹 없음)
+    request_mission_item_read(_current_mission_index);
+    
+    // 데이터를 다 가져올 때까지 상태를 '전이 중(Transitioning)'으로 표기
+    _mission_item_valid = false;
+    _time_first_read_request = hrt_absolute_time();
+}
+</code></pre>
+<h3>2.2 ) 비동기 타임아웃 검사 및 페일세이프(Failsafe)</h3>
+<p>데이터 읽기 요청 후 수 밀리초 내에 데이터가 도착하면 정상적으로 타겟을 갱신한다. 하지만 진동, 온도 변화, SD 카드 물리적 불량 등으로 인해 <code>dataman</code>이 응답하지 못할 경우 시스템은 무한 대기 상태(Deadlock)에 처하게 된다. 이를 방지하기 위한 안전 장치로 <code>Timeout</code> 예외 처리기가 가동된다.</p>
+<pre><code class="language-cpp">void Mission::on_active()
+{
+    // ... 기존 로직 ...
+    
+    // 만약 데이터 요청 후 일정 시간(예: 500ms)이 경과했는데도 데이터가 없다면
+    if (!_mission_item_valid) {
+        if (hrt_elapsed_time(&amp;_time_first_read_request) &gt; TIMEOUT_THRESHOLD_US) {
+            // 데드락 방지 페일세이프 발동
+            handle_mission_read_timeout();
+            return;
+        }
+        // 아직 타임아웃 전이면 기존 상태 유지 (Hovering)
+        return; 
+    }
+    
+    // ... 정상 셋포인트 갱신 로직 ...
+}
+</code></pre>
+<h2>3.  데드락 방지 흐름도 (Mermaid Diagram)</h2>
+<p>다음은 메인 제어 루프에서 SD 카드 I/O 지연을 우회하고 시스템의 생존성을 보장하는 데드락(Deadlock) 회피 시퀀스를 나타낸다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant NAV as Navigator (mission.cpp)
+    participant POS as Position Controller
+    participant DM as Dataman Daemon
+    participant SD as SD Card (Hardware)
+
+    NAV-&gt;&gt;POS: Publish Setpoint (Item N)
+    POS--&gt;&gt;NAV: Setpoint Reached (Acceptance)
+    
+    NAV-&gt;&gt;DM: Asynchronous Read Request (Item N+1)
+    note over NAV: Start Timeout Timer &lt;br/&gt; (Non-blocking)
+    
+    loop Every 20ms Nav Loop
+        NAV-&gt;&gt;POS: Maintain Current Pose (Hover/Hold)
+        alt Data Arrives within 500ms
+            DM--&gt;&gt;NAV: Mission Item N+1 Data
+            NAV-&gt;&gt;POS: Publish Setpoint (Item N+1)
+        else Timeout Exceeds Threshold
+            NAV-&gt;&gt;NAV: Trigger handle_mission_read_timeout()
+            NAV-&gt;&gt;POS: Mode Fallback to RTL/Hold
+            note over NAV: Flag Error to QGroundControl
+        end
+    end
+    
+    DM-&gt;&gt;SD: Physical Read (Subject to delays)
+    SD--&gt;&gt;DM: Hardware Return
+</code></pre>
+<h2>4.  QGroundControl 및 MAVLink 관점의 처리 로직</h2>
+<p>이러한 오류 상태는 항공기의 상태 머신(Commander)을 통해 지상 관제 시스템으로 전파된다.<br />
+<code>timeout</code> 예외가 발생하면 시스템은 <code>MAV_STATUSTEXT</code> 메시지를 통해 관제사에게 “Mission load timeout” 혹은 “Dataman error” 형태의 구체적 경고를 띄운다. 사용 가능한 대안적 행동으로는, 현재 위치에서 제자리 비행(Loiter/Hold)을 유지하며 통신 환경을 대기하거나 시계 내 가시 비행(VLOS) 거리인 경우 <code>Manual</code> 모드로의 강제 탈취(Takeover)를 조종사에게 요구하는 등 상황 지향적인 Failsafe(안전 장치) 메커니즘이 강제된다.</p>
+<h2>5.  요약: RTOS 환경 하에서의 실시간성 확보 설계 철학</h2>
+<p>멀티스레딩이 기본인 NuttX RTOS 환경에서 구현된 향상된 PX4 아키텍처는 공유 자원(Shared Resource)에 대한 <code>mutex_lock()</code> 등 락 메커니즘을 피하고, uORB 메시지 인터페이스를 통해 모듈 간 종속성을 격리(Decoupling)시킨다.<br />
+임무 파일이 손상되거나 파일 시스템에 병목이 발생했을 때 <code>mission.cpp</code> 로직 스스로 이를 자가 진단하고 타이머 인터럽트로 빠져나오는 이(Timeout Exception) 로직은 자율 무인항공기가 외부 환경이나 하드웨어 결함 속에서도 최소한의 비행 제어 루프 무결성을 사수하게 해준다. 이러한 견고한 예외 처리 체계는 Ardupilot 초창기 단순 <code>delay()</code> 기반의 로직 대비 기술적으로 한 차원 진보한 구현 형태라 할 수 있다.</p>
 
             </article>
             <footer>

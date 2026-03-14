@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.3.5 고정익(FW)의 L1 비선형 유도 로직(L1 Non-linear Guidance Logic) 연동을 위한 크로스 트랙 에러(Cross-track Error) 산출 및 진입각 계산</title>
+    <title>BIJUNG:30.3.5. 고정익(FW)의 L1 비선형 유도 로직(L1 Non-linear Guidance Logic) 연동을 위한 크로스 트랙 에러(Cross-track Error) 산출 및 진입각 계산</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,49 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.3.5 고정익(FW)의 L1 비선형 유도 로직(L1 Non-linear Guidance Logic) 연동을 위한 크로스 트랙 에러(Cross-track Error) 산출 및 진입각 계산</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.3.5 고정익(FW)의 L1 비선형 유도 로직(L1 Non-linear Guidance Logic) 연동을 위한 크로스 트랙 에러(Cross-track Error) 산출 및 진입각 계산</span></nav>
+                    <h1>30.3.5. 고정익(FW)의 L1 비선형 유도 로직(L1 Non-linear Guidance Logic) 연동을 위한 크로스 트랙 에러(Cross-track Error) 산출 및 진입각 계산</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.3.5. 고정익(FW)의 L1 비선형 유도 로직(L1 Non-linear Guidance Logic) 연동을 위한 크로스 트랙 에러(Cross-track Error) 산출 및 진입각 계산</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.3.5 고정익(FW)의 L1 비선형 유도 로직(L1 Non-linear Guidance Logic) 연동을 위한 크로스 트랙 에러(Cross-track Error) 산출 및 진입각 계산</h1>
+                <h1>30.3.5. 고정익(FW)의 L1 비선형 유도 로직(L1 Non-linear Guidance Logic) 연동을 위한 크로스 트랙 에러(Cross-track Error) 산출 및 진입각 계산</h1>
+<p>고정익(Fixed-Wing) 항공기는 멀티로터와 달리 공간 상에서 제자리 비행(Hovering)이 불가능하며, 양력(Lift)을 유지하기 위해 지속적인 전진 동력학(Forward Kinematics)과 최소 도달 속도(Stall Speed)를 강제받는다. 따라서 두 웨이포인트 사이를 선형으로 추종하도록 단순 PID(Proportional-Integral-Derivative) 위치 제어기를 적용하면, 측풍(Crosswind) 환경이나 급격한 경로 변경 시 심각한 오버슈트(Overshoot)와 지그재그 진동(S-curve Oscillation)을 유발하게 된다.</p>
+<p>이를 완전히 극복하기 위해 PX4-Autopilot은 S. Park, J. Deyst, J. How의 MIT 논문 *“A New Nonlinear Guidance Logic for Trajectory Tracking”*에 기반한 **L1 비선형 유도 로직(L1 Non-linear Guidance Logic)**을 표준 고정익 내비게이션 아키텍처로 채택하였다. 이 장에서는 <code>navigator</code> 계층이 생성한 <code>position_setpoint_triplet_s</code>가 하위 제어기인 <code>fw_pos_control_l1</code>에서 어떠한 기하학적 수식으로 해독되는지를 분석한다.</p>
+<h2>1.  L1 유도 기하학의 기본 공리</h2>
+<p>L1 유도 로직의 핵심 철학은 기체가 현재 위치에서 목표 궤적 상의 “특정 거리(L1 Distance)만큼 앞서 있는 가상의 점(Virtual Reference Point)“을 향하도록 측면 가속도(Lateral Acceleration)를 유도하는 것이다. 이는 운전자가 자동차를 운전할 때 바로 앞 범퍼를 보지 않고 수십 미터 전방의 시선 유도 거리(Look-ahead Distance)를 주시하며 부드럽게 핸들을 꺾는 원리와 수학적으로 완벽히 동일하다.</p>
+<h3>1.1 ) 주요 기하학적 매개변수</h3>
+<ul>
+<li><strong>기본 궤적(Reference Trajectory)</strong>: 이전 웨이포인트 <span class="math math-inline">\mathbf{P}_{prev}</span>와 현재 웨이포인트 <span class="math math-inline">\mathbf{P}_{curr}</span>를 잇는 무한한 직선.</li>
+<li><strong>크로스 트랙 에러(Cross-track Error, <span class="math math-inline">d</span>)</strong>: 현재 기체의 중심(CG)에서 기본 궤적에 내린 수선의 발(Orthogonal Projection)까지의 최단 거리.</li>
+<li><strong>L1 거리(<span class="math math-inline">L_1</span>)</strong>: 기체의 속도와 감쇠율(Damping Ratio) 파라미터(<code>FW_L1_DAMPING</code>)에 의해 결정되는 가상의 전방 주시 반경 길이.</li>
+<li><strong>진입각(Entry Angle, <span class="math math-inline">\eta</span>)</strong>: 기체의 현재 속도 벡터(Velocity Vector, 대지 속도 <span class="math math-inline">V_{gnd}</span>)와 기체 중심에서 L1 가상점(Reference Point)을 잇는 선분이 이루는 사이각.</li>
+</ul>
+<h2>2.  비선형 측면 가속도(Lateral Acceleration) 산출 수식</h2>
+<p>기체를 수렴시키기 위해 <code>fw_pos_control_l1</code> 모듈은 에일러론(Aileron)과 러더(Rudder)를 물리적으로 움직여 뱅크각(Bank Angle)을 형성한다. 이 뱅크각을 만들어내는 목표 비행 측면 가속도 <span class="math math-inline">a_{s_{cmd}}</span> 는 다음과 같은 비선형 수식으로 도출된다.</p>
+<p><span class="math math-display"> a_{s_{cmd}} = 2 \frac{V_{gnd}^2}{L_1} \sin \eta </span></p>
+<p>이 수식이 가지는 기계공학적 아름다움은, 유도 로직이 시간(<span class="math math-inline">t</span>)에 대한 복잡한 미분이나 노이즈가 섞인 PID 미분항(D-Term) 연산을 전혀 사용하지 않고 오직 <strong>순수 기하학적 각도(<span class="math math-inline">\eta</span>)와 거리(<span class="math math-inline">L_1</span>)</strong> 만으로 감쇠된 피드백 제어(Damped Feedback Control)를 완수한다는 데 있다. 기체가 궤적에 수렴해 나갈수록 <span class="math math-inline">\eta</span> 각도는 점근적으로 0에 수렴하며, 결과적으로 가속도 지령치 역시 0이 되어 완벽한 직선 비행으로 자연스럽게 전이된다.</p>
+<h2>30.3.5.3. L1 유도 벡터장 도식화 (Mermaid Diagram)</h2>
+<p>다음 다이어그램은 측풍이 부는 상황에서 L1 유도 알고리즘이 가상의 타겟점(L1 Reference Point)을 쫓으며 크로스 트랙 에러를 수렴시키는 기하학적 형상을 나타낸다.</p>
+<pre><code class="language-mermaid">graph TD
+    Prev[P_prev] --&gt;|Reference Trajectory Line| Curr[P_curr]
+    
+    UAV((UAV Position)) --&gt;|Cross-track Error 'd'| TrajLine[Orthogonal Point on Traj]
+    UAV --&gt;|Velocity Vector V_gnd| Heading
+    
+    UAV --&gt;|L1 Distance Circle Radius| RefPoint((L1 Target on Traj))
+    
+    Heading -.-&gt;|Angle η 'Eta'| RefPoint
+    
+    Note1[Lateral Accel Command &lt;br/&gt; a = 2 * V^2 / L1 * sin η]
+    RefPoint -.-&gt; Note1
+</code></pre>
+<h2>30.3.5.4. Ardupilot의 L1 컨트롤러와의 아키텍처 비교</h2>
+<p>Ardupilot 역시 동일한 논문을 바탕으로 한 <code>AP_L1_Control</code> 라이브러리를 보유하고 있다. 두 오픈소스 모두 수식적 뼈대는 상동하나, 임무 로직(<code>Mission</code>)과의 결합부(Coupling)에서 차이가 발생한다.</p>
+<p>Ardupilot은 웨이포인트 간의 기하학적 생성(WPNav)과 L1 생성기를 <code>mode_auto.cpp</code> 내부 단계에서 긴밀하게 묶어 놓은 반면, PX4 펌웨어는 고정익 유틸리티 라이브러리인 <code>ecl/l1</code> (Estimator Control Library 공간)에 수학적 껍데기(Pure Math Class)로 이를 독립시켜 놓았다.<br />
+따라서 PX4의 <code>navigator</code>는 단지 앞서 설명한 <strong>트리플릿 셋포인트(Triplet Setpoint)</strong> 메시지만을 <code>uORB</code>로 던져주고 퇴장하며, 하위의 <code>fw_pos_control</code> 데몬이 이를 구독(Subscribe)하여 <code>ecl/l1</code> 객체를 업데이트하는 방식으로 완벽한 프로세스 비동기성(Asynchrony)을 구현한다. 이는 향후 고정익 에이전트에 충돌 회피 알고리즘(Collision Avoidance)을 삽입할 때, 상위 경로 계획 단을 전혀 수정하지 않고도 하위 단에서만 L1 알고리즘의 유도 포인트 타겟(L1 Reference)을 임시로 변조하는 것을 가능하게 해 준다.</p>
+<h2>30.3.5.5. 시사점: 튜닝 엔지니어링의 관점</h2>
+<p>자율 에이전트 비행을 관제하는 GCS 개발자나 제어 엔지니어는, 고정익이 바람에 밀려 크로스 트랙 에러(<span class="math math-inline">d</span>)를 보일 때 단순히 PID의 비례 게인(P-Gain)을 높이는 초보적인 접근을 피해야 한다.<br />
+L1 유도 로직 하에서 기체의 궤적 수렴 속도와 제어 안정성은 추종 반경인 <strong>L1 주기(Period, <code>FW_L1_PERIOD</code>) 파라미터</strong>에 지배적으로 종속된다. 이 주기를 너무 짧게 잡으면 가상의 <span class="math math-inline">\eta</span> 각도가 맹렬하게 변동하여 에일러론(Aileron)이 고주파의 진동(Flutter)을 일으키고, 반대로 너무 길게 잡으면 곡선 추종 시 회전 반경이 거대해져 이탈(Overshoot)하게 된다. 유도 비행의 수학적 본질이 PID의 영역이 아니라 역학적 시선 유도(Kinematic Line-of-sight)에 있음을 체득하는 것이 고정익 자율 비행의 정점에 도달하는 길이 될 것이다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.4.3 최대 제동 가속도 포화(Saturation) 한계점과 피드포워드(Feed-forward) 보상기의 상호작용 및 오버슈트(Overshoot) 억제 로직</title>
+    <title>BIJUNG:30.4.3. 최대 제동 가속도 포화(Saturation) 한계점과 피드포워드(Feed-forward) 보상기의 상호작용 및 오버슈트(Overshoot) 억제 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,59 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.4.3 최대 제동 가속도 포화(Saturation) 한계점과 피드포워드(Feed-forward) 보상기의 상호작용 및 오버슈트(Overshoot) 억제 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.4.3 최대 제동 가속도 포화(Saturation) 한계점과 피드포워드(Feed-forward) 보상기의 상호작용 및 오버슈트(Overshoot) 억제 로직</span></nav>
+                    <h1>30.4.3. 최대 제동 가속도 포화(Saturation) 한계점과 피드포워드(Feed-forward) 보상기의 상호작용 및 오버슈트(Overshoot) 억제 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.4.3. 최대 제동 가속도 포화(Saturation) 한계점과 피드포워드(Feed-forward) 보상기의 상호작용 및 오버슈트(Overshoot) 억제 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.4.3 최대 제동 가속도 포화(Saturation) 한계점과 피드포워드(Feed-forward) 보상기의 상호작용 및 오버슈트(Overshoot) 억제 로직</h1>
+                <h1>30.4.3. 최대 제동 가속도 포화(Saturation) 한계점과 피드포워드(Feed-forward) 보상기의 상호작용 및 오버슈트(Overshoot) 억제 로직</h1>
+<p>멀티로터가 고속 비행 중 <code>Loiter</code> 모드나 <code>Mission</code> 모드의 특정 웨이포인트(Waypoint)에서 급격히 제동을 걸 때, 목표가 되는 궤적이 요구하는 가속도 스펙이 드론 하드웨어가 실제로 낼 수 있는 물리적 한계를 초과하는 경우가 발생한다. PX4-Autopilot의 위치 제어기(Position Controller)는 이러한 <strong>구동기 포화(Actuator Saturation)</strong> 현상에 대응하여 목표값을 조정하고 오버슈트(Overshoot)를 효과적으로 억제하기 위해 정교한 피드포워드(Feed-forward) 보상 메커니즘을 내장하고 있다.</p>
+<p>본 장에서는 위치 및 속도 제어 루프 내부에서 제동 가속도가 어떻게 한계점에 클리핑(Clipping)되며, 이 한계 상황 속에서 피드포워드 항이 어떤 식으로 오차의 누적을 막는지 수식과 구동 원리를 바탕으로 심층 분석한다.</p>
+<h2>1.  멀티로터 제동 가속도 한계점 산출 모델</h2>
+<p>기체가 전력으로 날고 있을 때, 속도를 줄이기 위해 기체는 비행 반대 방향으로 피치업(Pitch-up) 기동을 한다. 멀티로터의 최대 투입 가속도 <span class="math math-inline">a_{max}</span>는 추진기(프로펠러 및 모터)가 낼 수 있는 총 추력(Thrust)과 기체의 질량, 그리고 항력에 의해 결정된다. PX4에서는 이를 <code>MPC_ACC_HOR_MAX</code>와 같은 제어 한계(Controller Limit) 파라미터로 사전에 정의한다.</p>
+<p>비행 제어 컴퓨터 내 속도 제어기 루프는 PI(Proportional-Integral) 컨트롤러를 사용하며, 산출된 목표 가속도 항 <span class="math math-inline">\vec{a_{setpoint}}</span>가 모터의 물리적 한계를 초과할 경우 수식적으로 다음과 같은 포화(Saturation) 처리를 거친다.</p>
+<p><span class="math math-display"> \vec{a_{final}} = \min(\Vert \vec{a_{setpoint}} \Vert, MPC\_ACC\_HOR\_MAX) \cdot \frac{\vec{a_{setpoint}}}{\Vert \vec{a_{setpoint}} \Vert} </span></p>
+<p>이렇게 가속도의 크기가 수평 가속도 한계를 넘지 않도록 크기를 클리핑하고, 원래 의도했던 제어 벡터의 방향성만을 유지한다. 포화가 발생한(즉, 제어기가 포화 상태에 도달한) 상황에서는 일반적인 PID 제어만으로 오차를 따라잡지 못하는 지연(Lag)이 발생하게 된다.</p>
+<h2>2. 피드포워드(Feed-forward) 보상기의 역할</h2>
+<p>가속도 클리핑으로 인해 기체가 목표점 감속 궤적에 도달하지 못하면, 위치 오차가 누적되어 목표 지점을 지나쳐버리는 오버슈트 현상이 필연적으로 일어난다. PX4-Autopilot은 이를 방지하기 위해 궤적 생성기(Trajectory Generator)에서 이미 산출된 속도와 가속도 의도값을 피드백(Feedback) 측의 에러 연산을 거치지 않고 직접 제어 루프 말단에 더해주는 <strong>피드포워드(Feed-forward) 제어</strong>를 적용한다.</p>
+<h3>2.1 위치 제어 루프 구조</h3>
+<ol>
+<li><strong>위치 피드백</strong>: <span class="math math-inline">\vec{v_{target}} = K_P \cdot (\vec{p_{setpoint}} - \vec{p_{current}})</span></li>
+<li><strong>속도 피드포워드 합산</strong>: <span class="math math-inline">\vec{v_{sp}} = \vec{v_{target}} + \vec{v_{feedforward}}</span> (궤적 생성기에서 도출된 이상적 속도)</li>
+<li><strong>속도 피드백</strong>: <span class="math math-inline">\vec{a_{target}} = K_P \cdot (\vec{v_{sp}} - \vec{v_{current}}) + K_I \cdot \int (\vec{v_{sp}} - \vec{v_{current}}) dt</span></li>
+<li><strong>가속도 피드포워드 합산</strong>: <span class="math math-inline">\vec{a_{sp}} = \vec{a_{target}} + \vec{a_{feedforward}}</span> (궤적 생성기에서 도출된 이상적 가속도)</li>
+</ol>
+<p>위 구조에서 <span class="math math-inline">\vec{a_{feedforward}}</span>는 센서 이노베이션(오차) 여부와 무관하게 시스템 구동단(Thrust Mixer)에 즉각적인 역추력(Pitch-up) 조작을 지시한다. 이를 통해 PID 루프가 위치나 속도 에러를 인지할 때까지의 시간차(Time Delay)를 원천 차단하여 오버슈트를 최소화한다.</p>
+<pre><code class="language-mermaid">graph LR
+    A[Position Setpoint] --&gt;|+, -| B(Pos P Ctrl)
+    A1[Current Position] --&gt;|Feedback| B
+    B --&gt; C((+))
+    A2[Velocity FW] --&gt; C
+    C --&gt; D[Velocity Setpoint]
+    
+    D --&gt;|+, -| E(Vel PI Ctrl)
+    A3[Current Velocity] --&gt;|Feedback| E
+    E --&gt; F((+))
+    A4[Acceleration FW] --&gt; F
+    F --&gt; G[가속도 포화 제한기&lt;br&gt;Saturation]
+    G --&gt; H[Thrust/Attitude Target]
+</code></pre>
+<h2>3. 포화 상태에서의 상호작용 및 과적분 방지(Anti-windup)</h2>
+<p>만일 모터 출력이 100% 임계에 달해 포화 상태(<code>Saturation</code>)에 걸리게 되면, 제어 기체는 요구된 가속도를 더 이상 낼 수 없다. 이 순간 PI 제어기 내부의 적분기(Integrator)는 에러를 계속 쌓으면서 제동이 끝난 이후에도 반대 방향으로 기체를 과도하게 뒤집어버리는, 일명 적분 와인드업(Integral Windup)에 직면할 위험이 생긴다.</p>
+<p>따라서 PX4 속도 제어기 루프 소스코드(<code>src/modules/mc_pos_control/PositionControl.cpp</code>) 내에는 <strong>동적 안티-와인드업(Dynamic Anti-Windup)</strong> 로직이 결합되어 있다.</p>
+<ol>
+<li><strong>추력 한계 도달 감지</strong>: <code>_thrust_sp</code>가 <code>MPC_THR_MAX</code>에 달하거나 <code>MPC_ACC_HOR_MAX</code>를 초과할 때 플래그가 활성화된다.</li>
+<li><strong>적분기 누적 정지(Integration Stop)</strong>: 포화 상태로 진입한 축(예: 역방향 제동 수평축)에 대해서는 적분기 배열의 상태 업데이트 연산(<code>+= Ki * error * dt</code>)을 즉시 건너뛰거나(bypass), 누적량을 특정 임계치 이내로 잘라버린다.</li>
+<li><strong>지수 감쇠(Exponential Decay)</strong>: 기체의 속도가 충분히 줄어들어 다시 선형 제역 구간에 진입하면, 그동안 누적되어 있던 적분항 에러를 지수적으로 감소시키며 제어 안전성을 복원한다.</li>
+</ol>
+<h2>4. 모의 시험(SITL) 로그 및 파라미터 튜닝 통찰</h2>
+<ul>
+<li><strong>지연 시간 분석</strong>: ULog 분석 툴넷인 Flight Review에서 확인할 수 있는 <code>position_setpoint</code> 대비 실제 <code>vehicle_local_position</code>의 추종 그래프 곡선 상에서, 급정거(Braking) 시 오버슈트가 눈에 띄게 큰 현상이 관찰된다면 피드포워드 게인이 낮거나 <code>MPC_ACC_HOR_MAX</code>가 기체 물리력보다 비현실적으로 크게 할당되어 있을 확률이 높다.</li>
+<li><strong>가속 상한 조정</strong>: 따라서 Ardupilot 제어론과 마찬가지로 무조건 한상 높은 출력을 상정할 것이 아니라, <code>MPC_ACC_HOR_MAX</code> 파라미터를 실제 기체의 총 추력 중량비(TWR: Thrust-to-Weight Ratio) 스펙의 70~80% 선으로 강제로 제약해야 한다. 이는 궤적 생성기가 낼 수 없는 <span class="math math-inline">\vec{a_{feedforward}}</span>를 지시하는 것을 사전에 막아주어 시스템을 선형 영역 내로 가둔다.</li>
+</ul>
+<h2>결론 및 요약</h2>
+<p>PX4 제어 모듈 아키텍처는 제동 한계점 근방에서도 기구학적 연속성을 잃지 않기 위해 철저한 선후 관계를 정의한다.<br />
+선행하는 궤적 생성기 단계에서는 물리적 한계점(Saturation Limit) 이내의 보수적인 설정점(Setpoint)과 **피드포워드 신호(Feed-forward)**를 발부하며, 실제 모터 구동단에서는 예기치 못한 오차 누적으로 한계가 돌파될 시 <strong>조건부 적분 포화 방지(Anti-windup)</strong> 기술로 오버슈트를 잘라낸다. 결과적으로 이 두 기능의 긴밀한 상호작용 덕분에 멀티로터는 관성을 버티는 최대 역방향 브레이킹 제어 환경에서도 제어 발산을 피하고 의도된 제동 거리 내에 정착할 수 있다.</p>
 
             </article>
             <footer>

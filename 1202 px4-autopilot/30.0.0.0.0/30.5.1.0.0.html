@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.5.1 다중 목적지(Home vs Rally Point) 간의 거리 비용 함수(Cost Function) 평가 및 다익스트라(Dijkstra) 유사 휴리스틱 최단 경로 탐색</title>
+    <title>BIJUNG:30.5.1. 다중 목적지(Home vs Rally Point) 간의 거리 비용 함수(Cost Function) 평가 및 다익스트라(Dijkstra) 유사 휴리스틱 최단 경로 탐색</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,61 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.5.1 다중 목적지(Home vs Rally Point) 간의 거리 비용 함수(Cost Function) 평가 및 다익스트라(Dijkstra) 유사 휴리스틱 최단 경로 탐색</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.5.1 다중 목적지(Home vs Rally Point) 간의 거리 비용 함수(Cost Function) 평가 및 다익스트라(Dijkstra) 유사 휴리스틱 최단 경로 탐색</span></nav>
+                    <h1>30.5.1. 다중 목적지(Home vs Rally Point) 간의 거리 비용 함수(Cost Function) 평가 및 다익스트라(Dijkstra) 유사 휴리스틱 최단 경로 탐색</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.5.1. 다중 목적지(Home vs Rally Point) 간의 거리 비용 함수(Cost Function) 평가 및 다익스트라(Dijkstra) 유사 휴리스틱 최단 경로 탐색</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.5.1 다중 목적지(Home vs Rally Point) 간의 거리 비용 함수(Cost Function) 평가 및 다익스트라(Dijkstra) 유사 휴리스틱 최단 경로 탐색</h1>
+                <h1>30.5.1. 다중 목적지(Home vs Rally Point) 간의 거리 비용 함수(Cost Function) 평가 및 다익스트라(Dijkstra) 유사 휴리스틱 최단 경로 탐색</h1>
+<p>무인항공기(UAS) 운용 중 통신 두절(Data Link Loss)이나 배터리 부족(Low Battery)과 같은 비상 상황이 발생했을 때, 기체가 맹목적으로 초기 이륙 지점(Home)으로만 복귀하려 드는 것은 때때로 매우 치명적인 결과를 낳는다. 예컨대 기체가 수 킬로미터 떨어진 산 너머에 있는데, 그 사이에 물리적인 집결지(Rally Point)가 존재함에도 굳이 에너지를 더 소모하며 Home으로 돌아오려다 추락할 수 있다.</p>
+<p>PX4-Autopilot의 RTL(Return To Launch) 모듈은 이러한 비상 귀환 라우팅(Routing)을 최적화하기 위해, <strong>다중 목적지(Home vs Rally Point)</strong> 간의 우선순위를 평가하는 비용 함수(Cost Function) 모델과 이를 기반으로 한 스마트 경로 탐색 기능을 핵심 코어(Core)로 탑재하고 있다. 본 장에서는 이 최적화 로직의 아키텍처와 수학적 평가 기준을 분석한다.</p>
+<h2>1.  목적지 유형과 RTL_TYPE 파라미터 구조</h2>
+<p>RTL 로직(<code>src/modules/navigator/rtl.cpp</code>)이 발동될 때 가장 먼저 호출되는 서브루틴은 <strong>목적지 평가(<code>find_RTL_destination()</code>)</strong> 루틴이다. 기체는 <code>RTL_TYPE</code> 파라미터의 설정에 따라 목적지 탐색 우선순위를 결정한다.</p>
+<ul>
+<li><code>RTL_TYPE = 0</code> (Home): 오직 이륙했던 지점(Home) 하나만을 복귀 좌표로 상정한다.</li>
+<li><code>RTL_TYPE = 1</code> (Rally Point 우선): 활성화된 Rally Point 목록과 Home 위치를 모두 잠재적 후보로 두고, 비용 함수(Cost Function)를 통해 가장 안전하고 가까운 곳을 최종 목적지로 선정한다.</li>
+<li><code>RTL_TYPE = 2</code> (Mission Path): 임무(Mission) 중이었다면, 이전에 지나왔던 임무 경로를 역순으로 되짚어(Reverse Tracking) 장애물을 피한 뒤 Home이나 Rally Point로 향한다.</li>
+</ul>
+<p>본 분석에서는 산업용/관제용 드론에서 가장 보편적으로 쓰이며 복잡한 평가 로직이 들어가는 <code>RTL_TYPE = 1</code>을 중점적으로 다룬다.</p>
+<h2>2.  거리 비용 함수(Cost Function)의 수학적 평가지표</h2>
+<p>네비게이터(Navigator)는 메모리에 업로드된 모든 Rally Point(최대 수십 개)의 좌표 배열을 순회하면서, 단순히 2D 유클리드 거리(Euclidean Distance)가 아닌 3차원적 인지 편향(Heuristic)이 적용된 비용(Cost)을 산출한다. 가장 낮은 비용 점수를 얻은 좌표가 승리한다.</p>
+<h3>2.1  3D 거리 연산 (3D Distance Computation)</h3>
+<p>기체의 현재 3D 글로벌 위치값(Lat, Lon, Alt)과 각 수집 지점의 위치값 간의 Haversine(대원 곡선) 거리와 고도차를 피타고라스 정리로 병합하여 기본 이동 거리(<span class="math math-inline">D_{3d}</span>)를 산출한다.</p>
+<h3>2.2  고도 상승 오버헤드 페널티 (Climb Overhead Penalty)</h3>
+<p>비용 산출에서 가장 중요하게 여겨지는 파츠는 <strong>고도 상승에 소모되는 에너지</strong>이다.<br />
+멀티로터의 특성상 수평 비행보다 수직 상승 비행이 배터리를 비약적으로 많이 소모한다. 따라서 특정 Rally Point가 수평 거리는 가깝더라도 산등성이처럼 고도가 너무 높아 드론이 <code>RTL_RETURN_ALT</code>를 무리하게 끌어올려야 한다면, 해당 포인트는 페널티 가중치(<span class="math math-inline">W_z</span>)를 크게 부여받는다.</p>
+<p><span class="math math-display"> Cost_i = D_{horizontal} + W_z \cdot \max(0, Altitude_{target} - Altitude_{current}) </span></p>
+<h3>2.3 풍향 보정 최적화 (Wind Vector Compensation)</h3>
+<p>정교한 GCS 관제 하에서 EKF2 센서 융합이 바람 벡터(<code>wind_estimate</code>)를 구독하고 있다면, 비용 함수는 맞바람(Headwind)과 뒷바람(Tailwind) 효과를 반영한 지상 속도 예상치(Estimated Ground Speed)로 각 지점까지의 “도달 소요 시간(Time-to-Flight, ETA)“을 연산하여 Cost로 쓴다. 즉, 거리가 조금 더 멀어도 강한 뒷바람을 타고 활공하듯 갈 수 있는 Rally Point가 역풍을 뚫고 가야 하는 Home보다 비용이 더 낮게 평가될 수 있다.</p>
+<h2>3. 다익스트라(Dijkstra) 유사 휴리스틱 탐색 로직</h2>
+<p>완전한 다익스트라(Dijkstra) 알고리즘이나 A* 알고리즘은 공간을 격자(Grid) 노드로 분할하여 노드 간 비용을 계산하지만, 자원이 제한된 비행 제어기(Flight Controller) 특성상 PX4의 목적지 탐색은 <strong>다이렉트 그리디 탐색(Direct Greedy Search) 방식의 유사 다익스트라 모델</strong>을 차용한다.</p>
+<ol>
+<li><strong>후보 노드 초기화</strong>: 비행 전 GCS(QGroundControl 등)에서 MAVLink 프로토콜을 통해 전송된 Rally Point 점들과 Home 위치를 하나의 노드 리스트(Node List) <code>O = {R_1, R_2, ..., R_n, Home}</code>로 구성한다.</li>
+<li><strong>Min-Cost 트리버스(Traverse)</strong>: 현재 기체 위치(시작 노드)에서 각 <span class="math math-inline">O_i</span> 노드까지의 직접 연결(Edge) 단일 간선 루프 비용을 순산한다.</li>
+<li><strong>지오펜스(Geofence) 충돌 가지치기(Pruning)</strong>: 만약 특정 Rally Point로 향하는 직접 선분이 활성화된 지오펜스의 Exclusion Zone(금지 구역) 다각형을 통과(Intersection)한다면, 해당 경로는 휴리스틱 알고리즘에서 무한대(Infinity) 비용을 받아 경쟁에서 즉시 탈락(Prune)된다.</li>
+<li><strong>최적해(Optimal Solution) 승격</strong>: 가지치기를 뚫고 남은 노드 중 최소 비용을 갖는 노드를 <code>_destination</code> 구조체에 복사하고, 이 좌표를 하위 위치 제어 루프의 Setpoint로 인가한다.</li>
+</ol>
+<pre><code class="language-mermaid">graph TD
+    A[RTL 발동 트리거 수신] --&gt; B[후보 노드 Array 검색&lt;br&gt;Home + 랠리 포인트 목록]
+    B --&gt; C{각 노드별 순회 루프 시작}
+    C --&gt; D[3D Haversine 거리 계산]
+    D --&gt; E[고도 상승 및 바람 에너지 페널티 점수 합산]
+    E --&gt; F{직선 경로가 Geofence&lt;br&gt;금지 구역을 지나는가?}
+    F --&gt;|Yes| G[해당 노드의 Cost = MAX_FLOAT 처리&lt;br&gt;기각(Pruning)]
+    F --&gt;|No| H[지속 평가 (Min Cost 변수 비교 갱신)]
+    G --&gt; I{리스트가 끝났는가?}
+    H --&gt; I
+    I --&gt;|No| C
+    I --&gt;|Yes| J[최소 비용 노드를 목적지로 낙점]
+    J --&gt; K[NPFG / Position Controller로 궤도 유도 개시]
+</code></pre>
+<h2>4. Ardupilot 로직과의 차별화 분석</h2>
+<ul>
+<li><strong>Ardupilot의 집결지 처리 (Rally Point)</strong>: Ardupilot 구성에서도 <code>RALLY_LIMIT_KM</code>이나 <code>RTL_ALT</code> 등을 통해 집결지 기능은 지원되나, 위치 산출이 비교적 2D 반경 탐색(Radius Checking)을 우선시하는 경향이 있다.</li>
+<li><strong>PX4-Autopilot의 우위성</strong>: PX4는 Rally Point를 MAVLink <code>MISSION_ITEM</code> 서브 카테고리 로직으로 취급하여 Geofence 시스템과 강력하게 연동된다. 즉, 단순히 가까운 곳으로 가는 것이 아니라 **“금지 구역을 가로지르지 않으면서 비용이 가장 적은 곳”**을 검증하는 레이 캐스팅(Ray Casting) 알고리즘이 네비게이터 내부에서 동기적(Synchronous)으로 통합 계산된다는 점에서 구조적 강건성을 확보했다.</li>
+</ul>
+<h2>5. 결론 및 GCS 관제망 설계 중요성</h2>
+<p>PX4 시스템의 이 복합 비용 함수(Cost Function) 궤적 탐색 알고리즘은 GCS 운용자에게 중요한 시사점을 남긴다. 미션 비행 경로를 설정할 때, 긴 선형 비행 라인을 주변으로 적절한 간격과 고도의 랠리 포인트 배열(Rally Point Array)을 깔아주는 것이 드론의 배터리나 통신 소실 시 생존율을 비약적으로 상승시키는 핵심 요인이기 때문이다. 휴리스틱 거리 탐색 알고리즘의 원리에 대한 수학적 이해가 수반되어야 기체가 돌발적인 고도 상승이나 금지구역 돌진을 시도하는 현상을 관제 단계에서부터 차단할 수 있다.</p>
 
             </article>
             <footer>

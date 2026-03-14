@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.1.4 `FlightTaskAuto` 인스턴스와의 제어 명령 위임(Delegation) 및 의존성 주입(Dependency Injection) 메커니즘</title>
+    <title>BIJUNG:# 1.  `FlightTaskAuto` 인스턴스와의 제어 명령 위임(Delegation) 및 의존성 주입(Dependency Injection) 메커니즘</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,64 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.1.4 `FlightTaskAuto` 인스턴스와의 제어 명령 위임(Delegation) 및 의존성 주입(Dependency Injection) 메커니즘</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.1.4 `FlightTaskAuto` 인스턴스와의 제어 명령 위임(Delegation) 및 의존성 주입(Dependency Injection) 메커니즘</span></nav>
+                    <h1># 1.  `FlightTaskAuto` 인스턴스와의 제어 명령 위임(Delegation) 및 의존성 주입(Dependency Injection) 메커니즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span># 1.  `FlightTaskAuto` 인스턴스와의 제어 명령 위임(Delegation) 및 의존성 주입(Dependency Injection) 메커니즘</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.1.4 <code>FlightTaskAuto</code> 인스턴스와의 제어 명령 위임(Delegation) 및 의존성 주입(Dependency Injection) 메커니즘</h1>
+                <h1># 1.  <code>FlightTaskAuto</code> 인스턴스와의 제어 명령 위임(Delegation) 및 의존성 주입(Dependency Injection) 메커니즘</h1>
+<p>PX4-Autopilot의 아키텍처는 고도의 모듈성(Modularity)을 획득하기 위해 책임 구간을 엄격히 분리(Separation of Concerns)하는 설계 패턴을 적용했다. 이 중 자동 비행 모드를 관장하는 <code>navigator</code> 모듈이 경로점(Waypoint) 중심의 기하학적 ’의도(Intent)’를 생성한다면, 이 기하학적 의도를 실제 멀티로터나 고정익의 물리적 동역학 한계(Kinematic Constraints) 내에서 추종 가능한 궤적 상태(Trajectory State)로 변환하는 역할은 하위 위치 제어기(Position Controller)가 담당한다.</p>
+<p>이 절에서는 <code>navigator</code>가 만들어낸 위치 기반 설정점 삼중체(Setpoint Triplet) 메시지가 멀티로터 위치 제어 모듈(<code>mc_pos_control</code>) 내부의 <strong><code>FlightTaskAuto</code></strong> 인터페이스 층으로 수신되어, 최적화된 궤적 벡터로 탈바꿈하는 코드 레벨의 제어 명령 위임(Delegation) 및 객체 지향적 의존성 주입(Dependency Injection) 메커니즘을 심층 분석한다.</p>
+<h3>1.1  <code>mc_pos_control</code> 내의 <code>FlightTask</code> 추상화 아키텍처</h3>
+<p>관행적인 구동 제어 코드에서는 조종사의 스틱 입력이나 GCS의 자동 비행 명령을 단일 거대 함수(Monolithic Function) 혹은 무수한 <code>if-else</code> 블록으로 혼합 처리하여 코드가 얽히는 이른바 갓-클래스(God Object) 안티 패턴이 발생하기 쉽다. PX4-Autopilot은 멀티로터 위치 제어기 모듈 내부에 <code>FlightTask</code>라는 독립된 추상화 상태 머신 라이브러리 계층을 도입하여 이 문제를 해결했다.</p>
+<p><code>FlightTask</code> 아키텍처는 다형성(Polymorphism)을 기반으로 구성된 객체 지향 설계로, 모든 개별 비행 루틴(수동 제어, 브레이크, 오프보드 제어, 자동 비행 등)이 베이스 인터페이스(<code>FlightTask</code>)를 상속받는 구체 클래스(Concrete Class)로 분리되어 있다.</p>
+<pre><code class="language-mermaid">classDiagram
+    class FlightTask {
+        &lt;&lt;Abstract&gt;&gt;
+        +update() bool
+        +activate() bool
+        #_position_setpoint: Vector3f
+        #_velocity_setpoint: Vector3f
+    }
+    
+    class FlightTaskManual {
+        +update() bool
+        -evaluate_stick_inputs() void
+    }
+    
+    class FlightTaskAuto {
+        +update() bool
+        -process_triplet_setpoints() void
+        -generate_smooth_trajectory() void
+    }
+    
+    class FlightTaskOffboard {
+        +update() bool
+    }
+
+    FlightTask &lt;|-- FlightTaskManual
+    FlightTask &lt;|-- FlightTaskAuto
+    FlightTask &lt;|-- FlightTaskOffboard
+</code></pre>
+<p>위의 계층도에서 볼 수 있듯, <code>navigator</code> 모듈이 활성화 중일 때 하위 <code>mc_pos_control</code> 매니저는 <code>FlightTaskAuto</code> (또는 이의 파생 클래스)를 메모리 공간에 동적으로 인스턴스화하여 제어망을 연결한다.</p>
+<h3>1.2  제어 명령의 위임(Delegation) 및 uORB 통신 인터페이스</h3>
+<p><code>navigator</code> 로직은 자신이 연산해 낸 3차원 공간상의 경로점 데이터, 즉 설정점 삼중체(<code>position_setpoint_triplet_s</code>)를 uORB 네트워크로 퍼블리시한다. 이 데이터를 구독(Subscribe)하고 있는 <code>mc_pos_control</code> 컨텍스트는 현재 자신의 상태 머신에 할당된 포인터 태스크가 <code>FlightTaskAuto</code>인지 여부를 파악한 뒤, 이 데이터 메시지 참조를 <code>FlightTaskAuto</code> 객체에 철저히 위임(Delegation)한다.</p>
+<ul>
+<li><strong>분리의 이점</strong>: <code>navigator</code>는 단지 멀티로터 프레임의 틸트(Tilt) 각도 한계나 모터 스풀업(Spool-up) 특성 같은 로우-레벨 하드웨어 제어 파라미터를 전혀 알 필요가 없다.</li>
+<li>오직 ’목표 GPS 좌표’에 제동을 걸지 통과할지만 명시해주면, <code>FlightTaskAuto</code>가 기체의 최대 가속도(<code>MPC_ACC_HOR</code>), 가속도 변화율(Jerk, <code>MPC_JERK_AUTO</code>), 제동 거리 한계치 등의 기구학 동역학적 파라미터(Kinematic Parameters) 환경에 맞춰 <code>navigator</code>의 러프한 기하학 타겟을 초당 50Hz 이상의 부드러운 위치/속도 프로파일 궤적(<code>trajectory_setpoint_s</code>) 벡터로 역산출해 낸다.</li>
+</ul>
+<h3>1.3  의존성 주입(Dependency Injection)을 통한 데이터 무결성 보장</h3>
+<p>모놀리식 비행 제어 아키텍처(Ardupilot 구버전 등)의 치명적 설계 한계는 모든 모듈 전역 변수 메모리를 직간접적으로 읽고 쓸 수 있는 전역 환경의 노출이었다. 반면 <code>FlightTask</code> 아키텍처는 의존성 주입(Dependency Injection) 설계 철학을 적용하여 변수 단위의 무결성을 시스템 차원으로 보장한다.</p>
+<p><code>FlightTaskAuto</code>가 동작하기 위해 필요로 하는 외부 정보-EKF2가 추출한 기체의 현재 추정 상태(Position, Velocity, Attitude), GCS가 내린 특정 위치 제약 조건 토픽-는 <code>mc_pos_control</code> 중앙 허브 체인에서 모두 단일 수집되고 필터링된다. 이후 하위 <code>FlightTask</code> 객체가 생성(Instantiation)되거나 함수가 호출될 때, <code>updateInitialize()</code>와 같은 베이스 주입 함수 매개변수를 통해 포인터 참조나 안정된 값(Value) 형태로 안전하게 주입(Inject)받는다.</p>
+<ol>
+<li><strong>상태 주입 (State Injection)</strong>: 로컬 기체 좌표 상태(<code>vehicle_local_position_s</code>)를 메모리 내부 구조체에 사본 캡슐화시켜 병렬 스레드(uORB 토픽 업데이트 인터럽트)의 값 변이(Race Condition)를 예방한다.</li>
+<li><strong>명령 주입 (Command Injection)</strong>: <code>navigator</code> 기반의 설정점 삼중체를 파싱하여 태스크의 내부 목적지 벡터(<code>_target</code>)로 초기화 주입시킨다. 안전 범위(Altitude limits 등) 조건을 초과하는 불량 데이터가 섞여 들어오면 <code>FlightTaskAuto</code>는 주입단에서 이 이상 값을 클리핑(Clipping)하거나 태스크 거부 판정을 상위로 재출력한다.</li>
+</ol>
+<h3>1.4  매끄러운 궤적 생성을 위한 Jerk 최적화 모델 매핑</h3>
+<p>최종적으로 <code>FlightTaskAuto</code>는 주입된 <code>navigator</code>의 위치점 간을 부드럽게 잇기 위한 궤적 프로파일링에 집중한다. 단순히 목표 지점과 현재 지점의 방향 오차 벡터(Position Error Vector)만을 기반으로 비례항(P-gain)을 곱산하던 P-컨트롤러(Proportional Controller) 기반의 선형적 추종 과거 로직은 비행 궤도가 딱딱해지고 가속 역전 현상을 일으키는 치명적 문제가 있었다.</p>
+<p>현행 PX4 소스 코드는 이 위임된 타겟 좌표를 기초로 저크 유한(Jerk-limited) 비선형 스무딩 알고리즘(S-Curve 형 궤적 등)이나 모델 예측 보완 경로 로직을 차용한다.<br />
+다시 말해, <code>navigator</code>는 “B 좌표로 이동할 것” 이라는 고차원 명령만을 위임하고, <code>FlightTaskAuto</code>는 매 단위 스텝 루프(dt)마다 기체의 수직/수평 최대 속력 모델(<code>MPC_XY_CRUISE</code>, <code>MPC_Z_V_AUTO_UP/DN</code>)과 결합해 부드러운 <span class="math math-inline">\Delta V</span> 증가분과 <span class="math math-inline">\Delta P</span> 차분 미분값을 뱉어내는 궤적 모델링의 실질적 구현체가 되는 것이다.</p>
+<p>이러한 **위임(Delegation)**과 **의존성 주입(Dependency Injection)**이 어우러진 클래스 아키텍처 설계는, PX4 소프트웨어가 복잡한 오프보드 및 군집 에이전트 자율 비행(ROS2 MAVROS/uXRCE 기반)의 극히 난해하고 추상적인 궤적 알고리즘 요구 사항까지도 완벽에 가깝게 흡수하고 추종하도록 지탱하는 가장 우아한 소프트웨어 공학적 성취라 평가할 수 있다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.4.2 멀티로터(MC)의 저크 제한 역학 모델(Jerk-limited Kinematic Model) 기반 S-곡선(S-Curve) 감속 궤적 생성 알고리즘</title>
+    <title>BIJUNG:30.4.2. 멀티로터(MC)의 저크 제한 역학 모델(Jerk-limited Kinematic Model) 기반 S-곡선(S-Curve) 감속 궤적 생성 알고리즘</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,67 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.4.2 멀티로터(MC)의 저크 제한 역학 모델(Jerk-limited Kinematic Model) 기반 S-곡선(S-Curve) 감속 궤적 생성 알고리즘</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.4.2 멀티로터(MC)의 저크 제한 역학 모델(Jerk-limited Kinematic Model) 기반 S-곡선(S-Curve) 감속 궤적 생성 알고리즘</span></nav>
+                    <h1>30.4.2. 멀티로터(MC)의 저크 제한 역학 모델(Jerk-limited Kinematic Model) 기반 S-곡선(S-Curve) 감속 궤적 생성 알고리즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.4.2. 멀티로터(MC)의 저크 제한 역학 모델(Jerk-limited Kinematic Model) 기반 S-곡선(S-Curve) 감속 궤적 생성 알고리즘</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.4.2 멀티로터(MC)의 저크 제한 역학 모델(Jerk-limited Kinematic Model) 기반 S-곡선(S-Curve) 감속 궤적 생성 알고리즘</h1>
+                <h1>30.4.2. 멀티로터(MC)의 저크 제한 역학 모델(Jerk-limited Kinematic Model) 기반 S-곡선(S-Curve) 감속 궤적 생성 알고리즘</h1>
+<p>PX4-Autopilot의 멀티로터 제어 시스템에서 기체가 특정 목표 위치에서 정지하거나 부드러운 이동 궤적을 추종하도록 유도할 때, 가장 이질감 없는 승차성(Ride Quality)과 안정적인 기체 역학을 보장하기 위해 도입된 수학적 평활화 기법이 바로 <strong>S-곡선(S-Curve) 궤적 생성 알고리즘</strong>이다. 본 장에서는 단순 1차원 선형 보간이나 방형파(Square-wave) 제동을 극복하고, 가속도와 저크(Jerk)의 물리적 한계를 적용하여 S-Curve를 만들어내는 위치 제어 프레임워크(주로 <code>FlightTaskAutoMapper</code>와 <code>TrajectoryGenerator</code>)의 핵심 로직과 수학적 모델을 분석한다.</p>
+<h2>1.  저크 제한 역학 모델(Jerk-limited Kinematic Model) 개요</h2>
+<p>로봇 공학 및 무인항공기 네비게이션 분야에서 기체의 이동 궤적을 계획할 때 세부적인 상태량을 정의해야 한다.</p>
+<ul>
+<li>상태량 변수: 위치(Position, <span class="math math-inline">p</span>), 속도(Velocity, <span class="math math-inline">v</span>), 가속도(Acceleration, <span class="math math-inline">a</span>), 저크(Jerk, <span class="math math-inline">j</span>)</li>
+</ul>
+<p>고전적인 Ardupilot이나 단순 제어루프에서는 주로 속도 피드포워드와 목표 좌표 에러에 기반한 PID 루프를 썼기에 시작과 정지 구간에서 센티미터 스케일 단위의 떨림이나 기구학적으로 모터가 감당하지 못하는 순간 고출력(Step Response) 요구가 발생하였다.<br />
+PX4-Autopilot에서는 이를 방지하고자 가속도의 미분형인 **저크(Jerk)**를 능동적으로 한계치 파라미터로 두었다. 이를 통해 조종사가 부드럽게 스틱을 놓거나 자동 임무 중 비행 기점이 변경될 때, 2차 미분항(가속도)이 선형적으로 변하여 궤적이 결과적으로 S자 형태를 그리는 평활화(Smoothing) 모델을 적용했다.</p>
+<h2>2.  제동과 궤적 생성의 기구학(Kinematics) 3단계</h2>
+<p>S-Curve 감속 또는 이송 궤적은 일정한 물리 한계치(<code>MPC_ACC_HOR_MAX</code>, <code>MPC_JERK_AUTO</code>) 하에서 궤적 생성기(Trajectory Generator)에 의해 3개의 시간 구간으로 분할되어 계산된다.</p>
+<ol>
+<li><strong>가속도 감소 단계 (Negative Jerk Stage)</strong>:<br />
+현재 가속도가 목표한 감속 가속도(<code>-a_max</code>)에 도달할 때까지 저크 한계치(<code>-j_max</code>)를 최대로 인가하여, 수직에 가까웠던 가속도를 매끄럽게 음수로 전환시킨다.</li>
+<li><strong>일정 감속 단계 (Constant Acceleration Stage)</strong>:<br />
+감속 제한치 <code>-a_max</code>에 온전히 도달하면, 저크를 <span class="math math-inline">0</span>으로 만들고 남은 제동 에너지를 이 선형 가속 구역에서 소모한다. 기체는 이 단계에서 점진적 피치업(Pitch-up) 자세에 완전히 록(Lock)된 상태로 감속 활공을 한다.</li>
+<li><strong>가속도 초기화 단계 (Positive Jerk Stage)</strong>:<br />
+목표 정지점 또는 새 설정점 도달이 임박해 속도가 <span class="math math-inline">0</span>에 수렴할 시점, 다시 양(+)의 저크를 인가하여 기체의 음수 가속도를 <span class="math math-inline">0</span>으로 매끄럽게 눕힌다. 최종 도착 지점에서 속도, 가속도, 저크가 모든 축에서 <span class="math math-inline">0</span>이 된다.</li>
+</ol>
+<p>이 세 단계를 거치며 궤적 위치는 S자를 누워놓은 것과 같은 형태의 누적 곡선(Integration Curve)을 그리게 되므로, 이를 <strong>S-Curve</strong> 제어로 칭한다.</p>
+<h2>3.  알고리즘 아키텍처 및 소스 코드 (<code>src/lib/flight_tasks/tasks/AutoMapper</code>)</h2>
+<p><code>FlightTaskAuto</code> 모듈은 내부적으로 <code>PositionSmoothing</code> 또는 <code>Trajectory</code> 수학 라이브러리를 호출하여 내부 좌표계를 최적화한다.</p>
+<h3>3.1  기준 한계 파라미터 (Limits Constraints)</h3>
+<p>S-Curve 생성기는 다음 파라미터를 읽어 허용 허용 구간 수식을 구성한다.</p>
+<ul>
+<li><code>MPC_XY_VEL_MAX</code> : 최대 수평 속도</li>
+<li><code>MPC_ACC_HOR</code> / <code>MPC_ACC_HOR_MAX</code> : 수평 기준 가속도 / 최대 수평 가속도</li>
+<li><code>MPC_JERK_AUTO</code> : 자율비행(Auto) 루프 시의 최대 허용 저크 크기</li>
+</ul>
+<h3>3.2  궤적 생성 주기 (Update Loop)</h3>
+<ol>
+<li><strong>초기 시간 및 거리 산출</strong>: <code>updateTrajectory(...)</code> 함수가 호출되면 목표점의 위치(Target Position), 현재 속도와 가속도를 투입하고 거리 오차 <span class="math math-inline">\Delta p</span>를 계산한다.</li>
+<li><strong>소요 시간(Duration) 매트릭스 도출</strong>: 1, 2, 3단계의 소요 시간 <span class="math math-inline">t_1, t_2, t_3</span>를 각각의 3차 다항식(Cubic Polynomial)의 근으로 계산하여 최단 시간(Minimum Time) 최적화 방정식을 푼다.</li>
+<li><strong>설정점(Setpoint) 보간 (Interpolation)</strong>: 도출된 시간에 비례하여 현재 메인 제어 루프 스텝(<code>dt</code>)만큼의 순간 설정점(<code>position_setpoint</code>, <code>velocity_setpoint</code>, <code>acceleration_setpoint</code>)을 산출해 출력한다.</li>
+</ol>
+<pre><code class="language-mermaid">graph TD
+    A[네비게이터: 다음 Waypoint 또는 목표 Loiter 지점 지시] --&gt; B[FlightTaskAutoMapper]
+    B --&gt; C{현재 기구학적 상태량 측정 &lt;br&gt; v, a 조회}
+    C --&gt; D[목표 거리를 S-Curve의 3단계 적분식에 대입하여&lt;br&gt;소요 기동 시간 연산]
+    D --&gt; E[Jerk, Acc Limit 파라미터를 적용하여 최적 해 탐색]
+    E --&gt; F[매 루프마다 미세 보간된 설정점 추출]
+    F --&gt; G[Position Controller: 위치 속도 가속도를 동시 추종하는 피드포워드 인가]
+</code></pre>
+<h2>4.  제어 공학적 장점 및 Ardupilot 대비 경쟁성</h2>
+<ul>
+<li><strong>과적분(Over-integration) 억제</strong>: 기존의 P-P 제어 방식은 목표 위치에 선행적으로 위치를 고정하고 이를 추종하기 위해 속도 제어기가 강하게 잡아당겼기에 외란에 의존적이며 오버슈트가 필연적으로 수반되었다. 저크 제한 역학 기반 S-Curve는 동역학적으로 구현 “가능한 연속적인 목표 궤적” 자체를 주기 위해 오버슈트가 수식적으로 <code>0</code>인 최적 제어를 실현한다.</li>
+<li><strong>가속 기반 피드포워드(Feed-forward) 제어와의 강력한 결합성</strong>: 생성된 <code>acceleration_setpoint</code>는 모터의 추력 믹서에 직접적으로 더해지므로 지연(Lag) 시간 없이 기체를 피치업시킨다.</li>
+<li><strong>Ardupilot의 제동 방식 (Leash/Drift vs. 3rd-order Polynomial)</strong>: Ardupilot의 <code>AC_WPNav</code> 역시 제동 시 부드러운 코너링(Spline)이나 저크 제어를 일부 지원하지만, 기본 구조는 고무줄 모델(Leash Model)로 1~2차 필터(LPF)에 보다 의지하는 경향이 짙다. PX4는 수학적으로 엄밀한 3차 궤적 미적분 모델(<code>mathlib/bezier</code> 및 <code>trajectory</code> 패키지)을 시스템 코어(Core)에 내장함으로써 상용 수준의 모션 컨트롤 스무딩(Smoothing)을 기본 파라미터 조작만으로 구현한다.</li>
+</ul>
+<h2>5.  MAVLink 및 GCS 시스템과의 인터랙션</h2>
+<p>QGroundControl에서 미션 혹은 위치 목표(<code>MAV_CMD_NAV_WAYPOINT</code> 등)가 PX4로 전송될 때 타겟 위치 좌표만이 넘어간다 하더라도, 시스템 내부는 이 S-Curve 알고리즘에 의해 스스로 속도와 최적 가속 곡선을 재계획한다.</p>
+<ul>
+<li>비행 중 조종기(Mavlink Joystick)나 Companion Computer (ROS2 Offboard) 조작을 통해 임의로 목표점이 연속적으로 변경되는 <strong>궤적 덮어쓰기(Trajectory Overwriting)</strong> 엣지 케이스 시, S-Curve 알고리즘은 내부 상태 벡터를 그대로 이어받기 때문에 충돌이나 기체 뒤집힘이 없이 즉각적이고 부드러운 유턴(U-Turn) 궤도를 창출해 낸다.</li>
+</ul>
+<h2>6. 결론</h2>
+<p>PX4-Autopilot의 역학 기반 S-Curve 궤적 생성 로직은 단순 비행 제어기(Flight Controller)를 정밀 유도 로봇(Guidance Robot)의 영역으로 끌어올린 핵심 아키텍처이다. 수학적으로 엄밀한 저크 제한(Jerk Limiting)을 통해 제어 입력의 연속성을 담보하고, 궁극적으로 외란 속에서의 이산적 제어 오버슈트(Over-shoot) 현상을 완벽에 가깝게 원천 차단한다.</p>
 
             </article>
             <footer>

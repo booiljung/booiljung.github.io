@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.5 `RTL` (Return To Launch) 모드: 비상 복귀 상태 머신 및 경로 최적화 (`rtl.cpp`)</title>
+    <title>BIJUNG:30.5. `RTL` (Return To Launch) 모드: 비상 복귀 상태 머신 및 경로 최적화 (`rtl.cpp`)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,78 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.5 `RTL` (Return To Launch) 모드: 비상 복귀 상태 머신 및 경로 최적화 (`rtl.cpp`)</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.5 `RTL` (Return To Launch) 모드: 비상 복귀 상태 머신 및 경로 최적화 (`rtl.cpp`)</span></nav>
+                    <h1>30.5. `RTL` (Return To Launch) 모드: 비상 복귀 상태 머신 및 경로 최적화 (`rtl.cpp`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.5. `RTL` (Return To Launch) 모드: 비상 복귀 상태 머신 및 경로 최적화 (`rtl.cpp`)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.5 <code>RTL</code> (Return To Launch) 모드: 비상 복귀 상태 머신 및 경로 최적화 (<code>rtl.cpp</code>)</h1>
+                <h1>30.5. <code>RTL</code> (Return To Launch) 모드: 비상 복귀 상태 머신 및 경로 최적화 (<code>rtl.cpp</code>)</h1>
+<p>무인항공기(UAS) 운용 중 통신 단절(Data Link Loss), 배터리 부족(Low Battery), 지오펜스(Geofence) 이탈, 혹은 조종자의 명시적인 복귀 명령이 발생했을 때 기체가 안전하게 이륙 지점이나 지정된 안전 구역으로 복귀하는 기능은 필수적이다. PX4-Autopilot에서 이를 전담하는 핵심 모듈이 바로 <strong>RTL (Return To Launch)</strong> 모드이다.</p>
+<p>본 장에서는 네비게이터(<code>navigator</code>) 모듈 내의 <code>rtl.cpp</code>를 중심으로 RTL 모드의 유한 상태 머신(FSM, Finite State Machine) 구조와 비행 궤적(경로 및 고도)을 최적화하여 복귀하는 일련의 과정에 대해 심밀하게 분석한다.</p>
+<h2>1.  RTL 모드의 목표 및 아키텍처 개요</h2>
+<p>RTL(Return To Launch / Return To Home) 모드는 단순히 원점 방향으로 기수를 돌려 직진하는 1차원적인 로직이 아니다. 도심지, 산악 지형, 혹은 장애물이 존재하는 다양한 환경에서 기체의 충돌(CFIT, Controlled Flight Into Terrain)을 피하고 에너지를 최적화하여 착륙하기 위해, RTL 모듈은 다단계의 <strong>상태 머신(State Machine)</strong> 구조로 세분화되어 있다.</p>
+<p><code>RTL</code> 클래스는 <code>NavigatorMode</code>를 상속받으며, 다음과 같은 주요 역할을 수행한다.</p>
+<ul>
+<li><strong>목적지 선정</strong>: 이륙 지점(Home Position), 랠리 포인트(Rally Point, 비상 대피소), 또는 특정 임무 복귀 지점 중 가장 적합한 위치 산출.</li>
+<li><strong>고도 유지 및 상승(Climb)</strong>: 복귀 중 지형지물 충돌을 피하기 위해 설정된 안전 고도(<code>RTL_RETURN_ALT</code>)까지 기체를 상승.</li>
+<li><strong>수평 복귀(Return)</strong>: 선택된 안전 고도를 유지하며 목적지 상공까지 수평 이동.</li>
+<li><strong>하강 및 착륙(Descend &amp; Land)</strong>: 목적지 상공 도달 후, 미리 정의된 하강 속도로 고도를 낮추고 자동으로 착륙 또는 대기(Loiter) 상태 진입.</li>
+</ul>
+<h2>2.  RTL 상태 머신(Finite State Machine) 분석</h2>
+<p><code>rtl.cpp</code> 파일의 핵심은 <code>RTLState</code> 열거형(Enum) 변수를 통해 현재 RTL의 진행 단계를 추적하고 관리하는 것이다. 각 단계는 엄격한 전이 조건(Transition Condition)을 통과해야 다음 상태로 넘어간다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; RTL_STATE_CLIMB: RTL 모드 트리거
+    
+    RTL_STATE_CLIMB --&gt; RTL_STATE_RETURN: 목표 안전 고도(Return Alt) 도달
+    
+    RTL_STATE_RETURN --&gt; RTL_STATE_TRANSITION_TO_MC: (VTOL 전용) 목적지 상공 도달 시 멀티로터 변환
+    RTL_STATE_RETURN --&gt; RTL_STATE_DESCEND: 목적지 상공 반경 내 도달
+    
+    RTL_STATE_TRANSITION_TO_MC --&gt; RTL_STATE_DESCEND: 변환 완료
+    
+    RTL_STATE_DESCEND --&gt; RTL_STATE_LOITER: 하강 대기 고도(Loiter Alt) 도달 (설정 시)
+    RTL_STATE_DESCEND --&gt; RTL_STATE_LAND: 지면 도달 (착륙 절차 진입)
+    
+    RTL_STATE_LOITER --&gt; RTL_STATE_LAND: 대기 시간 종료 또는 사용자 명령
+    
+    RTL_STATE_LAND --&gt; [*]: 시스템 Disarm 완료
+</code></pre>
+<h3>2.1  상승 단계 (RTL_STATE_CLIMB)</h3>
+<p>기체가 현재 있는 고도와 파라미터로 설정된 <code>RTL_RETURN_ALT</code>를 비교한다.</p>
+<ul>
+<li>기체의 현재 고도가 <code>RTL_RETURN_ALT</code>보다 낮다면: 기체는 현재 위치(x, y 좌표)를 유지한 채 <code>RTL_RETURN_ALT</code>까지 고도를 상승시킨다.</li>
+<li>기체의 현재 고도가 이미 <code>RTL_RETURN_ALT</code>보다 높다면: 상승 단계를 생략하거나, 설정(<code>RTL_CONE_ANG</code> 등)에 따라 현재 고도를 그대로 유지한 채 복귀를 시작한다 (에너지 낭비 방지).</li>
+</ul>
+<h3>2.2  수평 복귀 단계 (RTL_STATE_RETURN)</h3>
+<p>설정된 고도로 상승한 이후, 기체는 목적지를 향해 직선 수평 비행을 수행한다. 이 때 멀티로터는 <code>MPC_XY_CRUISE</code> 속도로, 고정익은 <code>FW_AIRSPD_TRIM</code> 속도로 비행을 유지한다.</p>
+<h3>2.3  하강 및 대기 단계 (RTL_STATE_DESCEND / LOITER)</h3>
+<p>목적지 상공(허용 반경 내)에 도달하면, 기체는 하강 속도(<code>MPC_Z_VEL_MAX_DN</code>)에 맞추어 <code>RTL_DESCEND_ALT</code>까지 하강한다.<br />
+해당 고도에 도달하면 옵션에 따라 기체를 잠시 체공(<code>Loiter</code>) 시켜 조종자가 개입할 시간적 여유를 주거나, 즉시 착륙(<code>Land</code>) 시퀀스로 전이하여 지면에 닿을 때까지 하강을 지속한다.</p>
+<h2>3.  목적지 및 경로 최적화 (Destination &amp; Path Optimization)</h2>
+<p>전통적인 RTH(Return To Home)는 무조건 이륙했던 홈 지점으로 복귀를 강제했기에, 이륙 지점이 이동하는 선박 위거나 험지인 경우 심각한 사고를 유발했다. PX4 <code>rtl.cpp</code>는 안전을 최우선으로 <strong>Rally Point(집결지)</strong> 개념을 도입하여 다중 목적지 최적화를 수행한다.</p>
+<h3>3.1  최소 비용(Minimum Cost) 기반 목적지 산출 로직</h3>
+<p>RTL 발동 시, 모듈은 단순히 홈 포지션과의 거리를 계산하는 것이 아니라 **비용 함수(Cost Function)**를 평가한다.</p>
+<ul>
+<li><code>find_RTL_destination()</code> 함수는 현재 드론의 글로벌 좌표(Lat, Lon)를 기준으로 데이터베이스 내에 저장된 모든 Rally Point와 본래의 Home Position을 순회한다.</li>
+<li>이때 가장 거리가 가까운 곳을 찾되, 비행 소요 시간, 잔여 배터리 용량, 그리고 바람의 방향(맞바람 여부)을 가중치로 고려하여 기체가 가장 적은 리스크로到達할 수 있는 안전 목적지를 동적으로 결정한다.</li>
+</ul>
+<h3>3.2  분리된 접근 궤적 생성</h3>
+<p>경로 최적화 단계에서 NPFG(고정익)나 FlightTaskAuto(멀티로터)는 목적지로 향하는 직선 궤적을 긋는다. 하지만 목적지 바로 위에서 급브레이크를 걸 경우 고도 이탈이 생길 수 있으므로, 목적지 전방 일정 거리에서부터 선형으로 감속을 시작하도록 **종점 조건 보간(End-point Interpolation)**이 적용되어 부드러운 상공 진입을 보장한다.</p>
+<h2>4.  Ardupilot 로직과의 차별화 설계 포인트</h2>
+<ul>
+<li><strong>복귀 꼬깔(Cone) 메커니즘</strong>: PX4는 <code>RTL_CONE_ANG</code> 파라미터를 통해 이륙 지점에 가까워질수록 복귀 안전 고도를 점진적으로 낮추는 ‘콘(Cone)’ 형태의 3D 공간 제약 로직을 제공한다. 반면, Ardupilot은 일괄적으로 <code>RTL_ALT</code>를 준수하여 홈 바로 위까지 온 직후에 높은 고도에서 수직 강하하는 방식이 기본값으로 설정되어 있어, 비효율적인 수직 강하 시간을 유발할 수 있다. PX4의 Cone RTL 로직은 복귀 시간을 크게 단축시키는 장점이 있다.</li>
+<li><strong>모듈화된 위치 제어 위임</strong>: Ardupilot은 <code>mode_rtl.cpp</code> 자체에서 속도나 가속도 타겟을 꽤 많이 통제하지만, PX4는 <code>rtl.cpp</code> 내에서는 오직 **상태 판별과 위치 Setpoint 생성(네비게이션 계층)**만 수행하고, 그것을 어떻게 부드럽게 추종할지는 하위 <code>PositionController</code> 클래스에 온전히 위임(Delegation)하여 아키텍처 결합도를 크게 낮추었다.</li>
+</ul>
+<h2>5.  핵심 튜닝 파라미터(Parameters)</h2>
+<p>운용자는 RTL의 비행 패턴을 다음의 주요 파라미터로 제어한다.</p>
+<ul>
+<li><code>RTL_TYPE</code>: 목적지 선정 방식 설정 (0: 즉각 상승 및 Home, 1: Rally Point 우선, 2: Mission Path 거꾸로 트래킹 후 Home 등)</li>
+<li><code>RTL_RETURN_ALT</code>: 기체가 장애물을 피해 수평 비행을 할 기본 안전 고도 한계선. (지면 기준 기본 30m~50m)</li>
+<li><code>RTL_DESCEND_ALT</code>: 목적지 도달 후 정밀 하강 시작 전 대기(Loiter)할 고도.</li>
+<li><code>RTL_LAND_DELAY</code>: <code>RTL_DESCEND_ALT</code> 도달 후 조종자 개입 대기 시간. (<code>-1</code> 설정 시 착륙하지 않고 무한 대기, <code>0</code> 설정 시 즉시 착륙 시작)</li>
+</ul>
+<h2>6.  결론</h2>
+<p>PX4-Autopilot의 RTL 시스템은 단순한 귀환 매크로가 아닌, 지오펜스 위반 통제 및 페일세이프(Failsafe) 체계와 긴밀히 연동되는 자가 생존 복귀 솔루션이다. 유한 상태 머신(FSM)을 통해 단계별(상승-기환-강하-착륙) 물리적 제약을 안전하게 제어하고, 고도 침하(Dropping)를 막기 위한 랠리 포인트 기반 다항 휴리스틱 경로 탐색 구조를 바탕으로, 비상 상황 속에서도 고도화된 시스템 자율성(Autonomy)을 입증하고 있다.</p>
 
             </article>
             <footer>

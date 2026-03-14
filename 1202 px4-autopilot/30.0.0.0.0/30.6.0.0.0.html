@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.6 자동 비행 중단 및 이중화(Redundancy) 예외 처리 로직</title>
+    <title>BIJUNG:30.6. 자동 비행 중단 및 이중화(Redundancy) 예외 처리 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,67 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.6 자동 비행 중단 및 이중화(Redundancy) 예외 처리 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.6 자동 비행 중단 및 이중화(Redundancy) 예외 처리 로직</span></nav>
+                    <h1>30.6. 자동 비행 중단 및 이중화(Redundancy) 예외 처리 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.6. 자동 비행 중단 및 이중화(Redundancy) 예외 처리 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.6 자동 비행 중단 및 이중화(Redundancy) 예외 처리 로직</h1>
+                <h1>30.6. 자동 비행 중단 및 이중화(Redundancy) 예외 처리 로직</h1>
+<p>자동 비행(Mission, RTL, Hold 등) 중에는 예측하지 못한 기계적 결함, 환경적 변수, 혹은 운용자의 다급한 개입 등 수많은 예외 상황(Edge Cases)이 발생할 수 있다. 드론과 같은 로봇 공학 시스템에서 자동 비행을 ’시작’하는 것보다 훨씬 더 중요하고 어려운 기술은 이를 예측 가능하게 <strong>’중단(Abort)’하고 가장 안전한 대안 모드(Failsafe / Redundancy)로 전이시키는 것</strong>이다.</p>
+<p>본 장에서는 PX4-Autopilot의 커맨더(Commander)와 네비게이터(Navigator) 계층이 협력하여 어떻게 자동 비행 중단 파이프라인(Abort Pipeline)을 구동하고, 하드웨어 이중화(Redundancy)에 의존하는 Failsafe 로직을 스케줄링하는지 소스 코드 수준에서 분석한다.</p>
+<h2>1.  자동 비행 중단(Abort) 트리거 요인</h2>
+<p>자동 비행 블록(<code>mission_block.cpp</code>, <code>rtl.cpp</code> 등)이 진행되던 중 이 실행 라인이 중도(Interrupt)에 끊어지는 원인은 크게 두 가지 카테고리로 나뉜다.</p>
+<h3>1.1  사용자 개입 (Manual Takeover/Override)</h3>
+<p>조종사가 조종기(RC)의 스틱을 일정 임계치(Deadzone) 이상으로 크게 거칠게 움직이거나, 비행 모드 스위치를 수동 제어(Position, Altitude, Stabilized)로 변경할 때 발생한다.</p>
+<ul>
+<li>PX4는 <code>commander.cpp</code> 내부의 RC 입력 감시 루프에서 조종자 스틱의 움직임을 상시 감지한다. 파라미터 <code>COM_RC_OVERRIDE</code>가 활성화되어 있다면, 시스템은 조종자가 즉결 탈취(Takeover) 의사가 있다고 판단하고 기존에 실행 중이던 <code>navigator</code>의 궤적 제어 권한을 즉시 무효화한다.</li>
+</ul>
+<h3>1.2  시스템 내부 감지 에러 (System Failsafe)</h3>
+<p>센서의 이상 징후나 배터리 고갈 등 기체가 자체 진단 알고리즘(Preflight/In-flight Checks)을 통해 자동 비행 유지가 불가하다고 판정할 때 트리거된다.</p>
+<ul>
+<li><strong>포지션 에러(Position Loss)</strong>: EKF2 필터 내에서 GPS 수신 신호가 <span class="math math-inline">x</span>초 이상 끊기거나(Innovation Variance 튐 현상 발생), 광학 흐름(Optical Flow) 센서의 신뢰도가 하락했을 때.</li>
+<li><strong>지오펜스 위반(Geofence Breach)</strong>: 기체가 돌풍 등에 휩쓸려 GCS에서 설정한 3D 가상 울타리 영역을 벗어나려 할 때.</li>
+<li><strong>배터리 고갈(Low Battery)</strong>: 전압 강하를 감지해 계산된 예상 잔류 비행 시간이 설정된 안전 하한선(Threshold)을 스치고 내려갈 때.</li>
+</ul>
+<h2>2.  예외 처리 파이프라인: 상태 머신 전이 (State Machine Transition)</h2>
+<p>자동 비행 중단이 승인되면 기체는 그 자리에서 멈춰 추락하는 것이 아니라, 살아남기 위해 가장 합리적인 모드(Fallback Mode)로 강제 전이된다.</p>
+<p>PX4의 안전망(Safety Net) 상태 머신은 <code>commander</code> 모듈 안의 <code>Failsafe</code> 상태 테이블에 정의되어 있으며, 중요도 산정에 따라 순차적인 강등(Degradation) 절차를 밟는다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[임무(Mission) 자동 비행 중] --&gt; B{예외 상황 발생 트리거}
+    B --&gt;|배터리 경고 (Low)| C[RTL 모드 강제 전환]
+    B --&gt;|RC 스틱 물리적 개입| D[Position / Altitude 모드 등 수동 제어로 권한 이양]
+    B --&gt;|가벼운 GPS 신호 단절| E[Hold/Loiter 모드 전환 후 대기]
+    B --&gt;|심각한 GPS 영구 상실| F[고도 유지 기반의 Land 모드 강제 하강]
+    B --&gt;|Geofence 완전 이탈 / 통제 상실| G[비상 정지 (Flight Termination) / 낙하산 전개]
+    
+    C --&gt; H[안전 기착]
+    D --&gt; H
+    E --&gt;|신호 회복 시| A
+    E --&gt;|Timeout 초과 시| F
+    F --&gt; H
+</code></pre>
+<h3>2.1  폴백(Fallback) 모드의 결정 연산 로직</h3>
+<ul>
+<li>PX4는 현재 활용 가능한 센서들의 건강 상태(Sensor Health Bitmask)를 스캔한다.</li>
+<li>예를 들어, GPS가 죽어서 발생한 에러인데 RTL(Return) 모드로 폴백을 명령하는 것은 불가능하다(RTL은 GPS가 필수적이다).</li>
+<li>따라서 이 경우 커맨더는 RTL 옵션을 건너뛰고, 기압계(고도 유지)만으로 수행 가능한 <code>Land</code> 모드나 <code>Altitude</code> 조종 모드로 강제로 상태를 3단계 점프시켜 전이시키는 똑똑한 강등 프로세스(Smart Fallback)를 가독성 높은 <code>Switch/Case</code> 문으로 관리하고 있다.</li>
+</ul>
+<h2>3.  센서 이중화(Redundancy)와 보팅(Voting) 메커니즘</h2>
+<p>상업용 및 군용 UAS 인증을 받기 위해 최신 Pixhawk 계열의 하드웨어는 IMU(가속도/자이로스코프), 나침반(Compass), 기압계 센서를 최소 2개에서 3개씩(Triple Redundancy) 탑재한다.</p>
+<p>PX4의 <code>sensors</code> 모듈은 자동 비행 중에 이러한 다중 센서 데이터를 모두 취합하여 실시간으로 **보팅 알고리즘(Voting Algorithm)**을 돌린다.</p>
+<ul>
+<li><strong>다수결의 원칙 (Majority Voting)</strong>: 3개의 IMU 중 2개가 동일한 기울기 값을 나타내는데 1개가 엉뚱한 값을 가리킨다면, PX4 시스템은 진동이나 열적 스트레스로 인해 1개의 센서가 고장 났다고 판단(Fail)하고 즉시 해당 센서의 데이터 유입 파이프라인을 격리(Isolate)시킨다.</li>
+<li><strong>무중단 스위칭(Bumpless Switching)</strong>: 메인 센서 파이프라인이 백업 센서 파이프라인으로 전환되는 그 찰나의 순간(ms)에도 궤적 제어기의 PID 루프에 찌그러짐(Spike)이 발생하지 않도록, EKF2 필터 알고리즘 단에서 필터 상태 역학을 부드럽게 재보간(Re-initialization)하는 이중화 퓨전 방어를 수행한다.</li>
+<li>이 센서 이중화 스위칭에 성공하면, 위 2번의 비행 중단(Abort)까지는 가지 않고 텔레메트리에 “Primary Sensor Fault, Switched to Backup” 경고등만 띄운 채 묵묵하게 남은 임무(Mission)를 수행한다.</li>
+</ul>
+<h2>4.  Ardupilot 예외 처리 구조와의 비교</h2>
+<ul>
+<li><strong>파라미터 체계의 직관성</strong>: Ardupilot은 트리거되는 센서 종류마다 <code>FS_GPS_ENABLE</code>, <code>FS_BATT_ENABLE</code>, <code>FS_THR_ENABLE</code> 식으로 분절된(Fragmented) 설정 구조를 지녀 튜닝이 매우 복잡하다.</li>
+<li><strong>State Machine 통합</strong>: PX4는 커맨더(Commander)라는 최상위 상태 머신 하나가 모든 컴포넌트의 오류 깃발(Error Flags)을 중앙 집권적으로 폴링(Polling)하여 통일된 안전 규정(Safety Constraints) 하에 처리한다 (<code>COM_POS_FS_EPH</code>, <code>COM_LOW_BAT_ACT</code> 등 접두사가 정돈되어 있다). 따라서 소프트웨어 아키텍처 관점에서 상태 전이가 얽히는 논리적 데드락(State Deadlock) 결함이 발생할 확률이 Ardupilot에 비해 상대적으로 희박하다.</li>
+</ul>
+<h2>5.  결론 및 신뢰성 관점의 평가</h2>
+<p>PX4-Autopilot의 자동 비행 중단 및 예외 처리 로직은 “어떻게든 임무를 완수한다“가 아니라 **“무슨 수를 써서라도 기체 파손과 대인 피해를 막는다”**라는 보수주의(Conservatism) 철학을 바탕으로 쓰였다. 센서 보팅(Voting) 메커니즘으로 견딜 수 있는 1차 방어선이 뚫리면, 커맨더 계층의 상태 머신 폴백(Fallback) 전이라는 2차 방어선이 가동되어 드론을 가장 안전한 모양새로 추락시키거나 비상 착륙시킨다.<br />
+개발자나 엔지니어는 이 거대한 예외 처리 파이프라인의 분기 조건들을 정확히 이해하고 현장(도심, 해상 등)에 맞게 <code>COM_</code> 계열 Failsafe 파라미터들을 커스터마이징 타일링(Tiling)하는 것이 매우 중요하다.</p>
 
             </article>
             <footer>

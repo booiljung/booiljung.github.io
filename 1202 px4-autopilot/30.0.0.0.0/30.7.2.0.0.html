@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.7.2 SITL 가상 환경 메모리 덤프(Memory Dump)를 통한 FSM(Finite State Machine) 교착 상태(Deadlock) 추적 및 레지스터 값 검증 기법</title>
+    <title>BIJUNG:30.7.2. SITL 가상 환경 메모리 덤프(Memory Dump)를 통한 FSM(Finite State Machine) 교착 상태(Deadlock) 추적 및 레지스터 값 검증 기법</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,57 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.7.2 SITL 가상 환경 메모리 덤프(Memory Dump)를 통한 FSM(Finite State Machine) 교착 상태(Deadlock) 추적 및 레지스터 값 검증 기법</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.7.2 SITL 가상 환경 메모리 덤프(Memory Dump)를 통한 FSM(Finite State Machine) 교착 상태(Deadlock) 추적 및 레지스터 값 검증 기법</span></nav>
+                    <h1>30.7.2. SITL 가상 환경 메모리 덤프(Memory Dump)를 통한 FSM(Finite State Machine) 교착 상태(Deadlock) 추적 및 레지스터 값 검증 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.7.2. SITL 가상 환경 메모리 덤프(Memory Dump)를 통한 FSM(Finite State Machine) 교착 상태(Deadlock) 추적 및 레지스터 값 검증 기법</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.7.2 SITL 가상 환경 메모리 덤프(Memory Dump)를 통한 FSM(Finite State Machine) 교착 상태(Deadlock) 추적 및 레지스터 값 검증 기법</h1>
+                <h1>30.7.2. SITL 가상 환경 메모리 덤프(Memory Dump)를 통한 FSM(Finite State Machine) 교착 상태(Deadlock) 추적 및 레지스터 값 검증 기법</h1>
+<p>PX4-Autopilot의 자동 비행 관장 모듈인 커맨더(Commander)와 네비게이터(Navigator)는 수십 개의 상태(State)와 전이 조건(Transition Rules)으로 얽혀 있는 거대한 **유한 상태 머신(Finite State Machine, FSM)**이다. 만약 조종자가 RTL 스위치를 올렸는데 기체가 아무 반응 없이 그 자리에 서 있거나(Deadlock), 특정 미션 웨이포인트(Waypoint)를 영원히 빙빙 맴도는 논리적 무한 루프에 빠진다면, 이는 비행 궤적의 오류(Log Graph)가 아니라 C++ 코드 단의 **논리 흐름 결함(Logic Bug)**이다.</p>
+<p>이러한 종류의 FSM 아키텍처 결함은 ULog 데이터의 시계열 그래프 파싱만으로는 절대 원인을 규명할 수 없다. 본 장에서는 실제 하드웨어를 띄우지 않고, <strong>SITL(Software In The Loop)</strong> 클론 환경과 리눅스 기반의 디버거(GDB/LLDB)를 결합하여 PX4 스택 내부의 RAM 메모리를 덤프(Dump)하고 레지스터 값을 추적함으로써 ’상태 머신 교착(Deadlock)’의 진범을 색출해 내는 심리스(Seamless) 디버깅 기법을 다룬다.</p>
+<h2>1.  FSM 교착(Deadlock)의 아키텍처적 원리</h2>
+<p>PX4 내부의 FSM 교착은 대부분 다중 스레드(uORB 토픽 구독) 간의 비동기적 타이밍 이슈나, 엣지 케이스(Edge Case)를 고려하지 않은 전이 조건의 논리곱(AND) 누락에서 비롯된다.</p>
+<ol>
+<li><strong>상태 천이 조건 불만족 (Stalled Transition)</strong>: ‘경유지 도달(Reach)’ 판정을 위해서는 반경 1m 이내 진입(<code>dist &lt; WP_RAD</code>)과 지연 시간 <code>WP_DELAY</code>가 모두 참(True)이 되어야 하는데, 지연 시간이 카운트되기 전에 ULog 데이터상 기체가 이미 1m 밖으로 밀려나버려 두 조건이 영구적으로 교차 불만족 상태에 빠지는 현상.</li>
+<li><strong>모드 변경 거부 (Mode Rejection)</strong>: <code>rtl.cpp</code>가 실행되기 위해서는 글로벌 위치의 <code>xy_valid</code> 플래그가 참이어야 하지만, EKF2가 Innovation 에러로 플래그를 <code>false</code>로 떨어뜨리는 찰나(ms)에 커맨더가 상태 변경을 시도하다가 충돌하여 요청이 묵살(Drop)되는 현상.</li>
+</ol>
+<h2>2.  SITL(Software In The Loop) 환경 기반의 사고 재현(Reproduction)</h2>
+<p>실제 기체에서 <code>GDB</code> 같은 코어 디버거를 붙이는 것은 하드웨어 제약(JTAG 디버거 연결 등)상 실시간성이 떨어지므로, 개발자들은 <strong>SITL 및 Gazebo 시뮬레이터</strong>를 활용해 가상 공간에 완벽한 “살인 현장의 복제본“을 구성한다.</p>
+<h3>2.1  파라미터와 환경의 Injection</h3>
+<ul>
+<li>현장에서 문제가 발생했던 기체의 ULog 파일에서 <code>.params</code> 덤프를 추출하여 SITL 구동 스크립트에 밀어 넣는다 (Injection).</li>
+<li>풍향, 풍속, 자계 교란 수치 등 환경 변수(Environmental variables)까지 Gazebo 세계관 모델링에 적용하여 트리거 조건을 정확히 똑같게 만든다.</li>
+</ul>
+<h3>2.2  디버깅 빌드 옵션 활성화</h3>
+<p>PX4 펌웨어를 리눅스 환경에서 컴파일할 때 최적화 옵션을 해제해야만 C++ 변수들이 레지스터에서 날아가지 않고 온전히 남아있다.</p>
+<pre><code class="language-bash">make px4_sitl_default boardconfig
+# CMAKE_BUILD_TYPE을 'Release'가 아닌 'Debug' 로 설정
+make px4_sitl gazebo HEADLESS=1
+</code></pre>
+<h2>3.  GDB 메모리 덤프를 통한 FSM 변수 스코프 추적</h2>
+<p>GDB 프롬프트가 SITL 프로세스에 후킹(Hooking)되면, 개발자는 시간(Time)의 흐름을 멈추고 PX4 아키텍처의 핏줄(RAM) 속을 헤집고 다닐 수 있다.</p>
+<h3>3.1  브레이크포인트(Breakpoint)와 조건부 멈춤</h3>
+<p>문제가 생기는 <code>mission.cpp</code>나 <code>commander.cpp</code>의 특정 분기문에 브레이크포인트를 걸어 교착 상태 진입 직전까지 코드를 돌린다.</p>
+<pre><code class="language-gdb">(gdb) break src/modules/navigator/mission.cpp:450
+(gdb) run
+</code></pre>
+<p>단순히 멈추는 것이 아니라, “기체의 고도가 10m일 때”, “상태가 RTL_STATE_CLIMB 에서 멈췄을 때” 와 같이 내부 C++ 클래스 멤버 변수를 조건식(Conditional Breakpoint)으로 매달아 특정 이벤트 스트림을 잡아낼 수 있다.</p>
+<h3>3.2  FSM 핵심 변수(Register) 덤프 분석</h3>
+<p>실행이 정지되면, 현재 스택 프레임(Stack Frame)에 잡혀있는 네비게이터의 로컬 인스턴스 메모리를 열어본다.</p>
+<pre><code class="language-gdb">(gdb) print _mission_item
+(gdb) print _navigator-&gt;get_local_position()-&gt;xy_valid
+</code></pre>
+<ul>
+<li>FSM이 교착에 빠졌다면, 분명 <code>if (condition_A &amp;&amp; condition_B)</code> 구문에서 탈출하지 못하고 루프를 돌고 있을 것이다.</li>
+<li>메모리 덤프를 통해 <code>condition_A</code>는 1(True)을 가리키지만, 개발자가 예상치 못했던 uORB 타이밍 지연으로 인해 <code>condition_B</code>의 레지스터 값이 0(False)으로 고착화된 채 갇혀 있는 논리적 헛점을 두 눈으로 직접 확인할 수 있다.</li>
+</ul>
+<h2>4.  백트레이스(Backtrace)를 통한 호출 스택 오염 규명</h2>
+<p>가장 골치 아픈 교착 현상은, A 모듈이 B 모듈의 상태를 바꿨는데, 곧이어 C 모듈이 B의 상태를 다시 자기 맘대로 덮어써서 발생(Race Condition)하는 경우다.</p>
+<p>GDB의 <code>backtrace (bt)</code> 명령어를 사용하면, 현재 모듈의 함수가 “과연 시간 역순으로 누구누구의 호출(Call) 지시를 거쳐 여기까지 도달했는지” 족보(Call Stack)를 덤프해 준다.<br />
+이를 통해 의도하지 않은 <code>sensors</code> 쓰레드의 강제 인터럽트가 <code>navigator</code> 의 상태 할당 코드를 무단 개입(Preemption)하여 모터를 잠재운 원리를 역추적하고, 추후 코딩 시 <code>뮤텍스(Mutex)</code>나 <code>아토믹 타입(Atomic)</code> 보강 설계를 적용할 수 있는 근거를 마련한다.</p>
+<h2>5.  결론 및 심화 엔지니어링 마인드</h2>
+<p>자동 비행 FSM의 신뢰성은 “코드 리뷰를 백 번 하는 것“보다 시뮬레이터 메모리 위에 칼을 대고(디버거 후킹) 상태 변수의 값이 <span class="math math-inline">1</span> 단위로 어떻게 쪼개지며 변모하는지를 관찰하는 해부학적 과정에 의해 완성된다.</p>
+<p>SITL 환경에서의 GDB 메모리 덤프 레퍼런스는 단순한 에러 수정을 뛰어넘어, PX4의 난해한 C++ 객체 지향 구조(OOP)와 NuttX/Linux POSIX 쓰레드(pthreads) 기반 다중 처리 아키텍처의 민낯을 엔지니어가 완전히 장악(Mastering)하게 만드는 가장 고통스럽지만 치명적으로 강력한 훈련법이다.</p>
 
             </article>
             <footer>

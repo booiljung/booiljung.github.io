@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.3.3.4 고도 변경(Change Alt): 비행 경로 오차를 최소화하기 위한 3차원 활공각(Glide Slope) 비례 제어</title>
+    <title>BIJUNG:30.3.3.4. 고도 변경(Change Alt): 비행 경로 오차를 최소화하기 위한 3차원 활공각(Glide Slope) 비례 제어</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,59 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.3.3.4 고도 변경(Change Alt): 비행 경로 오차를 최소화하기 위한 3차원 활공각(Glide Slope) 비례 제어</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.3.3.4 고도 변경(Change Alt): 비행 경로 오차를 최소화하기 위한 3차원 활공각(Glide Slope) 비례 제어</span></nav>
+                    <h1>30.3.3.4. 고도 변경(Change Alt): 비행 경로 오차를 최소화하기 위한 3차원 활공각(Glide Slope) 비례 제어</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.3.3.4. 고도 변경(Change Alt): 비행 경로 오차를 최소화하기 위한 3차원 활공각(Glide Slope) 비례 제어</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.3.3.4 고도 변경(Change Alt): 비행 경로 오차를 최소화하기 위한 3차원 활공각(Glide Slope) 비례 제어</h1>
+                <h1>30.3.3.4. 고도 변경(Change Alt): 비행 경로 오차를 최소화하기 위한 3차원 활공각(Glide Slope) 비례 제어</h1>
+<p>자율 비행 중 고도를 변경하는 기동은 단순히 수직 방향(Z축)으로 상승 또는 하강하는 1차원적 기동이 아니다. 대부분의 미션 스트럭처(Mission Structure)에서 고도 변경은 다음 경유지(Waypoint)로의 수평 이동(XY축)과 동시에 이루어지며, GCS를 통해 하달되는 <code>MAV_CMD_NAV_WAYPOINT</code>나 <code>MAV_CMD_CONDITION_CHANGE_ALT</code> 명령어는 기하학적으로 **3차원 활공각(Glide Slope)**을 형성한다. PX4-Autopilot의 <code>navigator</code> 및 <code>FlightTaskAuto</code> 모듈은 고도 오차를 최소화하고 부드러운 궤적을 긋기 위해 수평 속도와 수직 속도를 동기화하는 비례 제어(Proportional Control) 로직을 구사한다.</p>
+<h2>1.  왜 3차원 활공각(Glide Slope) 제어가 필요한가?</h2>
+<p>만일 기체가 현재 고도 50m에 위치하고, 100m 앞방향(수평) 거리의 고도 10m 경유지로 이동해야 한다고 가정해 보자.<br />
+단순 무식한(Naive) 독립형 PID 제어 방식이라면, 기체는 수직 하강 속도(Z-velocity)와 수평 전진 속도(XY-velocity)를 각자의 최대 성능으로 구동시킬 것이다. 이 경우 하강 속도 제한(<code>MPC_Z_VEL_MAX_DN</code>)에 부딪혀 기체는 먼저 수평 목표점에 도달해 버리고 그 이후에 수직으로만 하강하거나, 반대로 고도를 10m까지 뚝 떨어뜨린 후 지면에 바싹 붙어서(Terrain Following) 목표점을 향해 날아가는 괴이하고 위험한 궤적(Dog-leg Trajectory)을 형성하게 된다.</p>
+<p>PX4는 이를 방지하고 **두 점 사이의 가장 이상적인 최단 3차원 직선(Ideal 3D Straight Line)**을 걷기 위해, 수평 이동 거리와 수직 이동 공간의 비율(활공각)을 계산하여 각 축의 속도 지령치(Velocity Setpoint)를 동기화시킨다.</p>
+<h2>2.  속도 동기화 및 비례 제어(Proportional Control) 알고리즘</h2>
+<p>PX4의 다축 위치 제어 내부 로직에서는 크로스 트랙(Cross-track) 시스템을 3차원으로 확장하여 구현한다. 이전 웨이포인트 <span class="math math-inline">\mathbf{P}_{prev}</span>와 현재 웨이포인트 <span class="math math-inline">\mathbf{P}_{curr}</span> 사이의 3차원 공간 백터를 기준으로, 수직 축(Z)의 이상적인 위치 <span class="math math-inline">Z_{ideal}</span> 를 기체의 수평 이동 진행률(Horizontal Progress)에 비례하여 계산한다.</p>
+<ol>
+<li>
+<p><strong>진행률(Progress) 스칼라 계산</strong>:<br />
+수평 평면 상에서, 전체 궤적 중 현재 기체가 얼마만큼 전진했는지를 0.0 ~ 1.0 사이의 실수 단위로 평가한다.<br />
+<span class="math math-display"> \text{Progress}_{xy} = \frac{|| \mathbf{P}_{uav, xy} - \mathbf{P}_{prev, xy} ||}{|| \mathbf{P}_{curr, xy} - \mathbf{P}_{prev, xy} ||} </span></p>
+</li>
+<li>
+<p><strong>이상적 고도(Ideal Altitude) 도출</strong>:<br />
+<span class="math math-display"> Z_{ideal} = Z_{prev} + \text{Progress}_{xy} \times (Z_{curr} - Z_{prev}) </span></p>
+</li>
+<li>
+<p><strong>고도 비례 제어 (Altitude Proportional Control)</strong>:<br />
+기체의 현재 실제 고도 <span class="math math-inline">Z_{uav}</span> 와 이상적 궤적 <span class="math math-inline">Z_{ideal}</span> 간의 오차 에러 <span class="math math-inline">e_z = Z_{ideal} - Z_{uav}</span> 를 도출한다. 하위 컨트롤러 루프는 이 에러에 위치 비례 게인(<code>MPC_Z_P</code>)을 적용하여 수직 속도를 교정(Correct)한다.<br />
+<span class="math math-display"> V_{z, setpoint} = V_{cruise, z} + (K_{p, z} \times e_z) </span><br />
+<em>(여기서 <span class="math math-inline">V_{cruise, z}</span> 는 활공각에 따른 기본 Feedforward 하강/상승 속도이다.)</em></p>
+</li>
+</ol>
+<h2>30.3.3.4.3. 3D 활공각 동기화 제어 로직 모식도 (Mermaid Diagram)</h2>
+<pre><code class="language-mermaid">graph TD
+    A[Start: Alt 50m, Dist 0m] --&gt;|Ideal 3D Glide Slope| B[Target: Alt 10m, Dist 100m]
+    
+    C((UAV Actual Path)) --&gt;|Progress = 50%| D{Ideal Z should be 30m}
+    
+    D --&gt; E{UAV Actual Z = 40m?}
+    
+    E -- Yes, UAV is too high --&gt; F[Calculate Z_Error = -10m]
+    F --&gt; G[Increase Downward V_z Setpoint via MPC_Z_P]
+    G --&gt; C
+    
+    E -- No, UAV is exactly 30m --&gt; H[Maintain Proportional V_z &amp; V_xy]
+    H --&gt; C
+</code></pre>
+<h2>30.3.3.4.4. 운동학적 제약 한계 (Kinematic Constraints Handling)</h2>
+<p>위와 같은 활공각을 만들려 할 때, 사용자가 설정한 시스템 파라미터 제약(Constraints)과의 충돌이 발생할 수 있다. 예를 들어, 매우 짧은 수평 거리에 비해 깎아지른 듯한 수직 강하(Steep Descent)가 요구되는 궤적의 경우, 기체의 최대 하강 속도(<code>MPC_Z_VEL_MAX_DN</code>)가 수평 전진 속도 요구량을 따라잡지 못하는 역설(Paradox)이 발생한다.</p>
+<p>이 때 PX4의 <code>FlightTaskAutoMapper</code> 알고리즘은 <strong>수직 제약을 수평 속도에 투영(Back-projection)</strong> 하는 기지를 발휘한다.<br />
+수직 속도가 한계치(<code>MAX_DN</code>)에 부딪혀(Saturated) 더 이상 활공각을 유지할 수 없다면, 반대로 <strong>수평 전진 속도(XY Cruise Speed)를 임시로 감속(Deceleration)</strong> 시켜버린다. 이를 통해 기체가 목표점을 지나치지도 않고, 무리한 자세 제어를 유도하지도 않으면서 완벽하게 이상적인 비행 궤적(Glide Slope)을 깎아 내려오게 만드는 것이다.</p>
+<h2>30.3.3.4.5. Ardupilot 대비 구조적 해석 요약</h2>
+<p>Ardupilot은 전통적인 <code>WPNav</code> 라이브러리 내에서 리드(Leash) 개념과 스플라인 쉐이핑(Spline Shaping)을 통해 고도 제어를 복잡하게 인터로킹(Interlocking)하는 방식을 취한다.<br />
+반면 PX4는 수직/수평 컨트롤러를 철저하게 독립적인 PID 캐스케이드(Cascade) 모델로 분리하되, 그 상위 계층인 <code>FlightTask</code> 추상화 레벨에서 기하학적 백-프로젝션(Back-projection)과 벡터 정규화(Vector Normalization)를 통해 두 축 간의 속도를 커플링(Coupling)하는 방식을 택한다.<br />
+이러한 설계는 시스템 엔지니어가 수학적으로 디버깅하기 훨씬 용이하며, Z축과 XY축 각각의 하드웨어(액추에이터) 대역폭 한계를 독립적으로 튜닝(<code>MPC_Z_P</code> vs <code>MPC_XY_P</code>)할 수 있는 강력한 직관성을 제공한다. 결과적으로 이는 산악 지형을 따라 비행하는 지형 추종(Terrain Following) 모델이나 가파른 활공 착륙 시에 우수한 궤적 보존력을 선사한다.</p>
 
             </article>
             <footer>

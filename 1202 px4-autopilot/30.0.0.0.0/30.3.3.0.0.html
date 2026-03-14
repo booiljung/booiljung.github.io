@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.3.3 항법 명령어(Navigation Commands) 처리의 기하학적 제어 로직 분석</title>
+    <title>BIJUNG:30.3.3. 항법 명령어(Navigation Commands) 처리의 기하학적 제어 로직 분석</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,67 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.3.3 항법 명령어(Navigation Commands) 처리의 기하학적 제어 로직 분석</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.3.3 항법 명령어(Navigation Commands) 처리의 기하학적 제어 로직 분석</span></nav>
+                    <h1>30.3.3. 항법 명령어(Navigation Commands) 처리의 기하학적 제어 로직 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.3.3. 항법 명령어(Navigation Commands) 처리의 기하학적 제어 로직 분석</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.3.3 항법 명령어(Navigation Commands) 처리의 기하학적 제어 로직 분석</h1>
+                <h1>30.3.3. 항법 명령어(Navigation Commands) 처리의 기하학적 제어 로직 분석</h1>
+<p>자율 비행의 중추 신경계라 할 수 있는 <code>navigator</code> 모듈은 GCS로부터 수신된 추상적인 MAVLink 명령어(예: <code>MAV_CMD_NAV_WAYPOINT</code>, <code>MAV_CMD_NAV_LOITER_TIME</code>)를 기체가 물리적으로해석 가능한 유클리드 공간(Euclidean Space) 상의 3차원 목표 벡터(3D Setpoint Vector)로 치환하는 역할을 수행한다. 이 장에서는 <code>mission.cpp</code> 및 그 부모 클래스인 <code>mission_block.cpp</code>가 항법 명령어를 어떠한 기하학적 수학 모델을 통해 제어 목표점(Setpoint)으로 가공하는지를 심층적으로 분석한다.</p>
+<h2>1.  항법 명령어의 기하학적 추상화 (Geometric Abstraction)</h2>
+<p>기체가 공간을 이동하기 위해서는 단순히 “위치 A에서 B로 가라“는 식의 이산적(Discrete) 명령만으로는 불충분하다. 비례-적분-미분(PID) 기반의 하위 위치 제어기(Position Controller, <code>FlightTaskAuto</code>)가 부드럽고 연속적인 경로 추종(Path Following)을 수행하려면, 기하학적으로 엄밀하게 정의된 **목표점 트리플릿(Position Setpoint Triplet)**이 필요하다.</p>
+<h3>1.1 <code>position_setpoint_triplet_s</code> 구조체의 수학적 의미</h3>
+<p>PX4는 이전 교차점(Previous), 현재 목표점(Current), 그리고 다음 목표점(Next) 좌표를 묶어 하나의 <code>uORB</code> 토픽으로 발행한다.</p>
+<ul>
+<li><strong>Previous</strong>: 스플라인(Spline) 경로 생성이나 크로스 트랙 오차(Cross-track Error) 수정을 위한 시작 벡터.</li>
+<li><strong>Current</strong>: 현재 비행 제어 루프에서 수렴하고자 하는 주 타겟 벡터.</li>
+<li><strong>Next</strong>: 목표 도달 지점 부근에서 감속 프로파일(Deceleration Profile)을 최적화하고 궤적을 둥글게 깎아내는 유도 곡선(L1/L2 Guidance Curve)을 계산하기 위한 선행 벡터.</li>
+</ul>
+<p>이 트리플릿(Triplet) 시스템은 Ardupilot의 단일 웨이포인트(Single Waypoint) 제어 루프 대비 고속 비행 시 곡선 비행(Cornering) 성능을 최적화할 수 있는 PX4만의 차별적인 벡터장 기하학 모델이다.</p>
+<h2>2.  항법 명령어 타입별 제어 로직</h2>
+<p>명령어의 종류에 따라 <code>mission_block.cpp</code>가 기하학적 타겟을 생성하는 알고리즘은 상이하다.</p>
+<h3>2.1 ) 이동 명령 (<code>MAV_CMD_NAV_WAYPOINT</code>)</h3>
+<p>가장 기초적인 3차원 공간상의 점 추종 로직이다. 입력된 위도, 경도, 고도 데이터를 기반으로 글로벌 투영(Global Projection)을 거쳐 로컬 직교 좌표계(Local NED) 벡터로 변환한다.<br />
+이동 명령은 단순히 타겟점만 부여하는 것이 아니라, 허용 오차 반경(<code>Acceptance Radius</code>) 개념을 기하학적으로 동반한다.</p>
+<ul>
+<li>유도 로직: 현재 기체 위치와 다음 목표점 간의 위치 오차 벡터(<span class="math math-inline">\vec{e} = \vec{P}_{target} - \vec{P}_{chaser}</span>)의 노름(Norm)이 0에 수렴하도록 비행 속도 벡터(Velocity Setpoint)를 비례 제어(Proportional Control) 방식으로 생성한다.</li>
+</ul>
+<h3>2.2 ) 대기 명령 (<code>MAV_CMD_NAV_LOITER_TIME</code> / <code>_UNL</code>)</h3>
+<p>기체가 특정 지점에 도달한 뒤, 사용자가 설정한 반경(Radius)을 그리며 궤도 비행을 하거나 제자리에서 체공(Hovering)하는 모드이다.</p>
+<ul>
+<li><strong>고정익(FW)</strong>: 구심력(Centripetal Force)과 양력(Lift Force)의 벡터 합성을 통해 일정한 뱅크 각도(Bank Angle)를 유지하게 만드는 원형 벡터장(Circular Vector Field)을 생성한다.</li>
+<li><strong>멀티로터(MC)</strong>: 로컬 타겟 좌표를 원점으로 삼고, 수평 속도 셋포인트를 <span class="math math-inline">0</span>으로 강제 클리핑(Clipping)하여 제동 운동학(Braking Kinematics)을 구현한다.</li>
+</ul>
+<h3>2.3 ) 고도 변경 및 착륙 명령 (<code>MAV_CMD_NAV_LAND</code>)</h3>
+<p>착륙 항법의 기하학적 제어는 2차원적인 평면 이동보다 수직(Z축) 하강 속도 프로파일(Glide Slope Profile)의 수학적 설계가 더욱 중요하다.</p>
+<ul>
+<li>목표 지점을 기준으로 가상의 3차원 원뿔(Cone)을 상정하여, 기체가 이 허용 볼륨(Tolerance Volume)을 벗어나지 않도록 XY축의 슬립(Slip)을 억제하면서 Z축으로는 지면 근접 효과(Ground Effect)를 상쇄하기 위해 고도가 낮아질수록 동적인 비선형 스로틀 곡선(Non-linear Throttle Curve)을 내보낸다.</li>
+</ul>
+<h2>3.  기하학적 목표점 생성 파이프라인 (Mermaid Diagram)</h2>
+<p>다음은 GCS 명령어에서부터 최종 제어기가 소비할 수 있는 수학적 벡터가 파생되는 파이프라인의 구조이다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[MAVLink Nav Command] --&gt; B{Dataman Decoder}
+    B --&gt; C[mission.cpp: advance_mission()]
+    C --&gt; D[mission_block.cpp: Geometric Translator]
+    
+    D --&gt; E[Geodetic to NED Projection &lt;br/&gt; 'map_projection_project()']
+    
+    E --&gt; F[Generate Previous Vector P_prev]
+    E --&gt; G[Generate Current Vector P_curr]
+    E --&gt; H[Generate Next Vector P_next]
+    
+    F --&gt; I[Position Setpoint Triplet Struct]
+    G --&gt; I
+    H --&gt; I
+    
+    I --&gt; J[Velocity / Attitude Controller via uORB]
+</code></pre>
+<h2>4.  Ardupilot 대비 구조적 고도화의 관점</h2>
+<p>Ardupilot은 전통적으로 개별 비행 모드 컨트롤러(예: <code>mode_auto.cpp</code>) 내에 기하학적 유도 벡터(Guidance Vector) 계산 부동소수점 연산이 섞여 있는 모놀리식(Monolithic) 설계 양상을 띠어 왔다.<br />
+반면 PX4 펌웨어는 고정익/로버의 비선형 L1 유도 모델(L1 Non-linear Guidance)이나 멀티로터의 위치 추종 모델을 순수 수학적 모듈(예: <code>FlightTaskAuto</code>, <code>npcg</code>)로 완벽하게 위임(Delegation)한다.</p>
+<p>따라서 <code>navigator</code> 모듈 내의 항법 처리 로직은 “어떻게(How) 그 위치로 갈 것인가“를 직접 연산하는 대신, “기동해야 하는 기하학적 공간 정보(What)가 무엇인가“를 수식화하여 트리플릿 기반으로 전달하는 <strong>인터페이스 역할</strong>에만 집중한다. 이러한 데코레이터(Decorator) 패턴과 유사한 관심사의 분리(Separation of Concerns)는 학술 연구 및 자율 에이전트 개발 시 시스템의 일부분만을 제어 기술(Control Theory) 모델로 갈아 끼우기 쉽도록 만들어 준다.</p>
+<h2>5.  요약 및 시사점</h2>
+<p>결과적으로 PX4의 <code>Mission</code> 및 <code>MissionBlock</code> 시스템은 단순한 타이머(Timer) 기반의 스크립트 실행기가 아니라, 3차원 유클리드 공간을 해석하고 구면 기하(Spherical Geometry)를 로컬 직교 좌표로 투영하는 복잡한 기하학 변환 엔진(Geometry Transformation Engine)이다. 이러한 아키텍처적 특성을 이해하면, 사용자가 QGroundControl에서 그은 하나의 선분이 기체의 비행 제어기 메모리 단에서 어떠한 형태의 수학적 유도 벡터장(Guidance Vector Field)으로 치환되는지 그 본질을 꿰뚫어 볼 수 있다.</p>
 
             </article>
             <footer>

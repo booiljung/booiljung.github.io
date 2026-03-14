@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:30.2.4 `FeasibilityChecker`의 운동학적 제약 조건(Kinematic Constraints) 및 비행 포락선(Flight Envelope) 사전 검증 로직</title>
+    <title>BIJUNG:# 1.  `FeasibilityChecker`의 운동학적 제약 조건(Kinematic Constraints) 및 비행 포락선(Flight Envelope) 사전 검증 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,68 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>30.2.4 `FeasibilityChecker`의 운동학적 제약 조건(Kinematic Constraints) 및 비행 포락선(Flight Envelope) 사전 검증 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">제목: 최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span>30.2.4 `FeasibilityChecker`의 운동학적 제약 조건(Kinematic Constraints) 및 비행 포락선(Flight Envelope) 사전 검증 로직</span></nav>
+                    <h1># 1.  `FeasibilityChecker`의 운동학적 제약 조건(Kinematic Constraints) 및 비행 포락선(Flight Envelope) 사전 검증 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 30. 자동 비행 모드(Mission, Hold, Return) 소스 코드 분석</a> / <span># 1.  `FeasibilityChecker`의 운동학적 제약 조건(Kinematic Constraints) 및 비행 포락선(Flight Envelope) 사전 검증 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>30.2.4 <code>FeasibilityChecker</code>의 운동학적 제약 조건(Kinematic Constraints) 및 비행 포락선(Flight Envelope) 사전 검증 로직</h1>
+                <h1># 1.  <code>FeasibilityChecker</code>의 운동학적 제약 조건(Kinematic Constraints) 및 비행 포락선(Flight Envelope) 사전 검증 로직</h1>
+<p>자동 비행 시스템에서 “경로가 존재한다“는 사실이 곧 “그 경로를 실제로 안전하게 비행할 수 있다“는 물리적 가능성을 내포하지는 않는다. GCS(지상 관제 시스템) 조작자의 실수, 통신 데이터의 오염, 혹은 비현실적인 경로 계획 알고리즘의 결함으로 인해 기체의 물리적 한계점(Physical Limits)을 돌파하는 자살성 스크립트가 기체로 업로드될 수 있다.</p>
+<p>이러한 치명적 인적/기계적 에러가 기어코 메인 비행 제어 루프를 장악하기 전에, 예방 수학(Preventive Mathematics)으로 기체의 생존을 사수하는 문지기(Gatekeeper) 역할의 계층이 존재한다. 바로 <code>FeasibilityChecker</code> 클래스 모듈이다. 본 절에서는 이 모듈이 미션 실행 직전에 어떻게 운동학적 제약 조건(Kinematic Constraints)과 기하학적 비행 포락선(Flight Envelope)을 사전 심사(Pre-flight Validation)하는지 분석한다.</p>
+<h3>1.1  <code>FeasibilityChecker</code> 모듈의 아키텍처 포지셔닝</h3>
+<p>PX4-Autopilot의 아키텍처 상, <code>FeasibilityChecker</code>는 <code>commander</code> 모듈의 하위 유틸리티 컴포넌트이자 <code>Navigator</code> 모듈과 밀접하게 소통하는 논리적 검사 장치이다.</p>
+<p>조종사가 GCS를 통해 새로운 자동 임무 아이템 구성을 기체에 전송하고 나면, MAVLink 프로토콜상 수십 개의 아이템이 <code>dataman</code>을 거쳐 SD 카드에 영구 기록된다. 그러나 쓰기 작업이 완수되었다 하더라도, 기체는 결코 곧바로 <code>Mission</code> 모드로의 진입을 허가(<code>MAV_RESULT_ACCEPTED</code>)하지 않는다.</p>
+<p>대신 백그라운드에서 <code>FeasibilityChecker::checkMissionFeasible()</code> 정적 검증 함수가 호출되어 전체 임무 배열 인덱스를 처음부터 끝까지 가상 시뮬레이션하듯 훑어내며(Iterate) 기체의 동역학 파라미터와 교차 검열을 수행한다.</p>
+<h3>1.2  기하학적 비행 포락선(Geometrical Flight Envelope) 검증</h3>
+<p>비행 포락선(Flight Envelope)이란 특정 기체가 안전을 담보하며 비행할 수 있는 고도, 속도, 지형적 한계의 3차원 바운더리를 일컫는다. <code>FeasibilityChecker</code>는 우선적으로 각 웨이포인트(Waypoint)의 공간 좌표가 이 울타리를 벗어났는지 색출한다.</p>
+<ol>
+<li><strong>지오펜스(Geofence) 침범 검사 (Polygon &amp; Cylinder Limits)</strong></li>
+</ol>
+<ul>
+<li>PX4 파라미터 데이터베이스 설정에 따라 다각형(Polygon) 형태나 원형(Circular) 형태의 지오펜스 영역이 지정되어 있을 수 있다.</li>
+<li>체커 루직은 미션 아이템 상의 모든 점(Vertices)과 선분(Segments)을 추출하여, Ray-Casting Algorithm이나 점-다각형 내포 검사(Point-in-Polygon Test) 수학 부동소수점 연산을 실행한다. 만일 단 하나의 임무선분이라도 제한 구역(Keep-out Zone)을 베고 지나가거나 이탈 구역(Keep-in Zone) 밖으로 나간다면 즉시 임무는 Feasibility 검증에서 탈락(False) 처리된다.</li>
+</ul>
+<ol start="2">
+<li><strong>절대/상대 고도 한계(Altitude Limits) 검증</strong></li>
+</ol>
+<ul>
+<li>글로벌 최대 비행 고도 파라미터(<code>MIS_TAKEOFF_ALT</code>, <code>GF_MAX_VER_DIST</code>)를 초과하는 웨이포인트가 존재하는지 스캔한다.</li>
+<li>고정익(Fixed-wing) 기체의 경우 착륙(Land) 웨이포인트에 도달하기 전의 활공경사(Glideslope) 고도가 지나치게 가파른 역전 지형을 가지진 않는지, 이륙(Takeoff) 점과 첫 번째 웨이포인트 간의 고도 이격 델타가 충분히 설정되어 충돌을 방지할 수 있는지 등을 공간 벡터 함수로 추론한다.</li>
+</ul>
+<h3>1.3  운동학적 제약 조건(Kinematic Constraints) 검증</h3>
+<p>고도와 평면 위치만 지오펜스 내에 존재한다고 끝이 아니다. <code>FeasibilityChecker</code>의 더 깊숙한 잣대는 멀티로터나 고정익이 지닌 운동학 및 동력학(Kinetics)적 한계 파라미터를 넘어서는지에 대한 평가이다.</p>
+<ul>
+<li><strong>멀티로터의 제동 거리(Braking Distance) 제약</strong></li>
+<li>두 웨이포인트 사이의 거리(<span class="math math-inline">\Delta d</span>)가 기체가 요구하는 최소 가속-감속 곡선 길이보다 극단적으로 짧아 속도를 내기도 전에 강제 제동을 일으켜야만 하는 물리적 모순이 있는지를 검토한다 (<code>MPC_ACC_HOR</code> 및 <code>MPC_JERK_AUTO</code> 파라미터 조합 검조).</li>
+<li><strong>고정익 차량의 롤링(Rolling) 및 피칭(Pitching) 선회 한계</strong></li>
+<li>고정익은 직각으로 꺾일 수 없다. <code>current</code> 아이템과 <code>next</code> 아이템을 잇는 코너각이 파라미터상의 최소 선회 반경(<code>FW_T_RMAX</code>)이나 최대 롤 뱅크 각도(<code>FW_R_LIM</code>)를 초과하여, 비행기가 구조적으로 실속(Stall)하거나 타겟을 무한 이탈할 수밖에 없는 예각(Acute Angle) 꺾임을 지시하는지 계산한다.</li>
+<li>착륙 패턴(Landing Pattern) 아이템이 존재할 시, 베이스 레그(Base Leg) 거리와 파이널 어프로치(Final Approach) 각도가 해당 기체의 글라이더 동역학적 침하율(Sink Rate)과 들어맞는지 고차원 궤적 검증을 단행한다.</li>
+</ul>
+<pre><code class="language-mermaid">graph TD
+    A[임무 갱신 이벤트 발생 &lt;br/&gt; GCS -&gt; MAVLink] --&gt; B[Dataman SD 쓰기 완료]
+    B --&gt; C{FeasibilityChecker &lt;br/&gt; 백그라운드 가상 시뮬레이션}
+    
+    C --&gt;|Stage 1| D{지오펜스 이탈 / &lt;br/&gt; 고도 한계 치명 검사}
+    C --&gt;|Stage 2| E{고정익/로터 최소 선회반경 &lt;br/&gt; 물리적 한계 초과 검사}
+    C --&gt;|Stage 3| F{이륙/착륙 패턴 정합성 &lt;br/&gt; 및 아이템 누락 검사}
+    
+    D --&gt;|Fail| Z[사전 예외 거리 &lt;br/&gt; MAV_RESULT_DENIED 방출]
+    E --&gt;|Fail| Z
+    F --&gt;|Fail| Z
+    
+    D --&gt;|Pass| G
+    E --&gt;|Pass| G
+    F --&gt;|Pass| G
+    
+    G[모든 노드 물리적 검증 통과] --&gt; H[Commander로 &lt;br/&gt; 비행 허용 승인 피드백 전달]
+    
+    style Z fill:#ff9999,stroke:#333;
+    style H fill:#99ff99,stroke:#333;
+</code></pre>
+<h3>1.4  이중화 안전장치 (Redundancy &amp; Fail-Safe Integration)</h3>
+<p>이러한 사전 검열이 위태롭게 실패(<code>return false</code>)할 경우, 기체는 아무런 조치 없이 방관하지 않는다. <code>FeasibilityChecker</code>의 반환 값은 <code>Commander</code>의 메인 안전 장치 스위치와 연결되어, 기체가 지상에 암 디스어밍(Disarmed) 가동 대기 중이었다면 이륙 자체를 시스템 락아웃(Lock-out)으로 철회해 버린다.</p>
+<p>만약 비행 중 임무가 긴급 재업로드되었고, 그것이 Feasibility를 통과하지 못해 기체가 허공에 붕 뜬 상황이라면 어떻게 될까? <code>navigator</code>는 오염된 새로운 미션을 절대 활성화 인덱스로 올리지 않는다. 즉각 기체를 기존 궤적 그 자리에 강제 <code>Hold</code>(정지 호버링) 또는 안전 지향적 <code>RTL</code>(이륙 위치로 복귀)로 상태 전이시켜 조종사의 새로운, “물리적으로 실행 가능한(Feasible)” 지시가 인가될 때까지 보수적 방어 기제로 대응하는 것이다.</p>
+<p>결론적으로, <code>FeasibilityChecker</code> 모듈은 GCS가 던져주는 소프트웨어적 수의 공간(Logical Space)을 멀티로터 모델이 살아 숨 쉬는 강건한 물리적 공간(Physical constraints)으로 치환할 수 있는지 단호히 판별해 내는, 수동적이지만 가장 강력한 수학 기반의 파수꾼(Watchdog) 알고리즘이라 할 수 있다.</p>
 
             </article>
             <footer>
