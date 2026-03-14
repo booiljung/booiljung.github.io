@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:27.6.2.2 추정기 상태 및 혁신 메시지 구독을 통한 실시간 순위 결정 로직</title>
+    <title>BIJUNG:27.6.2.2. 추정기 상태 및 혁신 메시지 구독을 통한 실시간 순위 결정 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,49 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>27.6.2.2 추정기 상태 및 혁신 메시지 구독을 통한 실시간 순위 결정 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6.2.2 추정기 상태 및 혁신 메시지 구독을 통한 실시간 순위 결정 로직</span></nav>
+                    <h1>27.6.2.2. 추정기 상태 및 혁신 메시지 구독을 통한 실시간 순위 결정 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6.2.2. 추정기 상태 및 혁신 메시지 구독을 통한 실시간 순위 결정 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>27.6.2.2 추정기 상태 및 혁신 메시지 구독을 통한 실시간 순위 결정 로직</h1>
+                <h1>27.6.2.2. 추정기 상태 및 혁신 메시지 구독을 통한 실시간 순위 결정 로직</h1>
+<p>본 소절에서는 PX4-Autopilot의 <code>EKF2Selector</code> 모듈이 각 확장 칼만 필터(EKF) 인스턴스로부터 발행되는 상태 메타데이터와 혁신(Innovation) 메시지를 구독(Subscribe)하고, 이를 통계적으로 정량화하여 실시간으로 인스턴스 간의 신뢰도 순위(Ranking)를 산정하는 동적 제어 로직을 소스 코드 수준에서 분석한다.</p>
+<h2>1.  uORB 메시징 체계를 통한 추정기 상태 구독 아키텍처</h2>
+<p>NuttX RTOS 상에서 동작하는 PX4 시스템은 모듈 간의 데이터를 고속으로 비동기 교환하기 위해 강력한 Publish-Subscribe 미들웨어인 uORB(Micro Object Request Broker) 통신 아키텍처를 채택하고 있다. <code>EKF2Selector</code> 모듈은 개별 <code>EKF</code> 인스턴스 내부의 메모리에 직접 뮤텍스 락(Mutex Lock)을 걸어 접근하는 방식을 지양하고, 시스템 버스로 방사되는 다수의 uORB 토픽을 수동적으로 구독함으로써 느슨한 결합(Loose Coupling)을 보장한다.</p>
+<p>다중 인스턴스 배열을 구성하는 개별 EKF 코어들은 자신의 갱신(Update) 주기가 완료될 때마다 다음과 같은 구조체 토픽을 시스템 버스에 발행(Publish)한다.</p>
+<ul>
+<li><code>estimator_status</code>: 필터의 게이팅(Gating) 실패 여부, 비행 모드에 따른 퓨전(Fusion) 활성화 비트맵(Flags), 그리고 각 축별 통계적 테스트 비율(Test Ratios)을 포함한다.</li>
+<li><code>estimator_innovations</code>: 위치, 속도, 지자계, 기압계 등의 상세한 수학적 혁신(<span class="math math-inline">\tilde{y}</span>) 잔차 공간 정보와 공분산 한계값을 포함한다.</li>
+</ul>
+<p><code>EKF2Selector</code>는 이 메시지 토픽들의 고유 인스턴스 번호 식별자(ODID)를 확인하여, 내부의 상태 맵(State Map)에 각 코어의 최신 건전성(Health) 상태를 주기적으로 캐싱(Caching)한다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant Inst0 as EKF Instance 0
+    participant Inst1 as EKF Instance 1
+    participant uORB as uORB Message Bus
+    participant Selector as EKF2Selector
+    
+    Inst0-&gt;&gt;uORB: Publish estimator_status (Instance 0)
+    Inst1-&gt;&gt;uORB: Publish estimator_status (Instance 1)
+    
+    uORB--&gt;&gt;Selector: Subscribe &amp; Callback Trigger
+    
+    activate Selector
+    Selector-&gt;&gt;Selector: Update Internal Health Map
+    Selector-&gt;&gt;Selector: Calculate Variance Penalty Score
+    Selector-&gt;&gt;Selector: Rank Instances (Sort)
+    deactivate Selector
+</code></pre>
+<h2>2.  혁신 분산 기반의 실시간 순위 결정 알고리즘(Ranking Logic)</h2>
+<p>각 EKF 인스턴스로부터 분산 데이터를 성공적으로 수신한 <code>EKF2Selector</code>는 앞선 절에서 다룬 ‘상태 평가 점수(Health Score)’ 누적 페널티 피드백 방정식에 기반하여 배열 내 모든 인스턴스를 동적으로 정렬(Sorting)한다. 순위 결정 알고리즘은 비행 제어 루프의 극단적으로 낮은 시계열 지연(Latency) 내에서 동작해야 하므로, 가벼운 부하의 단위 비교 구문 알고리즘을 거친다.</p>
+<p>실시간 순위 결정 프로토콜의 핵심 규칙은 다음과 같다.</p>
+<ol>
+<li><strong>페널티 점수 절대 우위 판정</strong>: 누적된 건강 점수 산술 지표가 가장 낮은(누적 오류율이 가장 적은) 인스턴스가 1차적으로 1순위 후보가 된다.</li>
+<li><strong>센서 퓨전 모드 우선순위 고려(Fusion Tie-breaking)</strong>: 인스턴스 간 결함 지표 편차가 거의 동일한 건강 점수 대역폭(Band) 내에 위치할 경우, 시스템은 현재 더 많은 보조 신뢰 센서를 활용하여 융합 중인 인스턴스에 가산점을 부여한다. 예를 들어, 광학 흐름(Optical Flow)과 GPS를 모두 융합 중인 인스턴스는 GPS 정보만 단독 활용하는 인스턴스 대비 비교 우위를 점유한다. 이는 활성 상태 플래그(Flags) 비트마스킹 로직을 통해 판별된다.</li>
+<li><strong>히스테리시스(Hysteresis) 락(Lock)</strong>: 순위가 실시간으로 교차되었다 하더라도, 기존 주(Primary) 인스턴스와 후보 인스턴스 간의 점수 이득(Margin) 폭이 사전에 튜닝된 파라미터(예: <code>EKF2_SEL_ERR_MARGIN</code>)를 초과하지 않는 이상 무분별한 주 인스턴스의 권한 이양(Handover) 트랜잭션을 억제한다.</li>
+</ol>
+<h2>3.  알고리즘의 신뢰성 입증 및 GCS 관제 연동 통합</h2>
+<p>위와 같은 정교한 스위칭 방어 메커니즘을 거쳐 단 하나의 EKF 인스턴스가 1순위 최적 추정기로 확정되면, 셀렉터 모듈은 비로소 단 1기 인스턴스의 예측치만을 추출하여 최종 제어 토픽인 <code>vehicle_odometry</code> 및 <code>vehicle_local_position</code> 토픽으로 포워딩(Forwarding)한다. 이는 비행 역학 시스템인 위치 제어기(Position Controller)의 피드백 제어 루프로 진입한다.</p>
+<p>QGroundControl과 같은 지상 관제 시스템(GCS) 소프트웨어 툴킷은 데이터링크를 타고 전송된 MAVLink 프로토콜 형식의 <code>ESTIMATOR_STATUS</code> 계열 패킷을 복원하여, UI 상에 이 실시간 인스턴스 순위 변동 추이를 시각화한다. R. W. Beard 등의 “Small Unmanned Aircraft: Theory and Practice“에 기술되어 있는 전통적인 중앙 집중형 칼만 필터 복원 방법론과 궤를 달리하며, PX4의 독립 구독 기반 순위 이양 아키텍처는 다중 코어 운영체제 하에서 메모리 점유 및 스레드 충돌 제약을 배제하고 자율 항법 시스템의 안전성(Reliability)을 극대화한 현대적 시스템 공학 설계의 모범적 사례로 평가받는다.</p>
 
             </article>
             <footer>

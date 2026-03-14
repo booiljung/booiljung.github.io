@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:27.7.1.2 솔루션 상태 플래그(solution_status_flags): 위치/자세 데이터의 제어기 사용 가능 여부 검증</title>
+    <title>BIJUNG:27.7.1.2. 솔루션 상태 플래그(solution_status_flags): 위치/자세 데이터의 제어기 사용 가능 여부 검증</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,62 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>27.7.1.2 솔루션 상태 플래그(solution_status_flags): 위치/자세 데이터의 제어기 사용 가능 여부 검증</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.7.1.2 솔루션 상태 플래그(solution_status_flags): 위치/자세 데이터의 제어기 사용 가능 여부 검증</span></nav>
+                    <h1>27.7.1.2. 솔루션 상태 플래그(solution_status_flags): 위치/자세 데이터의 제어기 사용 가능 여부 검증</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.7.1.2. 솔루션 상태 플래그(solution_status_flags): 위치/자세 데이터의 제어기 사용 가능 여부 검증</span></nav>
                 </div>
             </header>
             <article>
-                <h1>27.7.1.2 솔루션 상태 플래그(solution_status_flags): 위치/자세 데이터의 제어기 사용 가능 여부 검증</h1>
+                <h1>27.7.1.2. 솔루션 상태 플래그(solution_status_flags): 위치/자세 데이터의 제어기 사용 가능 여부 검증</h1>
+<p>본 소절에서는 확장 칼만 필터(EKF) 메커니즘이 도출해 낸 기체의 융합 상태 변수(자세, 속도, 위치)가, 하위 비행 제어기(Flight Controller) 네트워크에 피드백 제어 입력값으로 투입되기 직전 그 수학적 ’유효성(Validity)’을 실시간으로 보증하는 핵심 비트마스크 체계인 <code>solution_status_flags</code>의 아키텍처적 의의를 분석한다.</p>
+<h2>1.  솔루션 상태 플래그의 제어공학적 역할</h2>
+<p>PX4-Autopilot의 로터리/고정익 제어 모델은 각 축 방향의 오류 구배(Error Gradient)를 최소화하기 위한 PID 및 외란 관측기(Disturbance Observer) 네트워크로 구성된다. 이러한 폐루프(Closed-loop) 제어기들의 안정성은 역설적이게도 궤환(Feedback)되는 상태 변수의 절대적인 품질에 전적으로 의존한다. 만약 EKF가 GPS 음영 지역에 진입하여 X-Y 평면 상의 글로벌 위치(Global Position)를 단 한 번이라도 불확실하게 추산했다면, 위치 제어기(Position Controller)는 이 불확실성을 기동(Maneuver) 오차로 오인하여 모터 구동계에 최대 출력을 강제하는 양성 피드백(Positive Feedback) 붕괴 시나리오를 초래할 수 있다.</p>
+<p>이를 근본적으로 차단하기 위해, EKF2 래퍼 계층은 매 연산 틱(Tick)마다 현재 산출된 개별 도메인별 추정치가 “정상적으로 수렴하였는가?“를 단정 스위치(Assertion Switch) 형태로 인코딩하여 <code>solution_status_flags</code>라는 32비트(32-bit) 정수 배열에 0과 1로 포장하여 송출한다.</p>
+<h2>2.  주요 플래그(Flags) 구성과 정렬(Alignment) 생애 주기</h2>
+<p>해당 비트마스크 배열은 기체에 최초로 전원이 인가되는 시점(Boot)부터 초기화(Initialization) 단계를 거쳐 완전 비행 모드에 진입하기까지의 동적 상태 전이(State Transition) 트리를 정밀하게 추적한다. 핵심 비트 매핑(Bit Mapping)은 다음과 같은 의미역을 점유한다.</p>
+<ol>
+<li><strong>기본 자세 정렬 비트 (Attitude Alignment)</strong>:</li>
+</ol>
+<ul>
+<li><code>CS_TILT_ALIGN</code>: 기체의 Roll/Pitch 평면 기울기 추정이 중력 백터 단위로 정오차 범위 내 수렴을 완료했음을 지시한다.</li>
+<li><code>CS_YAW_ALIGN</code>: 진북(True North) 혹은 자북(Magnetic North) 벡터에 대한 기수각(Heading) 추정이 고정(Lock-in)되었음을 뜻한다. 비행 전 이 비트가 점등되지 않으면 커맨더 모듈(Commander Module)은 기체의 시동(Arming)을 원천 차단한다.</li>
+</ul>
+<ol start="2">
+<li><strong>공간 관측 데이터 융합 활성화 비트 (Spatial Data Fusion)</strong>:</li>
+</ol>
+<ul>
+<li><code>CS_GPS</code>: 위성 항법 측위(GNSS) 패킷이 정상 유입되어 EKF 공간 좌표의 융합 엔진에서 글로벌 위치 솔루션이 가용함(Valid)을 보증한다. <code>Offboard</code> 체계나 자율 경로 추종(Path Planning) 모드 진입의 핵심 전제 조건이다.</li>
+<li><code>CS_OPT_FLOW</code>: 광학 흐름(Optical Flow) 카메라 레이어 시스템을 통한 지면 상대 수평 속도의 수학적 유효성을 증명한다.</li>
+<li><code>CS_MAG_HDG</code> / <code>CS_MAG_3D</code>: 지자기 센서로부터 유입된 1차원 배향(Heading) 혹은 3차원 자력 벡터가 전자기적 오차 없이 필터에 정상 기여하고 있음을 지시한다.</li>
+<li><code>CS_EV_POS</code> / <code>CS_EV_YAW</code>: 로봇 운영체제(ROS 2) uXRCE-DDS 네트워크를 통해 인입되는 시각 관성 주행 거리계(VIO; External Vision) 데이터 트리거가 비행 동역학 모델 융합 루프에 정상 연동 상태임을 뜻한다.</li>
+</ul>
+<pre><code class="language-mermaid">classDiagram
+    class Estimator_Status_Topic {
+        +uint32_t solution_status_flags
+        +uint16_t filter_fault_flags
+        +uint16_t innovation_check_flags
+    }
+    
+    class Solution_Status_Bitmask {
+        &lt;&lt;Enumeration Flags&gt;&gt;
+        +Bit 0: CS_TILT_ALIGN
+        +Bit 1: CS_YAW_ALIGN
+        +Bit 2: CS_GPS
+        +Bit 3: CS_OPT_FLOW
+        +Bit ...
+    }
+    
+    class Position_Controller {
+        +Check Validity()
+        +Execute Control Logic()
+    }
+    
+    Estimator_Status_Topic *-- Solution_Status_Bitmask : Encodes
+    Position_Controller ..&gt; Solution_Status_Bitmask : Queries before Control Target Calculation
+</code></pre>
+<h2>3.  커맨더(Commander) 계층 및 GCS 관제 연동의 체계 무결성</h2>
+<p>추정기로부터 발원하는 <code>solution_status_flags</code> 비트 다중화 데이터스트림은 제어 루프의 내부 보안망 역할을 수행할 뿐만 아니라, 상위 시스템 머신인 커맨더 모듈의 의사결정에 직결된다.</p>
+<p>커맨더 모듈은 매 사이클마다 위치 제어 모드(Position Mode), 미션 제어 모드(Mission Mode), 외부 제어 모드(Offboard)와 같은 상위 자동화 요구 모델의 진입 조건을 관장한다. 이때 조종자가 조종기(Radio Control) 레버를 자동 비행 모드로 스위칭하더라도, 커맨더는 <code>solution_status_flags</code> 상의 <code>CS_GPS</code> 또는 <code>CS_EV_POS</code> 등의 필수 불가결(Indispensable) 위치 추정 비트가 On 상태가 아니라고 판별하면 즉시 GCS로 ‘Command Denied’ 메시지를 전송함과 동시에 모드 전이를 기각한다.</p>
+<p>이와 같은 비트 단위의 크로스체킹(Cross-checking) 아키텍처는 일시적으로 GPS 멀티패스(Multipath)가 튀거나 비전 시스템 지연(VIO Latency)이 점화된 상태에서, 무리하게 비행 모드를 승강시키려다 드론 군집 체계(Swarm Constellations)가 기구학적으로 발산해버리는 치명적 구조 결함을 회피할 수 있는 산업적 신뢰성의 토대를 마련한다. QGroundControl은 이 플래그들을 MAVLink 패킷으로 재해석하여, 파일럿에게 현재 비행 모드에 투입될 가용 센서 조합의 생존망을 대시보드의 녹색 인디케이터로 지속 브리핑해 주는 시각적 연동성을 완성한다.</p>
 
             </article>
             <footer>

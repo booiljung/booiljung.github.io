@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:27.7.2.1 공분산 발산 한계 초과 시 수행되는 로컬 좌표계 재초기화 파이프라인</title>
+    <title>BIJUNG:27.7.2.1. 공분산 발산 한계 초과 시 수행되는 로컬 좌표계 재초기화 파이프라인</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,27 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>27.7.2.1 공분산 발산 한계 초과 시 수행되는 로컬 좌표계 재초기화 파이프라인</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.7.2.1 공분산 발산 한계 초과 시 수행되는 로컬 좌표계 재초기화 파이프라인</span></nav>
+                    <h1>27.7.2.1. 공분산 발산 한계 초과 시 수행되는 로컬 좌표계 재초기화 파이프라인</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.7.2.1. 공분산 발산 한계 초과 시 수행되는 로컬 좌표계 재초기화 파이프라인</span></nav>
                 </div>
             </header>
             <article>
-                <h1>27.7.2.1 공분산 발산 한계 초과 시 수행되는 로컬 좌표계 재초기화 파이프라인</h1>
+                <h1>27.7.2.1. 공분산 발산 한계 초과 시 수행되는 로컬 좌표계 재초기화 파이프라인</h1>
+<p>본 소절에서는 PX4-Autopilot의 확장 칼만 필터(EKF) 아키텍처가 장기간의 센서 음영이나 동역학적 이상(Anomaly)으로 인해 내부 추정 공분산(Covariance)이 임계 발산 한계를 초과했을 때, 시스템의 완전한 붕괴를 회피하기 위해 수행하는 최후의 방어 체계인 ‘로컬 좌표계 재초기화(Local Frame Re-initialization)’ 파이프라인의 설계 및 구현체(<code>src/modules/ekf2/EKF/control.cpp</code>)를 세밀하게 분석한다.</p>
+<h2>1.  공분산 발산 한계의 정의와 트리거링(Triggering) 조건</h2>
+<p>상태 추정(State Estimation) 프로세스에서 공분산 행렬(Covariance Matrix, <span class="math math-inline">P</span>)의 대각 원소들은 각 상태 변수에 대한 필터 내부의 ’불확실성(Uncertainty)’을 대변한다. 센서 데이터가 지속적으로 유입되어 갱신(Update) 단계를 거칠 때마다 불확실성은 수축(Converge)하지만, 반대로 센서 데이터 융합이 기각(Reject)되거나 신호가 단절될 경우 모델 예측(Prediction) 단계에 내재된 프로세스 노이즈 벡터 <span class="math math-inline">Q</span>만이 계속 누적되어, 공분산은 시간의 흐름에 따라 물리적으로 불가능한 수준까지 팽창하게 된다.</p>
+<p>PX4 EKF2 모듈은 이러한 불확실성의 무한 발산을 감시하기 위해 특정 공분산 대각 요소(예: 수평 위치 분산, 속도 분산 등)가 사전에 하드코딩(Hard-coding) 설계되거나 파라미터화된 임계값을 돌파하는지(Variance &gt; Limit)를 매 틱(Tick)마다 검사한다. 더불어 혁신 게이트(Innovation Gate) 테스트에서 측정치가 <span class="math math-inline">N</span> 프레임 이상 연속으로 기각당하는 타이머 한계(일례로 5초)에 도달할 경우, 필터는 기존의 상태 벡터 공분산 행렬 구조가 완전히 파탄났으며(Diverged) 더 이상의 평활화(Smoothing) 복구가 불가능하다고 선언(Fault Declaration)하게 된다.</p>
+<h2>2.  로컬 원점(Local Origin) 강제 재초기화 시퀀스</h2>
+<p>발산이 공식적으로 선언되면, PX4는 해당 EKF 인스턴스를 즉시 셧다운(Shutdown)시키는 대신, 비행 중에 로컬 NED(North-East-Down) 좌표계의 중심 원점을 현재 기체가 위치한 지점으로 뜯어고치는 ’재초기화(Re-initialization)’라는 외과적 수술 파이프라인을 실행한다.</p>
+<ol>
+<li><strong>관측치 기반 강제 투영 (State Overwrite)</strong>: EKF는 발산해 버린 내부 모델 예측치(<span class="math math-inline">\hat{x}</span>)를 버리고, 그 순간 덤프(Dump) 된 가장 신뢰할 수 있는 단일 관측 센서(예: 단기간 수렴된 GPS 픽스 모델, 혹은 VIO 슬램 추정치)의 절대 좌표(Absolute Coordinate)를 상태 벡터에 물리적으로 덮어쓴다(Overwrite).</li>
+<li><strong>공분산 팽창(Covariance Inflation) 메커니즘</strong>: 강제 주입된 관측치 역시 잡음을 내포하고 있으므로, 필터는 덮어씌운 해당 상태 변수의 공분산을 즉각적으로 ‘초기 불확실성 상수(Initial Variance)’ 크기만큼 강제로 팽창시킨다. 이는 초기 상태의 EKF가 갖는 높은 칼만 이득(Kalman Gain, <span class="math math-inline">K</span>)을 재현하여, 후속 관측치들이 필터에 매우 공격적으로 융합될 수 있도록 문호를 개방하는 제어 역학적 조치이다.</li>
+<li><strong>오프셋 누산기(Offset Accumulator) 트래킹</strong>: 기체의 내부 좌표계 상 로컬 원점이 순간적으로 <span class="math math-inline">10\text{m}</span> 우측으로 공간 이동(Warp)했다면, 이는 비행 제어기(Position Controller) 입장에서는 위치 명령(Setpoint)을 <span class="math math-inline">10\text{m}</span> 이탈한 치명적 스텝 에러(Step Error)로 둔갑한다. EKF 파이프라인은 이를 무마하기 위해 원점이 이동한 <span class="math math-inline">\Delta</span> 벡터 리셋 오프셋(Reset Offset)을 연산하고, 이를 누산기 배열에 기록한다.</li>
+</ol>
+<h2>3.  MAVLink 및 제어기 무결성 복구(Integrity Restoration)</h2>
+<p>로컬 좌표계 초기화가 단행된 직후의 마이크로초(us) 대역에서, EKF 엔진은 <code>estimator_event_flags</code> 토픽의 비트마스크를 갱신하고 계산된 리셋 오프셋 좌표 벡터를 GCS 및 내부 제어기(Controller)로 방사(Publish)한다.</p>
+<p>비행 궤적 생성기(Trajectory Generator)와 위치 제어기(Position Controller)는 이 오프셋 벡터를 실시간 구독(Subscribe)한다. 제어기 루프는 타겟 목표점(Target Setpoint) 좌표계를 EKF가 리셋한 오프셋 수치만큼 똑같이 평행 이동시켜버린다.<br />
+결론적으로 기체의 추정기는 비연속적인 좌표 도약을 겪어 시스템 오류 한계를 초기화시켰음에도 불구하고, 물리적인 로터(Rotor)의 RPM 제어 신호는 좌표계 간섭에 의한 그 어떠한 스파이크(Spike)도 보이지 않게 설계된 것이다. 이러한 PX4의 추정-제어 간(Estimator-to-Controller) <strong>무충돌 분리(Bumpless Transfer)</strong> 아키텍처는, 과거 Ardupilot 플랫폼에서 잦은 EKF 리셋 시 기체가 울컥거리던(Twitching) 물리 현상을 소프트웨어 공학적으로 완벽히 억제해 낸 자율 비행 로보틱스 기술의 백미라 평가할 수 있다.</p>
 
             </article>
             <footer>

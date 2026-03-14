@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:35.1.1.3 은닉된 내부 상태 머신(Hidden Internal State Machine)을 통한 지상 관제 소프트웨어의 순환 복잡도(Cyclomatic Complexity) 완화 기법</title>
+    <title>BIJUNG:35.1.1.3. 은닉된 내부 상태 머신(Hidden Internal State Machine)을 통한 지상 관제 소프트웨어의 순환 복잡도(Cyclomatic Complexity) 완화 기법</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,53 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>35.1.1.3 은닉된 내부 상태 머신(Hidden Internal State Machine)을 통한 지상 관제 소프트웨어의 순환 복잡도(Cyclomatic Complexity) 완화 기법</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.1.1.3 은닉된 내부 상태 머신(Hidden Internal State Machine)을 통한 지상 관제 소프트웨어의 순환 복잡도(Cyclomatic Complexity) 완화 기법</span></nav>
+                    <h1>35.1.1.3. 은닉된 내부 상태 머신(Hidden Internal State Machine)을 통한 지상 관제 소프트웨어의 순환 복잡도(Cyclomatic Complexity) 완화 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.1.1.3. 은닉된 내부 상태 머신(Hidden Internal State Machine)을 통한 지상 관제 소프트웨어의 순환 복잡도(Cyclomatic Complexity) 완화 기법</span></nav>
                 </div>
             </header>
             <article>
-                <h1>35.1.1.3 은닉된 내부 상태 머신(Hidden Internal State Machine)을 통한 지상 관제 소프트웨어의 순환 복잡도(Cyclomatic Complexity) 완화 기법</h1>
+                <h1>35.1.1.3. 은닉된 내부 상태 머신(Hidden Internal State Machine)을 통한 지상 관제 소프트웨어의 순환 복잡도(Cyclomatic Complexity) 완화 기법</h1>
+<p>드론 통신 제어망에서 지상 관제 시스템(GCS)이나 다중 에이전트 지휘 서버를 설계할 때, 개발자를 가장 괴롭히는 요인은 시시각각 변하는 비행체의 동적 상태를 추적하고 그에 따른 분기문(If-Else, Switch) 논리를 작성하는 일이다. 본 절에서는 PX4-Autopilot 환경에서 MAVSDK가 내부적으로 채택한 은닉된 유한 상태 머신(Hidden Finite State Machine) 모델이, 어떻게 사용자 응용 프로그램의 순환 복잡도(Cyclomatic Complexity)를 획기적으로 낮추고 스파게티 코드(Spaghetti Code)의 양산을 막는지 고찰한다.</p>
+<h2>1.  원시 MAVLink 제어에서의 순환 복잡도(Cyclomatic Complexity) 현상</h2>
+<p>순환 복잡도란 소프트웨어 모듈 내의 독립적인 실행 경로(Path)의 개수를 정량화한 지표이다. MAVLink 프로토콜을 통신 소켓 레벨에서 직접 핸들링할 경우, 단순한 “이륙(Takeoff)” 제어 명령 하나를 수행하더라도 극도로 높은 순환 복잡도가 발생한다.</p>
+<ul>
+<li>제어 명령 발송 파이프라인: <code>MAV_CMD_NAV_TAKEOFF</code> 발송 <span class="math math-inline">\rightarrow</span> 응답 대기 상태 진입</li>
+<li>예외 상황 분기 1 (Timeout): 정해진 시간 내에 <code>COMMAND_ACK</code>가 비수신 시, 타임아웃 처리 후 재전송 큐(Queue) 삽입</li>
+<li>예외 상황 분기 2 (NACK): 기체(PX4)가 시동(Armed)되지 않았거나 GPS 수신 불량으로 거부(<code>MAV_RESULT_DENIED</code>)할 경우의 에러 처리 핸들러 호출</li>
+<li>상태 교차 검증: ACK를 수신했으나 실제 고도(Altitude) 텔레메트리 스트림에서 기체가 상승하지 않는 경우에 대비한 이중 조건 검사</li>
+</ul>
+<p>상술한 분기 논리를 응용 프로그램 측면에서 모든 제어 명령(Arm, Disarm, Land, Mission Upload)마다 개별 구현하게 되면, GCS 소스 코드는 수많은 비동기 콜백(Callback)과 플래그(Flag) 변수들의 뒤엉킴으로 인해 사실상 유지보수 불가능한 상태에 직면한다.</p>
+<h2>2.  MAVSDK의 은닉된 유한 상태 머신(Hidden FSM) 구조 도입</h2>
+<p>MAVSDK는 이러한 GCS 관제 소프트웨어의 순환 복잡도를 완화하기 위해 저수준 MAVLink 로직의 책임을 C++ 코어 내부의 ’은닉된 내부 상태 머신(Hidden Internal State Machine)’으로 위임(Delegation)하였다.</p>
+<ol>
+<li><strong>동기적(Synchronous) 블로킹 API 제공</strong>: 비동기 처리에 익숙하지 않은 개발자를 위해, MAVSDK는 요청을 보내고 최종 결과가 확정(성공 혹은 명시적 실패)될 때까지 스레드를 일시 정지(Blocking)시키는 인터페이스를 기본 제공한다. 내부 상태 머신이 재시도(Retry)와 타임아웃 판정을 전부 끝낸 뒤 통합된 <code>Result</code> Enum 객체만을 반환한다.</li>
+<li><strong>은닉된 재시도(Retry) 및 타임아웃 루프</strong>: Action 혹은 Mission 플러그인 내부의 상태 머신은 MAVLink 명령을 발송한 직후 자체적인 하드웨어 타이머를 구동한다. UDP 패킷 낙하(Drop)로 인해 500ms 내에 응답이 없으면 횟수 카운터를 증가시키며 백오프(Backoff) 단위로 자동 재발송(Retransmission)한다.</li>
+<li><strong>결정론적 상태 반환</strong>: 응용 계층의 개발자는 과정의 파편화된 ACK를 분석할 필요 없이, <code>Success</code>, <code>NoSystem</code>, <code>ConnectionError</code>, <code>Busy</code>, <code>CommandDenied</code>와 같이 사전에 엄격히 정의된 결론적인 상위 에러 코드만을 수신받아 하나의 Switch 분기로 처리할 수 있게 된다.</li>
+</ol>
+<pre><code class="language-mermaid">graph TD
+    A[사용자 함수: drone.action.takeoff()] --&gt;|함수 호출| B(MAVSDK 내부 FSM 진입)
+    B --&gt;|MAVLink 발송| C{COMMAND_ACK 수신?}
+    C --&gt;|No| D{타임아웃 및 재시도 횟수 한계?}
+    D --&gt;|초과 안함| B
+    D --&gt;|초과| E[결과 반환: Timeout Error]
+    C --&gt;|Yes| F{Result == ACCEPTED?}
+    F --&gt;|No| G[결과 반환: Command Denied]
+    F --&gt;|Yes| H[결과 반환: Success]
+    
+    E --&gt; I[사용자 응용 계층 제어권 반환]
+    G --&gt; I
+    H --&gt; I
+    
+    subgraph MAVSDK Hidden Sub-system
+        B
+        C
+        D
+        F
+    end
+</code></pre>
+<h2>3.  Ardupilot 관제와 비교한 PX4 환경의 통신 최적화</h2>
+<p>기존 Ardupilot 기반 시스템에서 자주 사용되는 Mission Planner나 DroneKit 스크립트를 파헤쳐 보면, 위와 같은 ACK 수신 대기 및 타이머 관리 로직이 Python 응용 코드 레벨에 적나라하게 노출되어 있는 경우가 잦다. 이는 무인기 개발 도중 임무 흐름을 재설정하거나 복구(Recovery) 논리를 심을 때 프로그램 생명주기를 파괴하는 치명적인 버그를 양산한다.</p>
+<p>본질적으로 PX4 환경을 통제하기 위한 QGroundControl(C++ 기반) 및 현대식 자율 에이전트(Python/ROS 2 중심) 구조에서는 이러한 통신 세션 제어 로직을 드론 미들웨어 계층 아래로 은닉하는 전략이 필연적으로 적용되고 있다. MAVSDK 프레임워크는 gRPC 백엔드 내에서 이러한 FSM을 캡슐화(Encapsulate)함으로써, 상위 시스템이 더 본질적인 공간 항법 알고리즘(Path Planning) 계산이나 VIO(Visual Inertial Odometry) 텔레메트리 융합 분석에만 컴퓨팅 리소스를 온전히 투입할 수 있는 쾌적한 개발 관제(GCS) 생태계를 완성하였다.</p>
 
             </article>
             <footer>

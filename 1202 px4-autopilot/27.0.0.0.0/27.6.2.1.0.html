@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:27.6.2.1 상태 평가 점수(Health Score) 산출: 혁신 분산 누적 및 페널티 부여 산술식</title>
+    <title>BIJUNG:27.6.2.1. 상태 평가 점수(Health Score) 산출: 혁신 분산 누적 및 페널티 부여 산술식</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,48 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>27.6.2.1 상태 평가 점수(Health Score) 산출: 혁신 분산 누적 및 페널티 부여 산술식</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6.2.1 상태 평가 점수(Health Score) 산출: 혁신 분산 누적 및 페널티 부여 산술식</span></nav>
+                    <h1>27.6.2.1. 상태 평가 점수(Health Score) 산출: 혁신 분산 누적 및 페널티 부여 산술식</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6.2.1. 상태 평가 점수(Health Score) 산출: 혁신 분산 누적 및 페널티 부여 산술식</span></nav>
                 </div>
             </header>
             <article>
-                <h1>27.6.2.1 상태 평가 점수(Health Score) 산출: 혁신 분산 누적 및 페널티 부여 산술식</h1>
+                <h1>27.6.2.1. 상태 평가 점수(Health Score) 산출: 혁신 분산 누적 및 페널티 부여 산술식</h1>
+<p>본 소절에서는 <code>EKF2Selector</code> 모듈이 다중 EKF 인스턴스 중 최적의 주(Primary) 추정기를 선발하기 위해 사용하는 정량적 평가 지표인 ’상태 평가 점수(Health Score)’의 산출 논리와, 순간적인 센서 오류(Glitch) 발생 시 부여되는 페널티(Penalty) 산술식을 소스 코드 구조 관점에서 상세히 분석한다.</p>
+<h2>1.  혁신 분산(Innovation Variance)과 테스트 비율(Test Ratio)의 정의</h2>
+<p>확장 칼만 필터(EKF)의 갱신(Update) 단계에서 가장 핵심적인 통계적 매개변수는 <strong>혁신(Innovation, <span class="math math-inline">\tilde{y}</span>)</strong> 이다. 혁신은 하드웨어 센서로부터 입력된 외부 관측치(<span class="math math-inline">z</span>)와 상태 공간 모델을 통해 산출된 선험적 관측 예측치(<span class="math math-inline">h(\hat{x}^-)</span>) 간의 차이로 정의된다.<br />
+<span class="math math-display"> \tilde{y} = z - h(\hat{x}^-) </span></p>
+<p>이 혁신값이 필터가 자체적으로 예측한 ’혁신 공분산(Innovation Covariance, <span class="math math-inline">S</span>)’의 수학적 허용 오차 내에 존재하는지 확률적으로 검증하는 과정을 게이팅(Gating)이라 정의하며, PX4 시스템은 이를 <strong>테스트 비율(Test Ratio)</strong> 이라는 정규화된 무차원 지표로 변환하여 활용한다.<br />
+<span class="math math-display"> \text{Test Ratio} = \frac{\tilde{y}^2}{\sigma^2_{gate} \cdot S} </span><br />
+여기서 <span class="math math-inline">\sigma_{gate}</span>는 시스템 파라미터(예: <code>EKF2_REQ_VDRIFT</code>)로 설정된 게이트용 표준편차 승수를 의미한다. 특정 센서 축에서 이 테스트 비율이 1.0을 초과하게 되면, 해당 센서 입력은 물리적 신뢰 한계를 벗어난 이상점(Outlier)으로 간주되며 필터 상태 갱신 과정에서 기각(Reject)된다.</p>
+<h2>2.  상태 평가 점수(Health Score) 산출 아키텍처</h2>
+<p>개별 인스턴스는 매 업데이트 틱(Tick) 주기마다 속도, 위치, 고도, 방위각 등 다차원에 걸친 테스트 비율을 융합하여 자신만의 ’건강 상태(Health Status)’를 <code>EKF2Selector</code>에 보고한다.</p>
+<p>이때 단순히 현재 프레임의 테스트 비율 크기를 합산하여 점수를 산출할 경우, 비행 기동 시 필연적으로 발생하는 일시적 가속도 진동이나 짧은 GPS 멀티패스(Multipath) 신호 튕김에 의해 종합 점수가 급격히 요동치게 되는 문제가 발생한다. PX4는 이러한 불안정성을 방지하기 위해 <strong>1차 저역 통과 필터(Low-pass Filter)</strong> 와 <strong>페널티 누적(Penalty Accumulation) 산술식</strong>이 결합된 히스테리시스 구조를 채택하였다.</p>
+<pre><code class="language-cpp">// 건강 점수 산출의 논리적 메커니즘 (src/modules/ekf2/EKF2Selector.cpp 개념 모델)
+float EKF2Selector::calculate_health_score(EKF_Instance &amp;inst, float dt) {
+    float current_frame_error = 0.0f;
+    
+    // 1. 각 센서 도메인별 관측 지표 비율 합산 (속도/위치, 지자계, 고도)
+    current_frame_error += inst.vel_pos_test_ratio;
+    current_frame_error += inst.mag_test_ratio;
+    current_frame_error += inst.hgt_test_ratio;
+    
+    // 2. 혁신 기각(Innovation Rejected)과 같은 임계점 초과 발생 시 막대한 가중치 페널티 부과
+    if (inst.is_innovation_rejected()) {
+        current_frame_error += PENALTY_INNOVATION_REJECTED;
+    }
+    
+    // 3. 시간 감폭(Time-Decay) 저역 통과 필터를 통한 누적 산술 (단위 시간 dt 반영)
+    // 급격히 오른 에러 점수는 관성을 유지하며 서서히 감소하여 필터 안정성 이력을 기록함
+    inst.accumulated_score = alpha * current_frame_error + (1.0f - alpha) * inst.accumulated_score;
+    
+    return inst.accumulated_score;
+}
+</code></pre>
+<p><em>(참고: 에러 누적 산술 시스템에서 점수(Score)는 수치가 높을수록 오류가 심각함을 의미하며, <span class="math math-inline">0</span>에 가까울수록 이상적인 추정 상태임을 나타낸다.)</em></p>
+<h2>3.  누적 페널티의 항법 제어공학적 의의</h2>
+<p>상기 제시된 산술식에서 가장 핵심적인 특징은 특정 센서의 상태 이상 범주 초과 시 즉각적으로 에러치(페널티)가 상승하지만, 해당 센서가 다시 정상 궤도에 진입하더라도 그 평가 점수가 즉각 <span class="math math-inline">0</span>으로 복구되지 않고 관성(Inertia)을 지니고 서서히 감쇠(Decay)한다는 점이다.</p>
+<p>이러한 특성은 로봇 운영체제(ROS 2) 통신망이나 다중 에이전트(Swarm) 자율 비행 관제 하에서 심도 있는 자동 항법(Auto-Navigation)을 수행할 때 치명적인 EKF 채터링(Chattering) 현상을 구조적으로 억제한다. 즉, 특정 IMU 보드가 물리적 공진으로 인해 초당 수 회의 간헐적 글리치(Glitch)를 출력할 경우, 단순한 임계값 초과 비교 논리에서는 초당 수 회씩 인스턴스 간의 스위칭이 연쇄적으로 일어날 수 있다. 하지만 분산 이력 형식을 지닌 누적 페널티 산술식 구조 하에서는 간헐적 오류가 발생하는 즉시 해당 인스턴스의 누적 에러율이 극단적으로 치솟게 되어, 주(Primary) EKF 후보군에서 안전하게 장기 배제(Long-term Exclusion)되게 된다.</p>
+<p>QGroundControl(QGC)과 같은 지상 관제 시스템(GCS)은 다운링크 MAVLink의 <code>ESTIMATOR_STATUS</code> 내부 페이로드를 통해 각 인스턴스의 혁신 비율과 건강 상태 플래그(Health Flags)를 실시간으로 해석하고, 조종자 및 GCS 개발자(MAVSDK 사용자 포함)에게 텔레메트리 트러블슈팅(Troubleshooting) 데이터를 제공할 수 있는 기반 창구를 얻게 된다.</p>
 
             </article>
             <footer>

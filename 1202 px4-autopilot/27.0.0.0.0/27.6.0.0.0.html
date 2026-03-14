@@ -115,81 +115,65 @@
             </header>
             <article>
                 <h1>27.6. 다중 인스턴스(Multi-Instance) EKF 및 페일오버(Failover) 아키텍처</h1>
-<p>단일 확장 칼만 필터(EKF)는 단 하나의 오차 없는 완전무결한 센서를 가정하는 수학적 모형을 기반으로 작동한다. 하지만 현실에서 상업용 픽스호크(Pixhawk)를 장착한 드론은 이중화(Dual) 또는 삼중화(Triple)된 이기종 센서(IMU 3개, GPS 2개, 마그네토미터 3개 등)를 탑재하여 하드웨어 결함에 대비한다.</p>
-<p>이 엄청난 양의 센서 데이터를 단일 24상태 EKF 배열에 무작정 들이붓는다면(Measurement Mixing), 고장 난 센서 하나가 뿜어내는 글리치(Glitch) 성 데이터가 필터 전체의 공분산을 파괴시켜 멀쩡한 다른 센서의 데이터 연산까지 오염시키는 치명적 문제가 발생한다.</p>
-<p>본 절에서는 이러한 ’연쇄 오염’을 원천 차단하고 단일 하드웨어 불량을 무결점 비행 제어로 승화시키는 PX4 ECL의 핵심 소프트웨어 페일오버 구조인 <strong>다중 인스턴스(Multi-Instance) EKF 센서 셀렉터 아키텍처</strong>를 분석한다.</p>
-<hr />
-<h2>1.  독립적인 n개의 평행 우주: EKF 인스턴스 분리</h2>
-<p>PX4는 비행 제어기 보드에 장착된 IMU 센서와 지자기 센서의 개수 조합에 비례하여 EKF 모듈 클래스의 <strong>객체 인스턴스(Instance)</strong> 를 메모리상에 독립적으로 여러 개 찍어낸다. (최대 기본 4개 설정 지원)</p>
-<p>예를 들어, Pixhawk 6C 하드웨어에 3개의 IMU와 2개의 마그네토미터가 연결되어 있다면, <code>EKF2</code> 래퍼 모듈은 내부적으로 <code>EKF</code> 클래스 인스턴스를 3개(혹은 그 이상) 독립적으로 동적 할당(<code>new</code>)한다.</p>
-<ul>
-<li><strong>인스턴스 0:</strong> IMU0 + MAG0 + GPS0 조합 전담 필터</li>
-<li><strong>인스턴스 1:</strong> IMU1 + MAG1 + GPS0 조합 전담 필터</li>
-<li><strong>인스턴스 2:</strong> IMU2 + MAG0 + GPS0 조합 전담 필터</li>
-</ul>
-<p>각각의 <code>EKF</code> 인스턴스는 철저히 자신에게 배정된 센서 데이터만을 구독(Subscribe)하며, 독자적인 24 차원 <code>StateSample</code> 배열과 <span class="math math-inline">24 \times 24</span> 차원의 공분산 행렬 <span class="math math-inline">\mathbf{P}</span> 를 보유한다. 즉, 드론의 두뇌 속에서는 똑같은 시간선 위에서 각 센서 조합에 따라 조금씩 다른 미래를 점치는 <strong>n개의 평행 우주</strong>가 연산되고 있는 셈이다.</p>
-<pre><code class="language-cpp">// src/modules/ekf2/EKF2.cpp 내 다중 인스턴스 할당 로직 (개념적 코드)
+<p>본 장에서는 PX4-Autopilot(펌웨어 버전 v1.14 기준)의 핵심 추정기(Estimator) 아키텍처인 다중 인스턴스 확장 칼만 필터(Multi-Instance Extended Kalman Filter, EKF2)의 논리적 구조와 동적 페일오버(Failover) 메커니즘을 심도 있게 분석한다. 무인항공기(UAV)의 비행 안정성은 센서 데이터의 무결성에 직결되며, 이를 위해 PX4는 소프트웨어 레벨에서 센서 이중화 및 삼중화에 대응하는 다중 인스턴스 아키텍처를 도입하였다.</p>
+<h2>1.  다중 인스턴스 EKF 아키텍처의 논리적 구조</h2>
+<p>현대의 상용 비행 제어기(Flight Controller, FC), 예를 들어 Pixhawk 6C와 같은 하드웨어는 신뢰성 향상을 위해 다수의 관성 측정 장치(Inertial Measurement Unit, IMU)와 지자기 센서(Magnetometer)를 중복 탑재한다. 전통적인 단일 EKF 아키텍처에서 이러한 다중 센서 데이터를 단순 평균화(Averaging)하거나 융합할 경우, 단일 센서의 하드웨어 결함이 전체 공분산 행렬을 왜곡시키는 한계를 지닌다. 이를 극복하기 위해 PX4는 독립적인 여러 개의 EKF 객체(Instance)를 병렬로 생성하는 접근 방식을 채택하였다.</p>
+<p>Ardupilot의 확장 칼만 필터(EKF3) 역시 다중 코어를 지원하지만, PX4의 EKF2는 파라미터 <code>EKF2_MULTI_IMU</code> 설정에 따라 기본적으로 감지된 IMU 단위로 인스턴스를 동적으로 할당하고 독립적인 스레드 큐(Work Queue)에서 연산을 수행하는 구조를 갖는다. 각각의 EKF 인스턴스는 철저히 격리된 상태 공간(State Space) 모델을 유지하므로, 한 인스턴스의 혁신(Innovation) 기반 발산이 다른 인스턴스에 영향을 미치지 않는다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Sensors [Hardware Sensor Layer]
+        IMU0[IMU 0]
+        IMU1[IMU 1]
+        IMU2[IMU 2]
+        MAG0[Mag 0]
+        MAG1[Mag 1]
+        GPS[GPS]
+    end
 
-// _ekf_instances 배열에 개별 EKF 코어 객체 동적 생성
-for (int i = 0; i &lt; num_instances; i++) {
-    _ekf_instances[i] = new EKF();
-    // 각 인스턴스에 고유한 IMU, Mag 조합 아이디 부여
-    _ekf_instances[i]-&gt;set_imu_id(imu_array[i]);
-    _ekf_instances[i]-&gt;set_mag_id(mag_array[i % num_mags]);
-}
-</code></pre>
-<p>이렇게 하면 IMU1 센서가 진동으로 맛이 가서 인스턴스 1번의 공분산 행렬이 폭발(NaN)하더라도, IMU0과 IMU2를 바라보고 있는 인스턴스 0번과 2번의 연산 결과는 수학적으로 전혀 오염되지 않는 격리성(Isolation)을 확보할 수 있다.</p>
-<hr />
-<h2>2.  센서 셀렉터(Sensor Selector) 모듈: 대통령을 선출하는 선거 보드</h2>
-<p>n개의 EKF 평행 우주가 각자 자신이 생각하는 ’진짜 기체 상태(위치, 속도, 자세)’를 산출해 내고 있다면, 최종적으로 기체의 모터에 명령을 내리는 비행 제어기(Attitude/Position Controller)는 도대체 누구의 말을 들어야 할까?</p>
-<p>이 딜레마를 해결하기 위해 다중 인스턴스 상단에는 <strong>센서 셀렉터(<code>EKF2Selector</code>)</strong> 모듈이 존재한다. 센서 셀렉터의 임무는 매 밀리초(ms)마다 n개의 EKF 인스턴스들이 산출해 낸 결과물의 ’건강 상태(Health Metrics)’를 평가하여 단 하나의 최고 권력자(Primary Instance)를 선출하는 것이다.</p>
-<h3>2.1  EKF 테스트 수치 (Test Ratios)</h3>
-<p>각 EKF 인스턴스는 융합 단계에서 계산한 잔차(Innovation) 값들을 바탕으로 자기 자신의 신뢰도 점수를 자가 보고한다.</p>
-<ul>
-<li><code>vel_test_ratio</code>: GPS 속도 잔차가 임계치를 초과한 비율</li>
-<li><code>pos_test_ratio</code>: GPS 위치 잔차 초과 비율</li>
-<li><code>mag_test_ratio</code>: 지자기 센서 방위각 잔차 초과 비율</li>
-</ul>
-<p>만약 특정 인스턴스에서 이 테스트 비율 수치들이 1.0(100%)을 넘어서 지속된다면, 해당 인스턴스의 센서 조합에 물리적인 결함이 발생했거나 EKF 연산이 튀었다(Diverged)고 판단할 수 있다.</p>
-<h3>2.2  प्राइमरी(Primary) 인스턴스 스위칭 로직</h3>
-<p>센서 셀렉터는 매 프레임마다 모든 인스턴스의 이 테스트 비율값 누적 오차를 모니터링한다.</p>
-<pre><code class="language-cpp">// src/modules/ekf2/EKF2Selector.cpp 내부의 메인 스위칭 평가 로직
+    subgraph EKF_Instances [EKF2 Multi-Instance Layer]
+        Inst0[EKF Instance 0\n(IMU0 + MAG0 + GPS)]
+        Inst1[EKF Instance 1\n(IMU1 + MAG1 + GPS)]
+        Inst2[EKF Instance 2\n(IMU2 + MAG0 + GPS)]
+    end
 
-// 1. 현재 메인(Primary) 활성 EKF의 상태 점검
-float current_primary_error = evaluate_error(_primary_instance);
+    subgraph Selector [EKF2 Selector]
+        Eval[Health Evaluation &amp; Test Ratios]
+        Switch[Primary Instance Switch Logic]
+    end
 
-// 2. 만약 활성 EKF의 에러가 치명적 허용치(Threshold)를 넘었을 경우
-if (current_primary_error &gt; CRITICAL_ERROR_THRESHOLD) {
+    IMU0 --&gt; Inst0
+    MAG0 --&gt; Inst0
+    GPS --&gt; Inst0
     
-    // 3. 백그라운드에서 돌아가고 있는 다른 대기 EKF 인스턴스들의 에러 종합 평가
-    int best_alternative = find_best_performing_instance();
+    IMU1 --&gt; Inst1
+    MAG1 --&gt; Inst1
+    GPS --&gt; Inst1
     
-    // 4. 새로운 인스턴스로 조향 권한 이양 (Switch Over)
-    if (best_alternative &gt;= 0) {
-        _primary_instance = best_alternative;
-        notify_system_of_ekf_switch(best_alternative); // GCS 및 시스템에 에러 경고 토픽 발행
-    }
-}
+    IMU2 --&gt; Inst2
+    MAG0 --&gt; Inst2
+    GPS --&gt; Inst2
+
+    Inst0 --&gt; Eval
+    Inst1 --&gt; Eval
+    Inst2 --&gt; Eval
+    Eval --&gt; Switch
+    Switch --&gt;|Primary State &amp; Covariance| Output[Attitude &amp; Position Controller]
 </code></pre>
-<p>만약 현재 Primary로 구동 중인 <code>인스턴스 0</code>의 GPS 수신기가 간섭을 받아 <code>pos_test_ratio</code>가 폭증하면, 셀렉터는 냉혹하게 권한을 박탈하고 뒤에서 조용히 올바른 궤적을 연산하고 있던 <code>인스턴스 1</code>을 새로운 Primary로 승격시킨다.<br />
-이 모든 스위칭 과정은 <strong>0.01초 이내</strong>에 소프트웨어적으로 처리되므로, 비행 중인 드론은 약간의 트위치(Twitch)만 발생할 뿐 궤적을 이탈하지 않고 안전하게 귀환할 수 있다.</p>
-<hr />
-<h2>3.  오프셋(Offset) 부드러운 전환 기법 (Bumpless Transfer)</h2>
-<p>그런데, 1번 인스턴스와 2번 인스턴스가 각자 추정한 고도(Z position) 값이 센서 바이어스 탓에 <span class="math math-inline">\text{50cm}</span> 정도 미세하게 다를 수 있다.<br />
-이 상태에서 셀렉터가 Primary EKF를 1번에서 2번으로 스위칭해 버리면, 비행 제어기의 고도 입력값이 0.01초 만에 <span class="math math-inline">\text{50cm}</span> 순간이동 이동(Jump)하게 된다. 위치 제어기(Position Controller)는 이 엄청난 에러를 상쇄하기 위해 모터 출력을 순간적으로 최대(Full Throttle)로 터뜨리거나 최저로 낮출 것이고, 드론은 허공에서 롤러코스터를 타거나 최악의 경우 모터 실속을 겪게 될 것이다.</p>
-<p>PX4는 이를 방지하기 위해 <strong>위치/자세 상태 변수에 대한 오프셋 블렌딩(Offset Blending 또는 Bumpless Transfer)</strong> 을 수행한다.</p>
-<ol>
-<li>스위칭이 결정되는 순간, 새로운 Primary(2번)가 보고하고 있던 위치와 구 Primary(1번)가 보고해 온 위치의 차이(<span class="math math-inline">\Delta pos</span>)를 계산하여 전역 오프셋 변수에 저장한다.</li>
-<li>이후 비행 제어기로 값을 퍼블리시할 때, 2번 인스턴스의 원본 출력값에 이 <span class="math math-inline">\Delta pos</span> 를 그대로 덧대어(Offset) 내보낸다.</li>
-<li>제어기 입장에서는 스위칭 전후의 데이터가 계단(Step) 현상 없이 완전히 매끄럽게 연결되는 것처럼 선형적으로 보인다.</li>
-<li>이 오프셋 분량(<span class="math math-inline">\Delta pos</span>)을 수 초~수십 초에 걸쳐 매우 느린 저주파(Low-pass) 필터 곡선을 그리며 서서히 <span class="math math-inline">0</span>으로 죽여나간다. (Fade-out)</li>
-</ol>
-<p>이를 통해 조종자나 자율 비행 알고리즘은 센서 페일오버 스위칭이 발생했는지 시각적으로 체감조차 하지 못한 채 안전 비행을 이어갈 수 있다.</p>
-<hr />
-<h2>4.  소결</h2>
-<p>PX4 EKF2의 다중 인스턴스 아키텍처는 유인 항공기의 “삼중화 플라이 바이 와이어(Fly-By-Wire)” 다수결 하드웨어 시스템을 철저하게 소프트웨어 로직만으로 에뮬레이션(Emulation) 해낸 산업계 오픈소스 제어공학의 정점이다.<br />
-격리된 모래상자(Sand-box) 같은 인스턴스와 혹독한 감시자(Selector)의 조화는 저가의 중국산 MEMS IMU 칩셋들을 조합해서도 수억 원짜리 항법 장치에 필적하는 거시적 비행 신뢰도를 창출해 낸다.</p>
-<p>지금까지 24상태 수학에서 시작하여 퓨전, 메모리 보정, 셀렉터 페일오버까지 EKF 코어 시스템의 핵심 뼈대를 남김없이 발라냈다. 다음 절에서는 이 복잡다단한 시스템이 결국 GCS와 조종자에게 “자신이 아프다“는 것을 어떻게 표현하는지, QGroundControl과 동기화되는 <strong>시스템 상태 진단 메시징 체계</strong>를 분석하며 Chapter 27의 문을 닫는다.</p>
+<h2>2.  센서 셀렉터(Sensor Selector) 및 평가 지표 산출</h2>
+<p>다중 인스턴스 EKF 아키텍처에서는 여러 인스턴스 중 현재 비행 제어기 및 위치 제어기(Position Controller)에 상태 변수를 공급할 단 하나의 주(Primary) 인스턴스를 결정해야 한다. 이 역할은 <code>EKF2Selector</code> (소스 코드: <code>src/modules/ekf2/EKF2Selector.cpp</code>) 모듈이 수행한다.<br />
+QGroundControl(버전 v4.3)의 MAVLink 인터페이스를 통해 모니터링 가능한 이 선택 프로세스는 혁신 분산(Innovation Variance) 기반의 테스트 비율(Test Ratios)을 핵심 평가 지표로 사용한다.</p>
+<ul>
+<li><code>vel_test_ratio</code>: 속도 잔차(Velocity Residual)에 대한 통계적 허용치</li>
+<li><code>pos_test_ratio</code>: 위치 잔차(Position Residual)에 대한 통계적 허용치</li>
+<li><code>mag_test_ratio</code>: 지자기 센서 방위각 불일치 허용치</li>
+</ul>
+<p>각 인스턴스는 매 업데이트 주기마다 위 지표들의 누적 결함 점수(Health Score)를 계산하여 셀렉터에 보고한다. 점수가 특정 임계치를 초과할 경우, 셀렉터는 해당 인스턴스의 논리적 상태를 불량으로 판정하고, 차순위 인스턴스 중 가장 오류율이 낮은 인스턴스를 주 인스턴스로 승격(Switch)시킨다.</p>
+<h2>3.  페일오버 발생 시의 범프리스 트랜스퍼(Bumpless Transfer) 제어 기술</h2>
+<p>페일오버(Failover)가 발생하는 시점에 구(Old) 인스턴스와 신(New) 인스턴스 간 연산된 추정 고도(Z Position)나 위치 좌표, 요(Yaw) 각도가 수학적으로 완벽하게 일치할 수는 없다. 이 상태에서 즉각적인 제어 권한 전환이 이루어질 경우, 하위 제어기(PID Controller)에 급격한 오차 신호 입력(Step Input)이 발생하여 액추에이터 출력이 튀는 현상(Bump)이 유발된다. 자율 에이전트(Autonomous Agent)의 경로 추종 성능이나 ROS2 기반의 오프보드(Offboard) 정밀 제어에서는 치명적인 궤적 이탈을 발생시킬 수 있다.</p>
+<p>이를 방지하고자 PX4는 전환 시점의 두 인스턴스 상태 변수 차이(<span class="math math-inline">\Delta x</span>)를 오프셋(Offset)으로 산출하고 저장한다. 전환 직후 제어기에 전달되는 상태 값은 원본 출력에 이 오프셋을 결합한 값이며, 이후 시간의 흐름에 따라 오프셋을 선형적 또는 지수 함수적으로 감쇠(Decay)시켜 최종적으로 <span class="math math-inline">0</span>에 수렴하게 한다. 이러한 메커니즘을 제어공학에서는 범프리스 트랜스퍼(Bumpless Transfer)라 정의한다. 지상 관제 시스템(Ground Control Station, GCS) 개발 시에는 <code>ESTIMATOR_STATUS</code> MAVLink 메시지를 분석하여 이러한 스위칭 이벤트 발생 빈도를 모니터링하는 것이 기체 진단 기술의 핵심이다.</p>
+<h2>4.  ROS2와 MAVLink를 통한 상태 진단 연동 및 관제망 통합</h2>
+<p>다중 인스턴스의 상태 및 페일오버 이벤트는 uORB 메시징 구조를 거쳐 MAVLink 프로토콜(<code>ESTIMATOR_STATUS</code>, <code>SENSOR_HEALTH_FLAGS</code>)로 변환되어 QGroundControl로 전송된다. ROS2 환경(uXRCE-DDS 미들웨어 활용)에서는 <code>/fmu/out/estimator_selector_status</code> 토픽을 통해 마이크로초(Microsecond) 단위의 셀렉터 상태 데이터를 실시간으로 구독(Subscribe)할 수 있다.</p>
+<p>기존 Ardupilot 기반 시스템이 주로 Mission Planner에서의 정적인 텍스트 기반 상태 알림에 의존했던 반면, PX4는 ROS2와의 깊은 통합을 통해 다중 에이전트(Swarm) 관제 시 개별 개체의 센서 신뢰도(Confidence Level) 저하를 트리거(Trigger)로 하여 백업 에이전트를 교체 투입하는 동적 역할 재할당 등의 고급 자율 제어 기술을 구현할 수 있는 기반을 제공한다. 관련 아키텍처 설계와 이론적 기저에 대해서는 Paul Riseborough 등의 “A Modular Architecture for Fault Tolerant State Estimation in Unmanned Aerial Vehicles” 와 같은 문헌의 논리적 확장을 따른다.</p>
+<p>이와 같이 PX4-Autopilot의 다중 인스턴스 EKF 아키텍처는 하드웨어 센서의 물리적 한계를 소프트웨어적 격리와 지능적인 셀렉터 로직으로 극복하는 고도화된 결함 감내 체계를 갖추고 있다.</p>
 
             </article>
             <footer>

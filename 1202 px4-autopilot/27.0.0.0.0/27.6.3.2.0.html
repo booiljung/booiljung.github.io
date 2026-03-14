@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:27.6.3.2 전환 시 발생하는 상태 단차(Step) 방지를 위한 센서 바이어스 보상 오프셋 리셋 함수</title>
+    <title>BIJUNG:27.6.3.2. 전환 시 발생하는 상태 단차(Step) 방지를 위한 센서 바이어스 보상 오프셋 리셋 함수</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,45 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>27.6.3.2 전환 시 발생하는 상태 단차(Step) 방지를 위한 센서 바이어스 보상 오프셋 리셋 함수</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6.3.2 전환 시 발생하는 상태 단차(Step) 방지를 위한 센서 바이어스 보상 오프셋 리셋 함수</span></nav>
+                    <h1>27.6.3.2. 전환 시 발생하는 상태 단차(Step) 방지를 위한 센서 바이어스 보상 오프셋 리셋 함수</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6.3.2. 전환 시 발생하는 상태 단차(Step) 방지를 위한 센서 바이어스 보상 오프셋 리셋 함수</span></nav>
                 </div>
             </header>
             <article>
-                <h1>27.6.3.2 전환 시 발생하는 상태 단차(Step) 방지를 위한 센서 바이어스 보상 오프셋 리셋 함수</h1>
+                <h1>27.6.3.2. 전환 시 발생하는 상태 단차(Step) 방지를 위한 센서 바이어스 보상 오프셋 리셋 함수</h1>
+<p>본 소절에서는 <code>EKF2Selector</code> 메커니즘이 주(Primary) 추정기 인스턴스를 교체할 때, 비행 제어기(Flight Controller) 상에서 발생할 수 있는 식별 유도 오차(Identification Error) 및 기하학적 궤적 불연속성을 수학적으로 배제하기 위해 호출되는 ’센서 바이어스 보상 오프셋 리셋 함수(Offset Reset Logic)’의 세부 동작 원리를 소스 코드 단위로 분석한다.</p>
+<h2>1.  하드웨어 바이어스(Bias)의 이질성과 연속적 추정 오차</h2>
+<p>PX4 시스템은 각 확장 칼만 필터(EKF) 인스턴스마다 상이한 관성 측정 장치(IMU)와 지자기 센서 네트워크를 격리하여 매핑한다. 동일한 제조 라인에서 출하된 센서 칩셋이라 할지라도 반도체 공학적 열 잡음(Thermal Noise) 밀도와 기체 장착 위치에 따른 수치적 레버 암(Lever Arm)이 모두 다르기 때문에, 각 인스턴스가 융합해 내는 자이로스코프 및 가속도계 바이어스(Bias) 추정 벡터는 독립적인 값으로 수렴하게 된다.</p>
+<p>이러한 근본적 인스턴스 이질성은 센서 퓨전 엔진이 외부에 최종 산출하는 전역 <span class="math math-inline">XYZ</span> 좌표(Global NED Position)와 요(Yaw) 방위각 추정 영역에서 미세한 이격(Separation)을 필연적으로 초래한다. 예를 들어 공간을 주행 중인 <code>Instance 0</code>이 계산한 기체의 상대 고도가 <span class="math math-inline">10.0\text{m}</span>일 때, 다른 노이즈 대역을 갖는 <code>Instance 1</code>이 연산한 고도는 <span class="math math-inline">10.2\text{m}</span>로 집계될 수 있다. 이때 하드 스위칭 방식의 페일오버(Failover)가 단행되면 위치 제어기(Position Controller)의 피드백 입력망에 <span class="math math-inline">0.2\text{m}</span>의 거대한 스텝 펄스(Step Impulse)가 시간 지연 없이 직격으로 주입된다.</p>
+<h2>2.  오프셋 리셋(Offset Reset) 블렌딩 알고리즘의 동작 절차</h2>
+<p>제어 시스템 관점에서 스텝 입력이 발생시키는 피드백 파탄을 완벽히 방어하기 위해, PX4의 <code>EKF2</code> 래퍼(Wrapper) 계층은 스위칭 파라미터가 성립된 직후 출력 단자에 동적인 보상 오프셋을 결합하는 소프트웨어 블렌딩 함수(<code>reset_blend_offsets</code>)를 구동한다. 아키텍처 설계상 이 과정은 이하의 3단계로 엄격하게 직렬화(Serialization)된다.</p>
+<ol>
+<li><strong>전이 전후의 상태 편차 산출 연산 (Delta Calculation)</strong>:<br />
+<code>EKF2Selector</code>에 의해 스위칭이 플래깅(Flagging)된 직후 함수가 호출되며, 기존에 신뢰받던 인스턴스(<span class="math math-inline">EKF_{old}</span>)와 승격되는 인스턴스(<span class="math math-inline">EKF_{new}</span>) 간의 궤적 관련 핵심 상태 변수 세트(위치 및 방위각) 간의 수학적 이격 거리(<span class="math math-inline">\Delta X</span>) 벡터를 정밀 연산한다.<br />
+<span class="math math-display"> \Delta X = X_{new} - X_{old} </span></li>
+<li><strong>전역 오프셋 버퍼 누적 (Offset Buffer Update)</strong>:<br />
+단발 스위칭이 여러 번 일어날 수학적 가능성에 대비하여, 산출된 <span class="math math-inline">\Delta X</span>를 단일 할당하지 않고 전역 누적 오프셋 버퍼 레지스터에 선형적으로 합산한다.<br />
+<span class="math math-display"> \text{Offset}_{buffer} \leftarrow \text{Offset}_{buffer} + \Delta X </span></li>
+<li><strong>퍼블리시 토픽의 논리적 출력 보정 (Output Compensation)</strong>:<br />
+스위칭 이벤트 이후 uORB 버스망(주로 <code>vehicle_local_position</code>, <code>vehicle_odometry</code> 토픽 배열)으로 공식 발행(Publish)되는 모든 출력 상태값은, 승격된 새 EKF 인스턴스의 순수 예측치에서 상기 오프셋 버퍼를 강제로 감산한 보정 데이터이다.<br />
+<span class="math math-display"> X_{publish} = X_{new} - \text{Offset}_{buffer} </span></li>
+</ol>
+<pre><code class="language-cpp">// 오프셋 누적을 통한 범프리스 트랜스퍼의 코드 공간 매핑 (개념적 재구성)
+void EKF2::reset_blend_offsets() {
+    // 1. 구체적인 위치(Position) NED 계터(Getter) 기반의 이격 편차 계산
+    Vector3f pos_delta = _instances[_new_primary].get_position() - _instances[_old_primary].get_position();
+    
+    // 2. 단차 데이터를 전역 보상 버퍼에 누적 보존하여 스텝을 역으로 상쇄
+    _pos_offset_buffer += pos_delta;
+    
+    // 3. 위치뿐 아니라 지향성 유지를 위한 방위각(Yaw) 평면 편차 상쇄 로직 호출
+    float yaw_delta = _instances[_new_primary].get_yaw() - _instances[_old_primary].get_yaw();
+    _yaw_offset_buffer += yaw_delta;
+}
+</code></pre>
+<h2>3. 지수 함수적 페이드 아웃(Exponential Fade-out) 메커니즘과 자율 비행 정합성</h2>
+<p>하지만 영구적인 가짜 수학적 오프셋을 적재한 채 비행하는 환경은, ROS 2 마이크로에이전트(uXRCE-DDS) 기반 완전 자율 시스템의 글로벌 경로 추종(Path Planning) 임무 수행 시 위도/경도의 시스템적 공간 오차를 고착화시킬 위험에 직면한다. 따라서 PX4 항법 이중화 시스템은 오프셋 적용 이후 단계에 긴 시정수(Time Constant, 약 30~50초 내외)의 튜닝 가능한 1차 저역 통과 필터(Low-pass Filter) 감쇠망을 추가로 덧대어 두었다.</p>
+<p>이 감쇠 편방정식에 종속된 <code>_pos_offset_buffer</code>와 <code>_yaw_offset_buffer</code>는 비행 스레드의 프레임 단위 시간 흐름(<span class="math math-inline">dt</span>)에 비례하며 지수 함수적으로(Exponentially) 서서히 <span class="math math-inline">0</span>으로 침전한다. 결론적으로 해당 리셋 블렌딩 알고리즘은, 물리적인 액추에이터와 로터 추력(Thrust)에 과격한 급충격을 가하지 않을 만큼의 느린 고주파 억제를 보장함과 동시에, 장기적으로는 ROS 2 오프보드(Offboard) 모드 요구 조건에 부합하는 글로벌 정합성까지 달성해 내는 군사-산업 복합 수준의 항법 소프트웨어로 평가받는다.</p>
 
             </article>
             <footer>

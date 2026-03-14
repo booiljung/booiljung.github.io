@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:27.6.1 다중 추정기 생성 모델 (`EKF2.cpp`)</title>
+    <title>BIJUNG:27.6.1. 다중 추정기 생성 모델 (`EKF2.cpp`)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,49 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>27.6.1 다중 추정기 생성 모델 (`EKF2.cpp`)</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6.1 다중 추정기 생성 모델 (`EKF2.cpp`)</span></nav>
+                    <h1>27.6.1. 다중 추정기 생성 모델 (`EKF2.cpp`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 27. Estimator(ECL/EKF2) 아키텍처 및 소스 코드 분석</a> / <span>27.6.1. 다중 추정기 생성 모델 (`EKF2.cpp`)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>27.6.1 다중 추정기 생성 모델 (<code>EKF2.cpp</code>)</h1>
+                <h1>27.6.1. 다중 추정기 생성 모델 (<code>EKF2.cpp</code>)</h1>
+<p>본 절에서는 PX4-Autopilot의 핵심 추정기 모듈인 <code>EKF2.cpp</code>를 중심으로, 다중 EKF 인스턴스(Multi-Instance)가 메모리 상에 동적으로 할당되고 생성되는 논리적 모델과 소스 코드 아키텍처를 분석한다. PX4의 다중 추정기 설계는 단일 센서의 하드웨어적 결함이 기체 전체의 상태 추정(State Estimation)에 미치는 영향을 소프트웨어적으로 격리(Isolation)하기 위하여 고안되었다.</p>
+<h2>1.  <code>EKF2</code> 래퍼(Wrapper) 모듈과 인스턴스 논리 구조</h2>
+<p>PX4 시스템 내에서 <code>EKF2</code> 모듈은 단일 확장 칼만 필터(Extended Kalman Filter) 알고리즘을 수행하는 순수 연산 코어(Core) 노드들의 생태계를 관리하는 래퍼(Wrapper) 모듈의 역할을 수행한다. Ardupilot의 EKF3 구조 역시 다중 코어를 지원하지만, PX4는 <code>EKF2.cpp</code> 내에서 <code>EKF</code> 클래스를 기반으로 여러 하위 인스턴스를 동적으로 생성하고, uORB 토픽을 통해 센서 및 제어 모듈과 비동기식으로 통신하는 엄격한 모듈화 설계를 보여준다.</p>
+<p>하드웨어 인터페이스 계층(Sensor Layer)에서 복수의 관성 측정 장치(IMU)와 지자기 센서(Magnetometer)가 스캐닝되면, <code>EKF2</code> 메인 루프는 파라미터 <code>EKF2_MULTI_IMU</code> 설정에 따라 가용한 센서 퓨전 조합의 경우의 수를 평가한다. 비행 제어기(Flight Controller) 상호 연결 버스(SPI, I2C, CAN)에 연결된 개별 IMU 센서 수량에 비례하여 <code>EKF</code> 클래스의 독립적인 객체 인스턴스가 생성되는 것이 특징이다.</p>
+<pre><code class="language-mermaid">classDiagram
+    class EKF2 {
+        +int _ekf_instances
+        +start()
+        +Run()
+        -allocate_instances()
+    }
+    class EKF {
+        +set_imu_id(uint32_t id)
+        +set_mag_id(uint32_t id)
+        +update()
+        +predict()
+    }
+    class EKF2Selector {
+        +select_primary_instance()
+    }
+    EKF2 "1" *-- "1..N" EKF : Dynamic Allocation &amp; Management
+    EKF2 "1" --&gt; "1" EKF2Selector : Health Evaluation Delegation
+</code></pre>
+<h2>2.  소스 코드 레벨에서의 인스턴스 동적 생성 절차</h2>
+<p><code>src/modules/ekf2/EKF2.cpp</code> 파일 내부의 초기화 및 <code>Run()</code> 루프를 분석하면, 다중 추정기 모델이 생성되는 순차적인 과정을 확인할 수 있다.</p>
+<ol>
+<li><strong>센서 식별 및 uORB 구독(Subscription) 구성</strong>:<br />
+시스템 부팅 직후, <code>EKF2</code> 모듈은 <code>sensor_combined</code> 및 <code>vehicle_imu</code> 등의 uORB 토픽을 확인하여 시스템에 등록된 IMU의 디바이스 ID를 배열 형태로 스캔한다.</li>
+<li><strong>다중 인스턴스 메모리 공간 할당(Dynamic Allocation)</strong>:<br />
+식별된 IMU 센서의 개수(<code>num_instances</code>)만큼 루프를 순회하며 메모리 힙(Heap)에 여러 개의 <code>EKF</code> 객체를 할당(<code>new</code>)한다.</li>
+<li><strong>독립적 센서 매핑(Mapping)</strong>:<br />
+각 <code>EKF</code> 인스턴스는 <code>set_imu_id()</code>와 같은 메서드를 통해 고유한 Primary IMU, 마그네토미터, 그리고 GPS 소스를 매핑받는다. 이를 통해 동일한 시간 도메인 내에서 서로 다른 하드웨어의 관측치(Observation)를 독립적으로 융합(Fusion)할 수 있는 수학적 상태 공간 모형을 구축하게 된다.</li>
+</ol>
+<p>이러한 독립적인 생성 모델은 특정 인스턴스에서 발생한 행렬 발산(Matrix Divergence)이나 혁신값(Innovation) 초과 오류가 다른 인스턴스로 논리적으로 전파되는 것을 원천적으로 차단한다. 결과적으로 다중 추정기 생성 모델은 멀티콥터와 고정익, VTOL(수직이착륙기) 전반에 걸쳐 하드웨어 결함에 대한 높은 내결함성(Fault Tolerance)을 시스템에 부여하는 기반 인프라로 작용한다.</p>
+<h2>3.  스레딩(Threading) 및 워크 큐(Work Queue) 아키텍처</h2>
+<p>PX4의 기반 운영체제인 NuttX RTOS 환경 내에서 효율적인 연산을 보장하기 위해, <code>EKF2</code> 클래스는 개별 스레드를 생성하는 대신 <code>px4::WorkItem</code>으로 추상화된 단일 워크 큐(Work Queue) 모델 위에서 스케줄링(Scheduling)된다.</p>
+<p>이는 다수의 인스턴스가 각자 독립된 POSIX 스레드(Pthread)를 무분별하게 생성할 경우 발생하는 컨텍스트 스위칭(Context Switching) 오버헤드와 메모리 단편화를 구조적으로 배제하기 위함이다. 단일 <code>EKF2</code> 래퍼 태스크가 내부적으로 다중 EKF 연산 순서를 최적화하여 순차적으로 호출(Tick)함으로써, CPU 코어 리소스를 제한적으로 보유한 임베디드 마이크로컨트롤러(MCU) 상에서도 필터의 고정된 틱 레이트(Tick Rate)를 안정적이고 결정론적(Deterministic)으로 유지할 수 있는 강점을 지닌다.</p>
 
             </article>
             <footer>
