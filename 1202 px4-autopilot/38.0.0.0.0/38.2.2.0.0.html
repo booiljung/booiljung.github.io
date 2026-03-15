@@ -115,6 +115,30 @@
             </header>
             <article>
                 <h1>38.2.2 시스템 식별자(System Identifier)의 시분할 다중화(Time-Division Multiplexing) 할당</h1>
+<p>MAVLink 네트워크는 근본적으로 브로드캐스트(Broadcast) 기반의 분산 아키텍처를 따른다. 동일한 무선 주파수(RF) 대역을 공유하는 반이중(Half-duplex) 텔레메트리 모뎀 환경에서 여러 대의 기체와 지상 관제 시스템(GCS)이 동시에 통신하기 위해서는, 각 패킷이 누구에게서 점화되었고 누구를 향하는지 구분할 수 있는 논리적 주소 체계가 필수적이다.</p>
+<p>이 주소 공간(Address Space)의 근간을 이루는 것이 바로 MAVLink 헤더에 명시된 **시스템 식별자(System Identifier, <code>sysid</code>)**와 **컴포넌트 식별자(Component Identifier, <code>compid</code>)**이다.</p>
+<h2>1. MAVLink의 255 <span class="math math-inline">\times</span> 255 주소 공간</h2>
+<p>MAVLink 프로토콜은 IPv4의 IP 주소처럼 거대한 체계를 갖추지 않고, 단 1바이트 크기의 <code>sysid</code>와 1바이트 크기의 <code>compid</code>를 할당한다.</p>
+<ul>
+<li>시스템 식별자(<code>sysid</code>): 1부터 254까지 할당 가능하여 최대 254대의 독립된 기체를 구분한다. (0은 브로드캐스트 주소, 255는 통상적으로 GCS에 할당).</li>
+<li>컴포넌트 식별자(<code>compid</code>): 하나의 <code>sysid</code> 내부에서 오토파일럿(1), 카메라 페이로드(100), 짐벌(154) 등의 하위 마이크로 서비스를 구분한다.</li>
+</ul>
+<p>PX4에서는 <code>MAV_SYS_ID</code> 파라미터를 통해 이 식별자를 부여한다. 공장 초기화 상태의 드론은 모두 <code>MAV_SYS_ID = 1</code>을 가지며, QGroundControl과 같은 GCS 애플리케이션은 기본적으로 <code>sysid = 255</code>로 하드코딩되어 네트워크에 합류한다.</p>
+<h2>2. 시분할 다중화(Time-Division Multiplexing, TDM) 관점의 접근</h2>
+<p>물리적인 무선 통신망(예: SiK Telemetry 433/915MHz)은 보통 하나의 주파수 채널을 사용하므로, 만약 두 대 이상의 기체가 밀리초 단위까지 정확히 동일한 시점에 <code>HEARTBEAT</code> 패킷을 송신(Tx)한다면 온기상에서 파형이 겹쳐 충돌(Collision)이 발생하고 데이터는 깨지게 된다.</p>
+<p>엄밀한 의미의 통신 이론적(Telecommunications) TDM은 셀룰러 네트워크(LTE 등)처럼 마스터 클럭(Master Clock) 기반의 기지국이 각 노드에게 전송할 수 있는 마이크로초 단위의 엄격한 시간 슬롯(Time Slot)을 할당하는 방식이다. 그러나 저전력 마이크로컨트롤러 환경의 MAVLink는 중앙 통제식 기지국 모델을 채택하지 않는다.</p>
+<p>대신, 각 드론 시스템은 각자의 독립적인 내부 타이머(NuttX 하드웨어 타이머)를 기준으로 1Hz 주기의 <code>HEARTBEAT</code>를 송출한다. 오실레이터(Oscillator)의 미세한 오차와 부팅 시점의 차이로 인해 여러 대의 드론이 존재하더라도 이들의 송신 타이밍은 시간 축 위에 자연스럽게 흩뿌려진다. 일종의 <strong>추계학적 시분할 다중화(Stochastic TDM)</strong> 또는 알로하(ALOHA) 모델에 가까운 형태로 무선 매체(Medium)를 점유하는 것이다.</p>
+<h2>3. 네트워크 라우팅(Routing) 토폴로지 구축</h2>
+<p>QGroundControl(GCS)이 부팅 후 새로운 기체를 획득(Acquisition)하는 제 1원칙이 바로 이 식별자와 결합된 <code>HEARTBEAT</code>의 수신이다.</p>
+<ol>
+<li>GCS의 UDP 포트나 시리얼 포트를 활짝 열고 대기한다.</li>
+<li>미지의 기체로부터 <code>HEARTBEAT</code> 패킷이 도달하면 헤더를 파싱하여 <code>sysid</code>를 추출한다. (예: <code>sysid = 3</code>)</li>
+<li>GCS 메모리 아키텍처(Qt의 <code>VehicleManager</code> 클래스) 내부에 ID 3에 해당하는 거대한 디지털 트윈(Digital Twin) 객체를 동적으로 메모리에 할당(<code>new Vehicle()</code>)한다.</li>
+<li>이후 GCS가 ID 3 기체에게 이륙 명령(<code>MAV_CMD_NAV_TAKEOFF</code>)을 내릴 때, 메시지 페이로드 내부에 타겟 시스템 ID(<code>target_system = 3</code>)를 강제 마킹하여 전송한다.</li>
+</ol>
+<h3>3.1 Ardupilot과의 아키텍처적 일관성</h3>
+<p>Ardupilot 역시 시스템 파라미터 <code>SYSID_THISMAV</code>를 통해 기체를 식별하며, MAVLink 표준 스펙의 기반(Foundation) 계층에서 동작하기 때문에 이 <code>sysid</code>를 활용한 주소 지정 방식의 통신 이론적 해석은 PX4와 쌍둥이처럼 일치한다. GCS는 날아다니는 기체가 PX4 펌웨어인지 Ardupilot 펌웨어인지 이전에, 오로지 이 <code>HEARTBEAT</code> 헤더의 식별자만을 근거로 라우팅 테이블(Routing Table)을 형성한다.</p>
+<p>단, PX4는 이 <code>HEARTBEAT</code> 수신 정보를 uORB의 내부 메시지 채널(<code>vehicle_status_s</code>)로 다시 퍼블리싱(Publishing)할 때, 다중 기체(Multi-vehicle) 시뮬레이션 환경을 지원하기 위해 uORB 인스턴스(Instance) ID와 MAVLink 시스템 식별자를 교묘하게 매핑(Mapping)하는 내부적 데이터 버스 래핑 구조를 갖추고 있다는 특징이 있다. 이 다수 노드의 매체 접근 회피에 대한 수학적 해석은 이어지는 38.2.2.1절에서 확률 모델로 구체화된다.</p>
 
             </article>
             <footer>

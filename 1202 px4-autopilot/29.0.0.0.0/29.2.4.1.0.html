@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.2.4.1 MAVLink 수동 제어 메시지 수신 시 수신 핸들러 함수 분석</title>
+    <title>BIJUNG:29.2.4.1. MAVLink 수동 제어 메시지 수신 시 수신 핸들러 함수 분석</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,51 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.2.4.1 MAVLink 수동 제어 메시지 수신 시 수신 핸들러 함수 분석</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.4.1 MAVLink 수동 제어 메시지 수신 시 수신 핸들러 함수 분석</span></nav>
+                    <h1>29.2.4.1. MAVLink 수동 제어 메시지 수신 시 수신 핸들러 함수 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.4.1. MAVLink 수동 제어 메시지 수신 시 수신 핸들러 함수 분석</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.2.4.1 MAVLink 수동 제어 메시지 수신 시 수신 핸들러 함수 분석</h1>
+                <h1>29.2.4.1. MAVLink 수동 제어 메시지 수신 시 수신 핸들러 함수 분석</h1>
+<p>본 소절에서는 지상 관제 시스템(GCS)이나 동반 컴퓨터(Companion Computer)로부터 와이파이(Wi-Fi) 또는 텔레메트리(Telemetry) 라디오를 타고 유입되는 MAVLink 패킷이, PX4 커널의 <code>mavlink_receiver</code> 클래스를 거쳐 어떻게 하드웨어 RC 신호와 완벽히 동일한 형상의 uORB 객체(<code>manual_control_setpoint</code>)로 파싱(Parsing)되고 변환되는지 그 수신 핸들러(Receive Handler) C++ 소스 코드를 해부한다.</p>
+<h2>1.  MAVLink <code>MANUAL_CONTROL</code> 메시지 규격과 수신 대기 구조</h2>
+<p>사용자가 QGroundControl 화면에 띄워진 가상 조이스틱을 드래그하거나 노트북에 연결된 게임패드(XBox 컨트롤러 등)를 조작할 때, GCS는 하드웨어 PWM을 쏘는 대신 MAVLink 프로토콜의 특수 패킷인 <code>MANUAL_CONTROL</code> (메시지 ID: 69)을 <span class="math math-inline">50Hz</span> 안팎의 주기로 고속 스트리밍한다.</p>
+<p>이 메시지 페이로드(Payload)는 X, Y, Z, R (각각 Pitch, Roll, Throttle, Yaw 에 대응) 4개의 16비트 정수와 스위치 상태를 포괄하는 16비트 확장 버튼 마스크(Buttons Mask) 필드로 구성된다. 중요한 점은, MAVLink 표준 명세상 이 축 데이터들은 PWM 마이크로초(<span class="math math-inline">1000 \sim 2000</span>)가 아닌, <span class="math math-inline">-1000</span> (최소)에서 <span class="math math-inline">+1000</span> (최대) 사이로 이미 일차적인 공간 정규화를 거친 정수값이라는 사실이다.</p>
+<p>PX4 펌웨어 내에서 백그라운드 데몬으로 상주하는 <code>mavlink_receiver</code> 스레드는 직렬 포트(Serial Port)나 UDP 소켓의 바이트 스트림을 파싱하다가 메시지 ID 69번을 발견하면 즉각적으로 전용 콜백 핸들러인 <code>handle_message_manual_control()</code> 함수를 호출한다.</p>
+<h2>2.  수신 핸들러 내부의 데이터 프로젝션(Projection) 알고리즘 분석</h2>
+<p>하드웨어 RC 드라이버(<code>rc_input.cpp</code>)가 29.2.2절의 거추장스러운 캘리브레이션 트림 연산을 수행해야만 했던 것과 대조적으로, MAVLink 수신 핸들러 내부의 C++ 로직은 대수학적으로 훨씬 간결하고 우아한 프로젝션 절차를 밟는다. 패킷 안에 이미 논리적 한계값이 <span class="math math-inline">\pm 1000</span>으로 보장되어 있기 때문이다.</p>
+<pre><code class="language-cpp">// src/modules/mavlink/mavlink_receiver.cpp 내 핸들러 개념적 소스 분석
+void MavlinkReceiver::handle_message_manual_control(mavlink_message_t *msg)
+{
+    // 1. MAVLink C 구조체로 패킷 페이로드 복사 및 디코딩
+    mavlink_manual_control_t man;
+    mavlink_msg_manual_control_decode(msg, &amp;man);
+
+    // 2. uORB 전송을 위한 자료구조 인스턴스화
+    manual_control_setpoint_s manual{};
+    manual.timestamp = hrt_absolute_time(); // 데이터 유입 시스템 타임스탬프 (경합 제어 핵심 인자)
+    manual.timestamp_sample = manual.timestamp;
+    manual.valid = true;
+    manual.data_source = manual_control_setpoint_s::SOURCE_MAVLINK_0; // 출처 라벨링
+
+    // 3. MAVLink 정수 공간 [-1000, 1000] -&gt; PX4 부동 소수점 공간 [-1.0f, 1.0f] 프로젝션 연산
+    // 분서 구조체 man.y (Roll), man.x (Pitch), man.r (Yaw), man.z (Throttle)
+    manual.roll     = math::constrain(man.y / 1000.0f, -1.0f, 1.0f);
+    manual.pitch    = math::constrain(man.x / 1000.0f, -1.0f, 1.0f);
+    manual.yaw      = math::constrain(man.r / 1000.0f, -1.0f, 1.0f);
+    manual.throttle = math::constrain(man.z / 1000.0f, -1.0f, 1.0f); // 스로틀 처리의 특이점 존재
+
+    // ... [스위치 및 버튼 마스크 파싱 생략] ...
+
+    // 4. 최종 uORB 토픽 퍼블리싱 (이로써 하드웨어 RC와 동등한 지위를 획득)
+    _manual_control_setpoint_pub.publish(manual);
+}
+</code></pre>
+<p>이 구현체에서 돋보이는 것은 단순한 변위를 넘어선 축별 규격 일치화(Coordinate Conformity) 작업이다. MAVLink <code>MANUAL_CONTROL</code> 통신 표준은 전방 밀기(Forward)를 X축 양수(Positive)로 약속하지만, 항공 역학에서 피치(Pitch) 기수 하강(Nose-down)은 관습적으로 음수(Negative) 부호를 부여받거나 기체 좌표계(FRD) 축에 따라 부호가 반전되어야 할 수 있다. PX4는 커널 내부 기구학 방정식에 부합하도록 이 수신 핸들러 단계에서 축 맵핑과 <code>/ 1000.0f</code> 부동소수점 형변환을 한 큐에 종료 지어, 상위 모듈이 MAVLink에서 온 데이터인지 하드웨어 RC 수신기에서 온 데이터인지 구분할 필요조차 없는 완벽한 다형성(Polymorphism)을 달성한다.</p>
+<h2>3.  타임아웃 억제(Bypass)와 좀비 패킷 차단 방어선</h2>
+<p>MAVLink 기반 제어는 이더넷/Wi-Fi 기반의 TCP/UDP 통신망을 탄다는 태생적 한계로 인해 패킷의 도달 시간이 일정치 않은 네트워크 지터(Network Jitter) 및 일시적 단절(Packet Loss)에 극히 취약하다.</p>
+<p>따라서 펌웨어는 수신 핸들러가 동작할 때마다 내부 텔레메트리 연결 감시자(Connection Watchdog)의 타임아웃 타이머를 초기화(Kick)한다. 만약 QGC 구동 태블릿의 배터리가 방전되거나 Wi-Fi 연결이 끊겨 <code>MANUAL_CONTROL</code> 메시지가 <span class="math math-inline">0.5</span>초 이상 도달하지 못할 경우, PX4의 시스템 커맨더(Commander) 내부 루프는 직전에 수신되었던 조이스틱의 마지막 값(예: Throttle 100% 상태 유지)을 즉각 폐기(Discard)하고 신호 유실(Data Link Loss)에 따른 페일세이프(Failsafe) 비상 모드인 RTL(Return To Launch) 체계로 즉각 강제 전환(Fallback)하게 된다.</p>
+<p>이러한 수신 핸들러 로직의 철저한 타임스탬핑과 프로젝션 방어기제가 존재하기에, 개발자는 무거운 전용 하드웨어 조종기를 배제하고 노트북 키보드나 GCS 소프트웨어만으로도 실제 상용 쿼드콥터의 수동 짐벌 타각을 완벽히 모사하고 치명적 결함 없이 통제할 수 있게 되는 것이다.</p>
 
             </article>
             <footer>

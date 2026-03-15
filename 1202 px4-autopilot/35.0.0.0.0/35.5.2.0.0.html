@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:35.5.2 동력 인가(Arming) 및 차단(Disarming) 보안 프로토콜 및 예외 처리</title>
+    <title>BIJUNG:35.5.2. 동력 인가(Arming) 및 차단(Disarming) 보안 프로토콜 및 예외 처리</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,37 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>35.5.2 동력 인가(Arming) 및 차단(Disarming) 보안 프로토콜 및 예외 처리</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.5.2 동력 인가(Arming) 및 차단(Disarming) 보안 프로토콜 및 예외 처리</span></nav>
+                    <h1>35.5.2. 동력 인가(Arming) 및 차단(Disarming) 보안 프로토콜 및 예외 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.5.2. 동력 인가(Arming) 및 차단(Disarming) 보안 프로토콜 및 예외 처리</span></nav>
                 </div>
             </header>
             <article>
-                <h1>35.5.2 동력 인가(Arming) 및 차단(Disarming) 보안 프로토콜 및 예외 처리</h1>
+                <h1>35.5.2. 동력 인가(Arming) 및 차단(Disarming) 보안 프로토콜 및 예외 처리</h1>
+<p>무인항공기에서 ’동력 인가(Arming)’란 단순한 전원 스위치의 On/Off 개념이 아니다. 수십 파운드의 양력을 즉각적으로 뿜어낼 수 있는 고속 회전체(프로펠러)와 고압 전류의 흐름에 대한 최종적인 ‘살상 인가(Lethal Authorization)’ 행위이다. 반대로 ’동력 차단(Disarming)’은 비행 종료 직후 기체를 다시 안전한 쇳덩어리로 되돌리는 록다운(Lockdown) 과정이다.</p>
+<p>PX4-Autopilot은 이 이진(Binary) 상태 전이(State Transition) 사이에 조종자의 극단적인 오조작과 하드웨어 노이즈로부터 시스템을 방어하기 위한 다중 레이어 보안 프로토콜을 설정해 두었다. 본 절에서는 Action API가 이 프로토콜과 어떻게 교섭(Negotiation)하고, 예외 상황을 어떻게 롤백(Rollback)하는지 분석한다.</p>
+<h2>1.  다층적 동력 인가(Arming) 보안 프로토콜</h2>
+<p>MAVSDK를 통해 <code>action.arm()</code> 명령이 인가되거나, 조종기 스틱을 구석으로 밀어 넣는(Yaw Right + Throttle Down) 하드웨어 제스처가 발생했을 때, <code>commander</code> 모듈은 즉시 모터의 PWM 출력을 개방하지 않는다.</p>
+<ol>
+<li><strong>하드웨어 안전 스위치(Safety Interlock) 인터럽트</strong>: 픽스호크(Pixhawk) 기반 기체의 가장 원시적인 물리적 방어선이다. 조종자가 기체 외부의 물리적 버튼(Safety Switch)을 3초 이상 길게 눌러 붉은색 LED가 깜빡임에서 점등(Solid) 상태로 래칭(Latching)되지 않았다면, 소프트웨어 상의 어떠한 무력 행사도 액추에이터 출력을 활성화할 수 없다 (<code>CBRK_IO_SAFETY</code> 파라미터로 우회 가능하나 권장되지 않음).</li>
+<li><strong>사전 비행 검증(Preflight Check) 통과 강제성</strong>: 직전 절에서 다룬 모든 센서 캘리브레이션, GPS 위치 고정(Lock), 배터리 전압 조건이 모두 충족되었을 때만 <code>COM_ARM_</code> 계열의 검증 로직이 True를 반환한다.</li>
+<li><strong>타임아웃(Timeout) 자동 차단 메커니즘</strong>: 조종사나 알고리즘이 Arming 명령을 내린 후, 기체가 지상에 머물며 이륙(Takeoff) 추력이 인가되지 않은 채 <code>COM_DISARM_PRFLT</code> 변수에 지정된 시간(기본값 예: 10초)이 경과하면, FSM은 조종자의 변심이나 통신 오류로 간주하고 즉각 기체를 다시 Disarmed 상태로 스스로 롤백해 버린다.</li>
+</ol>
+<h2>2.  동력 인가 거부(Arming Denied) 및 예외 처리 구조</h2>
+<p>스크립트 기반의 자율 비행(Autonomous Flight)을 프로그래밍할 때 가장 까다로운 부분은, 코드 라인상의 <code>arm()</code> 함수가 현실 세계의 물리적/논리적 이유로 침묵하거나 실패(Throw Exception)할 때이다.</p>
+<p>MAVLink <code>COMMAND_LONG</code> 메시지(Command ID: <code>MAV_CMD_COMPONENT_ARM_DISARM</code>)가 PX4로 전송되면, PX4는 <code>COMMAND_ACK</code> 응답을 통해 성공(<code>MAV_RESULT_ACCEPTED</code>) 또는 거부(<code>MAV_RESULT_DENIED</code>, <code>MAV_RESULT_TEMPORARILY_REJECTED</code>)를 반환한다.</p>
+<p>MAVSDK의 C++ 또는 Python 백엔드는 이 ACK 메시지를 파싱하여 비동기 프라미스(Promise)의 예외 처리를 발생시킨다.</p>
+<ul>
+<li>개발자는 <code>try-catch</code> 블록(또는 Error Callback) 내에서 아키텍처가 거부한 정확한 원인(예: “GPS Lock 미확보”, “센서 캘리브레이션 오류”)을 식별하여, 즉각 이륙 루틴을 중단하고 콘솔이나 GCS UI에 해당 경고를 렌더링해야 한다.</li>
+<li>예외 처리가 엉성하게 짜여있다면, 메인 스레드 스크립트는 시동이 걸리지 않은 쇳덩어리에게 허공을 향해 “Takeoff” 하라는 맹목적 명령을 영원히 쏘아대는 무한 루프나 교착 상태(Deadlock)에 빠지게 된다.</li>
+</ul>
+<h2>3.  공중 동력 차단(In-air Disarm) 방지와 예상치 못한 셧다운</h2>
+<p>동력 인가만큼이나 비행 제어기 설계자들을 공포로 몰아넣는 것은 바로 ’비행 도중의 의도치 않은 동력 차단(In-air Disarming)’이다.</p>
+<ul>
+<li>조종사의 실수로 공중에서 조종기 스틱이 Disarm 제스처(Yaw Left + Throttle Down) 위치로 지속 도달했을 때, 원시적인 과거 RC 펌웨어들은 지령에 따라 즉각 모터를 정지시키고 기체를 돌멩이처럼 자유 낙하시켰다.</li>
+<li>PX4는 <code>Landed Detector</code> (지상 접촉 감지기) 모듈을 통해 모터 추력과 Z축 속도의 미분값을 융합하여 기체가 현재 체공 중(<code>IN_AIR</code>) 상태인지 땅을 밟고(<code>LANDED</code>) 있는지를 강박적으로 판단한다. 기체가 체공 중이라면 FSM은 조종기의 Disarm 제스처나, 오프보드(Offboard) 터미널에서의 일반적인 <code>action.disarm()</code> API 호출을 권한 초과로 간주하여 필터링해 버린다.</li>
+<li>오직 기체의 물리적 완전 상실이 확정되었거나 폭주 중일 때만, <code>MAV_CMD_DO_FLIGHTTERMINATION</code> 나 조종기의 Kill-Switch 할당 채널(하드웨어적 강제 차단 채널)만이 이 방어벽을 찢고 들어가 모터 펄스폭변조(PWM)를 강제로 <span class="math math-inline">0\mu s</span> 로 세울 수 있다.</li>
+</ul>
+<p>이와 같이 PX4의 Arming/Disarming 아키텍처는 인간의 기계적 오조작 가능성을 묵살시키고, 단일 장애 지점(Single Point of Failure)을 회피함으로써 코더의 사소한 논리적 실수가 파국적 하드웨어 파편화로 직결되는 것을 필사적으로 막아내고 분리시킨다.</p>
 
             </article>
             <footer>

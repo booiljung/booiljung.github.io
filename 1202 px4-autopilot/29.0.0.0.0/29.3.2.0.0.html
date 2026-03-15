@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.3.2 고정익 다이렉트 패스스루(Direct Passthrough) 알고리즘 (`src/modules/fw_att_control`)</title>
+    <title>BIJUNG:29.3.2. 고정익 다이렉트 패스스루(Direct Passthrough) 알고리즘 (`src/modules/fw_att_control`)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,61 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.3.2 고정익 다이렉트 패스스루(Direct Passthrough) 알고리즘 (`src/modules/fw_att_control`)</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.3.2 고정익 다이렉트 패스스루(Direct Passthrough) 알고리즘 (`src/modules/fw_att_control`)</span></nav>
+                    <h1>29.3.2. 고정익 다이렉트 패스스루(Direct Passthrough) 알고리즘 (`src/modules/fw_att_control`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.3.2. 고정익 다이렉트 패스스루(Direct Passthrough) 알고리즘 (`src/modules/fw_att_control`)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.3.2 고정익 다이렉트 패스스루(Direct Passthrough) 알고리즘 (<code>src/modules/fw_att_control</code>)</h1>
+                <h1>29.3.2. 고정익 다이렉트 패스스루(Direct Passthrough) 알고리즘 (<code>src/modules/fw_att_control</code>)</h1>
+<p>본 절에서는 29.3.1.2절에서 승인받은 <code>NAVIGATION_STATE_MANUAL</code> 상태가 하위 제어기인 <strong>고정익 자세 제어 모듈(<code>fw_att_control</code>)</strong> 에 도달했을 때, 제어 루프 내부에서 어떠한 파격적인 우회(Bypass) 단축 경로가 열리는지 분석한다. 이 설계 구조는 수많은 추상화 레이어를 겹겹이 쌓아 올린 최신 비행 제어기(FC) 아키텍처 내에서, 역설적으로 아날로그 시대의 가장 원초적이고 기계적인 제어 본능(Direct Passthrough)을 구현하기 위한 코드적 몸부림이다.</p>
+<h2>1.  <code>fw_att_control</code> 모듈의 이중성(Duality): 자율 비행 vs. 수동 패스스루</h2>
+<p><code>src/modules/fw_att_control</code> 모듈은 본래 내비게이터(Navigator)나 위치 제어기(Position Controller)가 하달하는 ’목표 자세(Attitude Setpoint)’를 입력받아 엘리베이터(Elevator)나 에일러론(Aileron) 서보 모터의 타각으로 변환하는 강력한 PID 기반 각속도 피드백 제어 공장(Factory)이다.</p>
+<p>그러나 <code>vehicle_status.nav_state</code> 가 <code>NAVIGATION_STATE_MANUAL</code> 로 표기된 프레임이 유입되는 순간, 이 모듈은 스스로의 정체성인 <strong>‘제어기(Controller)’</strong> 로서의 지위를 즉각 내려놓고 단순한 <strong>‘배달부(Messenger)’</strong> 로 전락한다.</p>
+<p>센서 데이터를 기반으로 궤적 오차를 줄이는 <span class="math math-inline">50\text{Hz} \sim 250\text{Hz}</span> 주기의 루프는 그대로 돌고 있지만, 함수 내부 공간에서는 복잡한 삼각함수 연산이나 행렬(Matrix) 회전, PID 적분기(Integrator) 갱신 로직이 단 한 줄도 실행되지 않은 채 매뉴얼 데이터 블록만이 하위 믹서(Mixer)로 미끄러져 내려가게 된다.</p>
+<h2>2.  모드 검사 분기문과 제어 파이프라인의 생략(Omission)</h2>
+<p>다이렉트 패스스루의 심장부는 <code>FixedwingAttitudeControl::Run()</code> 이라는 메인 스레드 스케줄링 루틴 내부에 깊숙이 자리 잡고 있다.</p>
+<pre><code class="language-cpp">// src/modules/fw_att_control/FixedwingAttitudeControl.cpp 의 개념적 바이패스 분기
+void FixedwingAttitudeControl::Run()
+{
+    // ... [uORB 토픽 구독 및 차량 상태 업데이트 로직 생략] ...
+    
+    // 현재 제어 모드가 매뉴얼인지 판별
+    const bool is_manual = (_vcontrol_mode.flag_control_manual_enabled &amp;&amp; 
+                           !_vcontrol_mode.flag_control_attitude_enabled &amp;&amp;
+                           !_vcontrol_mode.flag_control_rates_enabled);
+
+    if (is_manual) {
+        // [다이렉트 패스스루 (Direct Passthrough) 모드]
+        // 자세나 각속도 제어가 모두 허용되지 않은 완전 수동 상태일 경우, 
+        // 하위 구체화 클래스(예: FlightTaskManual)에게 타각 제어를 전적으로 위임
+        
+        // 1. PID 제어기(Rate Controller) 적분기 와인드업(Windup) 리셋
+        // (수동 개입 중에는 PID가 동작하면 안 되므로 누적 오차를 0으로 강제 초기화)
+        _rate_ctrl.reset();
+        
+        // 2. 수동 제어 구조체 체인 호출 (29.3.2.1절 및 29.3.2.3절 참조)
+        _flight_task_manager.update(); // 내부에서 수동 입력값을 즉시 액추에이터 값으로 맵핑
+        
+    } else {
+        // [일반적인 피드백 루프 모드]
+        // Stabilized, Mission, Offboard 등 
+        
+        // 1. 목표 자세 오차 산출
+        _att_ctrl.update(_quat_state, _att_sp);
+        
+        // 2. 각속도 PID 제어 루프 통과 (여기가 바이패스되는 가장 무거운 연산 구역임)
+        _rate_sp = _att_ctrl.get_rate_setpoint();
+        _actuator_controls = _rate_ctrl.update(_rate_state, _rate_sp);
+    }
+    
+    // 3. 믹서로 향하는 uORB 토픽 발행
+    _actuator_controls_pub.publish(_actuator_controls);
+}
+</code></pre>
+<p>이 구조에서 가장 돋보이는 공학적 배려는 <code>_rate_ctrl.reset()</code> 구문이다. 조종자가 위험을 직감하고 매뉴얼 스위치를 친 순간, 기체는 극심한 발산 궤도에 있었을 가능성이 크며 PID 제어기의 적분항(I-term)에는 엄청난 양의 보상 에러가 누적(Windup)되어 있었을 것이다. 이를 초기화하지 않고 패스스루를 승인한다면, 추후 재차 자율 비행(Auto) 루프로 복귀할 때 누적된 폭발적인 에러 값이 서보 모터를 끝망울(End-point)까지 튕겨버리는 이른바 <strong>‘스냅백(Snap-back)’</strong> 현상을 낳아 기체를 공중분해시킬 수 있다.</p>
+<h2>3.  완전한 탈피드백(Zero-Feedback)의 철학</h2>
+<p>결과적으로 다이렉트 패스스루는 센서 융합(EKF)의 실패, PID 튜닝의 참사, 그 어떤 소프트웨어적 버그 앞에서도 조종기를 잡고 있는 인간 오퍼레이터의 물리적 판단력을 가장 신뢰한다는 PX4의 철학적 선언이다.</p>
+<p>동시에 이 파이프라인 우회는 CPU 사이클(Instruction Cycle) 낭비를 극한으로 줄이고 지연 속도(Latency)를 하드웨어 수준인 <span class="math math-inline">10\text{ms}</span> (SBUS 수신 주기) 근방으로 묶어버림으로써 파라미터 조작만으로 기체의 극한 테스트 비행 환경을 조성할 수 있는 매우 투명한 실험실을 제공한다. 이어지는 29.3.2.X 하위 시리즈에서는 이 순수한 데이터가 <code>FlightTaskManual</code> 이라는 그릇에 어떻게 담겨 액추에이터 배열(<code>actuator_controls</code>)로 메모리 이동(Memory Copy)하는지 미시적으로 들여다볼 것이다.</p>
 
             </article>
             <footer>

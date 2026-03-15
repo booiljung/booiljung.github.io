@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.7.2.2 인터-프로세스 통신(IPC) 병목 구간 식별 및 스레드 우선순위 역전(Priority Inversion) 디버깅 기법</title>
+    <title>BIJUNG:39.7.2.2. 인터-프로세스 통신(IPC) 병목 구간 식별 및 스레드 우선순위 역전(Priority Inversion) 디버깅 기법</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,43 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.7.2.2 인터-프로세스 통신(IPC) 병목 구간 식별 및 스레드 우선순위 역전(Priority Inversion) 디버깅 기법</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.7.2.2 인터-프로세스 통신(IPC) 병목 구간 식별 및 스레드 우선순위 역전(Priority Inversion) 디버깅 기법</span></nav>
+                    <h1>39.7.2.2. 인터-프로세스 통신(IPC) 병목 구간 식별 및 스레드 우선순위 역전(Priority Inversion) 디버깅 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.7.2.2. 인터-프로세스 통신(IPC) 병목 구간 식별 및 스레드 우선순위 역전(Priority Inversion) 디버깅 기법</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.7.2.2 인터-프로세스 통신(IPC) 병목 구간 식별 및 스레드 우선순위 역전(Priority Inversion) 디버깅 기법</h1>
+                <h1>39.7.2.2. 인터-프로세스 통신(IPC) 병목 구간 식별 및 스레드 우선순위 역전(Priority Inversion) 디버깅 기법</h1>
+<h2>1.  개요</h2>
+<p>앞 절에서 uORB 타임스탬프 델타(<span class="math math-inline">\Delta t</span>) 스파이크를 발견했다면, 이제 용의자는 네트워크가 아니라 PX4 펌웨어 그 자체다. NuttX RTOS 기반의 PX4는 수십 개의 스레드(태스크)가 제한된 CPU 자원과 메모리를 두고 치열하게 경쟁하는 멀티-스레딩(Multi-threading) 환경이다.<br />
+명령어를 처리하는 <code>Commander</code> 모듈이 제때 일어나지 못하고 지각을 했다는 것은, 누군가가 <code>Commander</code>의 길을 막고 놔주지 않았음을 의미한다. 본 절에서는 펌웨어 내부의 가장 치명적인 성능 저하 원인인 인터-프로세스 통신(IPC) 병목과, 임베디드 운영체제의 고전적인 난제인 ‘우선순위 역전(Priority Inversion)’ 현상을 어떻게 디버깅하고 튜닝하는지 살펴본다.</p>
+<h2>2.  uORB IPC 병목(Bottleneck)과 큐 레이턴시(Queue Latency)</h2>
+<p>PX4의 모든 스레드는 uORB라는 단일 인터-프로세스 통신(IPC) 브릿지를 통해 데이터를 주고받는다. uORB는 내부적으로 공유 메모리(Shared Memory)를 사용하므로 매우 빠르지만, 결국 큐(Queue) 기반의 버퍼링 시스템이다.</p>
+<p>명령어 처리가 지연되는 첫 번째 원인은 <strong>uORB 버퍼의 포화(Saturation)</strong> 다.<br />
+만약 <code>Commander</code> 모듈이 <code>vehicle_command</code> 토픽을 폴링(Polling)하기 직전에, 동일한 시간 자원을 공유하는 수백 Hz 주기의 IMU 센서 스레드가 무자비하게 인터럽트를 걸어 CPU 메모리 버스를 독점해 버렸다고 가정해 보자.<br />
+명령어는 uORB 파이프 안에 던져졌으나, 수신자인 <code>Commander</code>가 CPU 할당(Time Slice)을 받지 못해 큐 내부에서 몇 틱(Tick)을 강제로 대기하게 된다. 이러한 <code>Queueing Latency</code>는 명령어가 무언가 무거운 작업(예: 대용량 파라미터 저장, 플래시 메모리 Write)과 겹쳤을 때 극적으로 치솟으며, ULog의 <code>cpuload</code> 토픽을 분석해보면 전체 CPU 점유율이 일순간 90%를 돌파하는 그래프와 정확히 일치하는 양상을 띤다.</p>
+<h2>3.  스레드 우선순위 역전(Priority Inversion)의 치명적 함정</h2>
+<p>두 번째이자 가장 악랄한 원인은 리얼타임 운영체제(RTOS)의 고질병인 **스레드 우선순위 역전(Priority Inversion)**이다.</p>
+<ul>
+<li><strong>High Priority (H)</strong>: <code>Commander</code> (명령어 처리, 매우 중요)</li>
+<li><strong>Medium Priority (M)</strong>: 로거(Logger) (단순 SD 카드 기록, 중간 중요도)</li>
+<li><strong>Low Priority (L)</strong>: 백그라운드 파라미터 동기화 스레드 (낮은 중요도)</li>
+</ul>
+<p>사건의 전개는 다음과 같다.</p>
+<ol>
+<li>스레드 L이 실행되면서, 특정 공유 자원(예: VFS, 하드웨어 I/O 뮤텍스)에 락(Lock)을 건다.</li>
+<li>이때, 스레드 H(<code>Commander</code>)가 실행을 위해 깨어나지만, L이 쥐고 있는 뮤텍스(Mutex)가 필요하여 대기(Block) 상태에 빠진다. 아직까지는 정상이다 (L이 빨리 끝내고 락을 넘겨주면 되니까).</li>
+<li>그런데 갑자기 중간 우선순위인 스레드 M(Logger)이 깨어난다. M은 L보다 우선순위가 높으므로 L을 선점(Preemption)하여 CPU를 뺏어버린다!</li>
+<li><strong>결과</strong>: H(<code>Commander</code>)는 L이 락을 풀어주기만을 눈빠지게 기다리는데, L은 중간에 끼어든 M 때문에 영원히 CPU를 얻지 못해 작업을 끝내지 못한다. 결국 가장 중요한 H가 가장 덜 중요한 M의 작업이 끝날 때까지 하염없이 지연되는(Delayed) 모순이 발생한다.</li>
+</ol>
+<p>이 기간 동안 GCS에서 날아온 명령어 패킷은 <code>Commander</code>에 도달하지 못하고, 조종사는 통신 타임아웃 오류를 겪게 된다.</p>
+<h2>4.  디버깅 기법 및 시스템 튜닝(Tuning) 공학</h2>
+<p>이러한 내부 병목 및 타이밍 교착을 해결하기 위해, PX4 커어 펌웨어 개발자들은 다음과 같은 도구와 기법을 동원한다.</p>
+<ol>
+<li><strong>NuttX System Monitor (<code>top</code>)</strong>: 비행 전 벤치마크 테스트 시 NuttX Shell(NSH) 콘솔에서 <code>top</code> 명령어를 띄워놓고, 특정 명령어를 폭격했을 때 어떤 스레드(<code>commander</code>, <code>logger</code>, <code>navigator</code>)의 스택(Stack)과 CPU 점유율이 튀는지 실시간으로 모니터링한다.</li>
+<li><strong>Priority Inheritance (우선순위 상속) 구조 검증</strong>: OS 레벨에서 제공하는 우선순위 상속 프로토콜이 제대로 작동하는지 검토한다. 이는 위 사례에서 L 스레드가 락을 쥐고 있을 때 일시적으로 H 스레드만큼 우선순위를 끌어올려 M에게 선점당하지 않고 락을 빨리 풀게 만드는 RTOS의 방어 기법이다.</li>
+<li><strong>스레드 우선순위(Priority) 재배치</strong>: 소스 코드(예: <code>commander_main.cpp</code>) 상에 정의된 스케줄링 설정(<code>SCHED_PRIORITY_DEFAULT</code>, <code>SCHED_PRIORITY_MAX</code> 등)을 분석하여, 데이터 쓰기나 로깅 같은 무거운 I/O 스레드가 비행 제어 타스크보다 결코 높은 상대적 우선순위를 갖지 못하도록 펌웨어 아키텍처를 교정한다.</li>
+</ol>
+<p>결론적으로, GCS 타임아웃의 원인을 파헤치는 트러블슈팅의 끝에는 결국 RTOS의 근본적인 멀티태스킹 스케줄링 이론과 한정된 실리콘 자원을 분배하는 정밀한 C++ 코딩 공학이 자리 잡고 있다.</p>
 
             </article>
             <footer>

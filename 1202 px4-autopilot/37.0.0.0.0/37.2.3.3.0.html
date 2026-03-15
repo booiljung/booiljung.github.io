@@ -115,6 +115,52 @@
             </header>
             <article>
                 <h1>37.2.3.3 히스테리시스(Hysteresis) 함수 적용을 통한 상태 채터링(Chattering) 및 고주파 진동(High-frequency Oscillation) 억제 기법</h1>
+<p>제어 시스템이 특정 아날로그 센서의 임계값(Threshold)을 기준으로 불연속적인 이산 상태(Discrete State)를 전이시킬 때 맞닥뜨리는 가장 고질적인 문제는 상태 채터링(State Chattering) 현상이다. 입력 신호에 포함된 백색 잡음(White Noise)이나 센서의 측정 오차가 정확히 전이 임계값 부근에서 진동할 경우, 모터와 제어 루프는 수 밀리초 단위로 두 가지 상태를 왕복하며 물리적 파괴나 심각한 전력 소모를 유발한다. PX4-Autopilot은 상태 머신(FSM)이 이러한 고주파 진동에 빠지는 것을 방지하기 위해 수학적인 히스테리시스(Hysteresis) 함수와 타이머 지연(Time Delay) 기법을 상태 천이 논리망 곳곳에 배치하고 있다.</p>
+<h2>1.  상태 채터링(Chattering) 현상의 근원</h2>
+<p>예를 들어, 기체의 배터리 경고 임계 전압이 <span class="math math-inline">10.5V</span>로 설정되어 있다고 가정하자. 비행 중 모터가 강하게 회전하면 순간적인 전압 강하(Voltage Drop)로 배터리 전압이 <span class="math math-inline">10.4V</span>로 측정되고, 시스템은 비정상(FAILSAFE) 상태로 진입한다. 그 직후 제어기가 모터 출력을 줄이면 전압이 다시 <span class="math math-inline">10.6V</span>로 반등하여 정상(NORMAL) 상태로 복귀한다. 이 현상이 1초에 수십 회 반복되면 FSM은 <code>NORMAL</code> <span class="math math-inline">\leftrightarrow</span> <code>FAILSAFE</code> 사이를 미친 듯이 오고 가며, 비행 궤적은 심각한 불안정성(Instability)에 빠지게 된다.</p>
+<h2>2.  PX4의 히스테리시스(Hysteresis) 적용 기법</h2>
+<p>이러한 고주파 진동을 수학적으로 감쇠시키기 위해 PX4는 두 가지 차원의 히스테리시스 기법을 복합적으로 운용한다.</p>
+<h3>2.1  공간적/수치적 히스테리시스 (Threshold Hysteresis)</h3>
+<p>상태 진입 조건의 임계값과 상태 이탈(복구) 조건의 임계값을 분리하여 ’안전 여유 구간(Deadband)’을 생성하는 기법이다.</p>
+<ul>
+<li><strong>예시 설계:</strong> 배터리 경고 진입 임계값 <span class="math math-inline">V_{low} = 10.5V</span>, 경고 복원 임계값 <span class="math math-inline">V_{high} = 10.7V</span>.</li>
+<li>수학적으로 <span class="math math-inline">10.5V</span> 이하로 떨어져 <code>FAILSAFE</code>가 발동되었다면, 전압이 다시 <span class="math math-inline">10.6V</span>로 소폭 상승하더라도 FSM은 기존 <code>FAILSAFE</code> 상태를 강제 유지(Hold)한다. 전압이 완전히 안전한 수준인 <span class="math math-inline">V_{high}</span>(<span class="math math-inline">10.7V</span>)를 단방향으로 교차(Cross) 상향 돌파해야만 <code>NORMAL</code> 상태로의 복귀 전이가 허용된다.</li>
+</ul>
+<h3>2.2  시간적 히스테리시스 (Time-based Hysteresis / Debouncing)</h3>
+<p>수치적 여유 공간만으로는 짧은 시간에 발생하는 거대한 피크 노이즈(스파이크)를 걸러내기 부족하다. PX4는 <code>src/lib/hysteresis/hysteresis.h</code> 등의 유틸리티 클래스를 제공하여 상태 천이에 타이머 기반의 지연(Delay)을 부여한다.</p>
+<ul>
+<li><strong>Debounce 로직:</strong> GCS로부터 통신 단절(Data Link Loss) 이벤트가 발생했을 때 즉시 <code>RTL(Return To Launch)</code> 상태로 전이하지 않는다. 통신 단절 신호가 <span class="math math-inline">T_{delay}</span>(예: 10초) 동안 끊김 없이 연속적으로 참(True)으로 유지될 때에만 커맨더는 비로소 상태 전이 임계 구역을 개방한다. 찰나의 전파 간섭으로 인한 일시적 패킷 드롭은 이 시간적 히스테리시스 필터에 의해 흡수된다.</li>
+</ul>
+<h2>3.  히스테리시스 적용 대상과 시스템 안정성</h2>
+<p>PX4 커맨더 로직 내에서 히스테리시스 함수가 적용되는 주요 상태 변수(State Variable)들은 다음과 같다.</p>
+<ul>
+<li><strong>지면 접촉(Landed) 상태 판별:</strong> 지면 효과(Ground Effect)로 인해 기체가 착지 순간 통통 튀어오르는 바운싱(Bouncing) 에 대응하기 위해, 수직 속도가 일정 시간 동안 0에 수렴해야만 완벽한 착륙 상태로 인정한다.</li>
+<li><strong>비행 모드 전환 스위치:</strong> 조종기(RC) 스위치의 기계적 접점에서 발생하는 채터링 펄스를 필터링한다.</li>
+</ul>
+<p>오토파일럿 개발자는 직교하는 다차원 상태 공간 속에 지나치게 민감한 전입/전출 경계가 존재하지 않는지 시뮬레이터(SITL) 로그 분석을 통해 항시 검증해야 한다. 히스테리시스의 데드밴드를 너무 넓게 잡으면 제어 응답 속도(Response Time)가 떨어지고, 너무 좁게 잡으면 채터링 억제 능력을 상실하는 트레이드오프(Trade-off)가 발생함을 염두에 두어야 한다.</p>
+<h2>4.  히스테리시스 상태 전이 다이어그램</h2>
+<p>입력 신호의 노이즈와 시간/수치적 히스테리시스 공간의 관계를 그래프로 도식화하면 다음과 같다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Voltage Hysteresis Model
+        Input[Raw Sensor Input] --&gt; Is_Lower_Than_V_Low{&lt; 10.5V ?}
+        Input --&gt; Is_Higher_Than_V_High{&gt; 10.7V ?}
+        
+        Is_Lower_Than_V_Low --&gt;|Yes| Transition_Failsafe[State = FAILSAFE]
+        Is_Higher_Than_V_High --&gt;|Yes| Transition_Normal[State = NORMAL]
+        
+        %% Hysteresis Deadband Logic
+         Is_Lower_Than_V_Low -.-&gt;|No, but &lt; 10.7V| Hold_State[Maintain Current State]
+         Is_Higher_Than_V_High -.-&gt;|No, but &gt; 10.5V| Hold_State
+    end
+    
+    subgraph State Behavior (Time vs Signal)
+        direction LR
+        A_Signal[Signal fluctuates around 10.6V] -.-&gt;|Filtered by Hysteresis| B_State[State remains Stable / No Chattering]
+    end
+</code></pre>
+<p>도해와 같이 센서 신호가 <span class="math math-inline">10.5V</span>와 <span class="math math-inline">10.7V</span>라는 두 문턱(Threshold) 사이에 머무르는 한 상태는 변하지 않고 과거의 값을 기억(Memorize)한다. 오토마타 이론에서 이는 시스템이 일종의 단기 기억 소자(Memory Element)를 확보하여, 외부 교란력에 대한 시스템의 ’관성(Inertia)’을 공학적으로 구현한 것으로 해석된다.</p>
+<h2>5.  결론</h2>
+<p>무인항공기는 바람, 진동, 전자기파 등 가혹한 파라메트릭 외란(Parametric Disturbance) 속에서 작동하는 사이버 물리 시스템(Cyber-Physical System)이다. PX4의 커맨더 FSM이 극심한 관측 노이즈 속에서도 결정론적인 비행 모드를 굳건히 유지할 수 있는 비결은, 불리언 로직(Boolean Logic) 검증의 정밀함뿐만 아니라 그 이면에서 센서의 고주파 잔떨림을 흡수하는 히스테리시스(Hysteresis) 함수의 견고한 배치에 있다. MAVSDK나 ROS2를 통해 외부에서 오토파일럿의 상태를 강제로 통제하려는 GCS 오퍼레이터는, 자신이 보내는 명령이 기체 내부의 히스테리시스 윈도우와 충돌하여 묵살되지 않는지 사전에 그 시계열적 지연 특성을 완벽히 숙지해야만 한다.</p>
 
             </article>
             <footer>

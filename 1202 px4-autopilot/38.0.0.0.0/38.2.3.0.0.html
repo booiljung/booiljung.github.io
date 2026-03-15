@@ -115,6 +115,40 @@
             </header>
             <article>
                 <h1>38.2.3 기본/커스텀 모드 플래그의 비트 단위 논리 연산(Bitwise Logical Operation) 메커니즘</h1>
+<p>MAVLink <code>HEARTBEAT</code> 페이로드에는 기체의 비행 모드와 시동 상태를 나타내는 두 가지 핵심 필드가 존재한다. 하나는 1바이트(8비트) 크기의 <code>base_mode</code>이고, 다른 하나는 4바이트(32비트) 크기의 <code>custom_mode</code>이다.</p>
+<p>통신 대역폭이 극단적으로 제한된 환경에서 여러 개의 독립적인 상태 정보(예: ‘시동이 걸렸는가?’, ‘수동 조종이 가능한가?’, ‘독자적인 비행 모드를 사용하는가?’)를 각각 별도의 <code>bool</code> 변수로 전송하는 것은 엄청난 메모리 낭비다. PX4-Autopilot과 MAVLink는 이를 해결하기 위해 여러 개의 참/거짓(True/False) 상태를 단일 정수형(Integer) 변수의 각 비트(Bit) 슬롯에 밀어 넣는 <strong>비트 단위 논리 연산(Bitwise Logical Operation)</strong> 기법을 사용한다.</p>
+<h2>1. base_mode (8-bit) 구조와 MAV_MODE_FLAG 열거형</h2>
+<p><code>base_mode</code>는 모든 MAVLink 호환 시스템(PX4, Ardupilot 등)이 공통으로 준수해야 하는 가장 원초적인 상태 플래그들의 집합(<code>MAV_MODE_FLAG</code>)이다. 총 8개의 비트 슬롯에 다음과 같은 독립적인 상태가 매핑된다.</p>
+<ul>
+<li><strong>Bit 7 (128)</strong>: <code>MAV_MODE_FLAG_SAFETY_ARMED</code> (모터 시동 켜짐)</li>
+<li><strong>Bit 6 (64)</strong>: <code>MAV_MODE_FLAG_MANUAL_INPUT_ENABLED</code> (RC 조종기 개입 허용)</li>
+<li><strong>Bit 5 (32)</strong>: <code>MAV_MODE_FLAG_HIL_ENABLED</code> (Hardware-in-the-loop 시뮬레이션 모드)</li>
+<li><strong>Bit 4 (16)</strong>: <code>MAV_MODE_FLAG_STABILIZE_ENABLED</code> (자세 안정화 제어 활성화)</li>
+<li><strong>Bit 3 (8)</strong>: <code>MAV_MODE_FLAG_GUIDED_ENABLED</code> (외부 GCS 제어 활성화)</li>
+<li><strong>Bit 2 (4)</strong>: <code>MAV_MODE_FLAG_AUTO_ENABLED</code> (자율 임무 비행 활성화)</li>
+<li><strong>Bit 1 (2)</strong>: <code>MAV_MODE_FLAG_TEST_ENABLED</code> (기체 테스트 모드)</li>
+<li><strong>Bit 0 (1)</strong>: <code>MAV_MODE_FLAG_CUSTOM_MODE_ENABLED</code> (오토파일럿 고유의 커스텀 모드 사용)</li>
+</ul>
+<h3>1.1 논리합(OR, <code>|</code>)을 이용한 인코딩(Encoding)</h3>
+<p>기체 내부의 Commander 모듈이 <code>HEARTBEAT</code> 패킷을 조립할 때, 현재 조건에 부합하는 여러 플래그들을 <strong>비트 단위 논리합(Bitwise OR, <code>|</code>)</strong> 연산으로 결합한다.</p>
+<p>예를 들어, 드론이 시동이 걸려 있고(128), 자율 비행 모드에 진입했으며(4), PX4 고유의 세부 모드 플래그를 사용 중이라면(1), 이 세 가지 상태 변수는 CPU 레벨에서 다음과 같이 단일 8비트 정수로 압축된다.<br />
+<code>base_mode</code> = 128 (<code>10000000_2</code>) | 4 (<code>00000100_2</code>) | 1 (<code>00000001_2</code>) = 133 (<code>10000101_2</code>)</p>
+<p>단 1바이트 안에 세 가지의 본질적인 비행 상태 정보가 직교성(Orthogonality)을 유지한 채 안전하게 포장(Packing)된 것이다.</p>
+<h3>1.2 논리곱(AND, <code>&amp;</code>)을 이용한 디코딩(Decoding)</h3>
+<p>이 압축된 133(<code>10000101_2</code>)이라는 값을 수신한 QGroundControl(GCS)은 내부에 숨겨진 특정 상태를 추출하기 위해 <strong>비트 마스킹(Bit Masking)</strong> 기법과 <strong>비트 단위 논리곱(Bitwise AND, <code>&amp;</code>)</strong> 연산을 수행한다.</p>
+<p>GCS가 현재 드론의 “시동(Armed) 여부“만을 확인하고 싶다면, <code>MAV_MODE_FLAG_SAFETY_ARMED</code>(128)를 마스크(Mask)로 삼아 논리곱을 수행한다.</p>
+<ul>
+<li><code>if (base_mode &amp; MAV_MODE_FLAG_SAFETY_ARMED)</code></li>
+<li><code>10000101_2 &amp; 10000000_2</code> = <code>10000000_2</code> (128)<br />
+연산 결과가 0이 아니므로(True), GCS의 UI 로직은 기체가 무장 상태임을 인지하고 “Armed“라는 그래픽 요소를 화면에 점등한다.</li>
+</ul>
+<h2>2. custom_mode (32-bit)와 오토파일럿 간의 처리 차이</h2>
+<p>만약 <code>base_mode</code>의 0번 비트(<code>MAV_MODE_FLAG_CUSTOM_MODE_ENABLED</code>)가 켜져 있다면, GCS는 <code>base_mode</code>의 제한된 8비트 체계를 넘어서 32비트 공간을 자랑하는 <code>custom_mode</code> 필드를 파싱(Parsing)해야 한다. 이 4바이트의 넓은 공간을 해석하는 방법은 탑재된 오토파일럿에 따라 완전히 달라진다.</p>
+<ul>
+<li><strong>Ardupilot의 플랫(Flat) 매핑</strong>: 앞선 38.2절에서 가볍게 언급했듯, Ardupilot은 이 32비트 공간에 <code>Loiter = 5</code>, <code>RTL = 6</code> 등 단순한 Enum Integer를 집어넣는다. 따라서 별도의 비트 연산 없이 숫자를 그대로 읽으면 된다.</li>
+<li><strong>PX4-Autopilot의 다차원 비트 매핑</strong>: 반면 PX4는 이 32비트라는 광활한 공간을 메인 모드(Main Mode), 서브 모드(Sub Mode) 등 여러 계층으로 쪼개어 다시 한번 비트 수준에서 조각내어 사용한다.</li>
+</ul>
+<p>PX4의 이 독특한 다차원 계층 구조는 단순한 논리곱(AND)을 넘어서, 비트 배열을 특정 칸수만큼 통째로 밀어버리는 <strong>시프트(Shift, <code>&gt;&gt;</code>, <code>&lt;&lt;</code>) 연산</strong>을 필연적으로 요구한다. 이어지는 두 개의 하부 절(38.2.3.1, 38.2.3.2)에서는 PX4가 이 <code>custom_mode</code>를 어떻게 분해 조립하는지, 그리고 다중 플래그를 어떻게 병렬로 추출하는지 그 수학적 행렬 연산을 깊이 있게 해부한다.</p>
 
             </article>
             <footer>

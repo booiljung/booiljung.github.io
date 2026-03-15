@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.5.1.2 MAVLink 프로토콜 파서(Parser) 스레드와 비즈니스 로직 스레드 간의 데이터 교환 파이프라인</title>
+    <title>BIJUNG:39.5.1.2. MAVLink 프로토콜 파서(Parser) 스레드와 비즈니스 로직 스레드 간의 데이터 교환 파이프라인</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,45 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.5.1.2 MAVLink 프로토콜 파서(Parser) 스레드와 비즈니스 로직 스레드 간의 데이터 교환 파이프라인</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.5.1.2 MAVLink 프로토콜 파서(Parser) 스레드와 비즈니스 로직 스레드 간의 데이터 교환 파이프라인</span></nav>
+                    <h1>39.5.1.2. MAVLink 프로토콜 파서(Parser) 스레드와 비즈니스 로직 스레드 간의 데이터 교환 파이프라인</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.5.1.2. MAVLink 프로토콜 파서(Parser) 스레드와 비즈니스 로직 스레드 간의 데이터 교환 파이프라인</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.5.1.2 MAVLink 프로토콜 파서(Parser) 스레드와 비즈니스 로직 스레드 간의 데이터 교환 파이프라인</h1>
+                <h1>39.5.1.2. MAVLink 프로토콜 파서(Parser) 스레드와 비즈니스 로직 스레드 간의 데이터 교환 파이프라인</h1>
+<p>기체(PX4-Autopilot)로부터 지상 관제 시스템(GCS)으로 하향(Downlink)되는 텔레메트리 데이터 속도는 초당 수백 킬로바이트(KB)에 달할 수 있다. QGroundControl(QGC)은 이 방대한 연속적 바이트 스트림(Byte Stream)을 의미 있는 비행 데이터 객체로 변환하기 위해, 통신을 전담하는 ’MAVLink 파서 스레드(Link 스레드)’와 이를 해석하여 애플리케이션 상태를 갱신하는 ‘비즈니스 로직 스레드(Vehicle 스레드)’ 간의 고도로 정제된 파이프라인(Pipeline)을 설계하여 운용한다.</p>
+<h2>1.  MAVLink 바이트 스트림의 파싱(Parsing) 아키텍처</h2>
+<p>MAVLink 프로토콜은 패킷의 경계(Boundary)가 고정되어 있지 않은 직렬 통신 프로토콜이므로, UDP 데이터그램이나 직렬(Serial) 버퍼로부터 읽어들인 원시(Raw) 바이트들은 즉시 해독될 수 없다. QGC의 파서 스레드는 각 링크(Link) 인스턴스마다 독립적으로 구동되며 다음과 같은 절차로 메시지를 복원한다.</p>
+<ol>
+<li><strong>바이트 슬라이딩(Byte Sliding)</strong>: <code>QUdpSocket</code> 또는 <code>QSerialPort</code>에서 비동기 시그널(<code>readyRead</code>)이 발생하면, 파서 스레드는 데이터 버퍼를 순회하며 MAVLink의 시작 바이트(STX: v1의 경우 <code>0xFE</code>, v2의 경우 <code>0xFD</code>)를 헌팅(Hunting)한다.</li>
+<li><strong>C 헤더 구조체 역직렬화</strong>: 시작 바이트를 차은 후, 길이를 참조하여 헤더 및 페이로드를 조립하고 <code>mavlink_parse_char()</code> C 함수(MAVLink 라이브러리 제공)를 1바이트씩 호출하여 <code>mavlink_message_t</code> 구조체를 완성한다.</li>
+<li><strong>CRC / 서명 검증</strong>: 완성된 메시지는 무결성(CRC) 오류가 없는지, 그리고 MAVLink 2.0의 경우 서명(Signature)이 유효한지 검증된다. 불량 패킷(Drop Packet)은 비즈니스 로직으로 넘어가지 않고 파서 스레드 계층에서 즉각 폐기된다.</li>
+</ol>
+<h2>2.  스레드 간 데이터 교환 파이프라인의 설계</h2>
+<p>완성된 <code>mavlink_message_t</code> 구조체는 파서 스레드 공간에 존재하므로, 이를 화면에 렌더링하고 상태 기계(State Machine)를 동작시킬 <code>Vehicle</code> 스레드로 전달해야 한다. 이 교환 과정에서 메모리 오버헤드와 락 경합(Lock Contention)을 방지하는 것이 QGC 파이프라인 아키텍처의 핵심이다.</p>
+<h3>2.1  Qt 시그널-슬롯 기반의 메시지 펌핑(Message Pumping)</h3>
+<p>가장 기본적이고 안전한 파이프라인은 Qt의 <code>QMetaType</code> 시스템을 활용한 비동기 이벤트 전달이다.</p>
+<ul>
+<li>파서 스레드는 조립이 완료된 <code>mavlink_message_t</code>를 복사(Copy)하여 <code>MAVLinkProtocol::receiveBytes()</code>와 같은 코어 라우팅 시그널을 방출(Emit)한다.</li>
+<li>이 시그널은 <code>Qt::QueuedConnection</code> 속성을 가지므로, 메시지는 OS 수준의 스레드 간 이벤트 큐(Event Queue)에 안전하게 직렬화되어 적재된다.</li>
+<li>비즈니스 로직 스레드는 자체 <code>QEventLoop</code>를 순회하다가 큐에서 이 메시지를 꺼내어(Dequeue), <code>Vehicle::mavlinkMessageReceived()</code> 슬롯 함수에 파라미터로 제공한다.</li>
+</ul>
+<h3>2.2  복사 오버헤드 완화를 위한 참조 전달과 메모리 풀(Memory Pool)</h3>
+<p><code>mavlink_message_t</code>는 최대 280바이트에 달할 수 있는 꽤 큰 구조체이다. 초당 수천 개의 메시지가 큐잉될 때 발생하는 대량의 값 복사(Pass by Value)는 CPU의 L1/L2 캐시 미스(Cache Miss)를 유발하고 힙(Heap) 오버헤드를 가중시킨다.</p>
+<p>이를 극복하기 위해 QGC 및 고성능 GCS 아키텍처에서는 <strong>스마트 포인터(<code>std::shared_ptr</code>) 기반의 메모리 풀(Memory Pool)</strong> 기법을 병행한다.</p>
+<ul>
+<li>파서 스레드는 미리 할당된 풀(Pool)에서 <code>mavlink_message_t</code> 객체를 빌려와 데이터를 쓴다.</li>
+<li>시그널을 통해 전달되는 것은 280바이트의 데이터가 아니라 8바이트의 스마트 포인터 주소(Address)이다.</li>
+<li>비즈니스 스레드가 해당 콜백 처리를 완료하고 포인터를 해제(Release)하면, 메모리는 파괴되지 않고 파서 스레드의 풀로 재사용(Recycle) 반환되어 메모리 단편화(Fragmentation)를 완벽히 억제한다.</li>
+</ul>
+<h2>3.  PX4-Autopilot 비즈니스 로직 라우팅 전략</h2>
+<p>비즈니스 스레드로 넘어온 메시지는 단순히 저장되는 것을 넘어, PX4-Autopilot의 상태 전이에 즉각 영향을 미치는 로직 트리(Logic Tree)로 라우팅된다.</p>
+<ol>
+<li><strong>SYS_STATUS / HEARTBEAT 분석</strong>: 커맨더 모듈의 Arm/Disarm 상태나 비행 모드(Flight Mode) 변화를 실시간으로 캐치하여 UI의 상단 상태 표시줄(Toolbar)에 전파한다.</li>
+<li><strong>HIGHRES_IMU / ATTITUDE 추출</strong>: 3D 계기판(PFD)의 자세계(Attitude Indicator)를 구동하기 위한 피치/롤/요(Pitch/Roll/Yaw) 데이터를 고속으로 갱신한다.</li>
+<li><strong>명령어 응답(COMMAND_ACK) 가로채기</strong>: 이 파이프라인 설계에서 가장 중요한 부분이다. GCS가 조종사의 지시로 명령을 송신하고 대기 큐(Pending Queue)에서 타임아웃을 모니터링 중일 때, 비즈니스 스레드로 도달한 <code>COMMAND_ACK</code>는 텔레메트리 업데이트 루틴을 건너뛰고 <strong>지연 없이 최우선적으로 명령어 관리자(Command Manager)에게 라우팅</strong>된다. 그 결과 락(Lock)이 걸린 대기 큐에서 해당 식별자의 명령이 즉시 해제(Resolve)되어 동시성 타이머가 종료된다.</li>
+</ol>
+<p>결과적으로, 파서 스레드의 단순하고 무결한 바이트 조립 능력과 비즈니스 로직 스레드의 안전한 이벤트 큐잉 설계는 PX4와 GCS 간의 MAVLink 파이프라인이 수천 시간의 비행에서도 멈춤(Hang)이나 메모리 누수 없이 작동하도록 보장하는 소프트웨어 공학의 정수이다.</p>
 
             </article>
             <footer>

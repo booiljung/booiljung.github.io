@@ -115,6 +115,37 @@
             </header>
             <article>
                 <h1>38.2.2.1 대규모 군집 비행(Swarm) 네트워크 공간에서의 매체 접근 제어(MAC) 충돌 회피(Collision Avoidance) 확률 모델</h1>
+<p>PX4-Autopilot은 <code>MAV_SYS_ID</code> 확장을 통해 최대 254대의 드론이 하나의 통신망을 공유할 수 있는 아키텍처를 제공한다. 그러나 이 기체들이 단일 주파수 파장(예: 915MHz ISM 대역)의 반이중(Half-duplex) 텔레메트리 모뎀을 통해 군집 비행(Swarm)을 수행할 경우, <strong>매체 접근 제어(Medium Access Control, MAC)</strong> 계층에서의 패킷 충돌 현상은 심각한 통신 이론적 난제로 대두된다.</p>
+<h2>1. 순수 알로하(Pure ALOHA) 네트워크 수학적 모델링</h2>
+<p>텔레메트리 모뎀 기반의 MAVLink 브로드캐스트 환경은 반송파 감지(Carrier Sense) 기능이 부재하거나 은닉 노드(Hidden Node) 문제로 인해 무력화되기 쉽다. 따라서 각 드론이 1Hz 주기로 <code>HEARTBEAT</code>와 상태 메시지를 맹목적으로 송출하는 현상은 통신 공학의 전형적인 <strong>순수 알로하(Pure ALOHA) 채널 모델</strong>과 일치한다.</p>
+<p>하나의 MAVLink 프레임(약 17~30바이트)을 전송하는 데 걸리는 무선 점유 시간을 <span class="math math-inline">\tau</span>(초)라고 하고, <span class="math math-inline">N</span>대의 드론이 각각 초당 <span class="math math-inline">\lambda</span>번(통상 <span class="math math-inline">\lambda=1</span>) 메시지를 송신한다고 가정하자.<br />
+순수 알로하망에서 임의의 패킷 전송이 성공하기 위해서는, 해당 패킷 전송 시작 지점부터 종료 시점 사이의 기간 길이 <span class="math math-inline">2\tau</span>(취약 구간, Vulnerable Period) 동안 다른 어떠한 기체도 송신을 시작하지 않아야 한다.</p>
+<p>전송 발생이 푸아송 분포(Poisson Distribution)를 따른다고 가정할 때, 충돌 없이 전송이 성공할 확률 <span class="math math-inline">P_{success}</span>는 다음과 같이 도출된다.<br />
+<span class="math math-display"> P_{success} = e^{-2N\lambda\tau} </span></p>
+<p>이 수식은 <strong>드론의 대수(<span class="math math-inline">N</span>)가 증가할수록 패킷 생존율이 기하급수적으로(Exponentially) 붕괴</strong>됨을 의미한다. 10대 미만에서는 문제가 없던 텔레메트리 망이 50대, 100대의 군집 비행으로 확장되는 순간, 네트워크 대역폭(Throughput)이 급전직하하며 GCS 화면에 모든 기체의 연결이 끊어지는(Data Link Loss) 대형 사고로 이어지는 통신 수학적 근본 원인이다.</p>
+<h2>충돌 회피 방벽: 지터(Jitter) 유도와 위상 천이(Phase Shift)</h2>
+<p>이러한 네트워크 파국을 지연시키기 위해 PX4의 <code>mavlink</code> 모듈 스케줄러는 시스템 클럭에 기반한 결정론적(Deterministic) 타이머에만 의존하지 않는다.</p>
+<p>만약 두 대의 드론이 전원을 인가받은 시점이 마이크로초 단위로 동일하고 OS의 스케줄링 틱(Tick)마저 일치한다면, 두 드론은 매 1초마다 영원히 동시 송신을 시도하며 100% 확률의 ’결정론적 충돌 루프(Deterministic Collision Loop)’에 빠지게 된다.</p>
+<p>이를 파훼하기 위해 PX4는 타이머 루프에 미세한 OS 스케줄링 간섭(OS Scheduling Jitter)을 허용하거나, 고의적인 무작위 지연(Random backoff) 엔트로피를 부여한다. 이로 인해 주파수 간섭이 발생하더라도 다음 주기(1초 뒤)에는 서로의 송신 위상(Phase)이 어긋나게 되어, 지속적인 충돌 상태에서 스스로 탈출(Self-healing)할 수 있는 확률적 회피(Probabilistic Avoidance) 능력을 가지게 된다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Drone_A[Drone A 송신 주기]
+        A1(t=1.00s) --&gt; A2(t=2.01s) --&gt; A3(t=3.03s)
+    end
+    subgraph Drone_B[Drone B 송신 주기]
+        B1(t=1.00s&lt;br/&gt;충돌 발생) --&gt; B2(t=1.98s&lt;br/&gt;송신 성공) --&gt; B3(t=3.02s&lt;br/&gt;송신 성공)
+    end
+    
+    A1 -.-&gt;|RF 공간 중첩: Collision| B1
+    A2 -.-&gt;|위상 어긋남: Success| B2
+    A3 -.-&gt;|위상 어긋남: Success| B3
+    
+    style A1 fill:#fff1f0,stroke:#f5222d,stroke-width:2px;
+    style B1 fill:#fff1f0,stroke:#f5222d,stroke-width:2px;
+</code></pre>
+<h2>Ardupilot과 고도화된 MAC 계층으로의 오프로딩(Offloading)</h2>
+<p>Ardupilot 환경에서도 군집 비행 시 동일한 Pure ALOHA 대역폭 붕괴 현상을 겪는다. 초기에는 파라미터 튜닝을 통해 기체별로 텔레메트리 송출 주기를 강제로 엇갈리게 설정(Staggering)하는 임시방편(Workaround)을 사용했다.</p>
+<p>그러나 수십 대 이상의 진정한 군집 제어를 위해서는 PX4와 Ardupilot 모두 레거시 시리얼 텔레메트리를 포기하고, 802.11 WiFi나 LTE 기반의 IP 네트워크로 전환하는 추세이다.</p>
+<p>IP 네트워크로 전환한다는 것은, 하위 물리 계층 하드웨어(e.g., ESP8266/ESP32 WiFi 브릿지)가 제공하는 강력한 <strong>CSMA/CA (Carrier Sense Multiple Access with Collision Avoidance)</strong> 알고리즘과 RTS/CTS(Request to Send / Clear to Send) 기법을 활용할 수 있다는 의미이다. 결과적으로 펌웨어 레벨의 비효율적인 브로드캐스트 충돌 방어 로직을 하드웨어 MAC 전용 칩셋으로 오프로딩(Offloading)함으로써, 대규모 군집 관제의 실시간성과 신뢰성을 동시에 확보하게 된 것이다.</p>
 
             </article>
             <footer>

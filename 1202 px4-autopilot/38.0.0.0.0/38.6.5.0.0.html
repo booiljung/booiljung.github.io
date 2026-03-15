@@ -115,6 +115,37 @@
             </header>
             <article>
                 <h1>38.6.5 독자적 관제 시스템(Custom GCS) 감시 데몬(Watchdog Daemon) 설계 패러다임</h1>
+<p>지금까지 우리는 거대한 <code>QGroundControl</code> 애플리케이션이나 <code>MAVSDK</code> 프레임워크가 백엔드에서 어떻게 상태를 동기화하고 관리하는지 살펴보았다.</p>
+<p>하지만 군집 드론 라이트 쇼(Swarm Light Show), 배송 드론의 임무 컴퓨터(Companion Computer), 혹은 극도로 경량화된 산업용 맞춤형 관제 시스템(Custom GCS)을 바닥부터 즉 순수 C/C++나 Rust로 개발해야 하는 상황이라면 어떨까? Qt처럼 무거운 프레임워크 없이, 생명선인 무선 링크 단절(Data Link Loss)을 감지하는 가장 견고한 메커니즘을 어떻게 설계해야 할까?</p>
+<h2>1. 감시 데몬(Watchdog Daemon)의 철학</h2>
+<p>이러한 맞춤형 관제 시스템에서 가장 핵심이 되는 보안 장치는 <strong>감시 데몬(Watchdog Daemon)</strong>, 이른바 ’데드맨 스위치(Dead Man’s Switch)’의 구현이다.</p>
+<p>감시 데몬은 오로지 “드론으로부터 심장 박동(<code>HEARTBEAT</code>) 패킷이 제때 도착하고 있는가?” 하나만을 판별하기 위해 시스템 백그라운드에서 격리된 채 실행되는 초경량 독립 프로세스(또는 최우선순위 스레드)를 뜻한다. 드론이 1초마다 하트비트를 보내오면 감시 데몬은 타이머를 0으로 초기화(Reset/Kick)하며 잠재적인 비상사태 알람을 억제한다.</p>
+<h2>2. 수신 스레드와 감시 스레드의 격리 (Separation of Concerns)</h2>
+<p>맞춤형 GCS 설계의 첫 번째 패러다임은 텔레메트리를 파싱하는 ’수신 스레드’와 생존을 감시하는 ’감시 스레드’를 철저하게 **격리(Isolation)**하는 것이다.</p>
+<p>만약 메인 수신 스레드 안에서 시간을 체크해 통신 단절을 판별하려 한다면 치명적인 문제가 발생한다. 수신 스레드가 복잡한 웨이포인트(Waypoint) 미션 덩어리나 거대한 로그 파일을 처리하느라 단 3초라도 블로킹(Blocking)된다면, 통신이 아주 잘 되고 있음에도 불구하고 GCS는 드론의 하트비트 처리가 밀렸다는 이유만으로 ’통신 단절(Data Link Loss)’이라는 오탐지(False Positive) 알람을 울리고, 기체 지상 귀환(RTL) 명령을 쏴버리는 대참사가 일어날 수 있다.</p>
+<p>따라서 감시 데몬은 무거운 데이터 파싱과는 절대 엮이지 않고, 오직 하트비트 수령 시간만을 확인해야 한다.</p>
+<h2>3. 원자적(Atomic) 타임스탬프 기반 만료 로직</h2>
+<p>현대적인 Custom GCS 감시 데몬에서 가장 널리 쓰이는 표준적인 구현 방식은 스레드 안전(Thread-Safe)한 타임스탬프 체계다.</p>
+<ol>
+<li><strong>발도장 (Kicking the dog)</strong>: 수신 스레드가 <code>HEARTBEAT</code> 패킷을 정상적으로 파싱할 때마다, 수신 스레드는 <code>std::atomic&lt;uint64_t&gt;</code> 형태의 전역 공유 변수인 <code>last_heartbeat_time_ms</code>에 현재의 운영체제 유닉스(Unix) 타임스탬프를 원자적으로(Atomically) 덮어쓴다.</li>
+<li><strong>타이머 검사 루프 (Watchdog Loop)</strong>: 이와 완전히 분리된 감시 데몬 스레드는 500ms 마다 한 번씩 잠에서 깨어나 간단한 뺄셈 수학을 수행한다.</li>
+</ol>
+<pre><code class="language-cpp">// 감시 데몬 루프 예시 (C++)
+void watchdog_thread() {
+    while (true) {
+        uint64_t current_time = get_os_time_ms();
+        uint64_t last_time = last_heartbeat_time_ms.load();
+        
+        // 타임아웃 임계치(예: 3초)를 초과했는가?
+        if ((current_time - last_time) &gt; 3000) {
+            trigger_data_link_loss_alarm(); // 비상사태 돌입!
+            break; 
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+}
+</code></pre>
+<p>이 고전적이고 단순한 타임스탬프 폴링(Polling) 방식은 구현이 쉽고 매우 견고하다. 하지만, POSIX 실시간 운영체제(RTOS) 환경이나 임베디드 리눅스의 커널(Kernel) 수준에서 더욱 극한의 반응성(수 밀리초 이내의 빠른 단절 감지)과 제로(0)에 가까운 CPU 점유율을 달성하려면, 스레드가 깨어나서 검사하는 폴링 방식마저 버리고 하드웨어 수준의 <strong>타이머 인터럽트(Timer Interrupt)</strong> 구조로 넘어가야 한다. 이에 대한 심화 구현 기법은 다음 절에서 다룬다.</p>
 
             </article>
             <footer>

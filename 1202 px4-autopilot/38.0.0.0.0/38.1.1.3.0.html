@@ -115,6 +115,37 @@
             </header>
             <article>
                 <h1>38.1.1.3 마르코프 연쇄(Markov Chain) 확률 모델을 응용한 예측 불가 상태 전이(Unpredictable State Transition) 억제 기법</h1>
+<p>유한 상태 머신(FSM)의 근본적인 속성 중 하나는 ’무기억성(Memorylessness)’이다. 시스템의 다음 상태는 오직 “현재 시스템이 머물고 있는 상태“와 “새로 주어진 입력“에 의해서만 결정되며, 시스템이 지금의 상태에 도달하기까지 거쳐온 과거의 역사(History)는 고려되지 않는다. 이러한 성질은 확률 과정(Stochastic Process)의 하나인 마르코프 연쇄(Markov Chain)의 마르코프 성질(Markov Property)과 수학적으로 정확히 일치한다.</p>
+<p>PX4-Autopilot의 FSM 역시 기본적으로 이 마르코프 성질을 따른다. 그러나 센서 노이즈와 물리적 외란이 존재하는 실제 비행 환경에서 순수한 마르코프 연쇄 모델을 그대로 상태 전이에 적용하면, 확률적인 노이즈 입력으로 인하여 예측 불가능한 ‘상태 진동(State Oscillation)’ 현상에 직면하게 된다.</p>
+<h2>1. 센서 노이즈가 유발하는 확률론적 전이(Stochastic Transition) 문제</h2>
+<p>GPS 수신 위성 개수나 배터리 전압, 센서의 EKF(Extended Kalman Filter) 혁신(Innovation) 오차 등은 고정된 상수가 아니라 가우시안 노이즈(Gaussian Noise)를 띠는 확률 변수(Random Variable)다.</p>
+<p>만약 배터리 전압이 Failsafe 임계치(예: 14.0V) 부근에 도달했다고 가정해보자. 노이즈로 인해 배터리 값이 <code>13.9V</code>와 <code>14.1V</code>를 1초에도 수십 번씩 횡단(Crossing)하게 된다면, 순수 마르코프 모델에서는 다음과 같은 전이 확률 행렬 <span class="math math-inline">P</span>가 형성된다.</p>
+<p><span class="math math-display"> P = \begin{bmatrix} P(\text{Normal} \rightarrow \text{Normal}) &amp; P(\text{Normal} \rightarrow \text{Failsafe}) \\ P(\text{Failsafe} \rightarrow \text{Normal}) &amp; P(\text{Failsafe} \rightarrow \text{Failsafe}) \end{bmatrix} \approx \begin{bmatrix} 0.5 &amp; 0.5 \\ 0.5 &amp; 0.5 \end{bmatrix} </span></p>
+<p>이 경우 <code>commander</code> 모델은 <code>NORMAL</code> 상태와 <code>FAILSAFE</code> 상태를 나노초 단위로 오가며 미친 듯이 채터링(Chattering)을 발생시킬 수 있다. 물리적인 액추에이터는 이 속도를 따라갈 수 없으며, GCS는 화면 전체가 에러와 정상 알림으로 도배되는 예측 불가 상태(Unpredictable State)의 늪에 빠진다.</p>
+<h2>예측 불가 상태 전이 억제 기법 (State Transition Suppression)</h2>
+<p>PX4-Autopilot은 이러한 마르코프 모델의 취약점인 채터링과 비결정론적 진동을 억제하기 위해 **상태 평가 루프 내에 시간 의존적 필터링(Time-dependent Filtering)**과 <strong>이력 현상(Hysteresis)</strong> 기법을 도입하여 전이 확률 벡터를 의도적으로 변형시킨다.</p>
+<ol>
+<li>
+<p><strong>시간 임계치 지연(Temporal Threshold Delay)</strong><br />
+PX4의 <code>commander</code> 모듈은 특정 임계치를 한 번 넘었다고 해서 즉시 상태 <span class="math math-inline">s_j</span>로 전이하지 않는다. 대신, 해당 트리거(예: RC Loss)가 <strong>일정 시간(예: 0.5초) 이상 연속적으로 유지되었을 때만</strong> 마르코프 전이 확률을 사실상 <span class="math math-inline">1.0</span>으로 인정하여 전이를 확정 짓는다. (예: <code>rc_loss_timeout</code>). 이는 노이즈에 의한 고주파 성분의 확률적 전이를 저역 통과 필터(Low-pass Filter)처럼 차단하는 제어 공학적 효과를 낳는다.</p>
+</li>
+<li>
+<p><strong>비대칭 이력 현상(Asymmetric Hysteresis)</strong><br />
+일단 <code>NORMAL</code>에서 <code>FAILSAFE</code>로 넘어가기 위한 임계치가 14.0V라면, 다시 <code>FAILSAFE</code>에서 <code>NORMAL</code>로 복귀(Recovery)하기 위한 임계치는 14.5V로 비대칭적으로 높게 설정한다.<br />
+이력 현상이 적용되면 전이 확률 모델은 조건부 마르코프 모델로 변모한다. 즉, 이전에 어떤 상태에 있었는지의 ’이력’이 단기적으로 기억(Memory)되어 현재의 상태 전이 확률에 영향을 주게 된다. 그 결과, 임계치 부근에서의 진동 확률 <span class="math math-inline">P(\text{Failsafe} \rightarrow \text{Normal})</span>이 0으로 수렴하게 되며 핑퐁(Ping-pong) 전이가 근본적으로 억제된다.</p>
+</li>
+</ol>
+<pre><code class="language-mermaid">graph LR
+    A[Normal State] -- "V &lt; 14.0V (지속시간 &gt; 3초)" --&gt; B[Failsafe_RTL State]
+    B -- "V &gt; 14.5V (지속시간 &gt; 1초)" --&gt; A
+    
+    style A fill:#d9f7be,stroke:#52c41a,stroke-width:2px;
+    style B fill:#ffd666,stroke:#fa8c16,stroke-width:2px;
+</code></pre>
+<h2>Ardupilot 및 GCS 관제 환경에서의 차이점</h2>
+<p>Ardupilot 통신 프로토콜과 관제 소프트웨어(Mission Planner) 역시 유사한 이력 필터링을 사용하여 모드 변경의 채터링을 억제한다. 그러나 PX4-Autopilot과 QGroundControl 시스템의 두드러진 차이점은 이러한 시간 지연과 마르코프 확률 억제 로직이 코어 레벨 수준의 매개 변수로 노출되어 매우 엄격하게 계산된다는 점이다.</p>
+<p>PX4에서는 EKF2(Extended Kalman Filter 2) 모듈이 센서의 무결성(Innovation Variance)을 끊임없이 추적하여, 해당 분산 값이 특정 임계치를 넘는 확률적 상황이 되면 <code>commander</code>에 강제 상태 이탈(Fall-back) 메시지를 보낸다. 이때 <code>commander</code>는 EKF가 보내온 상태의 신뢰도 마진(Confidence Margin)을 기반으로 수학적인 시간 지연 평가를 수행하여 예측 가능하고 단방향적인(One-way) 비상 상태 전이를 달성한다.</p>
+<p>결언하자면, PX4-Autopilot은 이진 논리로 동작하는 오토마타의 기저에 확률 지배적인 물리 세계의 센서들이 놓여 있음을 인지하고 있다. 따라서 순수한 기하학적 형태의 상태 머신이 물리적인 노이즈 세계와 만날 때 붕괴되는 것을 방지하기 위해, 마르코프 연쇄 상의 전이 임계값에 시간(Time)과 체류 한계(Hysteresis)라는 차원을 더함으로써, 관제 GCS가 오판하지 않는 가장 신뢰성 높은 결정론적 출력을 보장하는 것이다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.7.4 수동 제어 소스 코드 사용자 정의(Customization) 실무 가이드</title>
+    <title>BIJUNG:29.7.4. 수동 제어 소스 코드 사용자 정의(Customization) 실무 가이드</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,67 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.7.4 수동 제어 소스 코드 사용자 정의(Customization) 실무 가이드</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.7.4 수동 제어 소스 코드 사용자 정의(Customization) 실무 가이드</span></nav>
+                    <h1>29.7.4. 수동 제어 소스 코드 사용자 정의(Customization) 실무 가이드</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.7.4. 수동 제어 소스 코드 사용자 정의(Customization) 실무 가이드</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.7.4 수동 제어 소스 코드 사용자 정의(Customization) 실무 가이드</h1>
+                <h1>29.7.4. 수동 제어 소스 코드 사용자 정의(Customization) 실무 가이드</h1>
+<p>특수 목적 기체, 예를 들어 농업용 분사 드론, 케이블 견인형 멀티로터, 비대칭 추력(Asymmetric Thrust) 구조의 틸트 로터 등을 상용화하려면 순정(Vanilla) PX4-Autopilot의 기본 수동 비행 모드(Stabilized, Acro)만으로는 한계가 발생한다. 표준 제어기가 상정하지 않은 복잡한 하드웨어 동역학을 탑재한 기체는 조종사의 스틱 입력을 독자적인 수학 모델에 따라 필터링하고 변조(Modulation)하는 <strong>사용자 정의 제어 로직(Customization)</strong> 모듈이 필수적으로 요구된다.</p>
+<p>본 장에서는 PX4의 객체 지향(Object-Oriented) C++ 아키텍처와 uORB 메시징의 분산 시스템 역량을 십분 활용하여, 코어 펌웨어를 크게 훼손하지 않고도 안전하게 수동 제어 컴포넌트를 이식(Porting)하는 실무 개발 가이드라인을 제시한다.</p>
+<h2>1.  uORB 토픽 가로채기(Intercept) 전략</h2>
+<p>Ardupilot 통상적인 코드 베이스에서는 제어 체인의 한가운데를 하드코딩으로 절단하고 커스텀 함수를 직접 삽입(Injection)해야 하는 경우가 잦다. 그러나 PX4-Autopilot의 진정한 강점은 각 프로세스가 별개의 Task 스레드로 분할되어 uORB 토픽으로 소통하는 퍼블리셔-서브스크라이버(Publisher-Subscriber) 구조에 있다.</p>
+<p>기존 코어 제어기인 <code>mc_att_control</code>을 비활성화하고, 개발자가 독자적으로 명명한 비행 제어기(예: <code>custom_att_control</code>) 앱을 컴파일하여 실행시키는 것만으로 제어 주도권을 완벽하게 대체할 수 있다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[조종기 RC 수신 모듈] --&gt; B[manual_control_setpoint 발행]
+    B -- 기존 흐름 차단 --&gt; C[기존 mc_att_control 중지]
+    B --&gt; D[사용자 정의 Custom_Control 모듈 실행]
+    D --&gt; E[독자 알고리즘 계산 (비선형 매핑 등)]
+    E --&gt; F[vehicle_rates_setpoint 발행]
+</code></pre>
+<h2>2.  FlightTask 인터페이스 상속을 통한 비행 모드 추가 아키텍처</h2>
+<p>PX4 v1.10 이상부터는 멀티로터 위치 및 자세 제어가 <strong>FlightTask</strong> 아키텍처 하위로 리팩토링되었다. 새로운 <code>Manual Mode</code>나 특수 <code>Acro Mode</code> 변형을 생성하고 싶을 경우, 전체 비행 모듈을 갈아엎을 필요 없이 순정의 <code>FlightTask</code> 베이스 클래스를 상속받는 객체를 선언하기만 하면 된다.</p>
+<p><code>src/modules/flight_mode_manager/tasks</code> 디렉토리 내에 <code>FlightTaskCustom</code>이라는 새 디렉토리와 구현부를 작성한다.</p>
+<pre><code class="language-cpp">// src/modules/flight_mode_manager/tasks/CustomAcro/FlightTaskCustomAcro.hpp
+#include "FlightTask.hpp"
+
+class FlightTaskCustomAcro : public FlightTask
+{
+public:
+    FlightTaskCustomAcro() = default;
+    virtual ~FlightTaskCustomAcro() = default;
+
+    // 조종기 입력 업데이트 주기마다 호출되는 가상 오버라이드 함수
+    bool updateInitialize() override;
+    // 실제 자세 및 추력 제어 로직 구현부
+    bool update() override;
+
+private:
+    // 커스텀 게인 제어를 위한 내부 변수
+    float _custom_roll_gain;
+};
+</code></pre>
+<p>이와 같이 클래스 상속 디자인 패턴(Inheritance Pattern)을 활용하면, 기본 비상 착륙, 고도 제한 한계 처리, uORB 구조체 정규화 등의 안전 인터페이스는 부모(Parent) 클래스로부터 상속받는 동시에 오직 순수 튜닝 파라미터(Core Control Logic)만 재정의할 수 있어 치명적인 버그 유발을 차단할 수 있다.</p>
+<h2>3.  커스텀 파라미터(Parameter) 연동 및 QGC 메타데이터 주입</h2>
+<p>사용자 정의 제어기를 컴파일한 후에는 현장에서 소스 코드 재빌드 없이 게인(Gain)과 한계치 매핑 트림(Trim) 값들을 QGroundControl(QGC) 상에서 손쉽게 튜닝할 수 있어야 한다.</p>
+<p>PX4-Autopilot 빌드 시스템 파이프라인(CMake &amp; KConfig)은 개발자가 소스 코드 어노테이션(Annotation) 방식으로 작성한 C++ 매크로를 긁어모아 컴파일 타임에 <code>parameters.xml</code> 이라는 메타데이터 파일로 융합(Fusion)한다.</p>
+<pre><code class="language-cpp">/**
+ * 사용자 정의 특수 아크로 모드 롤(Roll) 민감도
+ *
+ * 이 파라미터는 특수 탑재체가 장착되었을 때 좌우 기동의 반응성을 
+ * 비선형적으로 감쇠시키는 동적 게인으로 사용됩니다.
+ *
+ * @unit %
+ * @min 10
+ * @max 200
+ * @group Custom_Control
+ */
+PARAM_DEFINE_FLOAT(CUS_ACRO_R_SENS, 80.0f);
+</code></pre>
+<p>이 매크로(<code>PARAM_DEFINE_FLOAT</code>)를 선언하고 빌드하는 것만으로, QGC를 실행하여 기체에 연결했을 때 자동으로 <code>Custom_Control</code> 탭과 <code>CUS_ACRO_R_SENS</code> 파라미터 슬라이더 바가 동적으로 생성된다.</p>
+<h2>4.  요약 및 실무적 주의사항(Summary &amp; Pitfalls)</h2>
+<p>PX4-Autopilot의 수동 제어 소스 코드를 사용자 정의할 때는 <strong>강한 결합(Tight Coupling)을 피하는 것</strong>이 핵심이다. 비행 코어 로직 한가운데 <code>if(my_custom_code)</code>와 같은 하드 브렌칭(Hard Branching)을 난사하면, 훗날 메인스트림(Mainstream) PX4 펌웨어의 새 버전(<code>v1.15</code>, <code>v1.16</code> 등) 릴리스가 등장했을 때 로컬 소스 코드 베이스를 병합(Merge/Rebase)하는 과정에서 엄청난 형상 관리 충돌(Git Conflict)에 직면하게 된다.</p>
+<p>PX4가 제공하는 <code>FlightTask</code> 클래스 오버라이드 기법과 독립적인 uORB 퍼블리싱 체인은 이 형상 관리 부채(Technical Debt)를 최소화하고, 코어 펌웨어가 업그레이드되더라도 사용자 컴포넌트 시스템은 그대로 작동할 수 있는 높은 모듈성(Modularity)을 보장한다.</p>
 
             </article>
             <footer>

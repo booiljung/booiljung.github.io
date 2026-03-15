@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.3.2.1 MAV_RESULT_ACCEPTED: 제어 큐 진입 및 액추에이터 메모리 할당을 나타내는 수렴 상태 전이</title>
+    <title>BIJUNG:39.3.2.1. MAV_RESULT_ACCEPTED: 제어 큐 진입 및 액추에이터 메모리 할당을 나타내는 수렴 상태 전이</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,48 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.3.2.1 MAV_RESULT_ACCEPTED: 제어 큐 진입 및 액추에이터 메모리 할당을 나타내는 수렴 상태 전이</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.3.2.1 MAV_RESULT_ACCEPTED: 제어 큐 진입 및 액추에이터 메모리 할당을 나타내는 수렴 상태 전이</span></nav>
+                    <h1>39.3.2.1. MAV_RESULT_ACCEPTED: 제어 큐 진입 및 액추에이터 메모리 할당을 나타내는 수렴 상태 전이</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.3.2.1. MAV_RESULT_ACCEPTED: 제어 큐 진입 및 액추에이터 메모리 할당을 나타내는 수렴 상태 전이</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.3.2.1 MAV_RESULT_ACCEPTED: 제어 큐 진입 및 액추에이터 메모리 할당을 나타내는 수렴 상태 전이</h1>
+                <h1>39.3.2.1. MAV_RESULT_ACCEPTED: 제어 큐 진입 및 액추에이터 메모리 할당을 나타내는 수렴 상태 전이</h1>
+<h2>1. 서론: 시스템의 비가역적 제어 승인(Irreversible Control Acceptance)</h2>
+<p>명령어 처리 파이프라인에서 <code>COMMAND_ACK</code> 패킷의 필드 값으로 <code>MAV_RESULT_ACCEPTED</code>(값: 0)가 반환된다는 것은, GCS가 전달한 의도가 목적지 시스템의 논리적 필터 체계(Logical Filter Chain)를 완전히 통과하여 유효한 액션으로 확정되었음을 의미한다.</p>
+<p>PX4(펌웨어 v1.14 기준)의 아키텍처 관점에서 이는 단순한 ’수신 확인(Receipt Acknowledgement)’을 넘어선다. GCS에서 전달된 비동기 메시지가 비행 제어기 내부의 uORB <code>vehicle_command</code> 토픽을 거쳐 <code>Commander</code> 디먼의 자원 할당기(Resource Allocator)에 진입하였고, 타겟 서브 모듈(예: Navigator, Control Allocator, Estimation Node)의 큐(Queue)에 실제 메모리가 예약(Memory Allocation)되었음을 나타내는 ‘수렴 상태 전이(Converged State Transition)’ 행위이다.</p>
+<h2>2. 상태 전이 루프와 액추에이터 메모리 할당</h2>
+<p><code>MAV_RESULT_ACCEPTED</code>의 구조적 달성은 다단계 인증(Multi-stage Verification) 체계를 통과한 결과물이다.</p>
+<ol>
+<li><strong>사전 조건 통과(Pre-condition Passed)</strong>: <code>Commander</code> 루프에서 아밍(Arming) 여부, 배터리 전압 조건, 센서 정렬(Alignment) 상태, 그리고 현재 비행 모드(Flight Mode)와의 논리적 모순성 검사를 모두 통과하였다.</li>
+<li><strong>권한 위임(Authority Delegation)</strong>: 예를 들어 이륙(<code>MAV_CMD_NAV_TAKEOFF</code>) 명령이라면, <code>Commander</code>는 내비게이터(Navigator) 객체의 상태 머신을 TAKEOFF 분기로 전환하고, 내비게이터는 다시 궤적 생성기(Trajectory Generator)에 메모리를 할당한다.</li>
+<li><strong>제어기 큐 진입(Controller Queue Entry)</strong>: 최종적으로 할당된 목표 궤적은 하위 위치 제어기(Position Controller)와 자세 제어기(Attitude Controller)를 거쳐 혼합기(Mixer/Control Allocator) 매트릭스에 도달한다. PX4는 메인 디먼에서 이 위임 고리가 치명적인 오류 없이 연결되었음을 보장한 직후에 비로소 GCS로 <code>ACCEPTED</code>를 하달한다.</li>
+</ol>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant QGC as QGroundControl (v4.3)
+    participant Cmdr as PX4 Commander
+    participant uORB as uORB Bus
+    participant Nav as Navigator Module
+    participant Alloc as Control Allocator
+
+    QGC-&gt;&gt;Cmdr: COMMAND_LONG (예: TAKEOFF)
+    Cmdr-&gt;&gt;Cmdr: FSM 사전 조건 평가 (Arm, GPS)
+    Note over Cmdr: 조건 100% 충족
+    Cmdr-&gt;&gt;uORB: vehicle_command 발행
+    uORB-&gt;&gt;Nav: 구독 및 상태 전이
+    Nav-&gt;&gt;Alloc: 궤적 및 제어 할당 메모리 점유
+    Nav--&gt;&gt;Cmdr: 성공적 큐 진입 보고
+    Cmdr--&gt;&gt;QGC: COMMAND_ACK (MAV_RESULT_ACCEPTED)
+    QGC-&gt;&gt;QGC: UI 프로그레스 100% 및 알림(음성/텍스트) 발생
+</code></pre>
+<h2>3. Ardupilot과의 수렴 지연성(Convergence Latency) 철학 비교</h2>
+<p>동일한 <code>MAV_RESULT_ACCEPTED</code>라도 PX4와 Ardupilot(펌웨어 v4.x 대역) 간에는 이를 발급하는 시점에 있어 아키텍처 철학의 미세한 층위가 존재한다.</p>
+<ul>
+<li><strong>PX4-Autopilot의 즉각성 및 확정성 우선</strong>:<br />
+PX4는 명령이 실제로 서브 로직(Sub-logic)에 의해 완전히 소화(Dequeued and Handled)될 수 있을 때까지 평가를 붙잡아두는 경향이 있다. 따라서 <code>Commander</code>가 <code>ACCEPTED</code>를 내보냈다는 것은 즉시 제어 루프나 피드백 루프가 물리적으로 작동을 시작했음을 고도로 보장한다. 만일 약간이라도 실행 여부가 불투명하다면 즉각 <code>TEMPORARILY_REJECTED</code>로 상태를 강등시킨다.</li>
+<li><strong>Ardupilot의 비동기 낙관주의(Optimistic Asynchrony)</strong>:<br />
+Ardupilot의 경우, 명령어 큐 배열(Mission Mission Queue 등)에 해당 명령 집어넣기(Push) 기능 자체만 성공해도 <code>ACCEPTED</code>를 반환하는 구조가 다수 포진해 있다. 즉, 명령이 ’향후 실행되기로 약속되었다’는 큐 진입 선언에 방점을 찍으므로, GCS가 <code>ACCEPTED</code>를 수신했음에도 기체가 실제 해당 물리적 거동을 수행하기까지 내부 이벤트 스케줄러(Event Scheduler)의 틱(Tick) 지연에 따라 수 백 밀리초 이상의 간극이 발생할 수 있다.</li>
+</ul>
+<p>이처럼 <code>MAV_RESULT_ACCEPTED</code>는 QGroundControl과 같은 GCS가 사용자 인터페이스(UX) 상에서 시각/청각적 피드백(Visual/Audio Feedback)을 완료 처리하기 위한 핵심 트리거(Trigger)로서 작용하며, 양방향 관제 아키텍처 내에서 가장 무결한 동기화 지점(Synchronization Point)을 형성한다.</p>
 
             </article>
             <footer>

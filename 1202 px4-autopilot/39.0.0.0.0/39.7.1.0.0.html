@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.7.1 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</title>
+    <title>BIJUNG:39.7.1. 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,34 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.7.1 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.7.1 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</span></nav>
+                    <h1>39.7.1. 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.7.1. 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.7.1 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</h1>
+                <h1>39.7.1. 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</h1>
+<h2>1.  개요</h2>
+<p>드론이 사용자(조종사)의 제어 명령을 씹어버리는 현상이 보고되었을 때, 시스템 엔지니어가 가장 먼저 열어봐야 할 파일은 기체(PX4) 내부의 로그가 아니라 지상 스테이션(GCS)에 남아있는 텔레메트리 로그(Telemetry Log)다.<br />
+대부분의 ‘명령어 씹힘’ 현상은 기체의 물리적 결함보다는, GCS가 생각하는 기체의 상태와 기체가 생각하는 자신의 상태가 서로 엇갈리는 **비동기 상태 불일치(Asynchronous State Mismatch)**에서 기인하기 때문이다. 본 절에서는 QGroundControl(QGC) 등에서 출력되는 텔레메트리 로그를 마이닝(Mining)하여, MAVLink 트랜잭션의 꼬인 실타래를 푸는 소프트웨어 공학적 진단 기법을 살펴본다.</p>
+<h2>2.  GCS 텔레메트리 로그(.tlog)의 사후(Post-mortem) 분석 지위</h2>
+<p>QGC와 같은 현대적인 지상 관제 시스템은 기체와 주고받는 모든 MAVLink 16진수 바이트 스트림을 타임스탬프와 함께 <code>.tlog</code> 파일에 영구 기록(Recording)한다.<br />
+기체 내부의 ULog가 센서 데이터와 모터 출력 등 “기체가 실제로 무엇을 했는가(Physical Reality)“를 대변한다면, GCS의 tlog는 “조종사가 무엇을 요구했고 네트워크가 이를 어떻게 실어나르려 했는가(Intent &amp; Network Truth)“를 증명하는 블랙박스와 같다.</p>
+<p>텔레메트리 로그 마이닝의 첫 단추는 로그 분석 툴(예: QGC 내장 Flight Review, MAVExplorer 등)을 이용해 수백만 개의 패킷 속에서 오직 <code>COMMAND_LONG</code> (명령 송신)과 <code>COMMAND_ACK</code> (결과 수신), 그리고 기체의 모드 상태를 담은 <code>HEARTBEAT</code> 메시지만을 <strong>필터링(Filtering)하여 추출</strong>해 내는 것이다.</p>
+<h2>3.  MAV_RESULT와 트랜잭션 수명 주기 추적</h2>
+<p>추출된 패킷들을 타임라인에 올려놓고 나면, 엔지니어는 각 명령어가 겪은 유한 상태 기계(FSM) 전이 과정을 시각적으로 추적할 수 있다.<br />
+특히 <code>COMMAND_ACK</code> 패킷 안에 담긴 <code>result</code> 필드(열거형 변수)는 명령어 실패 로그 마이닝의 핵심 단서가 된다.</p>
+<ul>
+<li><strong><code>MAV_RESULT_UNSUPPORTED</code></strong>: 기체가 “나는 그런 명령어를 모른다“고 답한 경우다. 펌웨어 버전 불일치나, PX4가 해당 모듈을 빌드에서 제외했을 때 흔히 발생한다. (컴파일/버전 호환성 문제)</li>
+<li><strong><code>MAV_RESULT_DENIED</code></strong>: “알아는 들었는데, 지금 그 명령을 수행할 수 없다“는 논리적 거절이다. 이륙(Takeoff) 명령을 내렸는데 GPS Lock이 없거나 에러 깃발(Error Flag)이 꽂혀 있는 경우 시스템 안전을 위해 PX4 Commander가 거부한 것이다. (Pre-flight 검증 실패)</li>
+<li><strong><code>MAV_RESULT_TEMPORARILY_REJECTED</code></strong>: “명령은 타당하나, 내가 지금 다른 명령을 하드코어하게 처리 중이라 바쁘다“는 큐 포화 상태(Queue Saturation)를 의미한다.</li>
+</ul>
+<p>이러한 로그들을 시계열로 정렬해보면, 조종사는 “버튼을 눌렀는데 반응이 없다“고 불평하지만 실제 GCS 백엔드와 PX4 간에는 수심 밀리초 단위로 수많은 패킷 타협과 논리적 거부(Rejection)가 일어났음을 밝혀낼 수 있다.</p>
+<h2>4.  상태 불일치(Mismatch) 윈도우 시간 특정</h2>
+<p>가장 추적하기 까다로운 버그는 ACK 로그조차 깨끗한데 기체가 오작동하는 경우다.<br />
+GCS 로그상에서는 10시 05분 00초에 <code>MAV_CMD_DO_SET_MODE</code> (모드 변경: 리턴 모드)가 발송되었고, 정확히 30ms 뒤에 <code>COMMAND_ACK (ACCEPTED)</code>가 수신되었다고 기록되어 있다. GCS의 UI 트랜잭션은 완벽하게 성공(Success)으로 마킹된다.</p>
+<p>그러나 이후 수신되는 기체의 <code>HEARTBEAT</code> 패킷의 <code>custom_mode</code> 필드를 분석해보면, 1초, 2초가 지나도 기체는 여전히 ‘임무(Mission)’ 모드 코드를 뱉어낸다.<br />
+GCS는 “내가 리턴 모드 해제 명령의 성공 응답까지 받았으니 얘는 지금 돌아오는 중이야“라고 철석같이 믿고(State Illusion), UI 상에 돌아온다고 표시하지만, 기체는 자기 갈 길을 가고 있는 전형적인 <strong>상태 불일치(State Mismatch)</strong> 상황이다.</p>
+<p>이러한 현상이 포착되는 시간 구간(Mismatch Window)을 분석하면, 문제의 원인이 단순 통신 단절이 아니라는 객관적인 증거를 도출할 수 있다. 즉, 네트워크 파이프라인이나 GCS의 큐 로직은 완벽하게 제 역할을 다 했으며, PX4 펌웨어 내부의 내비게이터(Navigator) 상태 전이 함수 어딘가에서 메모리가 꼬였거나 하위 모듈이 데드락(Deadlock)에 빠져 ACK만 뱉고 실제 제어기를 구동하지 못했음을 논리적으로 확정(Pinpoint) 짓게 된다.</p>
 
             </article>
             <footer>

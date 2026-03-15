@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.2.1.1 리틀 엔디안(Little-Endian) 기반의 이종 플랫폼 간 페이로드 직렬화/역직렬화 규격</title>
+    <title>BIJUNG:39.2.1.1. 리틀 엔디안(Little-Endian) 기반의 이종 플랫폼 간 페이로드 직렬화/역직렬화 규격</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,49 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.2.1.1 리틀 엔디안(Little-Endian) 기반의 이종 플랫폼 간 페이로드 직렬화/역직렬화 규격</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.2.1.1 리틀 엔디안(Little-Endian) 기반의 이종 플랫폼 간 페이로드 직렬화/역직렬화 규격</span></nav>
+                    <h1>39.2.1.1. 리틀 엔디안(Little-Endian) 기반의 이종 플랫폼 간 페이로드 직렬화/역직렬화 규격</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.2.1.1. 리틀 엔디안(Little-Endian) 기반의 이종 플랫폼 간 페이로드 직렬화/역직렬화 규격</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.2.1.1 리틀 엔디안(Little-Endian) 기반의 이종 플랫폼 간 페이로드 직렬화/역직렬화 규격</h1>
+                <h1>39.2.1.1. 리틀 엔디안(Little-Endian) 기반의 이종 플랫폼 간 페이로드 직렬화/역직렬화 규격</h1>
+<h2>1.  개요</h2>
+<p>드론 관제 통신의 생태계는 본질적으로 이기종 컴퓨터 아키텍처(Heterogeneous Computer Architecture)들의 용광로이다. 지상 관제 시스템(GCS)인 QGroundControl은 대개 x86-64 아키텍처 기반의 Intel/AMD 랩탑이나 ARM 아키텍처 기반의 스마트폰(Android/iOS)에서 구동된다. 반면, 기체의 신경망을 통제하는 PX4-Autopilot 비행 제어기(Flight Controller)는 ARM Cortex-M 시리즈(Pixhawk 등) 마이크로컨트롤러 위에서 동작하며, 온보드 컴퓨터(Companion Computer)는 또 다른 ARM 계열(Raspberry Pi, Jetson)이나 x86(Intel NUC) 모듈일 수 있다.</p>
+<p>이종(Heterogeneous) 프로세서들이 <code>COMMAND_LONG</code>(#76)과 같은 동일한 통신 구조체를 메모리에 직접 매핑(Direct Mapping)하여 주고받기 위해서는, 다중 바이트(Multi-byte) 자료형(예: 4바이트 <code>float</code>, 2바이트 <code>uint16_t</code>)을 메모리에 어떻게 배열할 것인지에 대한 통일된 규약이 필수적이다. 이를 컴퓨터 과학에서는 <strong>엔디안(Endianness)</strong> 문제라고 부른다.</p>
+<p>본 절에서는 MAVLink 프로토콜이 채택한 <strong>리틀 엔디안(Little-Endian) 기반 네트워크 와이어 포맷(Wire Format)</strong> 규격의 기술적 타당성과, 그것이 PX4 펌웨어의 직렬화(Serialization)/역직렬화(Deserialization) 아키텍처에 미친 성능적 이점에 대해 심층 분석한다.</p>
+<h2>2.  엔디안(Endianness)의 원리와 바이트 오더링(Byte Ordering) 충돌</h2>
+<p>컴퓨터 메모리는 1바이트 크기의 셀(Cell) 단위로 주소가 매겨진다. 만약 <code>unsigned int</code>형 숫자 <code>0x12345678</code> (10진수로 약 3억 5백만)을 메모리에 저장하려면 4칸의 바이트(32비트) 공간이 필요하다.<br />
+이 4개의 바이트 블록(<code>0x12</code>, <code>0x34</code>, <code>0x56</code>, <code>0x78</code>)을 메모리의 낮은 주소(Low Address)부터 채울 때 어떤 순서로 넣을 것인가에 따라 두 가지 방식이 나뉜다.</p>
+<ol>
+<li><strong>빅 엔디안 (Big-Endian)</strong>: 최상위 바이트(MSB, Most Significant Byte, 여기서는 <code>0x12</code>)부터 먼저 가장 낮은 번지의 주소에 저장한다. 즉, <code>0x12</code> <span class="math math-inline">\to</span> <code>0x34</code> <span class="math math-inline">\to</span> <code>0x56</code> <span class="math math-inline">\to</span> <code>0x78</code> 순서로 사람이 숫자를 읽는 방향과 동일하게 저장된다.</li>
+<li><strong>리틀 엔디안 (Little-Endian)</strong>: 최하위 바이트(LSB, Least Significant Byte, 여기서는 <code>0x78</code>)부터 먼저 가장 낮은 번지의 주소에 역순으로 저장한다. 즉, <code>0x78</code> <span class="math math-inline">\to</span> <code>0x56</code> <span class="math math-inline">\to</span> <code>0x34</code> <span class="math math-inline">\to</span> <code>0x12</code> 순서로 저장된다.</li>
+</ol>
+<h3>2.1 네트워크 표준(Big-Endian)과 기계 표준(Little-Endian)의 충돌</h3>
+<p>전통적인 무선 텔레콤 및 인터넷 프로토콜 표준(TCP/IP 계층 네트워크 바이트 오더)은 ’빅 엔디안’을 규격으로 삼는다. 따라서 네트워크 프로그래머들은 호스트(내 PC) 아키텍처에 상관없이, 외부로 패킷을 쏠 때 언제나 <code>htonl()</code> (Host to Network Long) 같은 함수를 호출하여 메모리 포맷을 강제로 빅 엔디안으로 뒤집어 보내는 것을 철칙으로 배운다.</p>
+<p>그러나 MAVLink 아키텍트는 이 전통적인 IT 교과서의 규칙을 과감히 깨뜨려버렸다. <strong>MAVLink의 네트워크 와이어 전송 포맷은 오직 ‘리틀 엔디안’ 하나로 고정</strong>되어 있다.</p>
+<h2>3.  MAVLink가 리틀 엔디안 와이어 포맷을 채택한 공학적 이유</h2>
+<p>이단적인 결정으로 보이지만, 실시간 비행 제어 생태계의 기저를 면밀히 들여다보면 이는 가장 합리적인 ‘오버헤드 제로(Zero Overhead)’ 최적화 전략이다.</p>
+<h3>3.1  지배적인 프로세서 아키텍처의 물리적 특성 일치</h3>
+<p>오늘날 드론 생태계를 지배하는 두 축은 사용자 단의 x86 기반 PC/Android 단말기와 기체 단의 ARM 기반 마이크로컨트롤러이다. 그리고 인텔(x86)과 최신 ARM 아키텍처(운영체제 레벨)는 메모리 관리에 있어 <strong>둘 다 선천적인 리틀 엔디안</strong> 머신이다.</p>
+<p>만약 MAVLink가 TCP/IP처럼 빅 엔디안을 네트워크 표준으로 채택했다면, 데이터를 송신하는 (리틀 엔디안) GCS도 데이터를 뒤집어서 전송해야 하고, 데이터를 수신하는 (리틀 엔디안) PX4 비행 제어기도 패킷을 받은 후 다시 원래대로 메모리를 뒤집어 역직렬화해야 한다. 즉, 양측 모두 아무런 실익이 없는 <strong>바이트 스와핑(Byte Swapping) 연산 오버헤드</strong>를 치러야 한다. 수백 개의 텔레메트리가 오가는 제어 루프 통신에서는 이 스와핑 명령어가 소모하는 클럭 사이클 조차도 낭비로 간주된다.<br />
+리틀 엔디안을 통신 프로토콜 표준으로 삼음으로써, GCS와 PX4 양측 모두 램(RAM)에 있는 구조체를 단 한 번의 바이트 조작 없이(Zero-copy bypass) 그 모습 그대로 버퍼에 복사하여 라디오 모뎀으로 밀어 넣을 수 있게 된 것이다.</p>
+<h3>3.2  하드 리얼타임(Hard Real-Time) 직렬화 퍼포먼스 극대화</h3>
+<p>MAVLink 헤더 생성 로직(MAVLink Generator)은 컴파일 타임에 <code>COMMAND_LONG</code> 팩/언팩 매크로를 직조한다. 이때 만약 프로세서가 수신한 패킷의 엔디안과 통신망 엔디안(규격)이 리틀 엔디안으로 완벽하게 일치하는 것이 감지되면, C 언어 코드 컴파일러는 지루한 파싱 루프(Parsing Loop) 코드를 전부 폐기하고, 단일한 1회성 명령어인 메모리 캐스팅(Memory Casting, <code>memcpy</code>) 구문 하나로 파이프라인 처리를 대체한다.</p>
+<pre><code class="language-c">// PX4 내부 MAVLink 수신 언팩(Unpack) 유사 코드 
+// 만약 두 기종이 모두 Little-Endian 이라면 바이트 순서 뒤집기 과정을 모두 생략 가능.
+static inline void mavlink_msg_command_long_decode(const mavlink_message_t* msg, mavlink_command_long_t* command_long)
+{
+    // C 구조체에 직접 캐스팅 복사. 파싱 오버헤드가 제로(Zero)에 가깝다.
+    _mav_put_float(msg, 0, &amp;(command_long-&gt;param1));
+    _mav_put_float(msg, 4, &amp;(command_long-&gt;param2));
+    // ...
+}
+</code></pre>
+<p>이는 NuttX RTOS 상에서 다른 센서(IMU) 루프의 타이트한 스케줄링 간섭을 최소화하는 핵심 속도 무기가 된다.</p>
+<h2>4.  이종 마이너 아키텍처 지원을 위한 강제 매크로 스텝 (Fallback)</h2>
+<p>물론 드론 생태계 변방에 존재하는 일부 구형 PowerPC나 특정 네트워크 스위치 등 소수의 <strong>빅 엔디안 프로세서</strong> 노드도 공존 가능성이 있다. 이를 위해 MAVLink 펌웨어 드라이버 코드는 전처리기(Preprocessor) 지시문 <code>#ifdef</code> 를 통해 현재 펌웨어가 컴파일되고 있는 CPU의 엔디안 환경을 자동 색인한다.</p>
+<p>만약 운영체제나 타겟 CPU가 빅 엔디안 머신이라고 판별될 경우에 한정하여, MAVLink는 위에서 나열한 ‘직접 덤프’ 매크로를 우회(Fallback)시키고, 4바이트(<code>float</code>, <code>uint32_t</code>)와 2바이트(<code>uint16_t</code>)의 메모리 포인터 접근 시마다 바이트 순서를 상하 대칭으로 강제 역전(Bitwise Shift 연산)하는 안전장치 함수 코드 패스를 타도록 컴파일한다.</p>
+<p>결론적으로 MAVLink 2.0이 선포한 “리틀 엔디안 친화적 와이어 규격“은, 이 생태계의 주축을 이루는 x86 텔레메트리 관제 클라이언트와 ARM 기반 드론 제어기 간에 존재할 수 있었던 지루한 문법 번역(Translation) 과정을 아예 허물어버림으로써 얻은 극단적 성능 최적화의 결과물(Fruit of Optimization)이다. PX4 관제망 프로그래머는 이 메모리 투명성(Transparency) 원리를 이해하고 어플리케이션 개발 시 패킷 직렬화에 대해 안심하고 MAVSDK가 주는 메모리 래퍼(Wrapper) 속도 편익을 누리면 된다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.2.4.2 제어 권한 파라미터에 따른 통신 소스 선택기(Source Selector) 제어 흐름 및 하위 스코프 분석</title>
+    <title>BIJUNG:29.2.4.2. 제어 권한 파라미터에 따른 통신 소스 선택기(Source Selector) 제어 흐름 및 하위 스코프 분석</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,74 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.2.4.2 제어 권한 파라미터에 따른 통신 소스 선택기(Source Selector) 제어 흐름 및 하위 스코프 분석</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.4.2 제어 권한 파라미터에 따른 통신 소스 선택기(Source Selector) 제어 흐름 및 하위 스코프 분석</span></nav>
+                    <h1>29.2.4.2. 제어 권한 파라미터에 따른 통신 소스 선택기(Source Selector) 제어 흐름 및 하위 스코프 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.4.2. 제어 권한 파라미터에 따른 통신 소스 선택기(Source Selector) 제어 흐름 및 하위 스코프 분석</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.2.4.2 제어 권한 파라미터에 따른 통신 소스 선택기(Source Selector) 제어 흐름 및 하위 스코프 분석</h1>
+                <h1>29.2.4.2. 제어 권한 파라미터에 따른 통신 소스 선택기(Source Selector) 제어 흐름 및 하위 스코프 분석</h1>
+<p>본 소절에서는 다중화된 수동 제어 환경에서 PX4-Autopilot이 <code>COM_RC_IN_MODE</code> 파라미터를 기준으로 어떻게 데이터의 우선순위(Priority)를 산정하고 런타임 제어 흐름(Control Flow)을 분기하는지, <code>ManualControlSelector</code> 클래스 커널의 소스 코드를 해부하여 분석한다. 이는 물리적 RC 통신과 GCS의 MAVLink 통신 간의 치명적 간섭(Interference)을 소프트웨어 스코프(Scope) 수준에서 원천 차단하는 기구학적 독점(Monopoly) 알고리즘의 핵심이다.</p>
+<h2>1.  <code>COM_RC_IN_MODE</code> 매개변수 기반의 다중 통신 런타임 분기(Branching) 정책</h2>
+<p>비행 전 QGroundControl(QGC)을 통해 설정 가능한 <code>COM_RC_IN_MODE</code>는 PX4 시스템 내 <code>Commander</code> 및 <code>ManualControlManager</code> 모듈이 어떤 수신 매체를 합법적인(Legitimate) 조종권자로 인정할지 결정하는 최상위 운영 체제 정책이다. 이 정책은 크게 4가지 열거형(Enum) 상태로 정의된다.</p>
+<ol>
+<li><strong>Mode 0 (RC Only)</strong>: 오직 하드웨어 RC 수신기(SBUS, PPM 등)만을 신뢰한다. QGC에서 <code>MANUAL_CONTROL</code> MAVLink 메시지가 쏟아져 들어오더라도 커널은 이를 철저히 묵살(Drop)한다.</li>
+<li><strong>Mode 1 (Joystick Only)</strong>: 반대로 RC 수신기의 하드웨어 트러스트를 배제하고 오직 GCS 조이스틱 마우스 컨트롤만을 수용한다.</li>
+<li><strong>Mode 2 (RC/Joystick Fallback)</strong>: 가장 진보된 하이브리드 모드로, 평상시에는 1차(Primary) 매체인 RC 수신기의 데이터를 우선시하되, RC 신호가 단절 또는 페일세이프(Failsafe)에 돌입할 경우 매끄럽게 2차(Secondary) 매체인 조이스틱으로 제어 권한을 자동 위임(Fallback)한다.</li>
+<li><strong>Mode 3 (RC/Joystick Multiplexing)</strong>: Fallback과 무관하게 두 소스 중 ’최근 타임스탬프’가 찍힌 데이터의 발행을 동등하게 수용하는 경쟁 체제이나, 충돌 위험이 높아 특수 목적의 Swarm 컨트롤 외에는 권장되지 않는다.</li>
+</ol>
+<h2>2.  <code>ManualControlSelector</code> 컨트롤 프록시 알고리즘 소스 검증</h2>
+<p>이 복잡한 매개변수 정책을 코드로 투영한 런타임 객체가 바로 <code>src/modules/manual_control/ManualControlSelector.cpp</code> 에 이식된 선택기(Selector) 커널 알고리즘이다.</p>
+<pre><code class="language-cpp">// src/modules/manual_control/ManualControlSelector.cpp 의 다항 분기 모델 분석
+void ManualControlSelector::update(uint64_t now)
+{
+    // 각 소스(RC, MAVLink)로부터 수신된 uORB 인스턴스의 유효성 및 타임아웃 판정
+    bool rc_valid       = _rc_in.is_valid(now);
+    bool joystick_valid = _joystick_in.is_valid(now);
+
+    // 파라미터 매니저를 통해 캐싱해 둔 COM_RC_IN_MODE 정책 플래그 스코핑
+    switch (_rc_in_mode) {
+        
+        case 0: // RC Only
+            if (rc_valid) {
+                _instance = _rc_in.get_data();           // MUX 통과
+                _active_source = DataSource::RC;
+            } else {
+                _active_source = DataSource::NONE;       // RC 침묵 시 시스템 낙하(Signal Lost)
+            }
+            break;
+
+        case 1: // Joystick Only
+            if (joystick_valid) {
+                _instance = _joystick_in.get_data();     // MUX 통과
+                _active_source = DataSource::MAVLINK;
+            } else {
+                _active_source = DataSource::NONE;
+            }
+            break;
+
+        case 2: // RC with Joystick Fallback (다중 매체 자동 스위칭)
+            if (rc_valid) {
+                // 하드웨어 RC가 살아있는 한 조이스틱은 섀도잉(Shadowing)되어 스토어에서 대기
+                _instance = _rc_in.get_data();
+                _active_source = DataSource::RC;
+            } else if (joystick_valid) {
+                // RC 신호가 죽었을 때만 조이스틱 인스턴스가 MUX의 문지방을 넘을 수 있음
+                _instance = _joystick_in.get_data();
+                _active_source = DataSource::MAVLINK;
+            } else {
+                // 듀얼 데드(Dual Dead) 페일세이프 선언
+                _active_source = DataSource::NONE;
+            }
+            break;
+            
+        // ... (이하 생략)
+    }
+}
+</code></pre>
+<p>위의 C++ <code>switch-case</code> 분기 코드는 제어 공학의 배타적 논리합(XOR) 및 OR-게이트를 소프트웨어적으로 완벽히 에뮬레이션(Emulation)한다. 특히 <code>case 2</code>의 블록 스코프 내부 로직을 예의 주시하라. <code>if (rc_valid)</code> 가 제일 상단에 래칭(Latching)되어 있으므로 하드웨어 인터럽트의 보증만 서준다면 MAVLink 패킷은 절대 하위 <code>else if (joystick_valid)</code> 트리로 진입할 수 없다. 이는 이기종(Heterogeneous) 통신망이 아무리 백그라운드에서 요동치더라도 시스템 코어가 다루게 될 추상화 단위 <code>_instance</code> (최종 타겟 벡터) 하나에는 오직 단일 혈통(Single Lineage)만이 주입된다는 무결성을 확증한다.</p>
+<h2>3.  타임아웃 억제(Bypass) 조건과 페일세이프 인터페이스 매핑</h2>
+<p><code>ManualControlSelector</code> 의 판별 로직 근간을 이루는 <code>is_valid(uint64_t now)</code> 메서드는 단순히 이전 데이터 버퍼에 데이터가 차 있는지 여부를 판단하는 boolean 함수가 아니다. 이것은 커널 틱 타임스탬프(<code>hrt_absolute_time</code>)와 uORB 데이터 내부에 마킹된 생성 시간(Timestamp) 간의 델타(Delta, 즉 통신 체류 시간)를 정밀히 계측하여 시스템 파라미터(예: <code>COM_RC_LOSS_T</code>)의 임계 시정수를 초과했는지 판단하는 동적 상태 머신(State Machine)이다.</p>
+<p>어떤 이유로든 선택기(Selector)가 최종 산출물인 <code>_active_source</code> 상태 변수를 <code>DataSource::NONE</code> 으로 갱신(Update)하게 되면, 뒤이어 체인으로 묶여있는 <code>Commander</code> 메인 루프 모듈은 이 플래그를 구독하고 통제 불능(RC Loss) 상황을 확정 선언한다. 즉, <code>ManualControlSelector</code>는 여러 줄기의 수동 제어 파이프를 단일하게 묶어주는 그로밋(Grommet) 역할뿐만 아니라, 통신 단절이라는 항공 역학의 사형 선고를 제일 먼저 탐지하여 비상 탈출 시퀀스(RTL, Hold, Termination 등)의 스위치를 켜주는 센티널(Sentinel)로서의 막중한 임무를 동시에 수행하고 있다.</p>
 
             </article>
             <footer>

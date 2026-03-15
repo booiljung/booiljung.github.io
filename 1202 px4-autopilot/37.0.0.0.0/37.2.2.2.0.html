@@ -115,6 +115,59 @@
             </header>
             <article>
                 <h1>37.2.2.2 uORB 메시지 버스(Message Bus)를 통한 비동기 상태 게시(Publishing) 및 구독(Subscribing) 지연 분석</h1>
+<p>현대 무인기 운영체제의 중추는 모듈 간 데이터 교환 네트워크의 효율성에 달려 있다. PX4-Autopilot은 스레드 간 통신을 위해 <code>uORB(Micro Object Request Broker)</code>라는 비동기(Asynchronous) 발행-구독(Publish-Subscribe) 양식의 메시지 버스를 독자적으로 구현하여 사용한다. 커맨더(Commander) 모듈에서 산출된 최신 비행 상태(State)가 uORB를 거쳐 최종 제어기(Controller) 스레드에 어떻게 도달하는지, 그리고 이 과정에서 필연적으로 발생하는 전파 지연(Propagation Latency)의 특징을 분석하는 것은 시스템의 제어 응답성을 평가하는 데 필수적이다.</p>
+<h2>1.  전역 상태 버퍼로서의 uORB <code>vehicle_status</code> 토픽</h2>
+<p>NuttX 상에서 구동되는 각 소프트웨어 프로세스들은 글로벌 공유 메모리를 직접 스레싱(Thrashing)하지 않는다. 대신, 커맨더 스레드가 임계 구역 안에서 전역 FSM(Finite State Machine)의 변이를 완료하면, 그 즉시 <code>vehicle_status_s</code> 구조체 단위 객체로 패키징하여 uORB 파일 노드(File Node)에 게시(Publish)한다.</p>
+<ul>
+<li><strong>비동기성(Asynchrony):</strong> 퍼블리셔(커맨더)는 uORB 버퍼에 데이터를 덮어쓰고 곧바로 자신의 메인 루프로 돌아간다. 데이터를 소비할 구독자(비행 제어기 등)가 현재 슬립(Sleep) 상태인지, 깨어 있는지 퍼블리셔는 전혀 신경 쓰지 않는다.</li>
+<li>이러한 발송자-수신자 간의 강한 디커플링(Decoupling)은 전체 시스템의 락 경쟁(Lock Contention)을 제거하는 결정적 역할을 한다.</li>
+</ul>
+<h2>2.  uORB 상태 구독 지연(Subscribing Latency)의 요인 분석</h2>
+<p>아무리 락 프리(Lock-free) 아키텍처라 하더라도 비동기 특성상 필연적인 스레드 활성화 지연이 동반된다. uORB의 지연 시간 <span class="math math-inline">\tau_{uORB}</span>는 크게 세 가지 요인으로 분해될 수 있다.</p>
+<h3>2.1  폴링(Polling) 및 스케줄링 틱(Scheduling Tick) 지연</h3>
+<p>대부분의 하위 제어기 모듈(예: <code>mc_pos_control</code>)은 무한 대기하지 않고, 자신의 제어 주기(예: 250Hz, 4ms)에 맞춰 <code>poll()</code> 함수를 주기적으로 호출한다. 만약 커맨더가 상태를 변경하고 토픽을 퍼블리시한 직후 <span class="math math-inline">\Delta t</span>가 지난 시점에 제어기가 <code>poll()</code>을 수행한다면, 이 <span class="math math-inline">\Delta t</span>만큼의 시간 지연이 발생한다.</p>
+<ul>
+<li><strong>예상 최대 대기 시간:</strong> 구독자의 메인 루프 주기 <span class="math math-inline">T_{sub}</span>.</li>
+</ul>
+<h3>2.2  인터럽트 및 큐 지연 (Queue Latency)</h3>
+<p>인터럽트를 수반하는 하드웨어 센서 기반의 구독(Subscription)의 경우, 인터럽트 핸들러가 NuttX의 고우선순위 스레드로 컨텍스트 스위칭 구조를 통과하는 데 소모되는 마이크로초(<span class="math math-inline">\mu s</span>) 단위의 RTOS 오버헤드가 발생한다.</p>
+<h3>2.3  이벤트 드리븐(Event-driven) 상태의 폴팩 지연</h3>
+<p>주기적인 루프가 아니라 uORB 데이터 수신 이벤트 발생 자체에 스레드 활성화를 의존하는 모듈(<code>ORB_ID(vehicle_status)</code> 알림 등록 상태)의 경우, RTOS 스케줄러가 이벤트 시그널을 각 파일 디스크립터(File Descriptor)에 전파(Propagation)하고 해당 스레드를 Ready 큐로 강등/승격시키는 스케줄링 레이턴시가 부가된다.</p>
+<h2>3.  지연 억제를 위한 PX4의 아키텍처 토폴로지 최적화</h2>
+<p>상태 전이(State Transition)는 모터 회전 여부(Arming/Disarming)나 Failsafe 트리거와 같이 기체 생존에 직결되는 이벤트다. PX4는 상태 변경 메시지의 구독 지연 시간을 최소화하기 위해 다음 메커니즘을 지원한다.</p>
+<ul>
+<li><strong><code>orb_check()</code> 최적화:</strong> 주기적 루프를 도는 고립된 제어 코드 안에서는 매 주기마다 <code>orb_copy()</code>를 풀(Pull)하지 않고, 매우 가벼운 비트마스크 검사 함수인 <code>orb_check()</code> 호출만으로 해당 토픽(데이터)의 갱신 여부를 판별한다. 갱신된 내역이 있을 때만 실제 메모리 복사 연산을 수행하여 버스 락이나 CPU 점유 시간을 절약한다.</li>
+<li><strong>다중 인스턴스 큐(Multi-instance Queue):</strong> 센서 데이터와 달리 <code>vehicle_status</code>는 기체 내 단일 진실(Single Source of Truth)로 존재하므로 uORB 단일 인스턴스 덮어쓰기 방식으로 구성되어 O(1)의 읽기 속도를 달성한다.</li>
+</ul>
+<h2>4.  커맨더와 제어기 간 uORB 타이밍 다이어그램</h2>
+<p>비동기 메시지 버스를 통한 상태 전파 지연 구조를 도식화하면 다음과 같다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant OS as NuttX RTOS
+    participant Cmd as 커맨더 (Publisher)
+    participant uORB as uORB 버퍼 (차량_상태)
+    participant Ctrl as 위치/자세 제어기 (Subscriber)
+
+    Ctrl-&gt;&gt;OS: Poll 대기 (Timeout 4ms 주기)
+    
+    Note over Cmd: 이벤트 발생: Failsafe 이륙
+    Cmd-&gt;&gt;Cmd: 상태 변이: POSCTL -&gt; RTL
+    
+    Cmd-&gt;&gt;uORB: orb_publish(vehicle_status) 
+    Note left of uORB: t_pub (퍼블리시 완료 시점)
+    
+    uORB-&gt;&gt;OS: fd 이벤트 시그널링 예약
+    
+    OS--&gt;&gt;Ctrl: Poll 리턴 (데이터 유효)
+    Note right of Ctrl: t_sub (스레드 깨어남)
+    
+    Ctrl-&gt;&gt;uORB: orb_copy()로 최신 상태 가져오기
+    Ctrl-&gt;&gt;Ctrl: 내부 목표 궤적 변경(RTL 대응)
+    
+    Note right of uORB: 지연 시간 (Latency) = t_sub - t_pub
+</code></pre>
+<p>현대의 Pixhawk 4/5/6 세대의 프로세서(ARM Cortex-M7 등)에서 타이밍 다이어그램의 <code>t_sub - t_pub</code> 지연 시간은 일반적으로 수십 마이크로초(<span class="math math-inline">\mu s</span>) 이내로 억제되며, 인간 조종자나 관성 물리계가 체감할 수 없는 수준의 동시성을 보장한다.</p>
+<h2>5.  결론</h2>
+<p>uORB 기반의 비동기 메시징 아키텍처는 PX4-Autopilot 다중 스레드 환경의 커플링(Coupling)을 해제하고 결정론적 모듈성을 부여하는 핵심 요소이다. 하지만 비동기 구독 시스템은 필연적으로 폴링 간격과 RTOS 스케줄링 오버헤드라는 두 가지 벡터에 의해 전파 지연(Propagation Latency)의 맹점을 안고 있다. 관제 시스템 및 제어 알고리즘 설계자는 MAVLink 또는 ROS2 uXRCE-DDS를 통한 상태 제어 명령 하달 시, 커맨더 내부의 트랜잭션 수립 시간뿐만 아니라 uORB를 횡단하여 말단 액추에이터 제어기에 도달하는 논리적 비동기 레이턴시 전체를 통제 가능한 데드라인 시나리오 내에 귀속시켜야만 완전한 의미의 ’실시간 상태 기반 제어’를 달성할 수 있다.</p>
 
             </article>
             <footer>

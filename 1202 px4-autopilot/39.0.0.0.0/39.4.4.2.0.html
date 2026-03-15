@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.4.4.2 mavlink_messages 모듈의 uORB 구독(Subscribe) 이벤트 콜백 및 직렬 포트 송신 버퍼(Tx Buffer) 할당 로직</title>
+    <title>BIJUNG:39.4.4.2. mavlink_messages 모듈의 uORB 구독(Subscribe) 이벤트 콜백 및 직렬 포트 송신 버퍼(Tx Buffer) 할당 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,57 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.4.4.2 mavlink_messages 모듈의 uORB 구독(Subscribe) 이벤트 콜백 및 직렬 포트 송신 버퍼(Tx Buffer) 할당 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.4.4.2 mavlink_messages 모듈의 uORB 구독(Subscribe) 이벤트 콜백 및 직렬 포트 송신 버퍼(Tx Buffer) 할당 로직</span></nav>
+                    <h1>39.4.4.2. mavlink_messages 모듈의 uORB 구독(Subscribe) 이벤트 콜백 및 직렬 포트 송신 버퍼(Tx Buffer) 할당 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.4.4.2. mavlink_messages 모듈의 uORB 구독(Subscribe) 이벤트 콜백 및 직렬 포트 송신 버퍼(Tx Buffer) 할당 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.4.4.2 mavlink_messages 모듈의 uORB 구독(Subscribe) 이벤트 콜백 및 직렬 포트 송신 버퍼(Tx Buffer) 할당 로직</h1>
+                <h1>39.4.4.2. mavlink_messages 모듈의 uORB 구독(Subscribe) 이벤트 콜백 및 직렬 포트 송신 버퍼(Tx Buffer) 할당 로직</h1>
+<h2>1. 서론: “어떻게 막힘없이 내보낼 것인가?” 송신 병목 현상의 제어</h2>
+<p>비행 제어 시스템 내부에서 생성된 수많은 uORB 데이터—고속으로 변하는 자세(Attitude) 센서 값부터, 드물게 발생하는 알림 메시지(Status Text), 그리고 지상 관제 시스템(GCS)이 애타게 기다리고 있는 명령어 대답(<code>vehicle_command_ack</code>)까지—는 최종적으로 좁은 이더넷 관문이나 직렬(UART) 케이블을 통과해야 한다.</p>
+<p><code>mavlink_messages</code> (통상 PX4 코드베이스 내 <code>mavlink_main</code>에 종속된 객체) 모듈이 직면한 최대 과제는, 홍수처럼 쏟아지는 내부 토픽들을 각인된 전송 속도(Baudrate)의 한계치에 맞추어 유실율 최소화 및 지연율 제로(0)에 가깝게 스케줄링하여 송신(Tx) 링 버퍼에 우겨넣는 것이다. 본 절에서는 PX4(펌웨어 v1.14 기준)가 uORB 콜백(Callback) 이벤트 체인과 이중화된 버퍼링 아키텍처를 결합하여 어떻게 텔레메트리 송신 병목(Bottleneck) 현상을 타개하는지 분석한다.</p>
+<h2>2. uORB 이벤트 기반 비동기 스트림(Stream) 스케줄링</h2>
+<p>PX4의 MAVLink 송신 구조는 특정 토픽을 주기적으로 퍼 올리는(Polling) 구조와, 이벤트 발생 시 즉각 끼어드는(Interrupt) 구조가 혼합된 하이브리드 스트림(Hybrid Stream) 아키텍처를 취한다.</p>
+<ol>
+<li><strong>스트림 객체(MavlinkStream)의 다형성</strong>:<br />
+<code>mavlink_messages</code> 내부에는 각 토픽을 어떤 빈도율(Rate)로 송신할 것인지 정의한 수십 개의 <code>MavlinkStream</code> 자식 클래스들이 존재한다. 일반 텔레메트리(예: IMU)는 타이머(hrt) 기반의 폴링 루프에 종속되어 초당 N번씩 송신 큐에 진입한다. 반면, <code>vehicle_command_ack</code> 스트림 객체는 타이머에 의존하지 않고, uORB 토픽 갱신(Update) 시그널 자체를 파일 디스크립터(FD) 웩업(Wake-up) 소스로 사용하는 철저한 이벤트 기반(Event-based) 콜백 방식을 취한다.</li>
+<li><strong>이벤트 콜백(Event Callback)에 의한 우선순위 점유</strong>:<br />
+<code>Commander</code>가 ACK 토픽을 <code>orb_publish()</code> 하는 순간, 송신 스레드는 진행 중이던 지루한 타이머 루프를 선점당하고 깨어난다. 이 깨어난 스레드는 이벤트 기반 스트림 객체를 최우선적으로 호출하여 <code>mavlink_command_ack_t</code> 구조체를 찍어내며, 이를 통해 ACK 메시지가 다른 일반 텔레메트리 데이터들보다 언제나 최우선(Priority)으로 송신기 앞에 도달하는 새치기(Queue Jumping) 효과를 창출한다.</li>
+</ol>
+<pre><code class="language-mermaid">graph TD
+    subgraph uORB Message Bus
+        A[(vehicle_status)] -. 주기적 갱신 .-&gt; T_Timer
+        B[(vehicle_attitude)] -. 주기적 갱신 .-&gt; T_Timer
+        
+        ACK[(vehicle_command_ack)] == 즉각 갱신 이벤트 ==&gt; E_Poll[poll() Wake-up Signal]
+    end
+
+    subgraph mavlink_main (Tx Thread)
+        T_Timer(Timer Tick 50Hz) --&gt; S_Norm[Normal Stream Serialization]
+        E_Poll --&gt; S_Fast[ACK Stream Serialization]
+        
+        S_Norm --&gt; FIFO[MAVLink Tx Ring Buffer]
+        S_Fast == 최우선 삽입 ==&gt; FIFO
+    end
+    
+    subgraph POSIX Hardware Layer
+        FIFO --&gt;|write()| DMA(UART / UDP DMA Controller)
+    end
+    
+    style E_Poll fill:#f9f,stroke:#333
+    style S_Fast fill:#dfd,stroke:#333,stroke-width:2px
+</code></pre>
+<h2>3. Tx Ring Buffer와 하드웨어 DMA의 탄력적 결합</h2>
+<p>드물지만 트래픽 폭주(Traffic Burst)로 인해 MAVLink 직렬화가 끝난 바이트 배열이 하드웨어 인터페이스(UART)가 처리할 수 있는 속도(Baudrate)를 넘어설 때 방어 기제가 발동된다.</p>
+<ul>
+<li><strong>소프트웨어 링 버퍼(Software Ring Buffer)</strong>:<br />
+NuttX의 시리얼 드라이버 앞단에는 소프트웨어 레벨의 큰 Tx 링 버퍼(예: 수 KB)가 할당되어 있다. <code>mavlink_messages</code>가 POSIX <code>write()</code> 시스템 콜을 호출할 때 이 버퍼 공간이 충분하다면, 데이터는 지연 없이 버퍼에 안착하고 <code>write()</code> 함수는 논블로킹(Non-blocking)으로 즉시 반환(Return)된다.</li>
+<li><strong>Backpressure (배압) 메커니즘</strong>:<br />
+하지만 드론의 통신 상태가 나빠 Tx 링 버퍼가 가득 차버린 상황(Buffer Full)이라면, <code>write()</code> 함수는 (논블로킹 설정 시) 에러를 반환하거나 특정 바이트 수만큼만 밀어 넣고 튕겨 나온다. 이때 PX4 송신 스레드는 무리하게 대기(Busy Wait)하지 않고, 패킷을 버리거나(Drop, 중요도가 낮을 경우) 송신 속도 자체를 늦추는 배압(Backpressure) 제어를 수행한다.</li>
+<li><strong>DMA(Direct Memory Access)의 자율 가동</strong>:<br />
+Tx 링 버퍼에 쌓인 데이터들은 스레드가 다시 잠에 빠진(Sleep) 동안에도, 하드웨어 DMA 컨트롤러에 의해 1바이트씩 묵묵하게 무선 텔레메트리 라디오의 Tx 핀아웃으로 뽑혀 간다. CPU가 데이터를 한 땀 한 땀 밀어 넣지 않음으로써 확보된 잉여 연산력은, 앞쪽 수신단에서 MAVLink 버퍼 파싱을 수행하는 자원으로 재투자된다.</li>
+</ul>
+<p>결과적으로 PX4의 하행선 파이프라인(Downlink Pipeline)은 uORB 이벤트 다중화기(Multiplexer)와 NuttX 커널의 원형 큐(Ring Queue), 그리고 하드웨어 DMA의 무결성 전송 기능이 삼위일체로 맞물려 설계된 통신 로드 밸런싱(Load Balancing) 시스템의 눈부신 표본이다.</p>
 
             </article>
             <footer>

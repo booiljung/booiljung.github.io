@@ -115,6 +115,24 @@
             </header>
             <article>
                 <h1>38.6.4.1 Qt 프레임워크의 메타 객체 시스템(Meta-Object System) 기반 신호 및 슬롯(Signals and Slots) 이벤트 큐(Event Queue) 병목 현상(Bottleneck) 해소 전략</h1>
+<p>이전 절에서 <code>Q_PROPERTY</code>를 이용해 화면을 우아하게 갱신하는 단방향 데이터 플로우를 살펴보았다. 하지만 이 완벽해 보이는 설계의 이면에는 C++ 멀티스레드 프로그래밍의 가장 끔찍한 함정이 도사리고 있다.</p>
+<p>바로 <strong>스레드 경계 횡단(Cross-Thread Crossing)</strong> 문제다.</p>
+<h2>1. 스레드 컨텍스트 불일치와 크래시(Crash)</h2>
+<p><code>Vehicle</code> 클래스가 <code>emit flightModeChanged()</code> 시그널을 발생시키는 주체는 누구인가? 앞서 <code>MAVLinkProtocol</code>에서 넘어온 수많은 패킷을 파싱하고 있던 치열한 **백그라운드 네트워크 스레드(Thread A)**다.</p>
+<p>반대로, 그 시그널을 전달받아 “화면의 텍스트를 빨간색으로 다시 그려라“라는 명령(Slot)을 물리적인 모니터 픽셀(OpenGL/SceneGraph)에 쏘는 주체는 누구인가? 그것은 전적으로 어플리케이션의 **메인 GUI 스레드(Main GUI Thread, Thread B)**만이 수행할 수 있는 권한이다.</p>
+<p>만약 백그라운드 스레드 A가 메인 GUI 스레드 B의 렌더링 메모리 영역을 직접 건드린다면(Direct Function Call), 화면은 즉각 찢어지고(Tearing) QGC 프로그램은 세그멘테이션 폴트(Segmentation Fault) 오류를 뿜으며 강제 종료된다. GUI 프레임워크의 대원칙 위반이기 때문이다.</p>
+<h2>2. 메타 객체 시스템(Meta-Object System, MOC)의 마법</h2>
+<p>QGC 개발진은 Qt 프레임워크의 심장인 **메타 객체 시스템(Meta-Object System)**과 <strong>시그널 및 슬롯(Signals and Slots)</strong> 아키텍처를 방패로 삼아 이 치명적인 경계를 손쉽게 넘나든다.</p>
+<ol>
+<li><strong>컨텍스트 감지 (Context Sensing)</strong>: 백그라운드 스레드에서 <code>emit</code> 키워드가 실행되는 순간, Qt 안무가(MOC)는 발신자(네트워크 스레드의 <code>Vehicle</code>)와 수신자(메인 스레드의 <code>QML Engine</code>)가 서로 다른 스레드에 거주하고 있음을 즉각적으로 간파한다.</li>
+<li><strong>큐 대기열 연결 (Queued Connection)</strong>: Qt는 일반적인 함수 직접 호출(Direct Connection)을 포기하고, 이 호출을 자동으로 <strong>큐 연결(Queued Connection)</strong> 방식으로 강등(Degrade) 및 전환시킨다.</li>
+<li><strong>이벤트 투척 (Event Enqueuing)</strong>: 백그라운드 스레드는 “모득가 Return으로 바뀌었다“는 데이터를 하나의 독립적인 이벤트 객체(Event Object)로 예쁘게 포장하여, 메인 GUI 스레드가 가진 고유의 내부 <strong>이벤트 큐(Event Queue)</strong> 제일 뒷줄에 툭 던져 놓고(Enqueue), 파싱 결과 따위는 기다리지 않고 쿨하게 다음 MAVLink 패킷을 처리하러 떠난다. (완벽한 논블로킹)</li>
+<li><strong>안전한 수확 (Event Dequeuing)</strong>: 초당 60프레임으로 돌고 있는 메인 GUI 스레드는, 자신의 고유한 리듬에 맞춰 이벤트 큐를 확인하다가 방금 도착한 ’상태 변경 이벤트’를 집어 든다(Dequeue). 그리고 가장 안전하고 충돌 없는 타이밍에 화면의 글자를 업데이트한다.</li>
+</ol>
+<h2>3. 이벤트 큐 병목 현상(Bottleneck) 해소 전략</h2>
+<p>만약 군집 비행(Swarm) 중인 1,000대의 드론으로부터 초당 1,000번의 <code>flightModeChanged</code> 시그널이 폭발적으로 터져 나온다면 어떻게 될까? 메인 GUI 스레드의 이벤트 큐는 폭사(Overflow)할 것이고, 관제 화면은 얼어붙을 것이다(Freezing).</p>
+<p>이를 막기 위해 QGC의 프론트엔드/백엔드 브릿지는 특수한 <strong>스로틀링(Throttling) 기법</strong>을 병행한다. 시그널이 초당 10번 이상 발생하더라도, QML 바인딩 엔진은 이 변경 사항들을 하나하나 그리지 않고 짧은 시간 동안 **병합(Coalescing)**시켜 렌더링 프레임 주기에 맞춰 최적화된 최소 횟수(예: 최대 5~10Hz)로만 덮어 그린다.</p>
+<p>이 거대한 메타 객체 시스템 덕분에, QGroundControl은 백엔드에서 쏟아지는 수만 개의 통신 인터럽트와 동기화 부담을 프론트엔드의 렌더링 파이프라인으로부터 완벽하게 격리해 냈다. 이것이 PX4 기반 관제 시스템이 상용 드론 소프트웨어 중에서도 압도적인 다중 에이전트 그래픽 안정성을 갖출 수 있는 핵심 비결이다.</p>
 
             </article>
             <footer>

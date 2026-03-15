@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:35.4.2 3차원 공간 자세(Attitude) 추정치 방향 코사인 행렬(Direction Cosine Matrix) 변환 로직</title>
+    <title>BIJUNG:35.4.2. 3차원 공간 자세(Attitude) 추정치 방향 코사인 행렬(Direction Cosine Matrix) 변환 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,40 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>35.4.2 3차원 공간 자세(Attitude) 추정치 방향 코사인 행렬(Direction Cosine Matrix) 변환 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.4.2 3차원 공간 자세(Attitude) 추정치 방향 코사인 행렬(Direction Cosine Matrix) 변환 로직</span></nav>
+                    <h1>35.4.2. 3차원 공간 자세(Attitude) 추정치 방향 코사인 행렬(Direction Cosine Matrix) 변환 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.4.2. 3차원 공간 자세(Attitude) 추정치 방향 코사인 행렬(Direction Cosine Matrix) 변환 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>35.4.2 3차원 공간 자세(Attitude) 추정치 방향 코사인 행렬(Direction Cosine Matrix) 변환 로직</h1>
+                <h1>35.4.2. 3차원 공간 자세(Attitude) 추정치 방향 코사인 행렬(Direction Cosine Matrix) 변환 로직</h1>
+<p>무인항공기의 6자유도(6-DoF) 비행 제어를 성공적으로 수행하기 위해서는, 기체에 고정된 동체 좌표계(Body Frame)와 지구 표면에 고정된 지역 평면 좌표계(Local NED Frame) 사이의 회전 관계를 수학적으로 정확하게 모델링해야 한다.</p>
+<p>PX4-Autopilot의 최하단 추정기(Estimator)인 EKF2는 내부적으로 모든 3차원 회전 상태를 4차원 복소수 체계인 해밀턴 사원수(Hamiltonian Quaternion)로 관리한다. 그러나 사원수 자체는 직관적인 물리적 벡터 투영(Vector Projection) 등 기초 역학 연산에 적합하지 않은 경우가 많기 때문에, 이를 <span class="math math-inline">3 \times 3</span> 크기의 방향 코사인 행렬(DCM, Direction Cosine Matrix)로 역변환하여 제어루프나 원격 측정 파이프라인(Telemetry)에 비동기적으로 공급하는 과정이 필수불가결하다.</p>
+<h2>1.  방향 코사인 행렬(DCM)의 기하학적 정의</h2>
+<p>방향 코사인 행렬 식별자 <span class="math math-inline">R_b^n</span> (또는 <span class="math math-inline">C_b^n</span>)는 동체 좌표계(Body Frame, <span class="math math-inline">b</span>)에서 관측된 임의의 3차원 벡터를 항법 좌표계(Navigation Frame, 즉 NED, <span class="math math-inline">n</span>)로 회전시켜 주는 선형 변환(Linear Transformation) 행렬이다.</p>
+<p>행렬의 각 원소는 두 좌표계 축 간의 사이트각(Sight angle)에 대한 코사인(Cosine) 값으로 구성되며, PX4 내부적으로는 32비트 단정밀도 부동소수점 행렬 체계인 <code>matrix::Dcmf</code> 객체로 선언된다. DCM은 항상 직교 행렬(Orthogonal Matrix)이라는 강력한 성질을 지니기 때문에, 그 역행렬이 전치행렬과 동일하다(<span class="math math-inline">R^{-1} = R^T</span>). 즉 항법 좌표계에서 동체 좌표계로 역변환이 필요할 때는 값비싼 역행렬 연산 대신 메모리 조작만으로 전치(Transpose) 처리하여 컴퓨터의 연산 자원을 극적으로 절약할 수 있다.</p>
+<h2>2.  사원수(Quaternion) 추정치로부터의 비동기 DCM 변환 파이프라인</h2>
+<p>확장 칼만 필터(EKF2)는 100Hz~400Hz 이상의 고속으로 자세를 갱신하며, 결과물을 <code>vehicle_attitude</code> uORB 토픽의 <code>q[4]</code>(사원수 배열)로 퍼블리싱(Publish)한다.</p>
+<p>자세 제어기(Attitude Controller)나 센서 데이터 추출기(Data Extractor) 스레드들은 이 토픽의 알림을 비동기 이벤트 핸들러(<code>poll()</code>)로 수신한 즉시, 로컬 스레드 공간에서 아래와 같은 역학 공식을 통해 사원수를 DCM으로 다이렉트 변환 매핑한다. (사원수 <span class="math math-inline">q = [q_0, q_1, q_2, q_3]^T</span>)</p>
+<p><span class="math math-display">R(q) = \begin{bmatrix} q_0^2 + q_1^2 - q_2^2 - q_3^2 &amp; 2(q_1 q_2 - q_0 q_3) &amp; 2(q_0 q_2 + q_1 q_3) \\ 2(q_1 q_2 + q_0 q_3) &amp; q_0^2 - q_1^2 + q_2^2 - q_3^2 &amp; 2(q_2 q_3 - q_0 q_1) \\ 2(q_1 q_3 - q_0 q_2) &amp; 2(q_0 q_1 + q_2 q_3) &amp; q_0^2 - q_1^2 - q_2^2 + q_3^2 \end{bmatrix}</span></p>
+<p>PX4의 선형대수학 백엔드인 <code>lib/matrix</code> 라이브러리는 위 공식을 최적화된 C++ 템플릿 코드 인라인(Inline) 함수로 제공한다.</p>
+<pre><code class="language-cpp">// PX4 자세 제어기 내부의 비동기 DCM 추출 루틴 예시
+vehicle_attitude_s att_info;
+if (orb_copy(ORB_ID(vehicle_attitude), att_sub, &amp;att_info) == PX4_OK) {
+    // 1. uORB 배열로부터 사원수 객체화
+    matrix::Quatf q(att_info.q);
+    
+    // 2. 사원수를 방향 코사인 행렬(DCM)로 즉시 캐스팅 변환
+    matrix::Dcmf R = matrix::Dcmf(q);
+    
+    // 3. (예) 지구 중력 벡터를 기체 축 벡터로 회전 맵핑 (R 전치행렬 곱)
+    matrix::Vector3f gravity_body = R.transpose() * matrix::Vector3f(0.0f, 0.0f, 9.81f);
+}
+</code></pre>
+<p>이와 같이 EKF가 uORB에 등재한 단 4개의 실수 데이터(사원수) 묶음을, 소비하는 스레드(Consumer Thread) 측에서 필요할 때마다 9개의 실수 요소(DCM) 행렬로 동적 실체화(Instantiation)하는 방식은 전체 미들웨어 버스의 통신 대역폭(Bus Bandwidth) 부담을 최소화하는 현명한 텔레메트리 설계이다.</p>
+<h2>3. 원격 측정(Telemetry) 스트림에서의 DCM 파생물</h2>
+<p>위와 같이 생성된 DCM 행렬 객체는 MAVLink 백엔드로 이관되어 관제소 측 구미에 맞는 형태로 추가 분할된다.</p>
+<p>우주항공 분야 표기법의 관습에 따라 관제사들은 3차원 자세를 직접적인 행렬 수치로 이해하기 어려우며, 오일러 각(Euler Angle, Roll/Pitch/Yaw) 시각화를 선호한다. 텔레메트리 스레드는 DCM의 삼각함수 비례 요소를 역추출(<code>atan2</code>, <code>asin</code> 사용)하여 오일러 각으로 강제 강등(Down-grade) 변환하고, 이를 MAVLink의 <code>ATTITUDE</code> 메시지로 채워 50Hz 등의 주기로 지상 GCS 장비나 ROS2로 덤프(Dump)한다.</p>
+<p>그러나 이 오일러 변환 과정은 순수한 시각적 전시(Display) 기능이나 지상 관제망 호환성을 위한 부가적 서비스일 뿐, PX4의 핵심 자율 루프는 언제나 특이점(Singularity)이 없는 사원수 체계와, 벡터 좌표계 간섭 투영(Projection) 연산 속도가 최고조로 튜닝된 방향 코사인 행렬(DCM) 사이의 양자화된 브리지(Quantized Bridge) 안에서 폐쇄 구조를 유지한다.</p>
 
             </article>
             <footer>

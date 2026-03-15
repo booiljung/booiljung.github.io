@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.3.2 MAV_RESULT 열거형 기반의 제어기 상태 전이(State Transition) 행렬 심층 분석</title>
+    <title>BIJUNG:39.3.2. MAV_RESULT 열거형 기반의 제어기 상태 전이(State Transition) 행렬 심층 분석</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,76 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.3.2 MAV_RESULT 열거형 기반의 제어기 상태 전이(State Transition) 행렬 심층 분석</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.3.2 MAV_RESULT 열거형 기반의 제어기 상태 전이(State Transition) 행렬 심층 분석</span></nav>
+                    <h1>39.3.2. MAV_RESULT 열거형 기반의 제어기 상태 전이(State Transition) 행렬 심층 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.3.2. MAV_RESULT 열거형 기반의 제어기 상태 전이(State Transition) 행렬 심층 분석</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.3.2 MAV_RESULT 열거형 기반의 제어기 상태 전이(State Transition) 행렬 심층 분석</h1>
+                <h1>39.3.2. MAV_RESULT 열거형 기반의 제어기 상태 전이(State Transition) 행렬 심층 분석</h1>
+<h2>1. 서론: 제어 수락 로직을 통제하는 5가지 열거형 상태 공간</h2>
+<p>무인항공기 제어에서 ’명령어 처리(Command Processing)’란 단순히 GCS가 하달한 값을 레지스터에 쓰는 일방향 복사 행위가 아니다. 이는 현재 비행 동역학 및 안전 제어 상태 머신(Safety Control State Machine)이 특정 명령을 수용할 수 있는지 판단하고 그 결과에 따라 계층적 권한을 전이(Transition)하는 매우 복잡한 유한 상태 기계(FSM: Finite State Machine)의 검증(Validation) 사이클이다.</p>
+<p>이 거대한 상태 전이망의 라우터 역할을 하는 핵심 자료형이 바로 MAVLink의 <code>MAV_RESULT</code> 열거형(Enum)이다. PX4(펌웨어 v1.14 기준)의 Commander 모듈은 수신된 모든 명령에 대해 이 <code>MAV_RESULT</code> 행렬을 기반으로 내부 분기 로직(Branching Logic) 및 GCS(QGroundControl v4.3) 보고 절차를 결정짓는다. 본 장에서는 제어기 상태 전이에 영향을 미치는 5가지 주요 <code>MAV_RESULT</code> 반환 값 메커니즘을 심층 분석한다.</p>
+<h2>2. MAV_RESULT 전이 행렬의 상태 붕괴 및 발산 구조</h2>
+<p>PX4의 <code>commander</code> 모듈 안에는 거대한 <code>switch-case</code> 블록이나 함수 포인터 배열을 통해 각각의 <code>MAV_CMD</code>에 대한 사전 조건 검사(Pre-condition Check) 함수들이 분배되어 있다. 이 함수들의 리턴 값은 모두 <code>MAV_RESULT</code>로 규격화된다.</p>
+<h3>2.1 각 열거형 상태의 제어 공학적 의미</h3>
+<ol>
+<li><strong><code>MAV_RESULT_ACCEPTED</code> (수락됨: 0)</strong></li>
+</ol>
+<ul>
+<li><strong>물리적 의미</strong>: 명령의 사전 조건이 완벽히 충족되어, 기체의 제어 할당기(Control Allocator)나 하위 내비게이터(Navigator) 모듈로 권한이 성공적으로 위임(Delegation)되었음을 뜻한다. GCS UI에서는 진행률 막대가 100%에 도달하거나 성공 알림이 트리거된다.</li>
+</ul>
+<ol start="2">
+<li><strong><code>MAV_RESULT_TEMPORARILY_REJECTED</code> (일시적 거부: 1)</strong></li>
+</ol>
+<ul>
+<li><strong>물리적 의미</strong>: 명령어 자체의 문법이나 타당성엔 문제가 없으나, 현재 상태에서 당장 이를 실행하면 교착 상태(Deadlock)에 빠질 수 있음을 나타낸다. 예를 들어 GPS가 아직 3D Fix를 확보하지 못한 상태에서 자율 임무 모드(Mission Mode) 가동을 요청하거나, 시스템 초기화(Boot-up)가 완료되기 전 센서 캘리브레이션을 요청한 엣지 케이스(Edge Case)에서 반환된다.</li>
+</ul>
+<ol start="3">
+<li><strong><code>MAV_RESULT_DENIED</code> (논리적/안전상 거부: 2)</strong></li>
+</ol>
+<ul>
+<li><strong>물리적 의미</strong>: 시스템 권한 제어기(Safety Authority Controller)가 비가역적 논리 모순을 감지하여 명령 제어를 강제로 차단함을 의미한다. 공중 작동 중 시동 강제 해제(Disarm in Air)나, 페일세이프(Failsafe) 중 강제 모드 전환 요쳥 등 하드웨어 치명타를 유발할 소지가 있는 명령일 때 발동된다.</li>
+</ul>
+<ol start="4">
+<li><strong><code>MAV_RESULT_UNSUPPORTED</code> (미지원 명령어: 3)</strong></li>
+</ol>
+<ul>
+<li><strong>물리적 의미</strong>: 하프 듀플렉스(Half-Duplex) 명령어 사전(Command Dictionary) 검색에 실패한 상태이다. PX4에서 구현되지 않은 새로운 프로토콜 버전을 GCS가 사용하거나, 헬리콥터 제어 명령을 멀티콥터 스택에 요청한 경우 발생하는 예외 처리(Exception Handling) 전이이다.</li>
+</ul>
+<ol start="5">
+<li><strong><code>MAV_RESULT_FAILED</code> (런타임 제어 결함: 4)</strong></li>
+</ol>
+<ul>
+<li><strong>물리적 의미</strong>: 조건부 검사는 통과하여 액추에이터 활성화를 명시했으나, 하위 I/O 드라이버 수준의 센서 포화(Saturation), 동역학적 한계 초과, 혹은 메모리 할당 제한으로 제어 루프 내부에서 실패하였음을 알리는 치명적 피드백이다.</li>
+</ul>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; Command_Received : COMMAND_LONG 수신
+    state Command_Received {
+        PreConditionCheck : Commander 사전 조건 검사
+    }
+    
+    Command_Received --&gt; State_Delegation : 조건 통과
+    State_Delegation --&gt; Accepted : 제어권 할당 완료
+    Accepted --&gt; [*] : MAV_RESULT_ACCEPTED
+    
+    Command_Received --&gt; Safety_Block : 비행 모드 모순
+    Safety_Block --&gt; [*] : MAV_RESULT_DENIED
+    
+    Command_Received --&gt; Resource_Busy : 센서/GPS Lock 미확보
+    Resource_Busy --&gt; [*] : MAV_RESULT_TEMPORARILY_REJECTED
+    
+    State_Delegation --&gt; Runtime_Error : 드라이버/I2C 통신 결함
+    Runtime_Error --&gt; [*] : MAV_RESULT_FAILED
+</code></pre>
+<h2>3. Ardupilot과 PX4의 설계 철학적 전이 행렬 차이</h2>
+<p>상기 설명한 5가지 상태 변이 행렬을 구성하는 데 있어 오픈소스 생태계는 서로 다른 선택을 하였다.</p>
+<ul>
+<li><strong>PX4-Autopilot의 명시적 분리 구조</strong>:<br />
+PX4 백엔드 코드 베이스는 <code>TEMPORARILY_REJECTED</code>(상태가 바뀌면 나중에 성공할 수도 있음)와 <code>DENIED</code>(지금 상태나 미래 상태나 절대 불가함) 사이의 경계를 매우 엄격하게 컴파일 타임에 구분한다. QGroundControl은 이 반환 값을 읽고 “잠시 후 다시 시도해보십시오“와 “이 명령은 금지되어 있습니다“를 분명히 구별하여 띄운다.</li>
+<li><strong>Ardupilot의 암묵적 캐스팅 구조</strong>:<br />
+Ardupilot의 Mission Planner 생태계는 <code>MAV_RESULT_FAILED</code>와 <code>MAV_RESULT_DENIED</code>의 경계를 자주 혼용하는 경향이 있다. Ardupilot 내부 스크립트에서는 제어도중 하위 함수에서 false가 반환되면 편의상 포괄적인 FAILED 코드를 던져버리는 캡슐화(Capsulation) 관행이 있어, GCS가 장애의 원인이 ’권한 문제’인지 ’구동계 결함’인지 명확히 파악하지 못할 때 텍스트 기반 statustext(STATUSTEXT #253) 로그에 의존하여 인간이 직접 디버깅해야 하는 상황이 상대적으로 빈번하다.</li>
+</ul>
+<p>이를 종합할 때 <code>MAV_RESULT</code> 행렬 심층화 모델은 자율 에이전트 GCS 소프트웨어가 조종자의 개입 없이 독립적으로 복구 결정(Recovery Decision)을 내릴 수 있게 하는가에 대한 핵심 척도를 상징한다고 평가할 수 있다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.2.3.3 수신 신호 지터(Jitter) 제거를 위한 1차 저주파 통과 필터(1st-order IIR LPF): 시정수(Time constant) 및 이산화(Discretization) 모델 수식</title>
+    <title>BIJUNG:29.2.3.3. 수신 신호 지터(Jitter) 제거를 위한 1차 저주파 통과 필터(1st-order IIR LPF): 시정수(Time constant) 및 이산화(Discretization) 모델 수식</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,66 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.2.3.3 수신 신호 지터(Jitter) 제거를 위한 1차 저주파 통과 필터(1st-order IIR LPF): 시정수(Time constant) 및 이산화(Discretization) 모델 수식</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.3.3 수신 신호 지터(Jitter) 제거를 위한 1차 저주파 통과 필터(1st-order IIR LPF): 시정수(Time constant) 및 이산화(Discretization) 모델 수식</span></nav>
+                    <h1>29.2.3.3. 수신 신호 지터(Jitter) 제거를 위한 1차 저주파 통과 필터(1st-order IIR LPF): 시정수(Time constant) 및 이산화(Discretization) 모델 수식</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.3.3. 수신 신호 지터(Jitter) 제거를 위한 1차 저주파 통과 필터(1st-order IIR LPF): 시정수(Time constant) 및 이산화(Discretization) 모델 수식</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.2.3.3 수신 신호 지터(Jitter) 제거를 위한 1차 저주파 통과 필터(1st-order IIR LPF): 시정수(Time constant) 및 이산화(Discretization) 모델 수식</h1>
+                <h1>29.2.3.3. 수신 신호 지터(Jitter) 제거를 위한 1차 저주파 통과 필터(1st-order IIR LPF): 시정수(Time constant) 및 이산화(Discretization) 모델 수식</h1>
+<p>본 소절에서는 <code>ManualControl</code> 파이프라인의 종착역이자, 노후화된 기계식 조종기와 RF 통신 환경이 야기하는 전기적 아날로그 노이즈(Jitter)를 최종적으로 도태시키는 <strong>1차 저주파 통과 필터(1st-order IIR Low-Pass Filter)</strong> 의 수학적 원리와 C++ 커널 내부 이산화(Discretization) 런타임 타겟 코드를 심층 해부한다. PX4 <code>mathlib</code> 은 무한 임펄스 응답(IIR) 구조를 채택함으로써 메모리 점유량을 1개의 변수로 극한 압축하고, 매 제어 사이클(<span class="math math-inline">\Delta t</span>)마다 실시간으로 노이즈를 깎아내는 강력한 추종 성능(Tracking Performance)을 자랑한다.</p>
+<h2>1.  스틱 지터(Jitter) 앨리어싱(Aliasing)의 기구학적 파급 효과</h2>
+<p>드론 조종기의 짐벌 가변 저항(Potentiometer)에서 출력되는 아날로그 신호를 12비트 수준의 ADC(아날로그-디지털 변환기)로 샘플링하면, 조종자가 스틱을 전혀 움직이지 않아도 미세한 전압 플럭츄에이션(Fluctuation)에 의해 LSB(최하위 비트)가 흔들리면서 원시 신호가 <span class="math math-inline">\pm 1 \sim 2\mu s</span> 폭으로 고주파 진동(High-frequency Oscillation)을 일으킨다.</p>
+<p>더욱이 RF 송수신기 환경에서는 텔레메트리 파킷의 드롭(Drop)이나 CRC 불일치 등으로 인해 디코딩 지연이 발생할 수 있으며, 이는 신호의 비선형적 스파이크(Spike) 현상으로 귀결된다. 만일 29.2.3.2절의 곡선 매핑만 거친 신호가 그대로 하위 기구학 모델인 ’자세 제어기(Attitude Controller)’의 각속도 설정값(Rate Setpoint)으로 유입된다면, 제어기 백엔드의 <strong>D-Term(미분항)</strong> 이 이 고주파 노이즈 파동의 기울기(Derivative)를 우주 끝까지 증폭시켜 버리는 파국을 초래한다. 결국 모터 코일에 초당 수백 번의 브레이킹/가속 전류가 쏟아져 들어가 ESC(전자변속기)가 치명적인 발열에 시달리게 되며, 비행 궤적은 로보틱(Robotic)하고 덜컹거리는 상태로 전락한다.</p>
+<p>PX4 커널은 이러한 고주파 노이즈 성분을 사전에 차단(Cut-off)하고 인간 파일럿이 통제 가능한 거시적이고 부드러운 스틱의 궤적(저주파 성분)만을 선별적으로 통과시키기 위해 1차 IIR LPF(Low-Pass Filter)를 수동 제어 파이프라인의 최종 마개(Plug)로 꽂아 넣는다.</p>
+<h2>2.  연속 시간(Continuous-Time) 필터 모델 상수와 차단 주파수(Cut-off Frequency)</h2>
+<p>전자 공학에서 널리 쓰이는 표준 1차 RC 저주파 통과 필터의 연속 시간 미분 방정식(Differential Equation) 모델은 다음과 같다.</p>
+<p><span class="math math-display"> T \frac{dy(t)}{dt} + y(t) = x(t) </span></p>
+<p>여기서,</p>
+<ul>
+<li><span class="math math-inline">x(t)</span>: 입력 신호 (지터가 섞인 스틱의 정규화된 현재 위치)</li>
+<li><span class="math math-inline">y(t)</span>: 필터링을 거친 출력 신호 (부드럽게 평활화된 최종 제어값)</li>
+<li><span class="math math-inline">T</span>: 필터의 <strong>시정수(Time Constant, <span class="math math-inline">\tau</span>)</strong>, 입력 신호의 계단식 충격(Step Input)에 대해 출력이 목표값의 약 63.2% 도달하는 데 걸리는 시간.</li>
+</ul>
+<p>차단 주파수(Cut-off Frequency, <span class="math math-inline">f_c</span>, 단위: Hz)와 시정수 <span class="math math-inline">T</span> 는 역수 비례 관계를 갖는다.<br />
+<span class="math math-display"> f_c = \frac{1}{2\pi T} </span></p>
+<p>PX4 파라미터(Parameter) 환경에서는 보통 이 차단 주파수를 <span class="math math-inline">10Hz \sim 30Hz</span> 정도로 설정할 수 있도록 변수를 개방해 둔다(예: <code>MC_ROLLRATE_P</code> 등에 연계된 설정 혹은 <code>RC_FLT_SMP_RATE</code> 등). 차단 주파수를 <span class="math math-inline">10Hz</span> 로 과도하게 낮추면 (시정수 증가) 노이즈는 기가 막히게 상쇄되어 실크처럼 부드러운 조종감을 얻지만, 반대급부로 사용자가 스틱을 급격히 쳤을 때 시스템이 반응하기까지 수십 ms의 지연(Phase Lag / Latency)이 발생하여 기체가 둔감해(Sluggish) 지는 상충 관계(Trade-off)가 발생하므로 레이싱이나 아크로 기체의 경우 <span class="math math-inline">30Hz</span> 이상으로 타이트하게 튜닝해야 한다.</p>
+<h2>3.  이산화(Discretization) 기법 적용 및 C++ IIR 런타임 코어 소스 분석</h2>
+<p>디지털 마이크로컨트롤러(NuttX RTOS) 환경에서는 연속적인 미분 방정식을 풀 연산기(Analog Solver)가 존재하지 않는다. 따라서 PX4 <code>mathlib</code> 은 샘플링 주기(<span class="math math-inline">\Delta t</span>, 통상 <span class="math math-inline">1ms \sim 10ms</span>) 단위로 과거의 기록을 재귀적으로 적분해 내기 위해 오일러 전방 차분법(Forward Euler Discretization)이나 쌍선형 변환(Tustin Transform)을 적용하여 식을 이산 공간(Discrete Space)으로 매핑한다.</p>
+<p>PX4의 <code>LowPassFilter</code> 구현체는 가장 경량화되고 컴파일러 파이프라인 최적화에 친화적인 ‘지수 평활법(Exponential Smoothing)’ 형태의 이산 점화식(Recurrence Relation)을 런타임 코어로 활용한다.</p>
+<pre><code class="language-cpp">// src/lib/mathlib/math/filter/LowPassFilter2p.cpp 등 IIR 필터 모듈 핵심 연산 구조
+
+void LowPassFilter::set_cutoff_frequency(float sample_freq, float cutoff_freq) {
+    if (cutoff_freq &lt;= 0.0f) {
+        // 차단 주파수가 0 이하로 파라미터 오류가 날 경우, 필터링을 포기하고(Bypass) 
+        // 100% 원본 투과를 보장하기 위해 가중치를 1.0으로 강제 설정
+        _alpha = 1.0f;
+        return;
+    }
+    
+    // 시정수와 델타 타임(dt = 1/sample_freq)을 이용한 필터 가중치(Alpha) 연산
+    // 통상적인 1차 필터의 이산화 가중치 수식: dt / (T + dt)
+    // 컷오프 주파수에 기반한 T 도출 및 병합 전개:
+    // alpha = (2 * PI * dt * f_c) / (2 * PI * dt * f_c + 1)
+    
+    float dt = 1.0f / sample_freq;
+    float rc = 1.0f / (2.0f * M_PI_F * cutoff_freq);
+    _alpha = dt / (dt + rc); 
+}
+
+float LowPassFilter::apply(float sample) {
+    // 1차 IIR 계차 방정식 핵심 연산
+    // 현재 출력 = (Alpha * 현재 입력) + ((1 - Alpha) * 이전 루프의 출력 상태)
+    
+    // 이전 상태(_delay_element_1)가 NaN이나 오염된 메모리가 아님을 가정하고
+    // 단 2회의 부동 소수점 곱아드(FMA) 클럭으로 무한 임펄스 필터링(IIR)을 완수함
+    
+    _delay_element_1 = _delay_element_1 + _alpha * (sample - _delay_element_1);
+    
+    return _delay_element_1;
+}
+</code></pre>
+<p>위 C++ 커널 로직에서 주목할 점은 메모리 효율성(Memory Efficiency)이다. FIR (Finite Impulse Response) 필터와 같이 윈도우 사이즈(Window Size)만큼의 과거 샘플 데이터를 저장할 버퍼(Buffer) 배열 자체가 필요없다. 오직 이전 출력 상태를 머금고 있는 <code>_delay_element_1</code> 이라는 단 4바이트 부동소수점 변수 1개만으로, 수학적 아키텍처상 태초부터 지금까지의 모든 입력 기록을 지수적으로 망각(Exponential Decay)하며 내포하고 있게 된다.</p>
+<p>또한 <code>apply()</code> 함수의 핵심 구문 <code>_delay_element_1 + _alpha * (sample - _delay_element_1)</code> 은 수식의 논리적 동치인 <code>alpha*sample + (1-alpha)*state</code> 보다 부동소수점 승산 연산(Multiplication) 단축을 <span class="math math-inline">O(1)</span> 클럭 상에서 한 번 더 쥐어짠 대수적 결착 형태이다. 이토록 극도로 경량화된 IIR 코어가 뒷단에서 수만 번의 틱 루프를 거치며 실시간으로 고주파수 오실레이션을 착취(Exploit)해줌으로써, 상위 시스템은 더러운 하드웨어 프로토콜을 벗어나 티끌 하나 없이 투사된 완벽한 공력학적 목표 벡터(Setpoint Vector)를 확신하고 제어 밴드폭(Control Bandwidth)을 한계 이상으로 밀어붙일 수 있게 된다.</p>
 
             </article>
             <footer>

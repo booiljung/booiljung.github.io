@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.3.2.1 상호 배제적(Mutually Exclusive) 제어 입력의 상태 종속적(State-dependent) 마스킹(Masking) 처리</title>
+    <title>BIJUNG:37.3.2.1. 상호 배제적(Mutually Exclusive) 제어 입력의 상태 종속적(State-dependent) 마스킹(Masking) 처리</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,71 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.3.2.1 상호 배제적(Mutually Exclusive) 제어 입력의 상태 종속적(State-dependent) 마스킹(Masking) 처리</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.3.2.1 상호 배제적(Mutually Exclusive) 제어 입력의 상태 종속적(State-dependent) 마스킹(Masking) 처리</span></nav>
+                    <h1>37.3.2.1. 상호 배제적(Mutually Exclusive) 제어 입력의 상태 종속적(State-dependent) 마스킹(Masking) 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.3.2.1. 상호 배제적(Mutually Exclusive) 제어 입력의 상태 종속적(State-dependent) 마스킹(Masking) 처리</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.3.2.1 상호 배제적(Mutually Exclusive) 제어 입력의 상태 종속적(State-dependent) 마스킹(Masking) 처리</h1>
+                <h1>37.3.2.1. 상호 배제적(Mutually Exclusive) 제어 입력의 상태 종속적(State-dependent) 마스킹(Masking) 처리</h1>
+<p>지상 관제 시스템(GCS) 또는 조종기(Radio Control)의 조작계는 다수의 스위치와 조이스틱(Joystick)으로 구성되며, 조작자의 실수로 인해 논리적으로 동시에 성립될 수 없는 <strong>상호 배제적(Mutually Exclusive)</strong> 명령이 오토파일럿으로 유입될 가능성이 항상 존재한다. PX4-Autopilot은 이러한 모순점(Contradiction)을 해결하기 위해 유한 상태 기계(FSM, Finite State Machine)의 현재 상태(State)에 종속적으로 기각 또는 무시 정책을 적용하는 <strong>상태 종속적 마스킹(State-dependent Masking)</strong> 아키텍처를 도입하고 있다.</p>
+<h2>1.  상호 배제적 제어 입력의 본질적 위험성</h2>
+<p>통신 채널(MAVLink 또는 RC SBUS)을 통해 오토파일럿으로 수신되는 명령 중에는, 물리적 혹은 제어 논리적으로 양립할 수 없는 커맨드 시퀀스(Command Sequence)가 존재한다.</p>
+<p>대표적인 상호 배제적 이벤트의 예시는 다음과 같다.</p>
+<ul>
+<li><strong>Arm vs Disarm</strong>: 시동(Arm) 스위치와 시동 해제(Disarm) 채널이 물리적 배선 단락 또는 MAVLink 메시지 큐의 비정상적 지연(Lag) 교차로 인해 동시에 인가되는 경우.</li>
+<li><strong>Mission vs RTL(Return To Launch)</strong>: 웨이포인트(Waypoint)를 추종하는 자동 임무(Mission)를 지시하는 동시에 복귀(RTL) 명령이 하달된 경우.</li>
+<li><strong>Acro vs Position Hold</strong>: 기압계 및 GPS 센서를 융합하여 위치를 잡는 완전히 안정적인 <code>Hold</code> 모드 토글 스위치와, 모든 자세 제어 센서를 무시하고 각속도(Rate)만 추종하는 완전 수동 <code>Acro</code> 모드 토글 스위치가 다중 스위치 설정 오류로 동시에 ON 상태로 매핑된 경우.</li>
+</ul>
+<p>이러한 모순이 발생할 때, 코어 제어 루프가 우선순위를 명확히 결단(Arbitration)하지 못하면 기체는 제어 모드가 초당 수십 번씩 스위칭 현상(Chattering)을 일으켜 추락에 이르게 된다.</p>
+<h2>2.  상태 종속적(State-dependent) 마스킹(Masking) 아키텍처</h2>
+<p>PX4 커맨더(Commander) 내부의 상태 평가자(State Evaluator)는 입력 신호망의 “마스킹(Masking) 처리“를 통해, 현재 기체의 유한 상태 노드 결정을 방어한다. 이는 입력 포트 자체를 논리적으로 차폐(Filter-out)시키는 기법이다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Operator Input (Raw Commands)
+        CMD_RTL[RTL Switch ON]
+        CMD_MISSION[Mission Switch ON]
+        CMD_ACRO[Acro Switch ON]
+    end
+
+    subgraph PX4 State Dependent Masking Layer
+        S1{Current State: In-Air &amp; Low Battery?}
+        S1 -- Yes: High Priority --&gt; Mask1[Mask Acro &amp; Mission commands]
+        S1 -- No : Normal --&gt; Arbitrate{Priority Resolver}
+        
+        Arbitrate --&gt; Rule1(Failsafe &gt; Auto &gt; Manual)
+    end
+    
+    subgraph Resulting Mode (Accepted Command)
+        RTL_Active((RTL Mode Active))
+    end
+    
+    CMD_RTL --&gt; PX4
+    CMD_MISSION --&gt; PX4
+    CMD_ACRO --&gt; PX4
+    
+    Mask1 --&gt; RTL_Active
+    Rule1 --&gt; RTL_Active
+</code></pre>
+<h3>2.1  마운팅 우선순위(Priority Rules) 기반 트리거 마스킹</h3>
+<p>상호 배제적인 명령이 동시 송출된 상황에서 PX4는 정적인 <strong>하드코드 트리(Hard-coded Tree)</strong> 우선순위를 갖는다.</p>
+<ul>
+<li><strong>Failsafe 계열 제어 (최상위)</strong>: RTL, Land, Failsafe</li>
+<li><strong>Auto 계열 제어 (차상위)</strong>: Mission, Hold, Takeoff</li>
+<li><strong>Manual 계열 제어 (최하위)</strong>: Altitude, Stabilized, Manual, Acro</li>
+</ul>
+<p>조종자가 <code>Mission</code> 스위치와 <code>RTL</code> 스위치를 동시에 올렸을 경우, <code>Commander</code>는 하위 우선순위인 <code>Mission</code> 스위치에서 들어오는 이산 계단 신호(Discrete step signal)를 마스킹 처리(무시)하고 즉각 <code>RTL</code> 모드의 전환 조건으로 병합한다.</p>
+<h3>2.2  FSM 맥락 기반(Context-aware) 동적 마스킹</h3>
+<p>오로지 우선순위 트리에만 의존하는 것은 한계가 있다. 특정 상태에서는 상위 계열 명령이라 할지라도 기각되어야 하는 ‘상태 종속(State-dependent)’ 특징이 부여되어야 한다.</p>
+<ul>
+<li><strong>착륙 상태(Landed State)에서의 Kill Switch 마스킹</strong>: 기체가 지면에 닿아있는 상태(<code>Landed == True</code>)라면, 조종자의 <code>Kill Switch</code> 입력 또는 <code>Disarm</code> 명령의 우선순위는 극대화된다. 하지만 반대로, <strong>기체가 공중(<code>In-air == True</code>)이라면, 설정된 Circuit Breaker 파라미터(예: <code>CBRK_FLIGHTTERM</code>)에 의해 조종자의 <code>Kill Switch</code> 명령이 강제로 마스킹(차폐) 당할 수 있다.</strong> (실수로 공중에서 모터를 끄는 행위를 방지)</li>
+<li>물론 파라미터를 통해 “공중이라도 무조건 끈다“로 설정할 수 있으나, 기본값(Default)은 이산 사건의 현재 상태 노드(<code>In-air</code>)를 신뢰하고 조종자의 치명적 오입력을 필터링하는 데 초점을 둔다.</li>
+</ul>
+<h2>3.  Ardupilot의 제어 스위칭 로직과의 패러다임 차이</h2>
+<ul>
+<li><strong>Ardupilot (Flight Mode 1~6 PWM 믹싱)</strong>: Ardupilot의 전통적인 RC 제어 방식은 하나의 RC 채널(일반적으로 채널 5)을 6개의 PWM 밴드(Band)로 쪼개어 비행 모드를 할당한다. 이는 구조적으로 하드웨어 라인에서 2개의 모드가 동시에 눌리는 상호 배제적 오입력 사태를 원천 차단(SBUS 상에서 1개의 PWM 값만 존재하므로)하는 아키텍처적 장점이 있다.</li>
+<li><strong>PX4 (Multi-Channel Boolean Mapping)</strong>: 반면 PX4는 설계 철학상 다채널 버튼 기반 매핑(예: Joypad의 A, B, X, Y 버튼 각각에 모드 부여)을 적극 수용한다. 이는 GCS나 ROS 2 에이전트로부터 비동기 MAVLink 메시지가 난입하기 쉬움을 시사한다. 따라서 PX4는 MAVLink의 백엔드 단에서 <code>vehicle_command</code> 구조체 내의 이산 상태 조합을 <code>Commander</code>의 방어막 메커니즘인 ‘우선순위 스케줄러 및 상태 종속 마스킹’ 알고리즘으로 엄밀하게 걸러내도록 고도의 소프트웨어 설계가 집중되어 있다.</li>
+</ul>
+<h2>4.  제어 공학적 결론</h2>
+<p>상호 배제적이고 모순된 제어 입력이 주어졌을 때, 시스템이 패닉(Panic) 상태에 빠지지 않고 정형적 우선순위와 현재 기계 상태의 맥락(Context)을 파악하여 하위 논리를 의도적으로 거부(Masking)하는 것은 고도로 발전된 로보틱스 관제 미들웨어의 특징이다. 이러한 동적 입력 차폐 로직은 결함 주입 테스트(Fault Injection Test)나 조종 미숙으로 유발되는 극단적인 멀티-오더 결함을 방어하는 핵심 자산이다.</p>
 
             </article>
             <footer>

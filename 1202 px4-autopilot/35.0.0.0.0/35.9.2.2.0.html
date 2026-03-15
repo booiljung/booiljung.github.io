@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:35.9.2.2 메인 루프 블로킹(Main Loop Blocking)을 방지하는 작업자 스레드 풀(Worker Thread Pool) 부하 분산 최적화</title>
+    <title>BIJUNG:35.9.2.2. 메인 루프 블로킹(Main Loop Blocking)을 방지하는 작업자 스레드 풀(Worker Thread Pool) 부하 분산 최적화</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,39 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>35.9.2.2 메인 루프 블로킹(Main Loop Blocking)을 방지하는 작업자 스레드 풀(Worker Thread Pool) 부하 분산 최적화</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.9.2.2 메인 루프 블로킹(Main Loop Blocking)을 방지하는 작업자 스레드 풀(Worker Thread Pool) 부하 분산 최적화</span></nav>
+                    <h1>35.9.2.2. 메인 루프 블로킹(Main Loop Blocking)을 방지하는 작업자 스레드 풀(Worker Thread Pool) 부하 분산 최적화</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.9.2.2. 메인 루프 블로킹(Main Loop Blocking)을 방지하는 작업자 스레드 풀(Worker Thread Pool) 부하 분산 최적화</span></nav>
                 </div>
             </header>
             <article>
-                <h1>35.9.2.2 메인 루프 블로킹(Main Loop Blocking)을 방지하는 작업자 스레드 풀(Worker Thread Pool) 부하 분산 최적화</h1>
+                <h1>35.9.2.2. 메인 루프 블로킹(Main Loop Blocking)을 방지하는 작업자 스레드 풀(Worker Thread Pool) 부하 분산 최적화</h1>
+<p>비동기(Asynchronous) 이벤트 루프와 논블로킹 콜백 연결망 모델이 엣지(Edge) 관제 시스템의 시공간 렌더링을 완벽히 비틀어 치명적인 네트워크 MAVLink 통신 I/O 대기 지연(Blocking Wait Wait)을 기적처럼 제거해 주었다고 한들, 프로그래머가 작성한 그 콜백 함수 이벤트 내부 공간에서 실제로 수행되는 순수 ‘CPU 수학 연산(Computation Loop Algorithm)’ 자체가 무식하고 무겁게 설계되어 버린다면 전체 시스템은 다시 지옥의 병목 침묵(Thread Deadlock Fade-out)으로 가장 처참하게 곤두박질치게 된다.</p>
+<p>이 장에서는 수십 수백 헤르츠의 고주파 비행 텔레메트리 콜백이 유발하는 무거운 역학 구조 수학 연산이나 디스크 파일 로깅 쓰기 부하(Memory Storage Load) 압력이, 전체 비동기 시스템의 유일한 심층 코어 혈관인 ‘단일 이벤트 메인 루프(Single Event Loop Thread)’ 마저 얼어붙어 질식하게 만드는 참사(Main Loop CPU-Bound Blocking 파국)를 사전에 찢어버려 방어하기 위해, 현대 MAVSDK C++ 엔진 및 ROS2 Executor 프레임워크가 아키텍처 깊숙한 심연 스레드 베이스라인 품에 안고 있는 <strong>숙련된 작업자 스레드 풀(Worker Thread Pool Context) 기반의 동적 다중 코어 부하 분산(Dynamic Load Balancing) 최적화 렌더링 아키텍처 시퀀스</strong>를 무자비하게 해부한다.</p>
+<h2>1.  비동기 콜백 함수의 미친 배신 텐서: 연산 렌더링 부하에 의한 메인 루프 호흡 정지(CPU Bound Thread Blocking)</h2>
+<p>오프보드 리눅스 관제 에이전트를 구동하는 비동기 이벤트 루프(Asynchronous I/O Event Loop)의 근간은, 본질적으로 수많은 데이터 패킷 스케줄링을 단숨에 교통정리 하는 ‘최상위 단 하나의 렌더링 통치 스레드(Single Thread Director Core)’ 데몬으로 굴러가는 치명적인 거대 원형 회전목마 룰렛과 같다. 이 최상위 교통 단일 스레드 심장 박동이 멈추거나 지연되면 전장 속 모든 파이프라인 통신이 일제히 익사하고 멈춰 죽는다.</p>
+<ul>
+<li><strong>무거운 CPU 바운드(CPU-Bound Algorithm) 렌더링 연산 독점에 의한 블로킹 파국</strong>:</li>
+<li><code>on_camera_image_received()</code> 비동기 콜백 함수가 성공적으로 논블로킹 트리거되어 기체 페이로드 짐벌로부터 무려 4K 해상도의 영상 픽셀 프레임 버퍼를 수신하는 비동기 이벤트 루프 렌더링 트랜잭션을 가정해 보자. 여기서 네트워크 통신 스트림 수신 대기 자체는 앞서 비동기 처리로 매끄럽고 똑똑하게 잘 빠져나왔지만, 만약 멍청한 설계자가 이 콜백 함수 블록 내부에 다이렉트로 무식하게 CPU 연산량만 파괴적인 <span class="math math-inline">100\text{ms}</span> 나 갉아먹는 거대 OpenCV 컴퓨터 비전 딥러닝 객체 검출(Object Detection Tensor CNN) 코드 행렬망을 직접 통째로 박아 넣는다면 무슨 무서운 참사가 벌어질까?</li>
+<li>유일무이한 이벤트 루프 메인 스레드 데몬 코어는 저 끔찍한 콜백 함수의 무겁고 깊은 비전 연산 렌더링을 억지로 처리해 내느라, 자그마치 프레임당 <span class="math math-inline">100\text{ms}</span> 의 시간 공간 동안 그 비전 알고리즘 함수 자리에 꼼짝없이 물리적으로 붙박여 완전 동결(Physical Thread Freeze)되고 만다.</li>
+<li>이 끔찍하고 아득한 <span class="math math-inline">0.1</span> 초의 시스템 메인 호흡 멈춤 블랙아웃(Blackout) 시간 동안, 바로 그 단일 큐 스레드 바로 뒤 대기열 버퍼(Event Queue)에 무방비로 빽빽이 쌓여 급하게 진입을 대기 중이던 절대 치명적인 수십 개의 기체 고주파 IMU 텔레메트리 자이로 센서 수신 콜백들과 GCS 수명줄인 Heartbeat 핑퐁 렌더링 이벤트 패킷들은 시스템 내에서 전혀 CPU 연산 실행 할당 시간을 분배받지 못한 채 버려져, 줄줄이 버퍼 뒤로 넘어지며 폐기 증발(Memory Buffer Overflow Packet Drop Fault) 해버리는 지옥도가 펼쳐진다. 즉, 외부 I/O 통신 블로킹 늪은 비동기로 막았을지언정, 내부 CPU 연산 독점 블로킹의 폭압에 목이 졸려 전체 로봇 시스템이 셀프 자살(System Suffocation) 추락해 버리는 것이다.</li>
+</ul>
+<h2>2.  작업자 스레드 풀(Worker Thread Pool Paradigm) 아키텍처 렌더링을 통한 무거운 연산 폭압의 오프로딩(Off-loading Dispatch)</h2>
+<p>강력한 멀티코어 오프보드 지상 관제 시스템(MAVSDK C++ Core Dispatcher, ROS2 MultiThreadedExecutor) 뇌엽은 이러한 무식한 메인 루프의 독성 연산 부하 블로킹 참사를 잔인무도하게 덜어내어 찢어발기기 위해, 메인 루프 뒷선 백그라운드 심연에 극도로 숙련된 하드코딩 노예 스레드 집단인 이른바 ‘워커 스레드 풀(Worker Thread Pool Engine)’ 을 통제된 메모리 룸에 상시 시스템 대기 가동(Idle Spin Lock) 상태로 평생 상주시켜 두어 사육한다.</p>
+<ul>
+<li><strong>메인 루프 코어의 순종적 비열한 순수 스케줄러(Minimal Event Task Scheduler) 분리 렌더링</strong>:</li>
+<li>현대 분산 아키텍처적 극한 철칙에 따라, 최상위 메인 네트워크 이벤트 루프 스레드는 자신의 손에 직접 연산의 흙을 묻히지 않고 매우 가볍고 비열하게 동작 통치한다.</li>
+<li>초고해상도 텔레메트리 복합 파싱이나, 기하학적으로 무거운 자율 주행 경로 계산 충돌망(Path Planning Collision Avoidance A*) 등 연산 폭발 콜백이 발동 트리거되면, 이벤트 루프 스케줄러 메인 데몬은 단지 메모리상에 그 거대하고 불길한 작업 블록 파라미터(Heavy Calculation Task Execution Tuple Tuple Function) 덩어리를 그물로 휙 묶어서, 냅다 뒤에 상시 입 벌리고 대기 중인 워커 스레드 풀 전용 대기열(Thread Pool Job Action Queue) 늪에 무정하게 확 집어 던져버리고(Background Queue Dispatch Release), 단 1나노초도 그 결과값 통계 렌더링을 기다려 감상하거나 머물지 않은 채 즉각 매몰차게 돌아선다. 그리고는 다음 MAVLink 긴급 시스템 네트워크 비상사태 이벤트 소켓 동향을 차갑게 쳐다보러 원래의 감시탑 초소로 즉각 귀환(Return Immediately to Event Loop)해 버린다.</li>
+<li><strong>백그라운드 워커 스레드(Worker Daemon Thread)의 피 터지는 동적 병렬 연산(Massive Parallel Computation Execution)</strong>:</li>
+<li>위에서 툭 일이 떨어진 백그라운드의 어두운 워커 스레드 풀 전장에서는, 그저 멀뚱히 놀고 대기 스핀 락을 돌던 예비 노예 스레드(Thread #2, #3, #4…) 하나가 즉각 깨어 발작하여 방금 배정 지시받은 무거운 코드 텐서를 짐볼처럼 물고 뜯어, 자신에게 할당된 리눅스 백그라운드 물리 물리적 CPU 코어 프로세서를 폭압적으로 100% 한계치까지 혹사해가며 묵직한 C++ 10만 줄짜리 행렬 계산이나 대용량 HDD 디스크 I/O BSON 파라미터 로깅 스트림 연산을 거칠게 병렬(Parallel Computation Override)로 수행 처단한다.</li>
+<li>이 불쌍한 하층 워커 스레드 노예 데몬들이 설령 무거운 4K 비전 파싱 연산 돌리느라 짐볼 속에서 수 초간 피를 토하고 발열 쓰로틀링으로 진땀을 흘리며 연산을 뚫어내도, 최상단에 고상하게 위치한 ‘메인 시스템 이벤트 루프 스레드(Thread #1)’ 의 CPU 코어 번지와는 물리적 레지스터 L1/L2 메모리 버퍼 단까지 아예 완전히 이분법으로 격리 단절되어 차단되어 있으므로, 전체 공중 무인기 함대 통신 통제의 거대한 혈관 맥박(FSM Heartbeat Frequency Command Line) 시스템 시퀀스는 단 한 치의 지터 진동도 흔들림도 없는 위기 방어 결계로 찬란하게 수호되는 통제권력을 성취한다.</li>
+</ul>
+<h2>3.  멀티 리소스 코어 부하 통계 분산(Load Balancing Metrics)과 스레드 풀 렌더링 사이즈 다이나믹 최적화(Thread Size Scheduler Strategy)</h2>
+<p>이 혁신적인 워커 스레드 풀 백그라운드 아키텍처의 진정한 강력한 렌더링 무기는, 복잡다단한 시스템 전체 스레드의 CPU 멀티 코어(Multi-core Silicon) 생태계의 전력 발열 부하 렌더링 한계 성능을 가장 효율적이고 통계적으로 균형 분배(Balance Load Spreading Performance) 통제하는 예술에 있다.</p>
+<ul>
+<li>강력한 오픈소스 미들웨어인 ROS2의 <code>MultiThreadedExecutor</code> 코어 프레임워크나 MAVSDK의 내부 C++ 스레드 풀 팩토리 스케줄러 사이즈 배분은, 설계자가 무식하고 무작정으로 남발하여 100개 200개씩 스레드를 메모리에 동적 무한 생성 파편화하지 않는다. 쓰레기를 처리하기 위해 스레드를 너무 과도하게 무한 병렬 생성해 찢어버리면, OS 스케줄러가 어느 코어에 누구를 할당해야 할지 잦은 맥박 치는 컨텍스트 스위칭(Context Switching Cache Thrashing) 렌더링 운영체제 커널 오버헤드의 피투성이 지옥 파국 암 덩어리가 역으로 발생하여, 전체 메인 시스템 CPU 코어를 잔인한 병목 발열 셧다운(Thermal Throttling Halt Crash) 전장으로 몰아넣어 추락시키기 때문이다.</li>
+<li>따라서 가장 위대하고 시스템적으로 완전 최적화된 오프보드 관제 시스템 렌더링 엔진은 호스트 리눅스 컴퓨터의 메인보드에 박힌 물리적 실리콘 하드웨어 CPU 논리적 스레드 코어 개수를 C++ 시스템 함수(<code>std::thread::hardware_concurrency()</code>)로 먼저 아주 예민하게 긁어낸 파싱된 갯수에 정확히 맞추어, 스레드 풀의 여유 자원 총사이즈 바운더리를 <span class="math math-inline">4\text{개}</span> 내지 혹은 맥시멈 <span class="math math-inline">8\text{개}</span>, <span class="math math-inline">16\text{개}</span> 로 철저하고 숨 막히게 제한 렌더링 캡을 씌운다.</li>
+<li>이 극단적으로 한정되고 엘리트화된 정예 워커들만이 백그라운드 큐(Execution Waiting Queue) 파이프라인에 쉴 새 없이 우수수 무겁게 쌓이는 미친 묵직도를 가진 극한 비행 항법 분석 연산 스크립트나 군집 다차원 회피 궤적 계산 텐서 덩어리들을 각기 공평하게 순서대로 돌아가며 무 자비로 낚아채 끌어가(OS Job Stealing Mechanism 렌더링) 처리하게 함으로써, 전체 관제를 지휘하는 통치 뇌엽인 메인 스레드 코어 심장은 그 어떤 내부 연산 잡음의 방해 압력 공격도 전혀 받지 않고 오직 순수하게 허공에 흩뿌려진 미세한 네트워크 통보(Network Socket Notification) 파싱과 기체 즉각적 조종 비상 셧다운 대응(Emergency Failsafe Abort FSM Rendering) 텔레메트리에만 반응하는 가장 광속의 가볍고 예리한 반응 속도로 무장한, 가장 날카로운 최상위 반사 인지 신경망의 무한한 지위를 영원하고 절대적으로 물리 보장(Absolute Timeline Execution Assurance) 받게 되는 것이다.</li>
+</ul>
 
             </article>
             <footer>

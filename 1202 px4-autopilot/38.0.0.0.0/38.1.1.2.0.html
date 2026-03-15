@@ -115,6 +115,52 @@
             </header>
             <article>
                 <h1>38.1.1.2 비동기 인터럽트(Asynchronous Interrupt) 환경에서의 비결정론적 상태 천이(Nondeterministic State Transition) 한계 모델링</h1>
+<p>무인 항공기가 실제 환경에서 비행할 때, 시스템에 가해지는 입력(Input)과 위협 요인은 절대 순차적으로 발생하지 않는다. RC 수신기 신호 단절, 배터리 전압 급강하, GPS 위성 수 상실, 지상 관제소(GCS)로부터의 MAVLink 비상 착륙 명령 등 수많은 이벤트(Event)들이 마이크로초(Microsecond) 단위의 비동기적(Asynchronous) 시퀀스로 예측할 수 없이 쏟아진다. 이러한 환경에서 유한 상태 머신(FSM)이 각 인터럽트를 즉각적이고 독립적으로 처리하도록 설계된다면, 시스템은 치명적인 비결정론(Nondeterminism)의 수렁에 빠지게 된다.</p>
+<p>본 절에서는 이러한 비동기 인터럽트 환경이 어떻게 비결정론적 상태 천이를 유발하는지 이론적으로 모델링하고, PX4-Autopilot의 아키텍처가 이 한계를 어떻게 극복하고 있는지 분석한다.</p>
+<h2>1. 하드웨어 인터럽트와 상태 머신의 충돌 모델</h2>
+<p>일반적인 임베디드 오토마타 모델에서 최악의 비결정론은 상태 전이가 **완료되기 전(In-Transit State)**에 다른 인터럽트가 개입하여 새로운 상태 전이를 중첩 발생시킬 때 일어난다.</p>
+<p>예를 들어, 기체가 반자동 비행 모드(<code>POSITION</code>)로 비행 중이라고 가정해 보자.</p>
+<ol>
+<li>시점 <span class="math math-inline">t_1</span>: 배터리 전압이 임계치 이하로 떨어져 전원 관리 모니터 데몬이 <strong>‘배터리 비상(Battery Failsafe) <span class="math math-inline">\rightarrow</span> RTL(Return to Launch)’</strong> 전이 인터럽트를 발생시킨다.</li>
+<li>시점 <span class="math math-inline">t_1 + \epsilon</span> (매우 짧은 시간 후): 동시에 조종기(RC) 신호가 끊어지며, 통신 감시 데몬이 <strong>‘RC 상실(RC Loss) <span class="math math-inline">\rightarrow</span> HOLD(제자리 정지)’</strong> 전이 인터럽트를 발생시킨다.</li>
+</ol>
+<p>만약 두 인터럽트 서비스 루틴(ISR, Interrupt Service Routine)이나 다중 스레드가 전역 상태 변수(Global State Variable)에 경쟁적으로 접근하여 직접 상태를 수정한다면, 기체의 최종 상태는 마이크로초 단위의 선점형 스케줄링(Preemptive Scheduling) 타이밍에 따라 <code>RTL</code>이 될 수도 있고 <code>HOLD</code>가 될 수도 있다. 최악의 경우 내부 변수가 꼬여 비행 모드는 <code>HOLD</code>인데 동작 로직은 <code>RTL</code>을 수행하는 상태 불일치(State Mismatch) 치명타(Race Condition)가 발생한다. 이는 수학적으로 동일한 초기 상태와 입력 집합에 대해 결과 상태가 1개로 수렴하지 않는 **비결정론적 유한 오토마타(NFA, Nondeterministic Finite Automaton)**의 병폐다.</p>
+<h2>2. PX4-Autopilot의 비결정론 억제 아키텍처: 이벤트의 동기화(Synchronization)와 직렬화(Serialization)</h2>
+<p>PX4-Autopilot은 위와 같은 비결정론적 한계를 극복하기 위해 하드웨어 기반의 비동기 인터럽트와 논리적 상태 전이(Logical State Transition)의 결합을 원천적으로 분리(Decoupling)하였다.</p>
+<ol>
+<li>
+<p><strong>상태 변경의 독점권(Monopoly on State Changes)</strong><br />
+PX4 아키텍처 내에서 기체의 최고 수준 상태(Arming, Navigation Mode, Failsafe)를 변경할 수 있는 권한은 오직 단일 스레드로 동작하는 <code>commander</code> 모듈만이 독점한다. 어떤 센서 드라이버나 통신 모니터도 자신의 ISR이나 개별 스레드에서 시스템 상태 변수를 직접 변경(Mutation)할 수 없다.</p>
+</li>
+<li>
+<p><strong>uORB 기반의 비동기-동기 변환 파이프라인 (The Polling Architecture)</strong><br />
+모든 비동기 이벤트(배터리 저전압, RC 상실 등)는 발생 즉시 상태를 바꾸는 것이 아니라, uORB(Micro Object Request Broker) 브로커를 통해 단순한 ‘상태 변경 요청(이벤트 메시지)’ 형태로 퍼블리싱(Publish)된다.<br />
+<code>commander</code> 모듈은 내부의 메인 루프(Main Event Loop)에서 이러한 uORB 토픽들을 <code>poll()</code> 시스템 콜을 통해 순차적(Sequential)으로 읽어 들인다(Subscribe 및 Fetch). 따라서 아무리 쏟아지는 비동기 인터럽트라도 <code>commander</code> 루프의 큐(Queue)를 거치며 직렬화(Serialization)되며, 단일 타임스텝 내에서 순서대로 평가된다.</p>
+</li>
+</ol>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant Hardware as 센서/수신기 (인터럽트)
+    participant uORB as uORB 메시지 큐
+    participant Commander as Commander (단일 스레드)
+    
+    Hardware-&gt;&gt;uORB: (t=0) Battery Low Event 퍼블리싱
+    Hardware-&gt;&gt;uORB: (t=1µs) RC Loss Event 퍼블리싱
+    Note over uORB: 인터럽트를 메시지로 직렬화하여 큐잉
+    
+    loop 50Hz Commander Main Loop
+        Commander-&gt;&gt;uORB: poll() 및 페치(Fetch)
+        Note over Commander: Event 1 수신: 상태 전이표(DFA)에 따라 RTL 검토&lt;br/&gt;Event 2 수신: 상태 전이표에 맞춰 우선순위 재평가
+        Commander-&gt;&gt;Commander: 상태 전이 함수 1회 실행 확정
+    end
+</code></pre>
+<ol start="3">
+<li><strong>우선순위 기반 상태 평가(Priority-based Evaluation)</strong><br />
+단일 루프 안에서 여러 개의 상태 변경 요청이 직렬화되어 들어올 경우, <code>commander</code>는 내부의 우선순위 휴리스틱(Priority Heuristics)에 따라 가장 통제 수준이 높거나(치명적인) 이벤트를 선택한다. (예: <code>Hold</code>보다 <code>RTL</code> 우선, <code>RTL</code>보다 <code>비행 종료(Flight Termination)</code> 우선).</li>
+</ol>
+<h2>3. Ardupilot과의 스레딩(Threading) 모델 관점 차이</h2>
+<p>Ardupilot 아키텍처도 메인 스레드 기반의 루프 방식을 취하여 비동기성에 대처하지만, 객체 지향적(Object-Oriented) 캡슐화가 강조된 C++ 클래스 구조 내부에서 여러 하위 모듈(<code>AP_BattMonitor</code>, <code>AP_Vehicle</code>)이 자체적인 콜백이나 스케줄러를 통해 상위 비행 모드 변경 함수를 직접 호출(Direct Call)하는 디자인 패턴이 일부 혼재되어 있다. 이는 스케줄링 관리기가 동시성(Concurrency)을 엄격히 제어하지 않으면 예측 불가 상태 천이의 위험성을 미세하게 내포할 수 있다.</p>
+<p>반면, PX4는 마이크로 서비스 아키텍처(Microservices Architecture) 사상을 반영하여 완전히 분리된 프로세스(혹은 NuttX Task)들이 오직 uORB라는 메시지 버스(Message Bus)를 통해서만 데이터를 교환한다. <code>commander</code>는 다른 스레드에 의해 제어 흐름(Control Flow)을 빼앗기지(Preempted) 않으므로, 수학적으로 증명 가능한 DFA의 특성을 운영 체제 계층 수준에서 안전하게 보장받게 된다.</p>
+<p>결과적으로 PX4는 다수의 비동기 센서 인터럽트를 동기화된 메시지 스트림으로 사상(Mapping)함으로써, 비결정론적 상태 천이라는 제어 공학의 난제를 소프트웨어 아키텍처 디자인 체급에서 근본적으로 억제(Mitigation)하고 있다.</p>
 
             </article>
             <footer>

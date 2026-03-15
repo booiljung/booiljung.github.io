@@ -115,6 +115,23 @@
             </header>
             <article>
                 <h1>38.6.3 QGroundControl(QGC) 백엔드(Backend) 통신 모듈 아키텍처</h1>
+<p>앞서 MAVSDK라는 라이브러리 형태의 미들웨어를 살펴보았다면, 이번에는 전 세계에서 가장 널리 쓰이는 시각적(Graphical) 지상 관제 표준 소프트웨어인 **QGroundControl(QGC)**의 내부로 깊숙이 들어가 보자(Layer 4).</p>
+<p>QGC는 Qt 프레임워크를 기반으로 구축된 거대한 모놀리식(Monolithic) 애플리케이션이다. 무거운 그래픽 렌더링(QML)을 수행하는 프론트엔드와, 무지막지한 텔레메트리 파싱을 감당하는 C++ 백엔드가 철저하게 분리되어 있는데, 이 백엔드 통신 아키텍처의 중심에는 <code>Vehicle</code> 클래스가 자리 잡고 있다.</p>
+<h2>1. QGC 아키텍처의 심장: <code>Vehicle</code> 객체(Instance)</h2>
+<p>QGC 소스 코드(<code>src/Vehicle/Vehicle.cc</code> 및 <code>.h</code>)에서 추상화된 <code>Vehicle</code> 클래스는 지상 관제 시스템이 인지하는 **’단일 무인기’의 완벽한 소프트웨어적 분신(Digital Twin)**이다.</p>
+<p>만약 운용자가 3대의 드론(Swarm)을 QGC에 연결했다면, 백엔드 메모리에는 정확히 3개의 독립적인 <code>Vehicle</code> 인스턴스가 생성된다. 이 객체는 자신이 담당하는 특정 시스템 ID(<code>sysid</code>)의 최신 비행 모드(<code>_flightMode</code>), 배터리 잔량, GPS 좌표, 그리고 수백 개의 파라미터(Parameter) 캐시를 독점적으로 소유하고 관리하는 ‘상태 보관소(State Holder)’ 역할을 수행한다.</p>
+<h2>2. 단계 라우팅 파이프라인 (Routing Pipeline)</h2>
+<p>노트북의 Wi-Fi 안테나를 때린 UDP 패킷이 <code>Vehicle</code> 객체의 내부 상태를 변화시키기까지는 다음과 같은 아키텍처 터널을 통과해야 한다.</p>
+<ol>
+<li><strong>OS 소켓 계층 (<code>LinkManager</code>)</strong>: 가장 밑단에서 <code>LinkManager</code>가 운영체제의 네트워크 버퍼에서 Raw 바이트 스트림을 긁어모은다.</li>
+<li><strong>프로토콜 파서 및 라우터 (<code>MAVLinkProtocol</code>)</strong>: 긁어모은 바이트들은 팩토리 패턴을 차용한 <code>MAVLinkProtocol</code> 싱글톤(Singleton) 객체로 넘겨진다. 이곳에서 바이트들은 비로소 MAVLink 2.0 프레임으로 파싱된다. 이 객체는 마치 우체국 방사선(Router)처럼 패킷의 헤더를 까서 <code>sysid</code>(예: 1번 드론)를 확인한 뒤, 이 패킷을 1번 <code>Vehicle</code> 객체로 던질지, 2번 객체로 던질지 라우팅한다.</li>
+<li><strong>종착지 (<code>Vehicle::_mavlinkMessageReceived</code>)</strong>: 마침내 패킷은 자신의 주인이랄 수 있는 특정 <code>Vehicle</code> 인스턴스의 <code>_mavlinkMessageReceived(...)</code> 거대 스위치(Switch) 함수에 도달한다.</li>
+</ol>
+<h2>3. 상태 평가와 진실의 동기화 (State Evaluation)</h2>
+<p>이 핵심 함수 내부로 <code>HEARTBEAT</code> 패킷이 쏟아져 들어오면, QGC 백엔드는 앞서 38.5.2절에서 다루었던 <strong>‘단일 진실 공급원(Single Source of Truth) 검증’</strong> 연산을 맹렬히 수행한다.</p>
+<p>수신된 <code>HEARTBEAT</code> 패킷 내부의 <code>custom_mode</code> 비트마스크를 해독하여 <code>Return</code>이라는 문자열을 도출해 낸 뒤, 이것을 자신이 기존에 캐싱해두고 있던 <code>_flightMode</code> 멤버 변수(예: <code>Hold</code>)와 <code>strcmp</code>(문자열 비교) 수준으로 대조한다.</p>
+<p>두 값이 다르다면? QGC 백엔드는 드디어 **상태 전이(State Transition)**가 발생했음을 공식적으로 확정(Acknowledge)한다. 백엔드는 내부 캐시를 새로운 상태(<code>Return</code>)로 덮어쓰며, 프론트엔드 UI를 향해 “모드가 변경되었으니 렌더링을 업데이트하라!“고 묵직한 C++ 시그널(Signal)을 쏘아 올린다.</p>
+<p>이처럼 객체 지향적(Object-Oriented) 캡슐화에 기반한 QGC의 백엔드 아키텍처는, 외부의 통신 노이즈나 무수한 다중 에이전트(Swarm) 기체들의 텔레메트리 난립 속에서도 각 기체의 상태가 서로 오염(Cross-contamination)되지 않고 독립적이고 안전하게 동기화되도록 보장하는 철벽이다.</p>
 
             </article>
             <footer>

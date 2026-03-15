@@ -115,6 +115,46 @@
             </header>
             <article>
                 <h1>37.1 통신 채널 불확실성과 이산 사건 제어 시스템(Discrete Event Control System)의 본질</h1>
+<p>무인항공기(UAV)와 지상 관제 시스템(GCS, Ground Control Station) 간의 원격 제어는 연속 시간(Continuous-time) 동역학 제어와는 궤를 달리한다. GCS에서 하달되는 상위 수준의 제어 명령(예: 이륙, 착륙, 모드 전환)은 특정 시점에 일어나는 ’사건(Event)’으로 취급되며, 이에 따라 PX4-Autopilot 관제 시스템은 근본적으로 이산 사건 제어 시스템(Discrete Event Control System, DECS)의 형태를 띤다. 본 절에서는 통신 채널이 내포하는 본질적 불확실성과, 이러한 제약 속에서 동작하는 이산 사건 제어 시스템의 학술적 이론 및 PX4-QGroundControl 환경에서의 구현 특성을 깊이 있게 분석한다.</p>
+<h2>1.  이산 사건 제어 시스템(DECS)으로서의 GCS-PX4 상호작용</h2>
+<p>연속 제어가 PID 알고리즘이나 LQR(Linear Quadratic Regulator) 등을 통해 매 주기(예: 250Hz, 400Hz) 연속적인 피드백 오차를 보정하는 것이라면, GCS의 관제 논리는 비동기적으로 발생하는 유한한 상태(Finite State) 간의 천이 모델이다. 즉, 조종자의 클릭, 자율 경로 계획 에이전트의 이벤트 발송 등은 시스템 상태를 급격히 변동시키는 ’사건’이며, 시스템 공간은 사건에 의해 구동(Event-driven)된다.</p>
+<h3>1.1  상태 천이(State Transition)의 비결정적 특성</h3>
+<p>PX4-Autopilot의 커맨더(Commander) 모듈은 이산 사건들을 받아들여 내부 상태를 갱신한다.<br />
+상태 공간을 <span class="math math-inline">X</span>, 사건 집합을 <span class="math math-inline">E</span>, 그리고 상태 천이 함수를 <span class="math math-inline">f: X \times E \rightarrow X</span> 라 정의할 때, 이상적인 통신 채널에서는 GCS에서 발송한 사건 <span class="math math-inline">e \in E</span>가 기체에 도달하여 정확히 <span class="math math-inline">x_{k+1} = f(x_k, e)</span>의 논리적 천이를 유도한다.<br />
+그러나 무선 텔레메트리 채널의 불확실성으로 인해, 실제 런타임 제어 체계는 각 사건이 기체에 도달할지, 혹은 지연을 통해 구식 데이터(Stale Data)로 도달할지를 확정할 수 없는 비결정성(Non-determinism)을 수반한다.</p>
+<h2>2.  텔레메트리(Telemetry) 통신 채널의 불확실성 요인</h2>
+<p>MAVLink 기반 텔레메트리 통신은 대기 모델링, 전파 간섭, 물리적 지향성 등에 의해 시스템 성능이 저하되는 무선 네트워크(주로 433MHz, 915MHz 직렬 통신 또는 2.4GHz Wi-Fi/UDP)를 경유한다. 제어 공학 측면에서 통신 채널의 불확실성은 주요하게 세 가지로 분류된다.</p>
+<h3>2.1  패킷 손실(Packet Loss)과 마르코프 특성(Markov Property) 예측</h3>
+<p>UAV의 궤적 및 자세가 수시로 변함에 따라 안테나 이득(Antenna Gain)의 변화가 생기며, 다중 경로 페이딩(Multipath Fading)으로 인한 패킷 증발이 발생한다. 이러한 통신 채널의 상태는 앞선 시점의 전송 상태에만 의존하는 마르코프 연쇄(Markov Chain) 중 Gilbert-Elliott 모델로 흔히 근사된다. 패킷 손실은 GCS 입장에서는 앞서 언급한 이산 사건 <span class="math math-inline">e</span>가 소멸하는 것(Erasure)을 의미하므로, 재전송(Retransmission) 스케줄링이 없을 경우 제어 루프가 개방(Open-loop)되는 위험을 초래한다.</p>
+<h3>2.2  전송 지연(Transmission Latency)의 변동성인 지터(Jitter)</h3>
+<p>반이중(Half-Duplex) 방식의 직렬 모뎀을 사용하거나 채널 경합이 발생하는 환경에서는 MAVLink 메시지 전송의 종단 간 지연 시간(End-to-End Delay)이 가변적(Time-varying)이다.<br />
+이러한 통신 지연 <span class="math math-inline">\tau</span>가 발생할 경우, 상태 전이 함수는 본질적으로 지연 미분 방정식(Delayed Differential Equation)에 상응하는 형태를 띠게 되며, 제어 안정성 범위(Margin)를 좁히게 된다. 특히 조이스틱 제어 상태인 매뉴얼 플라이트(Manual Flight) 등에서 과도한 지터는 치명적인 조종자 유도 진동(Pilot-Induced Oscillation, PIO)의 원인이 된다.</p>
+<h3>2.3  정보 비대칭성 및 순서 역전(Out-of-Order Execution) 차단</h3>
+<p>UDP 프로토콜 기반의 MAVLink 통신(특히 MAVSDK 활용 시)은 메시지의 수신 순서를 엄격히 보장하지 않는다. 따라서 여러 개의 모드 전환 이벤트가 짧은 주기에 연속 전송될 경우, 나중에 전송된 메시지가 먼저 처리되는 순서 역전 현상이 발생할 수 있다. PX4-Autopilot은 각 MAVLink 명령어 패킷의 무결성과 순증(Monotonically Increasing)하는 시퀀스 번호 검증 메커니즘을 내부에 두어, 맥락에 맞지 않는 구식 제어 명령을 논리적으로 기각(Reject)함으로써 이산 시스템의 건전성을 확보한다.</p>
+<h2>3.  이산 사건 제어 시스템에서의 무결성 확보 아키텍처 (PX4 vs Ardupilot)</h2>
+<p>통신 채널의 본질적 불확실성을 극복하기 위하여 GCS 및 펌웨어는 상태 일관성 보증 아키텍처를 도입하고 있다.</p>
+<h3>3.1  QGroundControl 및 PX4의 관제 패턴</h3>
+<p>PX4 환경의 QGroundControl은 MAVLink 마이크로 프레임워크가 적용된 <code>Vehicle</code> 객체를 GCS 쪽에 미러링해둔다.<br />
+어떠한 이산 사건명령(예: <code>MAV_CMD_NAV_TAKEOFF</code>)을 발행할 때, QGC 내부에서 단순 전송뿐만 아니라 자체 상태 머신의 <code>waiting_for_ack</code> 상태 변수를 <code>true</code>로 설정한다. 기체로부터 도달한 <code>COMMAND_ACK</code> 결과(예: <code>MAV_RESULT_ACCEPTED</code>, <code>MAV_RESULT_TEMPORARILY_REJECTED</code>)를 토대로 상태 트랜잭션을 소멸(Resolve)시킨다. 이는 통상적인 분산 컴퓨팅(Distributed Computing) 환경에서의 2단계 커밋(Two-phase Commit)이나 원자성(Atomicity) 보장 개념과 유사하다.</p>
+<h3>3.2  상태 머신 흐름도 분석</h3>
+<p>통신 장애를 고려한 이산 사건 트랜잭션을 시스템 흐름도로 나타내면 다음과 같다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    direction LR
+    [*] --&gt; Idle: GCS 대기
+    Idle --&gt; CommandSent: 사용자 제어 사건(Event) 발생
+    
+    CommandSent --&gt; WaitingForAck: MAVLink 명령 전송
+    WaitingForAck --&gt; CommandSent: Timeout (응답 없음/패킷 손실)
+    
+    WaitingForAck --&gt; AckReceived: COMMAND_ACK 수신
+    AckReceived --&gt; Success: 유효한 상태 처리 완료 \n(MAV_RESULT_ACCEPTED)
+    AckReceived --&gt; Failed: 조건 미비로 인한 기각 \n(MAV_RESULT_REJECTED)
+    
+    Success --&gt; Idle: 로컬 상태 업데이트
+    Failed --&gt; Idle: 사용자 알림 표출
+</code></pre>
+<p>위의 상태 다이어그램과 같이, 불안정한 통신 채널을 거치는 원격 무인기 제어망은 반드시 이산 사건(명령 하달, 타임아웃, Ack 수신 등)을 트리거로 하는 상태 천이 검증망을 구축해야 한다. 이를 통해 PX4 커맨더 모듈과 GCS 관제 프로그램은 데이터 유실(Data Loss) 여부와 무관하게 시스템 전체의 동기 불일치(Desynchronization)를 방어할 수 있다.</p>
+<p>종합하자면, GCS 제어 시스템은 통신 채널의 물리적 불확실성이라는 페널티를 논리 계층인 이산 사건 제어 시스템(DECS)의 피드백 검증 구조로 상쇄하는 정밀 공학의 결정체이다. 이러한 이론적 토대는 이어지는 MAVLink 패킷 및 시퀀스 핸들링 분석에서 더욱 구체화되어 설명될 것이다.</p>
 
             </article>
             <footer>

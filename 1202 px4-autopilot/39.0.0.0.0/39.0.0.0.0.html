@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</h1>
+<p>무인항공기(UAV) 시스템에서 지상 관제 시스템(GCS, Ground Control Station)과 비행 제어기(Flight Controller) 간의 통신은 기체의 안전과 임무 수행에 직결되는 핵심 요소이다. 특히 상태 모니터링을 위한 텔레메트리(Telemetry) 데이터와 달리, 기체의 상태를 변경하거나 임무를 수행하도록 지시하는 제어 명령어(Control Command)는 반드시 도달해야 하며, 그 처리 결과가 명확히 피드백되어야 한다. 본 장에서는 MAVLink 프로토콜을 기반으로 하는 PX4-Autopilot(펌웨어 v1.14 이상 기준)과 QGroundControl(v4.3 이상) 환경에서 명령어 전달의 신뢰성을 보장하는 핵심 메커니즘인 <code>COMMAND_LONG</code> 메시지와 이에 대한 <code>COMMAND_ACK</code> (ACK/NACK) 처리 로직을 심도 있게 분석한다.</p>
+<h2>1.  무인기 제어망에서 명령어 신뢰성의 중요성</h2>
+<p>무인기 원격 제어망은 주로 RF(Radio Frequency) 대역이나 셀룰러 데이터 링크를 사용하며, 이는 패킷 손실, 지연, 대역폭 변동성 등의 한계를 지닌다. 텔레메트리 데이터는 주기적으로 송신되므로 일시적인 패킷 손실이 발생하더라도 다음 주기의 데이터로 보완이 가능하다. 그러나 비행 모드 변경, 시동(Arming), 특정 임무 시작 등의 명령어는 단 한 번의 패킷 손실이나 중복 실행이 치명적인 사고로 이어질 수 있다. 따라서 GCS는 비행 제어기(PX4-Autopilot)로 명령을 전송한 후, 반드시 해당 명령이 성공적으로 수신되었고 실행 가능한지에 대한 응답(Acknowledge, ACK)을 확인해야 한다. 실패(Negative Acknowledge, NACK)할 경우에는 재전송(Retry) 또는 안전 조치(Failsafe)를 수행하는 로직이 필수적이다.</p>
+<h2>2.  COMMAND_LONG 메시지 구조 및 아키텍처</h2>
+<p>MAVLink 프로토콜에서 가장 범용적으로 개별 명령을 전달하기 위해 사용되는 메시지는 <code>COMMAND_LONG</code> (Message ID: 76)이다. 이 메시지는 최대 7개의 부동소수점 매개변수(Parameter)를 통해 다양한 제어 명령을 하나의 공통된 구조로 전달할 수 있도록 설계되었다.</p>
+<ul>
+<li><code>target_system</code>: 대상 시스템 ID (PX4의 경우 기본값 1)</li>
+<li><code>target_component</code>: 대상 컴포넌트 ID (Autopilot은 보통 1)</li>
+<li><code>command</code>: MAV_CMD 열거형(Enumeration)에 정의된 명령어 ID (예: <code>MAV_CMD_DO_SET_MODE</code>, <code>MAV_CMD_COMPONENT_ARM_DISARM</code>)</li>
+<li><code>confirmation</code>: 재전송 횟수 또는 확인(Confirmation) 요청 플래그. 첫 전송 시 0, 재전송 시 증가한다.</li>
+<li><code>param1</code> ~ <code>param7</code>: 명령어(<code>MAV_CMD</code>)에 따라 정의되는 구체적인 매개변수 값</li>
+</ul>
+<p>PX4-Autopilot은 수신된 <code>COMMAND_LONG</code> 메시지를 내부 미들웨어인 uORB(Micro Object Request Broker) 통신 아키텍처를 통해 처리한다. MAVLink 데이터 스트림을 분석하는 <code>mavlink_receiver</code> 클래스는 <code>COMMAND_LONG</code> 메시지를 파싱하여, 내부적으로 <code>vehicle_command</code>라는 uORB 토픽(Topic)으로 발행(Publish)한다. 이후 커맨더(Commander) 모듈이나 내비게이터(Navigator) 모듈이 이를 구독(Subscribe)하여 실제 비행 로직에 적용한다.</p>
+<h2>3.  ACK/NACK 처리 서브시스템 (<code>COMMAND_ACK</code>)</h2>
+<p>PX4가 <code>COMMAND_LONG</code>을 수신하고 <code>vehicle_command</code> 토픽을 통해 로직을 처리한 후, 그 결과를 GCS에 피드백하기 위해 <code>COMMAND_ACK</code> (Message ID: 77) 메시지를 전송한다. 이는 MAVLink 프로토콜에서 명령의 수용 여부를 알리는 NACK/ACK 역할을 수행한다.</p>
+<p><code>COMMAND_ACK</code> 메시지의 핵심 필드는 <code>result</code> (MAV_RESULT)이며, 다음과 같은 결과 코드를 반환한다.</p>
+<ol>
+<li><code>MAV_RESULT_ACCEPTED</code> (0): 명령이 정상적으로 수신되었고, 실행이 승인(ACK)됨.</li>
+<li><code>MAV_RESULT_TEMPORARILY_REJECTED</code> (1): 명령이 문법적으로 유효하나, 현재 시스템 상태(예: 비행 중이 아님, 센서 미교정)로 인해 일시적으로 거부(NACK)됨.</li>
+<li><code>MAV_RESULT_DENIED</code> (2): 명령이 현재 기체 설정 및 상태에서 절대적으로 불가능하여 거부(NACK)됨.</li>
+<li><code>MAV_RESULT_UNSUPPORTED</code> (3): 해당 오토파일럿 펌웨어에서 지원하지 않는 명령(NACK).</li>
+<li><code>MAV_RESULT_FAILED</code> (4): 명령이 승인되어 실행 시도를 했으나 내부 오류로 인해 실패(NACK).</li>
+</ol>
+<h3>3.1 상호작용 흐름도 (Sequence Diagram)</h3>
+<p>다음은 QGroundControl(GCS)과 PX4-Autopilot 및 내부 uORB 간의 <code>COMMAND_LONG</code> 및 <code>COMMAND_ACK</code> 처리 과정을 나타낸 다이어그램이다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant GCS as QGroundControl (GCS)
+    participant MAV as PX4 MAVLink Module
+    participant uORB_CMD as uORB: vehicle_command
+    participant Commander as PX4 Commander
+    participant uORB_ACK as uORB: vehicle_command_ack
+
+    GCS-&gt;&gt;MAV: COMMAND_LONG 전송 (MAV_CMD)
+    MAV-&gt;&gt;uORB_CMD: vehicle_command 형태 변환 및 Publish
+    uORB_CMD-&gt;&gt;Commander: Subscribe 및 명령어 내용 파싱
+    Commander-&gt;&gt;Commander: 전제 조건 및 상태(State) 유효성 검사
+    
+    alt 검사 통과 및 실행 성공
+        Commander-&gt;&gt;uORB_ACK: Publish (MAV_RESULT_ACCEPTED)
+    else 일시적 실행 불가
+        Commander-&gt;&gt;uORB_ACK: Publish (MAV_RESULT_TEMPORARILY_REJECTED)
+    else 미지원 명령
+        Commander-&gt;&gt;uORB_ACK: Publish (MAV_RESULT_UNSUPPORTED)
+    end
+    
+    uORB_ACK-&gt;&gt;MAV: Subscribe (Acknowledge 수신)
+    MAV-&gt;&gt;GCS: COMMAND_ACK 전송 (Network 송신)
+</code></pre>
+<h2>4.  PX4-Autopilot과 Ardupilot의 명령어 처리 아키텍처 차이</h2>
+<p>오픈소스 기반 무인기 제어 플랫폼의 양대 산맥인 PX4-Autopilot과 Ardupilot은 명령어 수신 및 응답 반환 아키텍처에서 구조적 차이를 지닌다.</p>
+<p>PX4-Autopilot의 경우, NuttX RTOS를 기반으로 하는 철저한 모듈화 및 이벤트 주도(Event-driven) 통신 버스인 uORB를 사용한다. 따라서 MAVLink 수신 스레드와 명령어를 실제 처리하는 스레드(Commander 모듈 등)가 분리되어 있으며, 이들은 <code>vehicle_command</code>와 <code>vehicle_command_ack</code>라는 비동기(Asynchronous) 메시지 파이프라인을 통해 통신한다. 이 방식은 명령어 처리로 인해 메인 제어 루프가 블로킹(Blocking)되는 현상을 방지하여 실시간성을 극대화하지만, 메시지 큐의 지연이나 유실에 대비한 타임아웃 처리가 별도로 요구된다.</p>
+<p>반면, Ardupilot은 역사적으로 단일 루프(Single-loop) 아키텍처에서 출발하여 쓰레드를 분리해 왔으나, 명령어 처리의 핵심은 <code>GCS_MAVLink</code> 클래스 내에서 동기식(Synchronous)에 가깝게 핸들링되거나, 메인 루프에서 플래그를 폴링(Polling)하는 방식이 짙게 남아 있다. Ardupilot은 <code>COMMAND_LONG</code>을 수신 즉시 루틴 내부에서 조건을 판별하고 비교적 즉각적으로 <code>COMMAND_ACK</code>를 반환하는 경향이 있어 구조가 직관적이다.</p>
+<p>결론적으로 PX4 시스템은 분산형 마이크로서비스(Microservices) 아키텍처에 가까운 <code>Publish-Subscribe</code> 모델을 채택하여, GCS에서 전달된 <code>COMMAND_LONG</code>이 여러 모듈에서 동시에 평가되고 조합될 수 있도록 유연한 신뢰성 로직을 제공한다. 이를 통해 복잡한 다중 에이전트(Swarm) 제어나 ROS2와의 연동 시 보다 일관성 있는 메시지 전달망을 구축할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

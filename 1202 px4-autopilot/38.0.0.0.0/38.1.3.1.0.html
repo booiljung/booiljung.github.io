@@ -115,6 +115,49 @@
             </header>
             <article>
                 <h1>38.1.3.1 궤적 추종(Trajectory Tracking) 제어기와 다이렉트 액추에이터 제어(Direct Actuator Control) 간의 제어권 역전(Control Reversal) 방지 모델</h1>
+<p>비행 제어 시스템의 루프(Loop) 아키텍처는 일반적으로 캐스케이드(Cascade) 형태를 띤다. 최상위의 위치(Position)/속도(Velocity) 제어 루프에서 자세(Attitude) 목표값을 생성하고, 이 자세 목표값이 다시 각속도(Rate) 루프를 거쳐 최종적인 액추에이터(모터/서보)의 직접 구동 명령(PWM 출력 등)으로 변환된다.</p>
+<p>이러한 다단계 파이프라인에서, 자동 임무 비행(Mission)과 같이 공간상의 3차원 경로를 따라가는 <strong>궤적 추종(Trajectory Tracking)</strong> 방식과 조종사의 스틱 입력을 모터 출력에 직접 맵핑하는 Acro 모드와 같은 <strong>다이렉트 액추에이터 제어(Direct Actuator Control)</strong> 방식은 제어 주파수와 데이터 흐름의 위계가 완전히 다르다. 만약 이 두 가지 상이한 계층의 제어 명령이 동시에 제어권(Control Authority)을 주장하게 되면, 기체의 동작이 예측과 반대로 튀어 버리는 <strong>제어권 역전(Control Reversal)</strong> 현상이 발생할 수 있다.</p>
+<h2>1. 제어권 역전(Control Reversal)의 위험성</h2>
+<p>예를 들어 GCS에서 오프보드(Offboard) 모드로 기체를 제어한다고 가정해 보자. 오프보드 컴퓨터(Companion Computer)에서 ROS2 MAVROS를 통해 목표 위치 좌표(<code>SET_POSITION_TARGET_LOCAL_NED</code>)를 전송하는 동시에, 코드 오류로 인해 모터에 직접 명령을 내리는 <code>SET_ACTUATOR_CONTROL_TARGET</code> 메시지를 함께 퍼블리싱(Publishing)하는 실수를 범했다.</p>
+<p>만약 제어권 상호 배제 모델이 없다면, 조향 제어기(Position Controller)가 계산한 모터 출력값과 외부 컴퓨터가 직접 꽂아 넣은 다이렉트 모터 출력값이 하위 믹서(Mixer)단에서 충돌한다. 이는 위치 제어 루프를 완전히 무력화시키며, 드론이 궤적을 이탈하여 무작위 방향으로 급가속하는 치명타로 이어진다.</p>
+<h2>2. PX4의 제어 권한 플래그(Control Group Flags) 파이프라인 설계</h2>
+<p>PX4-Autopilot은 이와 같은 고수준(High-level)과 저수준(Low-level) 제어기 간의 월권 및 역전 현상을 방지하기 위해, <code>commander</code> 모듈 산하에 **비행 제어 모드 플래그(<code>vehicle_control_mode</code>)**라는 강력한 Boolean 필터 행렬을 운용한다.</p>
+<p><code>commander</code>는 현재 비행 모드에 따라 다음의 플래그들을 상호 배제적으로 Toggle한다:</p>
+<ul>
+<li><code>flag_control_manual_enabled</code></li>
+<li><code>flag_control_auto_enabled</code></li>
+<li><code>flag_control_rates_enabled</code></li>
+<li><code>flag_control_attitude_enabled</code></li>
+<li><code>flag_control_velocity_enabled</code></li>
+<li><code>flag_control_position_enabled</code></li>
+<li><code>flag_control_offboard_enabled</code></li>
+</ul>
+<h3>2.1 하위 제어기들의 엄격한 데이터 수용 거부(Rejection) 로직</h3>
+<p>이 플래그 토픽(<code>vehicle_control_mode_s</code>)은 시스템 내 모든 하위 제어기에 전달된다.<br />
+예컨대 다이렉트 액추에이터에 가까운 <strong>각속도 제어기(Rate Controller)</strong> 모듈의 소스 코드를 분석해보면, 루프의 최상단에서 우선 이 플래그 토픽을 검사한다.<br />
+만약 <code>flag_control_rates_enabled</code>가 <code>true</code>가 아니라면, 그 어떤 외부 입력(조종기 데이터든 MAVLink 다이렉트 명령이든)이 uORB 트리에 업데이트되더라도 이를 철저히 <strong>무시(Ignore)하고 0(Zero) 처리</strong>해버린다.</p>
+<p>마찬가지로 위치 제어기(Position Controller)는 <code>flag_control_position_enabled</code>가 참일 때만 활성화되어 궤적 추종 연산을 수행하고 <code>attitude_setpoint</code>를 하위로 넘겨준다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Commander[Commander Module]
+        A[Flight Mode Evaluation] --&gt;|Set Flags| B(vehicle_control_mode)
+    end
+    
+    subgraph Pipeline[Hierarchical Control Pipeline]
+        B -.-&gt;|플래그 전달| Pos[Position Controller]
+        B -.-&gt;|플래그 전달| Att[Attitude Controller]
+        B -.-&gt;|플래그 전달| Rate[Rate Controller]
+    end
+    
+    Ext1[Offboard Position Cmd] --&gt; Pos
+    Ext2[Offboard Direct Actuator Cmd] -.-&gt; |Rejection: 역전 방지| Rate
+    
+    style Ext2 fill:#fff1f0,stroke:#f5222d,stroke-width:2px,stroke-dasharray: 5, 5;
+</code></pre>
+<p>이 구조 하에서는 상위의 궤적 추종 모드(<code>MISSION</code>, <code>POSITION</code> 등)가 활성화되어 있을 경우 <code>commander</code>가 오프보드의 다이렉트 액추에이터 제어 플래그 자체를 논리적으로 무효화(Disable)시켜버린다. 따라서 외부 악성 노드(Malicious Node)나 코드 버그로 인해 하위 파이프라인으로 명령이 난입(Injection)하더라도, 수학적으로 제어 계층의 월권이 발생할 수 없다.</p>
+<h2>3. Ardupilot의 Mode 종속적 실행(Execution) 방식과의 차이</h2>
+<p>Ardupilot 아키텍처는 C++ 클래스 다형성(Polymorphism)을 활용하여 제어권 역전을 예방한다. 각 비행 모드(예: <code>ModeLoiter</code>, <code>ModeAcro</code>)는 하나의 클래스로 구현되어 있으며, 메인 루프에서 해당하는 모드의 <code>run()</code> 함수 단 한 개만을 독점 호출한다. <code>ModeLoiter::run()</code> 내부에서는 위치 제어 함수(예: <code>position_control-&gt;update()</code>)만을 호출하고, 하위 모터 믹서로 결과를 보낼 뿐 다른 경로를 취하지 않는다.</p>
+<p>Ardupilot이 **객체 지향적 캡슐화와 다형성(Polymorphism)**을 통해 프로세스 흐름 자체를 단절시킴으로써 제어권 역전을 막는다면, PX4는 마이크로 서비스 기반 아키텍처에 맞게 모든 제어기가 동시에 백그라운드에서 구동되되, <strong>퍼블리싱된 중앙 통제 플래그(Boolean Vector)에 의해 각 제어기의 입/출력 클러치(Clutch)를 물리적으로 끊어버리는 방식</strong>을 택한 것이다.</p>
+<p>결론적으로 PX4의 이러한 독립 플래그 기반 제어 권한 모델은, 이후 새로운 실험적 제어기 프레임워크나 외부 ROS2 노드를 추가할 때, 기존 시스템의 제어 일관성을 해치지 않고 명시적인 모드 트리(Mode Tree)에 안전하게 플러그인(Plug-in)할 수 있는 아키텍처적 유연함을 제공한다.</p>
 
             </article>
             <footer>

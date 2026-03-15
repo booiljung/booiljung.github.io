@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.5.4.2 오염된 로컬 상태(Corrupted Local State) 폐기 및 무결성 보정(Integrity Reconciliation) 알고리즘</title>
+    <title>BIJUNG:37.5.4.2. 오염된 로컬 상태(Corrupted Local State) 폐기 및 무결성 보정(Integrity Reconciliation) 알고리즘</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,70 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.5.4.2 오염된 로컬 상태(Corrupted Local State) 폐기 및 무결성 보정(Integrity Reconciliation) 알고리즘</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.4.2 오염된 로컬 상태(Corrupted Local State) 폐기 및 무결성 보정(Integrity Reconciliation) 알고리즘</span></nav>
+                    <h1>37.5.4.2. 오염된 로컬 상태(Corrupted Local State) 폐기 및 무결성 보정(Integrity Reconciliation) 알고리즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.4.2. 오염된 로컬 상태(Corrupted Local State) 폐기 및 무결성 보정(Integrity Reconciliation) 알고리즘</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.5.4.2 오염된 로컬 상태(Corrupted Local State) 폐기 및 무결성 보정(Integrity Reconciliation) 알고리즘</h1>
+                <h1>37.5.4.2. 오염된 로컬 상태(Corrupted Local State) 폐기 및 무결성 보정(Integrity Reconciliation) 알고리즘</h1>
+<p>본 절에서는 통신 단절(Data Link Loss) 후 재연결(Link Recovery) 시점에 직면하는 가장 심각한 데이터 무결성 붕괴 시나리오, 즉 지상 관제 시스템(GCS) 혹은 무인항공기(UAV) 내부의 <strong>로컬 상태가 심각하게 변조되거나 오염(Corrupted Local State)</strong> 되었을 때 이를 어떻게 검출하여 선제적으로 폐기하고, 양측의 <strong>무결성 보정(Integrity Reconciliation)</strong> 을 강제하는지에 대한 수학적, 논리적 메커니즘을 심층 분석한다.</p>
+<p>설계적 관점의 본문은 대규모 자율 비행(BVLOS) 및 군집 관제에서 필수적으로 요구되는 상태 변위 공격 방어 및 에러 트래핑 룰이 집약된 PX4 Firmware v1.14 이상의 MAVLink 2.0 해시(Hash) 무결성 검증 체계를 기준으로 서술된다.</p>
+<hr />
+<h2>1.  로컬 상태 오염(Corrupted Local State)의 공학적 정의와 발생 기제</h2>
+<p>“로컬 상태 오염“이란, 단순한 통신망 딜레이로 인한 과거 데이터 표출(Staleness) 상태를 의미하는 것이 아니다. GCS가 메모리(RAM) 혹은 하드 디스크에 로컬 캐싱해 둔 기체에 대한 <strong>절대적 상태 척도 값(미션 웨이포인트 배열, 지오펜스 영역 폴리곤, 파라미터 체크섬 등)이 단절 기간 중 인위적 혹은 기계적으로 변경되어, 재연결 시점의 실제 물리적 무인기 상태와 복구 불가능한 모순(Contradiction)을 일으키는 현상</strong>을 의미한다.</p>
+<p>발생 가능한 대표적인 오염 기제는 다음과 같다.</p>
+<ol>
+<li><strong>다중 오퍼레이터 개입 (Multi-Operator Interception)</strong>: A 관제소와 기체의 통신이 끊긴 사이, 현장에 전개한 B 이동 관제소가 기체에 잠시 접속하여 비행 파라미터나 미션 경로를 부분 수정한 후 이탈한 경우.</li>
+<li><strong>보조 컴퓨터 자율 개입 (Companion Computer Mutation)</strong>: 단절된 동안, 기체 탑재 MAVSDK 에이전트나 ROS2 AI 노드가 장애물 회피를 위해 미션 웨이포인트 N개를 자체 동적으로 삭제/추가(Dynamic Replanning)한 경우.</li>
+<li><strong>메모리 누수 및 재부팅 (Memory Leak / Hot-reboot)</strong>: 기체 혹은 GCS S/W가 일시적 커널 패닉으로 런타임에 재시작되면서 디스크에 기록되지 않은 휘발성 상태 벡터(Volatile State Vector)가 증발하거나 초기 상태(Default)로 초기화된 경우.</li>
+</ol>
+<p>이러한 오염된 캐시(Corrupted Cache)를 쥔 상태로 GCS가 통신 복구 직후 “너는 내가 아는 상태 그대로겠지“라고 간주하고 제어 명령(예: “현재 인덱스부터 계속 비행하라”)을 푸시(Push)하는 행위는, 기체를 엉뚱한 좌표로 공간 이동시키거나 최악의 경우 추락시키는 대재앙의 방아쇠가 된다.</p>
+<hr />
+<h2>2.  무결성 보정(Integrity Reconciliation)의 3단계 파이프라인</h2>
+<p>PX4 아키텍처는 통신 회복 시 이러한 파멸적 상태 전이를 봉쇄하기 위해, 양측의 로컬 상태가 티끌만큼이라도 오염되었는지를 맹렬하게 추궁하고 보정하는 이른바 <strong>‘신뢰하지 않으나 검증한다(Zero-Trust, but Verify)’</strong> 기반의 3단계 무결성 보정 파이프라인(Integrity Reconciliation Pipeline)을 가동시킨다.</p>
+<h3>2.1 Phase 1: MAVLink 무결성 체크섬(Checksum / Hash) 폴링 조사</h3>
+<p>재연결(HEARTBEAT 감지) 즉시, GCS 백엔드는 기체를 향해 무겁고 느린 데이터 전체 배열 대신 오직 핵심 무결성을 대변하는 초경량 <strong>해시 식별자(Hash Identifiers)</strong> 만을 핑(Ping)으로 질의한다.</p>
+<ul>
+<li><strong>미션 일치성</strong>: <code>MISSION_REQUEST_LIST</code> 호출을 통한 미션 총수치(<code>count</code>) 및 미션 항목의 <code>Opaque ID / Hash</code> 수렴 확인</li>
+<li><strong>지오펜스/랠리 포인트</strong>: 지오펜스 폴리곤 버전(Version) 및 랠리 포인트 시퀀스 버저닝 질의</li>
+<li><strong>파라미터 일치성</strong>: <code>PARAM_EXT_REQUEST_LIST</code> 형태를 통한 파라미터 <code>PARAM_HASH</code> 질의 (옵션 활성화 시)</li>
+</ul>
+<h3>2.2 Phase 2: 오염 감지와 로컬 상태의 자진 폐기 (Purge &amp; Invalidate)</h3>
+<p>기체로부터 반환받은 Hash/Version ID가 단절 직전 GCS가 보존하고 있던 로컬 캐시 DB의 식별자와 <strong>단 1비트라도 불일치</strong> 할 경우, GCS 예외 처리기는 즉각 “로컬 상태 오염(Corrupted)” 플래그를 참(True)으로 선고한다.<br />
+이 선고의 무서운 점은 GCS가 “누가 맞냐“를 두고 기체와 협상(Negotiation)하지 않는다는 데 있다. 하늘에 떠 있는 기체의 현물 메모리(Live RAM)만이 절대 진리이자 마스터(Master Record)로 격상되며, GCS는 자신이 보유했던 수십 MB의 지난 <strong>미션/파라미터 로컬 캐시를 디스크 상에서 가차 없이 휴지통으로 폐기(Purge/Invalidate)</strong> 해 버린다. 과거의 위상은 완전 소거된다.</p>
+<h3>2.3 Phase 3: 무결성 전체 재작성(Full Reconciliation Pull) 및 잠금 해제</h3>
+<p>오더(Order) 공백 상태가 된 GCS는 이제 기체에게 <code>MISSION_REQUEST_INT</code> 및 <code>PARAM_REQUEST_LIST</code> 등을 발동시켜, 수십 초의 딜레이가 걸리더라도 하늘에 떠 있는 <strong>UAV 내부의 100% 진본 상태 벡터 구조체 일체를 지면으로 완전히 긁어 내려받는(Full Pull Synchronization)</strong> 무결성 보정 작업을 착수한다.<br />
+이 다운로드가 완료되고 백엔드 DB가 새로운 기체의 상태로 완전 동기화(Reconciliation)되기 전까지, QGC 프론트엔드 UI 화면의 모든 조작 버튼(이륙, 웨이포인트 전송, 파라미터 쓰기)은 비활성화 회색(Dimmed/Locked) 처리되어 인간 관제사의 개입을 원천 차단한다. 무결성이 수복된 찰나에 비로소 컨트롤 제어권이 락 오프(Lock-off) 된다.</p>
+<hr />
+<h2>3.  미들웨어 계층의 무결성 보정 알고리즘 흐름도 (Mermaid Diagram)</h2>
+<p>QGroundControl과 PX4 간 재연결 직후 로컬 상태의 오염을 탐지하고, 즉각적 캐시 파기(Purge) 후 진본 데이터를 강제 이식(Pull)하는 철혈의 보정 아키텍처를 추적 도시한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[통신 단절 해소: GCS와 UAV 간 HEARTBEAT 패킷 통신 재개] 
+    --&gt; B[GCS 백엔드 통신 클래스: 재동기화 프로토콜 락(Lock) 개시]
+    B --&gt; C[Phase 1: 기체로 핵심 상태 'Hash/Version ID' 요청 Ping 송출]
+    
+    C --&gt; D{UAV 반환 Hash값과 GCS 로컬 캐시 Hash값의 일치 여부 대조}
+    
+    D -- Perfect Match! (완벽 일치) --&gt; E[변조 없음: 가벼운 실시간 지표(현재 위치/속도/전압)만 동기화]
+    E --&gt; F[빠른 UI 잠금 해제: 0.1초 내 관제 제어권 정상 반환]
+    
+    D -- Hash Mismatch! (오염/변조 탐지) --&gt; G[Phase 2: GCS '로컬 상태 오염' 선언]
+    
+    G --&gt; H[GCS 하드 디스크 내 기존 Mission, Parameter Cache 강제 삭제 폐기 (Purge)]
+    H --&gt; I[UI 스크린 제어 패널 전면 락킹 (Action Dimmed)]
+    
+    I --&gt; J[Phase 3: 무결성 전체 동기화 모드 가동]
+    J --&gt; K[UAV를 향해 MISSION / PARAMETER 전체 리스트 'Full Pull' 다운로드 착수]
+    K --&gt; L[대량 데이터 수신 처리 및 GCS 내부 DB 완전 최신화 구축 완료]
+    
+    L --&gt; M[무결성 보정 (Reconciliation) 완료 및 통과]
+    M --&gt; F
+</code></pre>
+<hr />
+<h2>4.  결론 및 요약 도출</h2>
+<p>네트워크 통신의 단절은 단순한 연결선 하나가 끊김을 의미하지 않는다. 그것은 정보의 주권이 <strong>시계열적으로(Temporally) 분리된 두 개의 우주(GCS와 UAV)</strong> 로 갈라지는 것을 뜻한다. 그 분열된 시간 동굴 안에서 어느 한쪽의 로컬 배열 요소 하나라도 외부 변수(다중 관제, 보조 컴퓨터의 자율 개입 등)에 의해 변경되었다면, 그것은 재결합 시점에 시스템 체제 전반을 붕괴시키는 <strong>‘오염된 상태 폭탄(Corrupted State Bomb)’</strong> 으로 돌변한다.</p>
+<p>PX4-Autopilot 생태계는 이 치명적 상태 모순을 극복하기 위해 제로 트러스트(Zero-Trust)에 입각한 <strong>무결성 보정(Integrity Reconciliation)</strong> 아키텍처를 장착하였다. 통신이 복구된 순간, GCS는 안일함을 버리고 즉각 기체의 해시(Hash) 식별자를 찔러 변조 유무를 감찰한다. 단 1비트의 스크래치라도 발견될 시, GCS는 과거에 자신이 믿고 있던 거대한 제어 기억(Cache) 전체를 미련 없이 쓰레기통에 파기(Purge) 해버리고, 구차할 정도로 시간이 걸릴지언정 기체의 현재 진본 데이터를 맨바닥부터 긁어오는(Full Pull) 우직함으로 데이터의 청정성을 보완 복구해 낸다.</p>
+<p>결과적으로 이토록 자비 없는 로컬 상태의 폐기와 강제 전체 덮어쓰기 논리망 덕에, 현대의 드론 편대는 통신이 수십 번 끊기고 그 사이 누군가 동적 임무 개입을 하더라도, 최상위 GCS가 결코 오염된 낡은 명령으로 드론을 조종하는(Ghost Commanding) 파멸적 참사에서 영구적으로 자유로워지는 구조적 기틀을 완성하게 되었다.</p>
 
             </article>
             <footer>

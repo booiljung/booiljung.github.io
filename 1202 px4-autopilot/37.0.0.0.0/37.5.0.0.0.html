@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.5 원자적 트랜잭션(Atomic Transaction) 기반의 예외 처리 및 상태 복구(State Recovery)</title>
+    <title>BIJUNG:37.5. 원자적 트랜잭션(Atomic Transaction) 기반의 예외 처리 및 상태 복구(State Recovery)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,88 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.5 원자적 트랜잭션(Atomic Transaction) 기반의 예외 처리 및 상태 복구(State Recovery)</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5 원자적 트랜잭션(Atomic Transaction) 기반의 예외 처리 및 상태 복구(State Recovery)</span></nav>
+                    <h1>37.5. 원자적 트랜잭션(Atomic Transaction) 기반의 예외 처리 및 상태 복구(State Recovery)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5. 원자적 트랜잭션(Atomic Transaction) 기반의 예외 처리 및 상태 복구(State Recovery)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.5 원자적 트랜잭션(Atomic Transaction) 기반의 예외 처리 및 상태 복구(State Recovery)</h1>
+                <h1>37.5. 원자적 트랜잭션(Atomic Transaction) 기반의 예외 처리 및 상태 복구(State Recovery)</h1>
+<p>본 절에서는 지상 관제 시스템(GCS, Ground Control Station)과 무인항공기(UAV) 간의 제어 및 통신 과정에서 발생하는 환경적 불확실성을 극복하기 위해, 데이터베이스 컴퓨터 과학에서 기원한 <strong>원자적 트랜잭션(Atomic Transaction)</strong> 개념이 PX4-Autopilot의 상태 머신 제어 및 예외 처리 아키텍처에 어떻게 차용되고 구현되었는지를 심도 있게 분석한다.</p>
+<p>무명 무선 링크(Telemetry Link)를 통해 이루어지는 MAVLink 기반 명령 전달(Command &amp; Control)은 본질적으로 패킷 유실(Packet Loss), 지연(Latency), 대역폭 제약 등 비결정론적 특성을 내포한다. 치명적인 파국을 방지하기 위해서는 하나의 명령이 ’완전히 성공(Commit)’하거나, 실패 시 ’어떠한 부작용도 남기지 않고 완벽하게 이전 상태로 복귀(Rollback)’하는 <strong>원자성(Atomicity: All-or-Nothing)</strong> 논리가 필수적으로 요구된다.</p>
+<p>본 내용은 특정 기능의 구현이 고도화된 PX4 Firmware v1.14 이상의 버전 및 QGroundControl v4.3 이상의 아키텍처를 기준으로 서술된다.</p>
+<hr />
+<h2>1.  이산 사건 제어 시스템에서의 원자성(Atomicity) 개념 차용</h2>
+<p>비행 제어 컴퓨터와 GCS 간의 상호작용은 근본적으로 분산 시스템(Distributed System)에서의 상태 동기화 문제와 동일하다. GCS에서 특정 모드 변경(예: Position 모드에서 Auto-Mission 모드로의 전환) 명령을 전송할 때, 통신 지연이나 기체의 센서 이상으로 인해 명령이 즉시 수행되지 않을 수 있다.</p>
+<p>이때 상태 천이가 어설프게 반쯤 진행되거나, GCS와 UAV가 서로 다른 상태(State Mismatch)를 인식하도록 방치하면 사고로 직결된다. PX4 시스템은 이를 방지하기 위해 명령어 처리를 트랜잭션 캡슐(Transaction Capsule)로 감싸 관리한다.</p>
+<ol>
+<li><strong>준비 단계 (Preparation / Pre-flight Check)</strong>: 트랜잭션을 실행하기 위해 필요한 모든 센서, 자원, 전제조건(Pre-condition)이 유효한지 검증한다.</li>
+<li><strong>실행 및 상태 갱신 (Execution)</strong>: 명령을 수행하여 내부 내부 유한 상태 기계(FSM)의 모드를 변경한다.</li>
+<li><strong>확인 응답 타임아웃 (Confirmation &amp; Timeout)</strong>: <code>COMMAND_ACK</code> 등 MAVLink 패킷을 수신하거나, 타임아웃 발생 시 트랜잭션 전체를 <strong>실패(Fail)</strong> 로 간주한다.</li>
+</ol>
+<hr />
+<h2>2.  원자적 트랜잭션 기반의 상태 천이 및 예외 처리 로직 (Mermaid Sequence Diagram)</h2>
+<p>다음 도표는 원자성이 보장되는 성공적인 상태 천이 과정과, 통신 및 시스템 측의 예외 발생으로 인한 안전한 상태 롤백(Rollback) 과정을 보여주는 시퀀스 다이어그램이다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant G as GCS (QGroundControl)
+    participant C as PX4 Commander (UAV)
+    participant S as PX4 State Machine (UAV)
+    participant N as Navigator (UAV)
+
+    Note over G, N: [시나리오 1: 원자적 트랜잭션 성공 (Commit)]
+    G-&gt;&gt;C: MAVLink COMMAND_LONG (모드 전환 요청)
+    activate C
+    C-&gt;&gt;S: 1. 상태 천이 가능 여부 사전 검증(Validate)
+    S--&gt;&gt;C: 검증 완료 (OK)
+    C-&gt;&gt;S: 2. 상태 벡터 갱신(State Update) 수행
+    S--&gt;&gt;C: 상태 갱신 완료
+    C-&gt;&gt;N: 3. 네비게이터 초기화(Init)
+    N--&gt;&gt;C: 네비게이터 준비 완료
+    Note right of C: 모든 하위 절차 성공 완료 -&gt; 원자성 확보
+    C-&gt;&gt;G: COMMAND_ACK (MAV_RESULT_ACCEPTED)
+    deactivate C
+
+    Note over G, N: [시나리오 2: 트랜잭션 예외 발생 및 롤백 (Rollback)]
+    G-&gt;&gt;C: MAVLink COMMAND_LONG (시동/Arming 요청)
+    activate C
+    C-&gt;&gt;S: 1. 사전 검증(Pre-arm Check)
+    S--&gt;&gt;C: 유효함 (Valid)
+    C-&gt;&gt;S: 2. 상태 갱신 시도
+    S-&gt;&gt;S: 오류 발생! (e.g., GPS Fix 상실로 인한 Reject)
+    S--&gt;&gt;C: 상태 갱신 거부 (Rejected)
+    Note right of C: 트랜잭션 무결성 훼손 판별 -&gt; 롤백 실행
+    C-&gt;&gt;S: 3. 직전 안정 상태로 롤백(Rollback to Previous Stable State)
+    S--&gt;&gt;C: 롤백 완료
+    C-&gt;&gt;G: COMMAND_ACK (MAV_RESULT_DENIED / TEMPORARILY_REJECTED)
+    deactivate C
+</code></pre>
+<p>위의 다이어그램에서 알 수 있듯, GCS의 요청에 대해 PX4의 <code>Commander</code> 모듈은 내부 하위 서브시스템 간의 조율자(Coordinator) 역할을 수행한다. 이 과정 중 하나라도 실패하면 즉시 전체 처리를 취소하고, GCS에 <code>MAV_RESULT_DENIED</code> 형태의 NACK 슬립을 반환하여 시스템의 비가역적 파괴를 억제한다.</p>
+<hr />
+<h2>3.  2단계 커밋(Two-Phase Commit, 2PC) 아키텍처의 적용과 한계 방어 전략</h2>
+<p>PX4 내부적으로는 고전적 분산 컴퓨팅 이론인 2단계 커밋 프로토콜(2PC)의 개념을 느슨하게 구현하여, 높은 래벨의 명령들에 대한 예외 처리를 수행한다.</p>
+<h3>3.1  투표(Voting) 혹은 타당성 평가 위상 (Phase 1)</h3>
+<p>명령(Command) 수신 즉시 제어 모듈, 센서 퓨전 엔진(EKF2/ECL), 구동기(Actuator) 매니저 측에 <strong>준비 가능성(Readiness)</strong> 을 확인한다. 예를 들어 비행 전 점검(Pre-flight Check) 로직은 이 위상에 적극적으로 관여한다. 하나라도 부정(Abort) 신호를 보내면 트랜잭션은 즉시 파기된다.</p>
+<h3>3.2  실행 및 완료 위상 (Phase 2)</h3>
+<p>모든 하위 시스템이 동의(Commit)할 준비가 되었다면, FSM 내부의 잠금(Lock)을 획득하여 동시다발적으로 시스템 매개변수를 전환한다. 주로 <code>VehicleStatus</code> 구조체를 <code>uORB</code> (Micro Object Request Broker) 인터페이스를 통해 한 번에 갱신 및 발행(Publishing) 함으로써 구현된다. <code>uORB</code> 토픽은 비동기적으로 모든 서브모듈에 배포되므로 동시성 충돌을 원천적으로 막는다.</p>
+<p>그러나 UAV의 환경에서 순수 2PC는 통신 단절 시 발생하는 <strong>교착 상태(Deadlock)</strong> 문제가 있으므로, PX4는 <strong>엄격한 시간 경계 타임아웃(Strict Time-bounded Timeout)</strong> 및 <strong>비동기 롤백 타이머</strong>를 결합하여 시스템이 무한정 대기하지 않도록 설계되어 있다.</p>
+<hr />
+<h2>4.  예외(Exception) 처리 및 상태 복구(State Recovery) 매커니즘 구현</h2>
+<p>단순히 트랜잭션을 취소하는 것을 넘어서서, 외부의 불안정성이나 오류 이후 자율적으로 <strong>안정적인 상태(Stable State)</strong> 를 되찾는 회복탄력성(Resilience) 논리가 필수적이다. 이를 보통 상태 복구(State Recovery)라 칭한다.</p>
+<h3>4.1 ) QGroundControl 재전송 (Retransmission) 알고리즘</h3>
+<p>QGC 단에서는 커맨드가 유실되거나 처리에 지연이 걸려 지정된 시간(통상적으로 500ms ~ 1초) 내에 ACK/NACK를 수신하지 못하면, 지수 백오프(Exponential Backoff) 혹은 일정 주기 타임아웃 모델을 사용하여 <strong>명령을 재전송</strong> 한다. 이때, <code>VehicleComponent</code> 구조체 내부에서 각 명령에 할당된 1바이트 시퀀스 번호(Tx Sequence/Ack Sequence)를 통해 중복 처리(Idempotent Processing) 문제를 예방한다.</p>
+<h3>4.2 ) 안전 장치(Failsafe) 트리거 및 롤백 (Rollback)</h3>
+<p>이미 상태 천이가 시작된 직후 데이터링크 상실(Data Link Loss) 또는 심각한 센서 정지가 발생한다면, 오토파일럿은 현재의 트랜잭션을 강제 종료한다. 이후 내장된 <strong>안전 복구 머신(Failsafe State Machine)</strong> 에 개입을 위임한다.<br />
+PX4의 경우, 특정 모드(예: Offboard) 진입 후 텔레메트리 스트림이 끊기면 <code>nav_state</code>를 즉시 <code>Hold</code> 혹은 <code>Return to Launch (RTL)</code> 상태로 강제 천이시키는 하드코딩된 복구 경로가 존재한다. 이는 부분적으로 커밋된 불완전한 궤적 비행 상태를 즉시 무효화하고 기체의 에너지를 보존하는 방식으로 동작한다.</p>
+<h3>4.3 ) Ardupilot 대비 아키텍처 차이점 비교</h3>
+<p>Ardupilot은 전통적으로 매크로적인 관점의 안전 조치(예약된 Waypoint 계속 수행 혹은 RTL)에 집중하는 편향이 있으나, 최근 도입된 PX4 FSM 모델의 경우 매우 미시적인 마이크로 트랜잭션(Micro-transaction) 단위로 커맨드 무결성과 롤백을 제어하는 객체 지향적(Object-Oriented), 상태 기반(State-based) 아키텍처를 지향한다. 즉, 잘못된 명령어의 부분적 수용 자체를 허가하지 않는 엄증함을 가진 모듈식 구현(Commander Module)이 두드러진다.</p>
+<hr />
+<h2>5.  결론 및 요약</h2>
+<p>PX4-Autopilot 및 QGroundControl의 연동 체계에서 도입된 원자적 트랜잭션 개념은 드론 무선 제어 시스템이 직면하는 근본적인 비동기성, 불확실성을 소프트웨어 구조적으로 해결하기 위한 공학적 노력의 산물이다.</p>
+<ul>
+<li>모든 GCS 명령은 ‘완전한 성공’ 하거나 ’철저하게 취소’된다 (원자성 확보).</li>
+<li>상태 천이 불일치를 막기 위해 시퀀스 번호, <code>COMMAND_ACK</code> 피드백 루프, 타임아웃 메커니즘을 동원한다.</li>
+<li>예외 발생 시 직전 안정 상태(Hold/Hover 등)나 명시적인 비상 상태(Failsafe RTL)로의 즉각적인 롤백 및 상태 복구(State Recovery)를 달성하여 치명적 기체 파손을 방지한다.</li>
+</ul>
+<p>이러한 고도의 트랜잭셔널 상태 제어(Transactional State Control) 설계는 단순 취미용 드론 단계를 넘어 복잡한 상업용 무인 자율 비행 로봇으로 고도화되기 위하여 필수적으로 요구되는 아키텍처적 근간을 제시한다.</p>
 
             </article>
             <footer>

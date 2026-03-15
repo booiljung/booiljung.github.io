@@ -115,6 +115,27 @@
             </header>
             <article>
                 <h1>38.5.2.2 단일 진실 공급원(Single Source of Truth) 일관성(Consistency) 유지를 위한 GCS-UAV 간 핸드셰이크(Handshake) 검증</h1>
+<p>이전 절에서 우리는 비행 제어기(PX4 Commander)가 분산 권력 구조의 정점에 서는 단일 진실 공급원(SSOT, Single Source of Truth)으로 선출되었음을 확인했다.<br />
+이제 남은 과제는 하나다. 이 거대한 지상 관제 시스템(GCS)과 임무 컴퓨터가 어떻게 비행 제어기의 변덕스러운 진실(상태 전이)을 1비트의 어긋남 없이 완벽하게 복제(Copy)하고 일관성(Consistency)을 유지할 것인가?</p>
+<h2>1. UDP의 망각(Fire-and-Forget)과 낙관적 UI 업데이트의 금지</h2>
+<p>MAVLink 프로토콜은 TCP가 아닌 UDP 기반으로 동작한다. 만약 GCS 개발자가 무지하여, 화면에서 <code>Return</code> 버튼을 누르는 즉시 MAVLink로 명령을 발사(Fire)하고 화면 상단의 텍스트를 “Return 모드로 변경됨“이라고 낙관적(Optimistic)으로 업데이트해 버렸다고 가정해 보자.</p>
+<p>불행히도 그 찰나의 순간 불어닥친 전파 간섭으로 인해 명령 패킷은 허공에서 증발했다.<br />
+이제 기체는 여전히 <code>Hold</code> 모드에 머물러 있는데, GCS 화면만 <code>Return</code>으로 바뀌어 있는 <strong>논리적 분리(Logical Partition)</strong> 현상이 발생했다. 운용자는 기체가 알아서 돌아오겠거니 믿고 커피를 마시러 갔다가 배터리가 방전되어 기체가 추락하는 참사를 맞이할 것이다.</p>
+<p>이러한 재앙을 막기 위해, QGroundControl이나 MAVSDK 같은 성숙한 아키텍처는 <strong>오직 PX4가 승인하고 뱉어내는 텔레메트리만이 UI를 바꿀 수 있다</strong>는 철의 규칙을 강제한다.</p>
+<h2>2. 상태 전이(State Transition)를 위한 3-Way 핸드셰이크 프로토콜</h2>
+<p>일관성 유지를 위해 GCS와 UAV 사이의 모든 중대한 모드 전환은 엄격하게 트랜잭션 화된 3-Way 핸드셰이크 과정을 거친다.</p>
+<ul>
+<li><strong>Step 1: 제안 (The Proposal - <code>COMMAND_LONG</code>)</strong><br />
+운용자가 GCS에서 모드 전환을 지시하면, GCS는 <code>COMMAND_LONG</code> (예: <code>MAV_CMD_DO_SET_MODE</code>) 패킷을 기체로 전송한다. <strong>이때 GCS 화면의 텍스트는 아직 절대 변하지 않는다.</strong> 대신 버튼 위에 조그만 ‘로딩(Spinning)’ 애니메이션이 나타나며 체제 전환이 ‘보류(Pending)’ 중임을 알릴 뿐이다.</li>
+<li><strong>Step 2: 승인 및 전이 (The Acknowledgment - <code>COMMAND_ACK</code>)</strong><br />
+기체의 PX4 Commander는 이 명령을 수신하면 내부 상태 머신(State Machine) 비트맵을 대조한다. (예: “현재 GPS Lock이 정상이므로 Return 모드로의 전이가 수학적으로 합당하다.”) 전이가 합당하면 실제로 자신의 시스템 내부 모드를 변경하고, GCS를 향해 <code>MAV_RESULT_ACCEPTED</code>라는 꼬리표가 붙은 <code>COMMAND_ACK</code> 패킷을 하향 전송한다.</li>
+<li><strong>Step 3: 진실의 확인 (The Telemetry Confirmation - <code>HEARTBEAT</code>)</strong><br />
+가장 보수적이고 안전한 분산 GCS 구현체는 <code>COMMAND_ACK</code>를 받은 직후에도 UI를 바꾸지 않고 한 템포 더 인내한다. 이들은 그다음에 날아오는 주파수 1Hz짜리 <code>HEARTBEAT</code> 패킷의 <code>custom_mode</code> 비트 필드가 실제로 <code>Return</code> 모드로 뒤집혀서 내려오는 것을 바이트 레벨에서 육안으로 ’확인(Confirmation)’하고 나서야, 비로소 GCS 화면의 로딩 애니메이션을 끄고 모드 텍스트를 초록색의 <code>Return</code>으로 확정 업데이트한다.</li>
+</ul>
+<h2>3. 합의 실패(Denial) 시의 원상 복구(Rollback)</h2>
+<p>초기 제안(Step 1) 이후, 만약 PX4가 조건 불만족으로 인해 <code>MAV_RESULT_DENIED</code>를 반환하거나 아예 패킷이 유실되어 아무 대답도 오지 않으면(Timeout), GCS는 즉시 로딩 애니메이션을 취소하고 사용자에게 “명령 거부됨” 또는 “응답 없음“이라는 치명적 경고를 팝업으로 띄운다.</p>
+<p>이 거절(Denial/Timeout) 파이프라인 덕분에, GCS의 UI 상태는 억지로 전진하지 않고 기체의 현재 진성 상태와 완벽히 동기화된 지점으로 안전하게 **롤백(Rollback)**한다.<br />
+단일 진실 공급원(Mighty PX4)이 직접 허락하지 않은 상태는 화면에 그릴 수 없도록 UI 계층을 틀어막는 것, 이것이 데이터 링크 손실률이 10% 단위로 요동치는 험악한 전파 환경 속에서도 GCS와 기체가 절대 스플릿 브레인에 빠지지 않게 결속시키는 분산 처리 아키텍처의 최후의 보루다.</p>
 
             </article>
             <footer>

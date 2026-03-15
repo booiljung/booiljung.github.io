@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.2 MAVLink 2.0 명령어 패킷의 페이로드 메모리 아키텍처 및 직렬화</title>
+    <title>BIJUNG:39.2. MAVLink 2.0 명령어 패킷의 페이로드 메모리 아키텍처 및 직렬화</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,59 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.2 MAVLink 2.0 명령어 패킷의 페이로드 메모리 아키텍처 및 직렬화</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.2 MAVLink 2.0 명령어 패킷의 페이로드 메모리 아키텍처 및 직렬화</span></nav>
+                    <h1>39.2. MAVLink 2.0 명령어 패킷의 페이로드 메모리 아키텍처 및 직렬화</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.2. MAVLink 2.0 명령어 패킷의 페이로드 메모리 아키텍처 및 직렬화</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.2 MAVLink 2.0 명령어 패킷의 페이로드 메모리 아키텍처 및 직렬화</h1>
+                <h1>39.2. MAVLink 2.0 명령어 패킷의 페이로드 메모리 아키텍처 및 직렬화</h1>
+<p>초창기 무인항공기 통신 프로토콜들은 각 제조사마다 독자적인 시리얼 통신 규격을 사용하여 상호 호환성이 결여되어 있었다. 이를 극복하고 범용적인 오픈소스 드론 생태계를 구축하는 데 결정적인 역할을 한 것이 바로 MAVLink(Micro Air Vehicle Link) 프로토콜이다. GCS(QGroundControl)와 비행 제어기(PX4-Autopilot) 간의 제어 명령을 담당하는 핵심 메시지인 <code>COMMAND_LONG</code> (설계상 제한이 많은 구형 패킷) 및 <code>COMMAND_INT</code> 등은 한정된 무선 대역폭 속에서도 다양한 형태의 데이터를 누수 없이 효율적으로 전달해야 하는 임무를 띤다. 본 장에서는 MAVLink 프로토콜 최신 버전인 2.0 규격 하에서 명령어 패킷의 메모리 페이로드 구조가 어떻게 설계되어 있으며, 서로 다른 컴퓨터 아키텍처 간의 데이터 직렬화(Serialization)가 어떻게 이루어지는지 심도 있게 해부한다.</p>
+<h2>1.  MAVLink 2.0 프로토콜 개요와 메시지 구조</h2>
+<p>MAVLink 프로토콜은 매우 경량화된(Lightweight) 바이너리(Binary) 직렬화 프로토콜이다. 2017년부터 도입된 MAVLink 2.0 규격은 기존 1.0 규격을 확장하여, 24비트의 Message ID(수십만 개의 메시지 정의 가능)와 보안 통신을 위한 메시지 서명(Message Signing) 기능을 추가함으로써 엔터프라이즈 및 군용 무인기 환경의 요구사항을 충족하게 되었다.</p>
+<p>명령어 패킷을 포함한 모든 MAVLink 2.0 패킷은 다음과 같은 프레임(Frame) 구조를 가진다.</p>
+<table><thead><tr><th style="text-align: left">필드 명칭</th><th style="text-align: left">크기 (Bytes)</th><th style="text-align: left">설명</th></tr></thead><tbody>
+<tr><td style="text-align: left">Magic (STX)</td><td style="text-align: left">1</td><td style="text-align: left">패킷 시작 지시자 (MAVLink 2.0의 경우 고정값 0xFD)</td></tr>
+<tr><td style="text-align: left">Payload Length (LEN)</td><td style="text-align: left">1</td><td style="text-align: left">페이로드 데이터의 바이트 길이 (0 ~ 255)</td></tr>
+<tr><td style="text-align: left">Incompatibility Flags</td><td style="text-align: left">1</td><td style="text-align: left">MAVLink 버전을 판별하거나 패킷 검증 여부를 나타내는 플래그</td></tr>
+<tr><td style="text-align: left">Compatibility Flags</td><td style="text-align: left">1</td><td style="text-align: left">특정 기능 지원 여부</td></tr>
+<tr><td style="text-align: left">Sequence (SEQ)</td><td style="text-align: left">1</td><td style="text-align: left">패킷 유실 감지를 위한 시퀀스 번호 (0 ~ 255 순환)</td></tr>
+<tr><td style="text-align: left">System ID (SYS)</td><td style="text-align: left">1</td><td style="text-align: left">송신 시스템의 ID (예: QGC=255, PX4=1)</td></tr>
+<tr><td style="text-align: left">Component ID (COMP)</td><td style="text-align: left">1</td><td style="text-align: left">송신 컴포넌트의 ID (Autopilot=1, Gimbal=154 등)</td></tr>
+<tr><td style="text-align: left">Message ID (MSG)</td><td style="text-align: left">3</td><td style="text-align: left">페이로드 유형 식별자 (Command Long=76 등)</td></tr>
+<tr><td style="text-align: left"><strong>Payload (DATA)</strong></td><td style="text-align: left">0 ~ 255</td><td style="text-align: left"><strong>실제 전송될 데이터 (여기에 <code>COMMAND_LONG</code> 맵핑)</strong></td></tr>
+<tr><td style="text-align: left">Checksum (CKA, CKB)</td><td style="text-align: left">2</td><td style="text-align: left">ITU X.25 기반 CRC-16 무결성 검증</td></tr>
+<tr><td style="text-align: left">Signature (선택)</td><td style="text-align: left">13</td><td style="text-align: left">암호화 서명 (데이터 위변조 방지)</td></tr>
+</tbody></table>
+<h2>2.  제어 명령어(Command) 페이로드 아키텍처</h2>
+<p>위 프레임 구조에서 시스템의 핵심 제어 동작을 지시하는 내용은 바이트 스트림 구역인 통신 페이로드(<code>DATA</code>) 안에 구체적인 C 언어 구조체(Struct) 형태로 패킹(Packing)된다. PX4-Autopilot에서 가장 대표적으로 처리하는 두 가지 명령어 구조체는 다음과 같다.</p>
+<h3>2.1  COMMAND_LONG (Message ID: #76)</h3>
+<p>초기 MAVLink 1.0 시절부터 가장 범용적으로 쓰인 메시지이다. “모든 것을 이 메시지 하나로 처리할 수 있도록 하자“는 설계 철학 하에, 무려 7개의 <code>float</code> 형 파라미터를 제공한다. (전체 페이로드 길이: 33 Bytes)</p>
+<ul>
+<li><code>param1</code> ~ <code>param7</code> (float, 4비트씩 총 28 Bytes): 명령어 성격에 따라 다목적으로 쓰이는 인자. WGS84 좌표계 데이터도 여기에 실린다.</li>
+<li><code>command</code> (uint16_t, 2 Bytes): <code>MAV_CMD</code> 열거형으로 정의된 명령어 식별 번호 (예: 400번=Arm/Disarm).</li>
+<li><code>target_system</code> (uint8_t, 1 Byte): 명령을 수행해야 할 시스템의 ID.</li>
+<li><code>target_component</code> (uint8_t, 1 Byte): 명령을 수행해야 할 시스템 내 컴포넌트 단위의 ID.</li>
+<li><code>confirmation</code> (uint8_t, 1 Byte): 재전송 시퀀스 횟수 식별 용도.</li>
+</ul>
+<h3>2.2  COMMAND_INT (Message ID: #73)</h3>
+<p><code>COMMAND_LONG</code>이 지닌 부동소수점 데이터 표현의 치명적 한계(단정밀도 <code>float</code>가 지리 좌표계를 담을 때 나타나는 공간 오차)를 극복하기 위해 MAVLink 2.0 시대에 표준으로 승격된 메시지이다. 공간 좌표가 포함된 임무 설정에 주로 쓰인다. (전체 페이로드 길이: 35 Bytes)</p>
+<ul>
+<li><code>param1</code> ~ <code>param4</code> (float, 16 Bytes): 부동소수점이 필요한 보조 인자.</li>
+<li><code>x</code> (int32_t, 4 Bytes): 위도(Latitude). 보통 원본 값에 <span class="math math-inline">10^7</span>을 곱해 부호 있는 정수로 표현한다.</li>
+<li><code>y</code> (int32_t, 4 Bytes): 경도(Longitude). <span class="math math-inline">10^7</span> 스케일링.</li>
+<li><code>z</code> (float, 4 Bytes): 고도 데이터.</li>
+<li><code>command</code>, <code>target_system</code>, <code>target_component</code> 등 기타 구조는 <code>COMMAND_LONG</code>과 동일하다.</li>
+</ul>
+<h2>3.  메모리 직렬화(Serialization)와 통신 엔디안(Endianness)</h2>
+<p>GCS(예: QGroundControl)가 작동하는 환경은 주로 x86_64 기반의 데스크톱(Windows/Linux)이거나 ARM 아키텍처 기반의 스마트폰(iOS/Android)이다. 그리고 데이터를 수신하는 PX4-Autopilot 장비(Pixhawk 등)는 ARM Cortex-M 시리즈 기반의 마이크로컨트롤러(MCU)이다.<br />
+이러한 이종(Heterogeneous) 플랫폼 간에 바이너리 데이터(특히 4바이트 크기의 <code>float</code>나 <code>int32_t</code>)를 바로 메모리 복사로 전송하면 엔디안(Endianness) 문제와 메모리 정렬(Alignment) 문제로 인해 데이터가 깨지게 된다.</p>
+<h3>3.1  Little-Endian 규격 강제</h3>
+<p>MAVLink 프로토콜 명세는 네트워크 통신망에서 데이터를 보낼 때 TCP/IP 표준 네크워크 바이트 오더인 Big-Endian 대신 <strong>Little-Endian을 표준 직렬화 방식으로 채택</strong>했다. 이는 현대의 대부분 기기(x86 프로세서 및 디폴트 ARM 마이컴)가 Little-Endian 메모리 구조를 지배적으로 사용하기 때문이다. Little-Endian을 사용하면 데이터를 보낼 때나 받을 때 별도의 바이트 스왑(Byte-swapping, 예: <code>htons()</code>, <code>ntohs()</code>) 오버헤드 연산을 생략할 수 있어 임베디드 소형 CPU(픽스호크)의 파싱(Parsing) 연산 부하를 크게 줄일 수 있다.</p>
+<h3>3.2  C 구조체 페이로드 패킹의 공학</h3>
+<p>C/C++ 언어에서 구조체 컴파일러는 메모리 접근 효율성을 위해 변수들 사이에 패딩(Padding, 의미 없는 공백 바이트)을 삽입하여 메모리를 정렬(Alignment)하려는 본능이 있다. 그런데 이 구조체를 그대로 통신 패킷에 복사하면 전송 대역폭이 낭비될 뿐 아니라 양단 플랫폼의 컴파일러가 패딩을 다르게 처리할 경우 페이로드가 깨진다.</p>
+<p>이를 방지하기 위해 PX4의 MAVLink 파서는 <code>#pragma pack(1)</code> 또는 <code>__attribute__((packed))</code> 와 같은 컴파일러 지시자를 사용하여 MAVLink 메시지 구조체의 모든 멤버를 빈틈없이 1바이트 단위로 압축하여 직렬화한다.<br />
+또한 MAVLink 페이로드 정렬 알고리즘은 패딩을 본질적으로 최소화하기 위해 메시지 정의(XML 파일)에서 생성된 구조체의 필드 순서를 설계자의 정의 순서와 무관하게 <strong>‘데이터 타입 크기가 큰 것부터 작은 것 순으로’ (예: uint64_t -&gt; uint32_t -&gt; uint16_t -&gt; uint8_t) 메모리에 재배치</strong>하여 바이트 시퀀스를 직렬화한다.</p>
+<p>결론적으로 GCS와 PX4가 주고받는 <code>COMMAND_LONG</code> 등의 제어 명령어 페이로드는 RF 통신 환경의 제약을 극복하기 위해 바이트 스왑 생략(Little-Endian), 패딩 제거(Packed Struct), 메시지 데이터 크기 순 정렬이라는 고도화된 메모리 아키텍처 공학의 산물이다. 이어지는 하위 절들에서는 이 페이로드 구조체 구석구석을 채우고 있는 바이트 데이터들이 어떤 한계와 연산 모델을 지니는지 개별적으로 상세히 해부한다.</p>
 
             </article>
             <footer>

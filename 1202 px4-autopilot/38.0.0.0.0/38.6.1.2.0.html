@@ -115,6 +115,22 @@
             </header>
             <article>
                 <h1>38.6.1.2 <code>vehicle_status_s</code> 구조체의 메모리 직렬화(Memory Serialization) 및 하드웨어 타이머(Hardware Timer) 기반 발행 스케줄러(Scheduler) 로직</h1>
+<p>이전 절에서 논블로킹 <code>poll()</code>을 통해 깨어난 MAVLink 스레드는 이제 메모리상에 신선한 <code>vehicle_status_s</code> C++ 객체를 들고 있다. 이제 이 거대한 메모리 덩어리를, 전파(RF)의 거친 노이즈를 뚫고 GCS까지 살아남을 수 있는 ’안전하고 촘촘한 바이트 배열’로 압축하는 과정이 필요하다.</p>
+<h2>1. 비트 단위(Bit-wise) 메모리 직렬화 (Memory Serialization)</h2>
+<p>C++ 컴파일러가 만들어낸 <code>vehicle_status_s</code> 구조체는 메모리 접근 최적화를 위한 패딩(Padding) 바이트를 포함하고 있어 네트워크로 그대로 내보내기엔 대역폭 낭비가 심하다. 이를 순수한 MAVLink 규격으로 욱여넣는 과정을 **직렬화(Serialization)**라고 한다.</p>
+<ol>
+<li><strong>매핑 및 비트마스크 구성</strong>: PX4 내부의 상태 값(<code>nav_state</code>, <code>arming_state</code>)을 국제 표준인 <code>MAV_MODE</code>와 <code>MAV_STATE</code> 포맷에 맞게 재가공한다. 예를 들어, 시동이 걸린 상태이고 PX4 고유의 비행 모드를 쓰고 있다면 <code>base_mode</code> 변수에 <code>MAV_MODE_FLAG_SAFETY_ARMED | MAV_MODE_FLAG_CUSTOM_MODE_ENABLED</code> 처럼 비트 OR 연산을 통해 플래그 버퍼를 찌부러뜨린다.</li>
+<li><strong>구조체 패킹(Packing)</strong>: <code>mavlink_msg_heartbeat_pack()</code>과 같은 매크로/함수들은 엔디안(Endianness, Little/Big Endian) 차이로 인한 바이트 오더링(Byte Ordering) 문제를 해결하며, 데이터 사이의 패딩을 완전히 제거하여 정확히 9바이트(Heartbeat 페이로드 기준)의 조밀한 스트림(Stream)으로 찍어낸다.</li>
+<li><strong>검사합(CRC) 및 무결성 서명</strong>: 직렬화된 데이터 꼬리에 CRC(Cyclic Redundancy Check) 바이트와 MAVLink v2 규격에 따른 서명(Signature)을 덧붙여 전송 중 단 1비트(Bit flip)라도 오염되면 GCS가 패킷을 즉각 폐기할 수 있도록 무결성 봉인을 채운다.</li>
+</ol>
+<h2>2. 하드웨어 타이머(HRT) 기반의 전송 스케줄러</h2>
+<p>이렇게 완벽하게 다듬어진 बा이트 배열(버퍼)이라 할지라도, MAVLink 모듈은 이를 즉시 UART 포트(시리얼 포트)로 무식하게 들이붓지 않는다.</p>
+<p>57600 baud rate 수준의 좁은 텔레메트리 파이프 안에는 1Hz짜리 Heartbeat뿐만 아니라 50Hz짜리 자세 정보(Attitude), 10Hz짜리 GPS 정보가 피 터지게 자릿싸움을 펼치고 있다. 이를 통제하는 것이 PX4의 <strong>하드웨어 타이머(Hardware Timer) 기반 스트림 스케줄러</strong>다.</p>
+<ul>
+<li><strong>마이크로초 시계 (HRT, High-Resolution Timer)</strong>: PX4는 NuttX의 <code>hrt_absolute_time()</code> 함수를 호출하여 현재 시간을 마이크로초 단위로 추적한다.</li>
+<li><strong>토큰 버킷(Token Bucket) 기반 대역폭 통제</strong>: MAVLink 송신 루프는 각 스트림(Heartbeat, Attitude 등)마다 설정된 주파수(Hz)를 기반으로 언제 다음 패킷이 나갈 차례인지를 정확히 스케줄링한다. 다른 고주파 패킷들을 보낸 직후 시리얼 버퍼(DMA Queue)가 꽉 찼다면, Heartbeat 스트림은 다음 마이크로초 단위 타임 슬롯(Time slot)이 열릴 때까지 전송 큐에서 단정히 대기한다.</li>
+</ul>
+<p>이처럼 **극한의 메모리 압축(직렬화)**과, **나노초 단위로 통제되는 대역폭 제어(하드웨어 타이머 스케줄링)**가 결합되어, PX4의 Heartbeat는 아무리 좁고 혼잡한 통신 회선 속에서도 자신만의 1Hz 주파수를 잃지 않고 기체의 단일 진실(Single Source of Truth)을 지상으로 내뿜을 수 있는 것이다.</p>
 
             </article>
             <footer>

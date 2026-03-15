@@ -115,6 +115,42 @@
             </header>
             <article>
                 <h1>38.1.1 유한 상태 머신(Finite State Machine)의 결정론적 오토마타(Deterministic Automata) 설계</h1>
+<p>무인 항공기(UAV)와 같은 임무 수행 필수적인(Mission-critical) 시스템에서는 한 치의 논리적 오류도 기체의 추락이나 인명 피해로 직결될 수 있다. 따라서 비행을 관장하는 최상위 모듈은 어떠한 상황에서도 시스템의 다음 상태를 100% 예측 가능해야 한다. PX4-Autopilot의 <code>commander</code> 모듈은 이러한 요구사항을 달성하기 위해 비결정론적(Nondeterministic) 요소를 배제하고, 수학적으로 엄밀한 ‘결정론적 유한 오토마타(Deterministic Finite Automaton, DFA)’ 모델을 기반으로 상태 머신을 설계 및 운용한다.</p>
+<h2>1. 결정론적 유한 오토마타(DFA)의 선형적 인과관계</h2>
+<p>컴퓨터 과학과 오토마타 이론에서 DFA는 상태 공간(State Space, <span class="math math-inline">Q</span>), 입력 알파벳(Input Alphabet, <span class="math math-inline">\Sigma</span>), 전이 함수(Transition Function, <span class="math math-inline">\delta</span>), 초기 상태(<span class="math math-inline">q_0</span>), 그리고 결승 상태 집합(<span class="math math-inline">F</span>)으로 이루어진 5-튜플(5-tuple)로 정의된다.</p>
+<p><span class="math math-display"> M = (Q, \Sigma, \delta, q_0, F) </span></p>
+<p>PX4-Autopilot의 FSM 체계에서 각 요소는 다음과 같이 매핑된다.</p>
+<ul>
+<li><strong><span class="math math-inline">Q</span> (상태 공간)</strong>: 기체의 무장 상태(<code>ARMED</code>, <code>STANDBY</code>), 내비게이션 모드(<code>MANUAL</code>, <code>MISSION</code>), 안전장치 상태(<code>FAILSAFE</code>, <code>TERMINATION</code>) 등의 조합.</li>
+<li><strong><span class="math math-inline">\Sigma</span> (입력 알파벳)</strong>: 조종사의 스틱 입력, MAVLink를 통한 GCS 제어 명령, 센서 시스템에서 발행하는 배터리 저전압 경고, 통신 단절(Data Link Loss) 이벤트 등.</li>
+<li><strong><span class="math math-inline">\delta</span> (전이 함수)</strong>: 현재 상태와 입력 조건이 주어졌을 때, 유일하게(Uniquely) 결정되는 다음 상태를 산출하는 엄격한 분기 로직(코드의 <code>state_machine_helper.cpp</code> 내부 검증 로직).</li>
+</ul>
+<p>DFA의 가장 중요한 특징은, 특정 ’현재 상태’에서 특정 ’입력’이 주어졌을 때 전이할 수 있는 ’다음 상태’가 무조건 단 1개만 존재하거나 아예 전이가 불가능해야 한다는 점이다. 만약 여러 개의 다음 상태를 갖는 비결정론적 유한 오토마타(NFA)가 적용된다면, 동일한 명령을 내렸을 때 시스템이 확률적으로 다른 동작을 수행할 위험이 있다. PX4는 모든 예외 처리에 대해 NFA 구조를 강제로 억눌러 완벽한 DFA 형태로 동작하도록 통제한다.</p>
+<h2>기체 라이프사이클의 DFA 설계 구조 분석</h2>
+<p>아래의 도표는 PX4-Autopilot의 시동(Arming) 및 비상(Failsafe) 상태를 중심으로 설계된 단순화된 결정론적 오토마타의 전이도 구조이다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; INIT : Power On
+    INIT --&gt; STANDBY : Boot &amp; Pre-flight Checks Passed
+    STANDBY --&gt; ARMED : MAV_CMD_COMPONENT_ARM_DISARM (Arm) [Pre-arm checks valid]
+    ARMED --&gt; STANDBY : Disarm Command AND Unpowered/Landed
+    ARMED --&gt; FAILSAVE_RTL : Datalink Loss Detected Event
+    FAILSAVE_RTL --&gt; TERMINATION : Critical Hardware Failure Event
+    FAILSAVE_RTL --&gt; STANDBY : Landed Safely
+    TERMINATION --&gt; [*] : System Lockout
+</code></pre>
+<p>이 다이어그램에서 주목할 점은, 모든 상태 전이에는 명확한 **이벤트 결합 조건(Event AND Condition)**이 필요하다는 것이다.<br />
+예를 들어 <code>STANDBY</code>에서 <code>ARMED</code>로 전이하기 위한 전제 조건(Pre-condition)은 조종사의 <code>ARM</code> 명령 입력뿐만 아니라, GPS 3D Fix 확인, 센서 캘리브레이션 무결성, 배터리 전압 조건 등을 검증하는 <code>Pre-flight checks</code> 통과 플래그가 수반되어야 한다. 만약 이 플래그가 하나라도 누락되면, DFA의 전이 함수 <span class="math math-inline">\delta</span>는 상태 전이를 거부(Reject)하고 기체를 계속 <code>STANDBY</code> 상태로 유지한다.</p>
+<h2>소스 코드 레벨에서의 전이 함수(Transition Function) 구현 규칙</h2>
+<p>PX4의 소스 코드를 살펴보면 <code>main_state_transition</code> 또는 <code>arming_state_transition</code>과 같은 함수들이 DFA의 전이 함수 역할을 수행한다. 이 함수들은 단순히 상태 변수를 대입(<code>state = new_state</code>)하지 않는다.</p>
+<ol>
+<li><strong>상태 불변성(Immutability) 검증</strong>: 현재 상태와 요청된 상태가 동일하다면 즉시 반환하여 처리 오버헤드를 줄인다.</li>
+<li><strong>유효성 검사 매트릭스(Validation Matrix)</strong>: 하드코딩된 규칙에 따라 <code>if-else if</code> 체인이나 룩업 테이블(Look-up Table)을 순회하며 전이 가능 여부를 판별한다. 어떠한 조건 분기에도 해당하지 않는 불법적인 전이(Illegal Transition) 시도는 <code>TRANSITION_DENIED</code> 형태의 에러 코드를 반환한다.</li>
+<li><strong>거부의 결정론적 전파</strong>: 상태 전이가 거부되면, 즉각적으로 GCS에 MAVLink <code>COMMAND_ACK</code> 메시지(결과 코드: <code>MAV_RESULT_DENIED</code> 또는 <code>MAV_RESULT_TEMPORARILY_REJECTED</code>)를 송신하여 지상 관제소가 현재 왜 전이가 발생하지 않았는지를 정확히 파생 추적(Traceability)할 수 있게 한다.</li>
+</ol>
+<h2>Ardupilot과 비교: 결정론적 엄격성의 차이</h2>
+<p>Ardupilot 아키텍처는 “파일럿의 제어권 보장(Pilot Override)“을 좀 더 선호하는 경향이 있다. 예를 들어, 일부 센서에 일시적인 글리치(Glitch)가 생겨도 조종사가 수동 모드에서 강제 시동을 걸거나 비행을 속행할 수 있도록 경험적 우회 규칙(Heuristic Bypass Rule)을 제공하는 경우가 존재한다. 이는 현장에서 비상 이륙이 필요한 특수한 상황에서 장점이 될 수 있다.</p>
+<p>반면, PX4-Autopilot은 **“논리적으로 증명되지 않은 상태 전이는 무조건 금지한다”**는 학술적이고 예외를 허용하지 않는 엄격성을 고집한다. 이는 산업용 드론의 자율 비행(Autonomous Flight)과 군집 비행(Swarm) 환경에서 관제 소프트웨어(예: QGroundControl, ROS2 기반 자율 제어 노드)가 기체의 다음 반응을 수학적으로 100% 확신할 수 있게 만들어 준다. 관제 알고리즘은 PX4의 일관된 DFA 동작을 믿고, 기체가 자신의 명령을 거부했다면 기체 결함 모듈의 문제를 먼저 해결하는 방향(예: GPS 신호 회복 지시 또는 센서 재캘리브레이션 유도)으로 상태 제어 모델을 설계할 수 있다.</p>
+<p>결과적으로 PX4의 이러한 결정론적 오토마타 설계는 예측 불가능성(Unpredictability)을 최소화하여 시스템 전체의 무결성(Integrity)을 보호하는, 가장 견고한 제어 공학적 방어기제라 할 수 있다. 다음 절에서는 이러한 구조적 특성이 선형대수학의 상태 전이 행렬 체계에서 어떠한 대수학적, 공간적 제약을 갖는지 고찰한다.</p>
 
             </article>
             <footer>

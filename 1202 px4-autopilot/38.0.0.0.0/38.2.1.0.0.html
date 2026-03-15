@@ -115,6 +115,29 @@
             </header>
             <article>
                 <h1>38.2.1 HEARTBEAT 페이로드(Payload)의 바이트 정렬(Byte Alignment) 및 메모리 매핑</h1>
+<p>MAVLink 프로토콜은 제한된 무선 주파수(RF) 대역폭 환경에서 최소한의 오버헤드로 데이터를 전송하기 위해 극단적인 최적화를 추구한다. 그 최적화의 핵심 철학 중 하나가 바로 페이로드(Payload)를 담는 C/C++ 구조체(Struct)의 <strong>메모리 정렬(Memory Alignment) 및 패딩(Padding) 최소화 기법</strong>이다.</p>
+<h2>1. C 컴파일러의 메모리 패딩(Padding) 문제</h2>
+<p>일반적으로 GCC나 Clang과 같은 C/C++ 컴파일러는 CPU의 메모리 접근 속도(Fetch 성능)를 높이기 위해 구조체 멤버 변수들을 4바이트(32비트) 또는 8바이트(64비트) 경계(Boundary)에 강제로 맞춰 정렬한다.</p>
+<p>예를 들어 개발자가 1바이트 변수 다음 4바이트 변수를 구조체에 선언하면, 컴파일러는 둘 사이에 의미 없는 빈 공간 3바이트(Padding)를 삽입한다. 이 C 구조체를 통신 소켓에 그대로 복사(Serialization)하여 무선으로 전송한다면, 전체 통신 대역폭의 상당 부분을 이 쓸모없는 패딩 바이트를 전송하는 데 낭비하게 된다.</p>
+<h2>2. MAVLink의 크기 내림차순 정렬(Descending Order Sort) 알고리즘</h2>
+<p>이러한 메모리 낭비를 구조적으로 회피하기 위해 MAVLink 코드 생성기(<code>mavgen</code>, <code>pymavlink</code>)는 개발자가 작성한 XML 메시지 명세서(Definition)를 C 헤더 파일로 변환할 때, 구조체 멤버들을 원래 선언된 논리적 순서가 아니라 **자료형의 크기(Byte-size) 내림차순으로 강제 재배치(Reordering)**한다.</p>
+<p>가장 큰 자료형(예: <code>uint64_t</code>)을 맨 앞에 배치하고, 이어서 <code>uint32_t</code>, <code>uint16_t</code>, 그리고 마지막에 가장 작은 <code>uint8_t</code> 배열들을 꽉 채워 넣는 방식이다. 이렇게 하면 컴파일러가 자연스럽게 패딩 패널티(Penalty) 없이 빈틈없이 연속된 블록으로 메모리를 매핑할 수 있다.</p>
+<h3>2.1 HEARTBEAT 구조체의 실제 메모리 청사진</h3>
+<p>앞서 설명한 재배치 알고리즘을 거친 MAVLink 2 규격의 <code>mavlink_heartbeat_t</code> C 구조체는 다음과 같이 물리적 메모리에 9바이트 크기로 빈틈없이 밀착(Packed)된다.</p>
+<pre><code class="language-c">typedef struct __mavlink_heartbeat_t {
+ uint32_t custom_mode;   /*&lt; [4 Bytes] 오토파일럿 고유의 커스텀 비행 모드 비트마스크 */
+ uint8_t type;           /*&lt; [1 Byte] 기체 유형 (e.g. Quadrotor, Fixed-wing) */
+ uint8_t autopilot;      /*&lt; [1 Byte] 오토파일럿 종류 (e.g. PX4, Ardupilot) */
+ uint8_t base_mode;      /*&lt; [1 Byte] 비행 시동 및 기본 상태 (e.g. Armed/Disarmed) */
+ uint8_t system_status;  /*&lt; [1 Byte] 시스템 헬스 컨디션 (e.g. Active, Critical) */
+ uint8_t mavlink_version;/*&lt; [1 Byte] MAVLink 프로토콜 통신 버전 규격 */
+} mavlink_heartbeat_t;
+</code></pre>
+<p>가장 덩치가 큰 4바이트짜리 <code>custom_mode</code>가 구조체의 최상단 오프셋(Offset 0~3)을 차지하고, 나머지 1바이트 변수 5개가 그 뒤를 이음으로써, 컴파일러 스펙과 무관하게 전체 페이로드가 정확히 9바이트(4+1+1+1+1+1)로 압축된다. 이 9바이트 덩어리는 직렬화(Serialization)를 위한 메모리 복사 함수(<code>memcpy</code>) 호출 한 번으로 통신 버퍼에 즉각 등재된다. CPU 파싱 오버헤드를 0에 수렴시키는 C언어 시스템 프로그래밍의 정수라 할 수 있다.</p>
+<h2>3. Ardupilot과의 MAVLink 엔진 호환성</h2>
+<p>흥미로운 점은 PX4와 Ardupilot이라는 상이한 두 비행 제어 철학을 가진 시스템이, 통신 밑단에서는 동일한 MAVLink 코드 생성기 기반의 C 헤더 파일 저장소를 공유한다는 점이다.</p>
+<p>Ardupilot의 HAL 계층 내부 GCS 트래픽 처리 모듈과 PX4의 <code>mavlink_messages.cpp</code> 송수신부 모두, 메모리에 올려진 <code>mavlink_heartbeat_t</code> 구조체를 바이트 단위로 쪼개어 시리얼 또는 UDP/TCP 스트림에 밀어 넣는 동일한 직렬화 절차를 거친다. 따라서 기체가 Ardupilot이든 PX4이든 관계없이 GCS로 쏘아 올려지는 <code>HEARTBEAT</code> 페이로드의 물리적 바이트 정렬은 1비트의 오차도 없이 쌍둥이처럼 정확히 일치한다.</p>
+<p>차이가 발생하는 지점은 바이트 매핑 자체가 아니라, 그 래핑된 바이트 안에 쓰여진 <code>custom_mode</code> 숫자의 ’논리적 의미 해석(Semantics)’으로 국한된다. 다음 절에서는 이 압축된 데이터 묶음이 이기종 하드웨어 아키텍처(x86 PC, ARM MCU 등)를 건너갈 때 발생하는 메모리 조각 맞추기, 즉 엔디안(Endianness) 정렬 문제와 무결성 알고리즘을 다룬다.</p>
 
             </article>
             <footer>

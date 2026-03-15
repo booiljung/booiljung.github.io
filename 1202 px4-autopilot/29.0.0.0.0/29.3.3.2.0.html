@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.3.3.2 시동 활성화 상태에서의 스로틀 아이들(Idle) 최저 출력 강제 유지 시스템 안전 코드</title>
+    <title>BIJUNG:29.3.3.2. 시동 활성화 상태에서의 스로틀 아이들(Idle) 최저 출력 강제 유지 시스템 안전 코드</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,44 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.3.3.2 시동 활성화 상태에서의 스로틀 아이들(Idle) 최저 출력 강제 유지 시스템 안전 코드</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.3.3.2 시동 활성화 상태에서의 스로틀 아이들(Idle) 최저 출력 강제 유지 시스템 안전 코드</span></nav>
+                    <h1>29.3.3.2. 시동 활성화 상태에서의 스로틀 아이들(Idle) 최저 출력 강제 유지 시스템 안전 코드</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.3.3.2. 시동 활성화 상태에서의 스로틀 아이들(Idle) 최저 출력 강제 유지 시스템 안전 코드</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.3.3.2 시동 활성화 상태에서의 스로틀 아이들(Idle) 최저 출력 강제 유지 시스템 안전 코드</h1>
+                <h1>29.3.3.2. 시동 활성화 상태에서의 스로틀 아이들(Idle) 최저 출력 강제 유지 시스템 안전 코드</h1>
+<p>본 소절에서는 매뉴얼 모드(Manual Mode) 파이프라인에서 센서 피드백을 모두 생략(Bypass)하는 와중에도, 단 하나 절대로 타협하지 않는 치명적인 하드웨어 보호 인터록(Interlock)인 <strong>시동(Armed) 상태에서의 스로틀 아이들(Idle) 강제 유지</strong> 메커니즘을 소스 코드 수준에서 살펴본다.</p>
+<h2>1.  0% 스로틀의 함정과 공기역학적/전기적 재앙</h2>
+<p>조종자가 매뉴얼 모드 비행 중 고도를 급격히 낮추기 위해 송신기의 스로틀 스틱을 최하단(<span class="math math-inline">0\%</span>)으로 내렸다고 가정해 보자. 만약 다이렉트 패스스루 논리에 의해 이 <span class="math math-inline">0\%</span> 값이 ESC(전자식 속도 제어기)로 <span class="math math-inline">1:1</span> 직격하게 되어 모터가 공중에서 완전히 멈춰버린다면(Dead Stop), 다음과 같은 두 가지 재앙적 결과가 초래된다.</p>
+<ol>
+<li><strong>ESC 탈조(Desynchronization)</strong>: 고속의 맞바람(Relative Wind)을 맞으며 활공 중인 기체의 프로펠러는 관성에 의해 자유 회전(Windmilling)을 하게 된다. 이때 모터가 완전히 꺼져 있다가 조종자가 다시 스로틀을 올리면, ESC는 윈드밀링 중인 모터의 역기전력(BEMF) 위상을 순간적으로 추적하지 못하고 탈조(Desync)를 일으켜 모터가 타버리거나 추력이 영구 상실될 구멍(Blackout)이 발생한다.</li>
+<li><strong>조종면/자세 제어 권한 상실</strong>: 멀티로터의 경우 모터가 멈추면 자이로스코프가 아무리 훌륭해도 자세 제어(Roll/Pitch/Yaw)를 위한 각운동량(Angular Momentum) 배분 자체가 불가능해지며, 고정익 랜딩기어나 플랩 연동 등에 악영향을 미칠 수 있다.</li>
+</ol>
+<p>이 때문에 PX4 펌웨어는 기체가 이륙 승인(Armed)을 받은 시점부터 다시 시동 해제(Disarmed)가 될 때까지, 어떠한 상황에서도 모터가 완전히 멈추지 않도록 <strong>아이들(Idle) 베이스라인</strong>을 강제 형성한다.</p>
+<h2>2.  아이들(Idle) 최저 출력 클리핑 알고리즘</h2>
+<p>매뉴얼 스로틀 토픽이 액추에이터 버퍼로 인가되는 로직(<code>FlightTaskManual</code> 혹은 종단 믹서 단)에는 조종자의 <span class="math math-inline">0\%</span> 스로틀 입력조차도 파라미터로 사전에 정의된 아이들 속도(예: <code>PWM_MIN</code> 보다 살짝 높은 임계치)로 치환해 버리는 구문이 내포되어 있다.</p>
+<pre><code class="language-cpp">// 매뉴얼 스로틀 처리에 있어 Armed 상태에 따른 아이들 강제 병합 논리 (개념적 재구성)
+float compute_manual_throttle(float stick_throttle, bool is_armed, float idle_percent)
+{
+    // 시동이 걸리지 않은 상태(Disarmed)라면 스로틀은 절대적으로 0 (안전 스위치)
+    if (!is_armed) {
+        return 0.0f; 
+    }
+
+    // [시동 상태(Armed) 스로틀 베이스라인 확보]
+    // 조종자가 스틱을 완전히 내려서 stick_throttle 이 0.0 이더라도,
+    // idle_percent (전형적으로 0.05 ~ 0.15, 즉 5~15%) 이하로는 절대로 떨어지지 않도록 구속한다.
+    
+    // 수학적 맵핑: stick_throttle (0.0 ~ 1.0) -&gt; (idle_percent ~ 1.0)
+    float throttle_out = idle_percent + (stick_throttle * (1.0f - idle_percent));
+
+    return throttle_out;
+}
+</code></pre>
+<p>이 연산식을 유심히 살펴보면, 조종자의 <code>stick_throttle</code> 변수가 단순히 <code>idle_percent</code> 와 크기 비교 후 잘리는 것(Clipping)이 아니라, <code>idle_percent</code> 와 <span class="math math-inline">1.0</span> 사이의 구간으로 다시 선형적 사상(Linear Mapping)이 이루어짐을 알 수 있다. 이 방식은 스틱의 맨 아래 영역에서도 데드존(Dead-zone) 없이 조종자의 스로틀 분해능(Resolution)을 끝까지 살려주기 위한 공학적 배려이다.</p>
+<h2>3.  매뉴얼 모드의 본질: 자유와 통제의 교차점</h2>
+<p>결과적으로 PX4의 매뉴얼 모드는 “조종자에게 <span class="math math-inline">100\%</span> 의 자유를 허락하되, 기체가 하드웨어적으로 죽어버리는 단 <span class="math math-inline">1\%</span> 의 물리적 지점(Dead Stop)만큼은 소프트웨어 커널이 끝끝내 쥐고 놓아주지 않는” 교묘한 타협의 산물이다.</p>
+<p>조종자는 EKF의 간섭이나 고도 피드백의 저항 없이 스틱을 맨 아래로 내려 기체를 수직 강하시킬 자유(Freedom)를 누리지만, 백그라운드의 안전 장치(Safeguard)는 ESC가 탈조하지 않을 최소한의 RPM 전류를 끊임없이 공급(<code>throttle_out = idle_percent</code>)하여 최후의 순간에 다시 스로틀을 쳐올렸을 때 기체가 일발 시동(Instant Spool-up)으로 회복할 수 있는 통제력(Control Authority)의 끈을 유지해 준다. 이것이 상용 비행 제어기와 취미용 토이(Toy) 컨트롤러를 가르는 항공 소프트웨어의 보이지 않는 격차(Gap)이다.</p>
 
             </article>
             <footer>

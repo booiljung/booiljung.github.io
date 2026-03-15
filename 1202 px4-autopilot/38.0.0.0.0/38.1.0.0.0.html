@@ -115,6 +115,27 @@
             </header>
             <article>
                 <h1>38.1 PX4 상태 머신(State Machine) 아키텍처의 제어 공학적 모델링</h1>
+<p>무인 항공기(UAV)의 비행 제어 시스템은 본질적으로 연속 시간(Continuous-Time) 도메인에서의 물리적 플랜트(Plant) 제어와, 이산 시간(Discrete-Time) 도메인에서의 논리적 이벤트 처리가 결합된 하이브리드 제어 시스템(Hybrid Control System)의 특성을 갖는다.</p>
+<p>기체의 기울기나 모터의 회전수를 제어하는 자세 제어기(Attitude Controller)나 위치 제어기(Position Controller)가 미분방정식에 기반한 연속 연속(Continuous) 제어 루프를 형성한다면, ‘이륙 대기’, ‘비행 중’, ‘비상 착륙’, ’센서 캘리브레이션’과 같은 시스템의 거시적인 운용 모드는 이산 사건 모델(Discrete Event Model)로 정의된다. PX4-Autopilot은 이러한 이산 사건을 처리하기 위해 내부적으로 기하학적이고 엄격하게 정의된 유한 상태 머신(FSM, Finite State Machine) 아키텍처를 채택하고 있다.</p>
+<h2>1.  하이브리드 제어 시스템 관점에서의 FSM 역할</h2>
+<p>제어 공학에서 이산 사건 시스템(Discrete Event System, DES)은 오직 이벤트(Event)가 발생할 때만 상태가 변화하는 시스템을 지칭한다. PX4의 <code>commander</code> 모듈은 이 DES의 핵심 구현체로서, 시스템의 전반적인 라이프사이클과 안전 권한(Safety Authority)을 통제한다.</p>
+<p>연속 시간 제어기(예: PID 제어기)가 외란이나 노이즈에 대처하여 시스템의 점근적 안정성(Asymptotic Stability)을 확보하는 데 집중한다면, FSM으로 구현된 <code>commander</code> 모듈은 논리적 충돌 방지와 비정상 상위 수준(High-level) 동작 시나리오의 배제를 통해 시스템의 본질적인 안전성(Safety)을 보장한다. 만약 안정적인 자세 제어가 이루어지고 있더라도, 기체가 지상에 있는 상태(Landed State)에서 비행 모드(In-air State)로의 논리적 전이 없이 프로펠러가 임의로 회전한다면 이는 치명적인 논리적 결함이다. 이를 원천 차단하는 것이 상태 머신의 역할이다.</p>
+<h2>2.  상태 공간(State Space) 정의 및 가관측성(Observability) 확보</h2>
+<p>PX4-Autopilot의 FSM은 오토마타(Automata) 이론에 기반하여 명확한 상태 공간(State Space, <span class="math math-inline">\Sigma</span>)을 정의한다.<br />
+상태 공간은 단순히 하나의 변수 목록이 아니라, 여러 개의 독립적이거나 상호 종속적인 직교 상태(Orthogonal States)로 구성된다. 핵심적인 상태 공간의 요소는 다음과 같다.</p>
+<ol>
+<li><strong>내비게이션 상태 (Navigation State):</strong> 현재 기체가 수행 중인 비행 모드 (예: <code>NAVIGATION_STATE_MANUAL</code>, <code>NAVIGATION_STATE_AUTO_MISSION</code>, <code>NAVIGATION_STATE_AUTO_RTL</code> 등).</li>
+<li><strong>무장 상태 (Arming State):</strong> 액추에이터의 물리적 동력 활성화 여부 (예: <code>ARMING_STATE_STANDBY</code>, <code>ARMING_STATE_ARMED</code> 등).</li>
+<li><strong>결함 내성 상태 (Failsafe State):</strong> 센서나 통신 컴포넌트의 오류 검출에 따른 비상 수준 분류 (예: 데드레코닝 필요, 즉시 착륙, 비행 종료 등).</li>
+</ol>
+<p>이러한 다차원의 상태 변수들은 <code>vehicle_status</code>라는 uORB(Micro Object Request Broker) 메시지 토픽을 통해 내부의 다른 모든 시스템 모듈(제어기, 내비게이터, 통신 모듈 등)로 브로드캐스트된다. 이는 제어 공학의 결정론적 모델에서 ’가관측성(Observability)’을 확보하는 행위와 동일하다. 상태를 은닉하지 않고 시스템 전체에 투명하게 공개함으로써, 독립적으로 비동기 처리되는 다른 모듈들이 단일 진실 공급원(Single Source of Truth)을 바탕으로 동기화된 동작을 수행할 수 있게 한다.</p>
+<h2>3.  PX4 모델링 철학과 Ardupilot과의 비교</h2>
+<p>상태 머신을 설계하는 관점에서 PX4-Autopilot과 Ardupilot은 상이한 제어 공학적 철학을 내포하고 있다.</p>
+<p><strong>PX4-Autopilot의 엄격한 오토마타(Strict Automata)</strong><br />
+PX4는 결정론적 유한 상태 머신(Deterministic Finite Automaton, DFA)의 특징인 “암시적 거부(Deny by Default)” 원칙을 따른다. 허용된 상태 전이 행렬(State Transition Matrix)에 명시되지 않은 경로로는 어떠한 외부 강제 입력이나 인터럽트가 발생하더라도 절대 상태가 전이되지 않는다. <code>commander</code> 모듈의 소스 코드를 분석해보면 상태 전이 함수 실행 전 필수 조건(Pre-condition)을 수십여 줄의 엄격한 <code>if-else</code> 블록 혹은 검증(Validation) 함수 묶음으로 검사하는 것을 확인할 수 있다. 이는 복잡성을 다소 증가시키지만 예기치 못한 논리적 교착 상태(Deadlock)나 레이스 컨디션(Race Condition)을 수학적 수준에서 원천 차단하는 장점을 제공한다.</p>
+<p><strong>Ardupilot의 유연한 경험적 상태 제어(Heuristic State Control)</strong><br />
+반면 Ardupilot은 상태 관리에서 약간 더 유연한 트리거(Trigger) 및 예외 처리 아키텍처를 보여준다. 비행 중 특정 센서부에서 데드락이 우려될 경우, 내부 모니터링 데몬이 하드 페일 세이프(Hard Failsafe) 모드로 전이하기 전에 자체적인 휴리스틱(Heuristics)을 개입시켜 비행 모드를 한 단계만 다운그레이드하거나, 제한된 조건 하에서 사용자의 명령을 부분 수용하는 “조건부 수용(Conditional Acceptance)” 로직이 발달되어 있다. 이는 하드웨어 결함에 대처하는 생존성 면에서는 유리하지만 상태 머신의 직관적인 추론 가능성(Predictability)을 복잡하게 만든다.</p>
+<p>결과적으로 PX4의 <code>commander</code> 아키텍처는 고도로 모델링되고 수리적으로 증명 가능한(Provable) 제어 시스템 구축을 지향하며, 이는 ROS/ROS2와 같은 범용 로봇 미들웨어나 지상 관제 시스템(QGroundControl)과의 비동기 상호작용 설계에서 명확한 인터페이스 사양서(Specification) 역할을 수행하게 된다. 하위 절에서는 이러한 결정론적 오토마타 설계 기법, 다중 스레드 환경에서의 동시성 제어, 그리고 제어권 전이 시 발생할 수 있는 이력 현상(Hysteresis)과 같은 구체적인 제어 공학적 과제들의 구현 방식에 대해 깊이 있게 논의할 것이다.</p>
 
             </article>
             <footer>

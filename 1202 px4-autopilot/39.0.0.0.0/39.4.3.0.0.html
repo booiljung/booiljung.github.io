@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.4.3 Commander 모듈의 POSIX 스레드(Pthread) 스케줄링 및 이벤트 처리</title>
+    <title>BIJUNG:39.4.3. Commander 모듈의 POSIX 스레드(Pthread) 스케줄링 및 이벤트 처리</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,48 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.4.3 Commander 모듈의 POSIX 스레드(Pthread) 스케줄링 및 이벤트 처리</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.4.3 Commander 모듈의 POSIX 스레드(Pthread) 스케줄링 및 이벤트 처리</span></nav>
+                    <h1>39.4.3. Commander 모듈의 POSIX 스레드(Pthread) 스케줄링 및 이벤트 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.4.3. Commander 모듈의 POSIX 스레드(Pthread) 스케줄링 및 이벤트 처리</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.4.3 Commander 모듈의 POSIX 스레드(Pthread) 스케줄링 및 이벤트 처리</h1>
+                <h1>39.4.3. Commander 모듈의 POSIX 스레드(Pthread) 스케줄링 및 이벤트 처리</h1>
+<h2>1. 서론: 상태 머신(State Machine)의 심장박동을 통제하는 자장</h2>
+<p>PX4 아키텍처에서 <code>Commander</code> 디먼(Daemon)은 기체의 두뇌이자 최종 의사결정권자 역할을 수행한다. 이 모듈은 센서 캘리브레이션부터 시동(Arming), 비행 모드 전환(Flight Mode Switch), 비상 착륙(Failsafe)에 이르기까지 기체의 모든 운명적 전환을 관장하는 유한 상태 기계(Finite State Machine, FSM)를 구동한다.</p>
+<p>그러나 이 방대한 로직 덩어리를 어떻게 RTOS 스케줄러 위에서 “언제 깨우고 언제 재울 것인가“에 대한 문제는 제어 공학적으로 매우 민감한 사안이다. 만약 조종자의 긴급 홀드(Hold) 명령이 도착했음에도 <code>Commander</code> 스레드가 다른 블로킹(Blocking) 작업에 묶여 적시에 응답하지 못한다면 바로 기체 추락으로 직결되기 때문이다. 본 장에서는 PX4(v1.14 기준)가 기반으로 하는 NuttX RTOS의 POSIX 스레드(Pthread) 환경 내에서 <code>Commander</code> 모듈이 어떤 스케줄링 패러다임을 채택하여 비동기적 통신 이벤트(uORB 토픽)를 레이턴시(Latency) 없이 처리해 내는지 분석한다.</p>
+<h2>2. 하드 실시간(Hard Real-time) 제어와 연성 실시간(Soft Real-time) 관제의 분리</h2>
+<p>NuttX는 고도로 튜닝된 선점형(Preemptive) 실시간 운영체제이다. PX4는 이 RTOS의 스레드 우선순위(Priority) 체계를 활용하여, 모터로 향하는 PWM 출력을 계산하는 자세 제어부(Attitude Rate Controller)에는 최상위 강주기(Hard-realtime) 우선순위(예: <code>SCHED_FIFO</code> 250)를 부여한다.</p>
+<p>반면, <code>Commander</code> 모듈은 GCS의 명령을 해석하고 비행 모드를 바꾸는 상대적으로 주기가 긴 연성 실시간(Soft-realtime) 작업을 담당하므로, 그보다 약간 낮은 커스텀 우선순위 영역(예: 130~140 대역)에 배치된다.</p>
+<ol>
+<li><strong>상태 동기화 중심의 루프(State-Sync Loop)</strong>:<br />
+자세 제어기가 무조건 400Hz(2.5ms) 마다 깨어나야 하는 강풍(Gale) 속의 돛대라면, <code>Commander</code> 스레드는 보통 20Hz~50Hz(20ms~50ms)의 여유로운 기본 주기(Base Rate)를 갖는다. 하지만 이 기본 주기는 단지 기체 상태 벡터(센서 헬스, 배터리 등)를 주기적으로 갱신하기 위한 백그라운드 맥박일 뿐이다.</li>
+<li><strong>이벤트 드리븐(Event-Driven) 웩업(Wake-up)</strong>:<br />
+<code>Commander</code> 스레드가 20ms 타이머를 기다리며 수면(Sleep) 중일 때, 앞서 <code>mavlink_receiver</code>가 역직렬화한 <code>vehicle_command</code> uORB 토픽이 버스에 Publish 되면 상황이 완전히 역전된다. uORB 시스템은 해당 토픽을 기다리며(Poll) 자고 있는 <code>Commander</code> 스레드에 POSIX 시그널(Signal)을 던져 스케줄러를 선점(Preempt)하고 즉각적으로 스레드를 깨운다(Wake-up).</li>
+</ol>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant MR as mavlink_receiver Thread
+    participant uORB as uORB Event Bus
+    participant SC as NuttX Scheduler
+    participant CMD as Commander Thread (상태 대기 중)
+
+    MR-&gt;&gt;uORB: orb_publish(vehicle_command)
+    uORB-&gt;&gt;SC: Signal / Semaphore Post
+    SC--&gt;&gt;CMD: Context Switch (Preemption)
+    activate CMD
+    CMD-&gt;&gt;CMD: FSM 상태 천이 검증 및 실행 판별
+    CMD-&gt;&gt;uORB: orb_publish(vehicle_command_ack)
+    deactivate CMD
+    SC--&gt;&gt;CMD: Sleep 전환 (다음 주기/이벤트 대기)
+</code></pre>
+<h2>3. Ardupilot과 PX4의 백그라운드 스케줄링(Background Scheduling) 구조 비교</h2>
+<p>어러한 인터럽트 및 이벤트 주도(Event-Driven) 스케줄링 구조는 두 오픈소스 플랫폼 간 런타임 특성을 근본적으로 갈라놓는다.</p>
+<ul>
+<li><strong>PX4의 ‘이산적 Pthread 격리’ (Discrete Pthread Isolation)</strong>:<br />
+<code>Commander</code>는 C++의 <code>main()</code> 함수로 진입하여 무한 루프를 도는 독립된 POSIX Pthread 디먼이다. 명령 수신이나 모드 전환 시 예기치 않은 블로킹(예: 플래시 메모리 I/O 지연)이 발생하더라도, 이는 온전히 <code>Commander</code> 스레드의 타임 슬라이스(Time Slice) 내에서만 지연을 유발할 뿐, 더 높은 우선순위에서 돌아가는 비행 제어 스레드의 2.5ms 주기에는 단 1마이크로초(<code>us</code>)의 영향도 주지 않는다. 메모리와 컨텍스트 스위칭 비용을 지불하는 대신, 마이크로 커널 기반의 아키텍처 강건성(Robustness)을 확보한 것이다.</li>
+<li><strong>Ardupilot의 ‘조화된 메인 루프 분할’ (Cooperative Main-Loop Slicing)</strong>:<br />
+이에 반해 Ardupilot(v4.x)의 <code>AP_Scheduler</code>는 단일 스레드(Single Thread) 위에서 모든 작업을 테이블 형태로 쪼개어 번갈아 가며 실행하는 협력식 다중 작업(Cooperative Multitasking) 류의 철학을 지닌다. Fast Loop(자세 제어)가 끝난 후 남은 자투리 시간에 GCS 커맨드 처리, 모드 전환 검증 루틴 등의 슬롯 타스크(Task)들이 순차적으로 끼어들어 실행된다. 이는 컨텍스트 스위칭 및 세마포어(Semaphore) 오버헤드가 제로(0)에 가까워 저사양 마이크로프로세서에서 극강의 효율을 내지만, 특정 서브 로직 코드 경로(Code Path)에서 시간 초과(Overrun)가 발생하면 메인 루프의 심박이 밀려버릴 위험(Jitter)에 노출되어 있다.</li>
+</ul>
+<p>PX4 <code>Commander</code>의 이러한 독립적인 스레딩(Threading) 및 이벤트 폴링 채택은 드론의 컴퓨팅 파워가 Cortex-M4를 넘어 M7, 임베디드 리눅스의 A53 코어로 급격히 우상향하는 현대 기술 트렌드에서, “자원 효율보다는 자원 격리를 통한 시스템 병렬성(Parallelism) 및 안정성“에 투자하는 RTOS 기반 분산형 아키텍처의 정답안이라 할 수 있다.</p>
 
             </article>
             <footer>

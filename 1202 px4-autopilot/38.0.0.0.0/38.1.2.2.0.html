@@ -115,6 +115,47 @@
             </header>
             <article>
                 <h1>38.1.2.2 임계 구역(Critical Section) 진입 시 상태 변수 상호 배제(Mutual Exclusion) 및 메모리 배리어(Memory Barrier) 적용 원리</h1>
+<p>PX4-Autopilot의 핵심 상태 머신인 <code>commander</code>는 논리적으로 단일 스레드 이벤트 루프를 기반으로 동작하여 대부분의 데이터 경합(Data Race)을 구조적으로 회피한다. 그러나 하드웨어 추상화 계층(HAL)을 넘나드는 센서 인터럽트 서비스 루틴(ISR, Interrupt Service Routine), uORB 원형 큐(Ring Buffer) 버퍼의 갱신, 그리고 최신 고성능 비행 제어기(예: Pixhawk 6C의 STM32H7 등 듀얼 코어 프로세서)의 캐시 메모리 융합 과정에서는 여전히 ‘임계 구역(Critical Section)’ 보호라는 저수준 제어 공학적 필수 과제가 도사리고 있다.</p>
+<p>비행 제어 소프트웨어에서 기체의 무장 상태(Armed/Disarmed) 플래그와 같은 생명주기 변수는 가장 보수적으로 상호 배제(Mutual Exclusion)가 적용되어야 하는 자원이다.</p>
+<h2>1. 임계 구역의 상호 배제 매커니즘</h2>
+<p>운영체제 수준에서 다중 스레드나 인터럽트 핸들러가 동일한 메모리 주소(예: uORB의 내부 큐 포인터)를 동시에 덮어쓰려 할 때, 메모리 무결성이 붕괴되는 것을 방지하기 위해 PX4는 상황에 따라 다층적인 상호 배제 기법을 둔다.</p>
+<ol>
+<li>
+<p><strong>인터럽트 마스킹 (Interrupt Masking)</strong><br />
+가장 원시적이면서 강력한 방법이다. NuttX OS 레벨에서 임계 구역에 진입하기 직전 하드웨어 인터럽트를 비활성화(<code>irqsave()</code>)하고, 구역을 벗어날 때 복원(<code>irqrestore()</code>)한다. 이 짧은 <span class="math math-inline">\mu s</span> 단위의 구역 안에서는 어떠한 센서 타이머 틱이나 스케줄러 선점도 발생하지 않으므로, 데이터의 원자성(Atomicity)이 100% 보장된다. 이는 주로 버스 드라이버나 uORB 코어 로직의 큐 인덱스 갱신 시 활용된다.</p>
+</li>
+<li>
+<p><strong>스핀락(Spinlock)과 원자적 연산(Atomic Operation)</strong><br />
+멀티코어 아키텍처이거나 인터럽트 지연을 최소화해야 하는 환경에서는 스레드를 블로킹(운영체제 Wait 큐로 이동)하는 대신, CPU 명령어 단에서의 하드웨어적 CAS(Compare-and-Swap) 명령어 등을 활용한 락 프리(Lock-free) 원자적 변수 갱신을 수행한다.</p>
+</li>
+</ol>
+<h2>2. 컴파일러 최적화 및 파이프라이닝의 함정: 메모리 배리어(Memory Barrier)의 필요성</h2>
+<p>최신 ARM Cortex-M7 이상의 프로세서는 슈퍼스칼라(Superscalar) 아키텍처, 비순차적 명령어 실행(Out-of-order execution), 그리고 L1 데이터 캐시(Data Cache)를 내장하고 있다. 이는 코드상으로 <code>is_armed = true</code> 구문을 실행했더라도, CPU의 기록 버퍼(Write Buffer)나 L1 캐시에만 값이 변경되었을 뿐 <strong>실제 메인 RAM(SRAM)에는 값이 즉시 반영되지 않았을 수 있음</strong>을 의미한다.</p>
+<p>최악의 시나리오를 고려해보자.</p>
+<ul>
+<li><code>commander</code> 스레드가 시동 플래그를 <code>true</code>로 셋팅하고 PWM 액추에이터 드라이버를 호출한다.</li>
+<li>PWM 액추에이터 스레드는 즉시 DMA(Direct Memory Access)나 버스 매트릭스를 통해 RAM의 주소를 조회하여 모터를 돌리려 한다.</li>
+<li>그러나 메인 RAM의 <code>is_armed</code> 변수는 캐시가 플러시(Flush)되지 않아 여전히 <code>false</code>인 스텔일 데이터(Stale Data) 상태다.</li>
+<li>액추에이터는 시동이 걸리지 않은 것으로 오판하여 PWM 출력을 거부한다.</li>
+</ul>
+<p>이러한 미세한 비동기적 타이밍 에러를 방지하기 위해, 임계 구역 전후로 반드시 <strong>메모리 배리어(Memory Barrier)</strong> 명령어를 삽입해야 한다.</p>
+<p>ARM 아키텍처 명령어 기준으로 다음과 같은 배리어가 PX4-NuttX 저변에 포진해 있다.</p>
+<ul>
+<li><strong>DMB (Data Memory Barrier)</strong>: 명령어 파이프라인 상 메모리 접근 순서를 강제한다. DMB 명령어 이전에 발생한 모든 메모리 쓰기 동작이, DMB 이후에 선언된 메모리 읽기 동작보다 반드시 구조적으로 선행 완료되도록 보장한다.</li>
+<li><strong>DSB (Data Synchronization Barrier)</strong>: DMB보다 강력하게, 메모리 쓰기뿐만 아니라 캐시 동기화가 실제로 시스템 버스에서 완벽히 끝날 때까지 CPU 실행 프로세스 자체를 일시 중지시킨다.</li>
+</ul>
+<pre><code class="language-mermaid">graph TD
+    A[Commander Thread: is_armed = true] --&gt;|Write to L1 Cache| B(Write Buffer)
+    B --&gt;|Hardware Instruction: DSB/DMB| C{Memory Barrier (강제 동기화)}
+    C --&gt;|Flush to RAM| D[(Main SRAM)]
+    E[Actuator Thread] --&gt;|Read from RAM| D
+    
+    style C fill:#ffd666,stroke:#fa8c16,stroke-width:2px;
+</code></pre>
+<p>PX4 아키텍처는 공유 변수를 다룰 때 C++의 <code>std::atomic</code> 라이브러리를 사용하거나 커널이 제공하는 배리어 매크로를 삽입함으로써, 메모리 뷰(Memory View)의 일관성(Consistency)을 확보한다. 이는 곧 기체가 어떠한 혼돈의 스케줄링 속에서도 자신이 시동(Arm) 상태인지 비무장(Disarm) 상태인지 <strong>시스템의 모든 코어와 주변 장치가 ’단일 진실 공급원(Single Source of Truth)’으로서 동일하게 바라보는 것을 수학적으로 증명</strong>하는 기초 공사가 된다.</p>
+<h3>2.1 Ardupilot HAL 계층과의 설계 패턴 비교</h3>
+<p>Ardupilot 통제 모델의 객체 지향 C++ 하드웨어 추상화 계층(AP_HAL)에서는 <code>AP_HAL::Semaphore</code> 등의 객체를 적극적으로 활용하여 I/O 버스(I2C, SPI)와 비행 상태 객체(<code>Vehicle</code> 인스턴스)를 스레드로부터 방어한다. 코드 가독성과 객체 지향적 무결성 측면에서는 유리하나, 경쟁 상태가 발생하면 세마포어 블로킹으로 인한 문맥 지연이 발생한다.</p>
+<p>반대로 PX4는 uORB와 메시지 기반 아키텍처를 도입하여 상위 계층에서의 ‘명시적인 락(Lock) 객체’ 사용 자체를 제거해버린 설계적 우위를 갖는다. 대신, 락 프리 큐를 올바르게 구현하기 위해 최하단 계층(OS/펌웨어 보드 브링업 단계)에서 인터럽트 마스킹과 메모리 배리어를 병적으로 세밀하게 튜닝해야만 하는 트레이드오프(Trade-off)를 극복하며 지금의 견고한 상태 머신 모델을 완성했다.</p>
 
             </article>
             <footer>

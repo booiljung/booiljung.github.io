@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.3.3.1 비잔틴 장애 허용(Byzantine Fault Tolerance) 개념을 차용한 다중 센서-상태 불일치 감지</title>
+    <title>BIJUNG:37.3.3.1. 비잔틴 장애 허용(Byzantine Fault Tolerance) 개념을 차용한 다중 센서-상태 불일치 감지</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,67 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.3.3.1 비잔틴 장애 허용(Byzantine Fault Tolerance) 개념을 차용한 다중 센서-상태 불일치 감지</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.3.3.1 비잔틴 장애 허용(Byzantine Fault Tolerance) 개념을 차용한 다중 센서-상태 불일치 감지</span></nav>
+                    <h1>37.3.3.1. 비잔틴 장애 허용(Byzantine Fault Tolerance) 개념을 차용한 다중 센서-상태 불일치 감지</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.3.3.1. 비잔틴 장애 허용(Byzantine Fault Tolerance) 개념을 차용한 다중 센서-상태 불일치 감지</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.3.3.1 비잔틴 장애 허용(Byzantine Fault Tolerance) 개념을 차용한 다중 센서-상태 불일치 감지</h1>
+                <h1>37.3.3.1. 비잔틴 장애 허용(Byzantine Fault Tolerance) 개념을 차용한 다중 센서-상태 불일치 감지</h1>
+<p>무인항공기(UAV)의 오토파일럿 제어 루프에서 가장 극단적인 위험 요소는, 센서 모듈이 통신을 완전히 멈추는 물리적 고장(Fail-stop)이 아니라 **분명히 데이터를 송신하고 있으나 그 값이 물리적 진실(Ground Truth)과 모순되는 침묵하지 않는 악의적 고장(Fail-active/Byzantine Fault)**이다. PX4-Autopilot의 확장 칼만 필터(EKF2) 추정기 및 커맨더(Commander) 융합망은 분산 시스템 이론의 비잔틴 장군 문제(Byzantine Generals Problem) 철학을 센서 평가 아키텍처에 차용하여, 이러한 데이터 링크 및 텔레메트리 내부망의 기만적 노이즈를 필터링한다.</p>
+<h2>1.  비잔틴 장애(Byzantine Fault)와 UAV 센서 네트워크 모델링</h2>
+<p>분산 컴퓨팅에서 비잔틴 장애는 어떤 노드가 시스템의 다른 부분에 완전히 서로 다르거나 임의적인 정보(Conflicting information)를 전달하여 합의(Consensus)를 파괴하는 현상을 뜻한다. UAV 시스템에서는 다중 가용 센서(Redundant Sensors)들이 비잔틴 장군들로, EKF2 추정기가 사령관으로 비유될 수 있다.</p>
+<ul>
+<li><strong>비잔틴 장군의 배신 시나리오</strong>: 픽스호크(Pixhawk) 하드웨어에 내장된 3개의 독립적인 IMU 센서 중 1개의 자이로스코프에 특정 주파수의 진동 공진(Resonance)이 발생하여, “현재 기체가 초당 300도로 회전 중이다“라는 거짓된(Malicious) 데이터를 출력한다. 반면 나머지 2개의 IMU와 GPS의 속도 벡터는 “기체는 정지 상태이다“라고 정상 데이터를 보낸다.</li>
+<li>만약 단순 평균(Average) 융합을 사용한다면, 이 하나의 배신자(고장난 센서)로 인해 전체 상태 추정치가 오염되어 기체는 즉각 추락한다.</li>
+</ul>
+<h2>2.  PX4 EKF2의 센서 다수결 투표(Majority Voting) 미들웨어</h2>
+<p>PX4의 EKF2(Extended Kalman Filter) 및 <code>sensors</code> 모듈은 비잔틴 장애를 허용(Tolerance)하기 위해, 다중 센서 간의 상태 불일치를 실시간으로 판별하고 배제하는 **혁신 기반의 투표 감쇠형 알고리즘(Innovation-based Voting and Dampening Algorithm)**을 운용한다.</p>
+<h3>2.1  혁신(Innovation)과 검열 통과 문턱(Gate) 산출</h3>
+<p>EKF2는 각각의 센서(IMU, Mag, Baro, GPS)에서 들어오는 관측값(Observation)을 단순히 믿고 융합하지 않는다. 현재 상태 모델에서 예측한 예측값(Prediction)과 실제 센서 관측값의 차이인 **혁신(Innovation)**을 계산한다.</p>
+<p>데이터는 무결성에 대한 통계적 검열 문턱(Consistency Gate)을 통과해야만 상태 벡터 업데이트에 반영될 권한을 얻는다.<br />
+<span class="math math-display"> \text{Innovation} = y_k - h(\hat{x}_{k|k-1}) </span><br />
+그리고 <span class="math math-inline">\text{Innovation}</span> 값의 제곱 마할라노비스 거리(Square Mahalanobis Distance)가 임계 제한 파라미터(예: <code>EKF2_MAG_GATE</code>, <code>EKF2_GPS_V_GATE</code>)를 연속적으로 초과하면, PX4는 해당 센서를 “비잔틴 고장(데이터 신뢰성 상실)“으로 판별한다.</p>
+<h3>2.2 다수결 투표 지표 (Mermaid 도표)</h3>
+<p>3개의 IMU를 장착한 멀티센서 보드(Pixhawk 6X 등)에서의 상태 불일치 감지 및 합의(Consensus) 격리구조는 다음과 같다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Raw Sensor Streams
+        IMU0[IMU 0: Normal]
+        IMU1[IMU 1: Normal]
+        IMU2[IMU 2: Byzantine Fault / Resonance]
+    end
+
+    subgraph Sensor Selector Module
+        Compare{Cross-validation &amp; Voting}
+        Eval0[Error Metric 0: Low]
+        Eval1[Error Metric 1: Low]
+        Eval2[Error Metric 2: High]
+        
+        Compare --&gt; Eval0
+        Compare --&gt; Eval1
+        Compare --&gt; Eval2
+        
+        Eval0 -- Select --&gt; Active_IMU[Primary IMU Selected]
+        Eval1 -- Select --&gt; Active_IMU
+        Eval2 -- Veto/Reject --&gt; Blocked[Fail-over &amp; Isolation]
+    end
+
+    subgraph EKF2 Estimator
+        Active_IMU --&gt; StateEq[State Prediction &amp; Update]
+    end
+</code></pre>
+<p>시스템은 메트릭이 우수한 센서들의 다수(Majority) 클러스터를 형성하고, 이 클러스터에서 크게 위상적 거리가 벌어지는 IMU2 노드의 관측치를 즉시 <strong>격리(Isolation)</strong> 및 버림(Drop) 처리한다. 이를 통해 데이터 링크 계층에서 오염된 정보가 비행 제어 루프로 번지는 것을 막는다.</p>
+<h2>3. 센서 타임아웃(Timeout) 및 상태 천이 트리거</h2>
+<p>비잔틴 장애는 “데이터가 안 들어오는 현상“이 아니라 “이상한 데이터가 계속 들어오는 현상(Fail-active)“이다. PX4의 <code>Commander</code>는 EKF2에서 산출하는 복합 혁신 일치성 플래그(예: <code>estimator_status</code> 토픽의 <code>gps_check_fail_flags</code>)를 상시 모니터링한다.</p>
+<p>만약 위성 다중 경로(Multipath) 반사로 인해 GPS가 수 미터씩 위치를 순간 이동시키는 비잔틴 오류를 발생시킬 경우:</p>
+<ol>
+<li>EKF2는 GPS 속도/위치 혁신 에러 게이트의 초과를 선언하고 GPS 데이터를 융합에서 완전히 배제(Timeout)시킨다.</li>
+<li><code>Commander</code>는 전역 위치(Global Position) 유효성 플래그가 <code>False</code>로 전환되었음을 감지한다.</li>
+<li>현재 모드가 위치 제어(Position Control) 또는 임무(Mission) 모드일 경우, 필수 불가결한 생존 조건이 깨졌으므로 기체를 GPS 의존성이 없는 <strong>고도 유지(Altitude Hold) 모드</strong> 또는 <strong>수동 롤/피치 제어(Stabilized) 모드</strong>로 즉시 강제 튕겨낸다(Failsafe Transition).</li>
+</ol>
+<h2>4. Ardupilot 관점과의 비교 결론</h2>
+<p>Ardupilot은 <code>EKF3</code>를 통해 센서 어피니티(Affinity) 코어 개념을 도입하여 여러 개의 코어를 병렬로 돌린 후 최고 성능의 레인(Lane)을 선택하는 EKF-Lane Switching 비잔틴 허용 메커니즘을 가진다. 이는 매우 강력하지만 컴퓨팅 파워를 많이 소모할 수 있다.<br />
+반면 PX4는 <code>sensor_combined</code> 토픽을 발행하기 전 가벼운 <code>Sensors</code> 처리 모듈 단계에서부터 다수결 투표 기반의 선별적 필터링을 앞장세우고, 단일 EKF 인스턴스 내에서 혁신 게이트(Innovation Filter)를 이중으로 통과시키는 구조를 가져가 연산 효율과 신뢰성의 최적 하모니를 꾀한다.</p>
+<p>이러한 분산 합의 철학의 내재화는, 단순히 센서가 끊어지면 멈춘다는 원시적인 방어를 넘어, 센서가 시스템을 능동적으로 기만(Lying)하는 열악한 군사적 및 산업적 전파 교란 환경(GPS Jamming/Spoofing)에서도 기체가 생존할 수 있는 강력한 결함 허용(Fault Tolerance)의 제어 공학적 근거가 된다.</p>
 
             </article>
             <footer>

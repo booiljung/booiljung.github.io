@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:35.3.2.1 전역 고유 식별자(UUID) 기반 무인기 인스턴스 해시 테이블(Hash Table) 동적 맵핑 체계</title>
+    <title>BIJUNG:35.3.2.1. 전역 고유 식별자(UUID) 기반 무인기 인스턴스 해시 테이블(Hash Table) 동적 맵핑 체계</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,61 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>35.3.2.1 전역 고유 식별자(UUID) 기반 무인기 인스턴스 해시 테이블(Hash Table) 동적 맵핑 체계</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.3.2.1 전역 고유 식별자(UUID) 기반 무인기 인스턴스 해시 테이블(Hash Table) 동적 맵핑 체계</span></nav>
+                    <h1>35.3.2.1. 전역 고유 식별자(UUID) 기반 무인기 인스턴스 해시 테이블(Hash Table) 동적 맵핑 체계</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.3.2.1. 전역 고유 식별자(UUID) 기반 무인기 인스턴스 해시 테이블(Hash Table) 동적 맵핑 체계</span></nav>
                 </div>
             </header>
             <article>
-                <h1>35.3.2.1 전역 고유 식별자(UUID) 기반 무인기 인스턴스 해시 테이블(Hash Table) 동적 맵핑 체계</h1>
+                <h1>35.3.2.1. 전역 고유 식별자(UUID) 기반 무인기 인스턴스 해시 테이블(Hash Table) 동적 맵핑 체계</h1>
+<p>다중 에이전트(Swarm Multi-Agent) 네트워크에서 각 기체가 일시적인 시스템 식별자(<code>MAV_SYS_ID</code>)를 할당받더라도, 전원 재부팅이나 네트워크 재연결 시 해당 식별자가 유지된다는 보장은 없다. 특히 유동적인 애드혹(Ad-hoc) 군집 통신 환경에서는 더욱 그러하다. 따라서 일시적인 세션 ID가 아닌, 하드웨어에 종속된 절대불변의 전역 고유 식별자(UUID, Universally Unique Identifier)를 기반으로 비행체 인스턴스를 추적하고 맵핑하는 체계가 필수적이다.</p>
+<p>본 절에서는 PX4-Autopilot(v1.14 기준)이 펌웨어 레벨에서 UUID를 생성하는 메커니즘과, 이를 지상 관제 시스템(GCS) 또는 MAVSDK 기반의 백엔드에서 해시 테이블(Hash Table) 구조를 통해 어떻게 동적 맵핑(Dynamic Mapping)하는지 심층적으로 구명한다.</p>
+<h2>1.  하드웨어 종속 전역 고유 식별자(UUID)의 생성 기법</h2>
+<p>PX4-Autopilot은 이식이 용이한 NuttX 단일 실시간 운영체제(RTOS) 위에서 동작하며, 주로 STMicroelectronics의 STM32 계열 마이크로컨트롤러(MCU)를 핵심 제어 장치로 활용한다. 범용적인 UUID 규격(예: RFC 4122)과 유사하게, PX4는 하드웨어 공장 출하 시 실리콘 다이(Silicon Die)에 각인되는 고유 식별자(UID, 96-bit 또는 128-bit)를 추출하여 기체의 UUID로 삼는다.</p>
+<p>이 하드웨어 종속 UUID는 단순히 하드웨어 추적에 그치지 않고 MAVLink 프로토콜의 <code>AUTOPILOT_VERSION</code> 메시지를 통해 네트워크 상으로 브로드캐스트된다. 해당 메시지의 <code>uid</code> 배열 필드는 18바이트 길이로 구성되며, 앞부분은 시스템 아키텍처(예: Pixhawk 4, Cube Orange 등)를 식별하는 제조사 타입 코드로, 뒷부분은 MCU 고유의 일련번호(Serial Number)로 채워진다.</p>
+<p>이를 통해 지상 관제 측은 일시적인 네트워크 세션 식별자인 <code>MAV_SYS_ID</code>에 의존하지 않고, 물리적으로 동일한 드론인지를 확정적으로 인가(Authentication)할 수 있다.</p>
+<h2>2.  해시 테이블(Hash Table)을 활용한 인스턴스 맵핑(Mapping) 아키텍처</h2>
+<p>관제 소프트웨어(예: QGroundControl 구조체 관리자 또는 별도의 MAVSDK 애플리케이션)는 수신된 수천, 수만 개의 원격 측정(Telemetry) 데이터 패킷을 가장 짧은 지연 시간 안에 해당 데이터의 본래 비행체 객체(Vehicle Object)로 라우팅해야 한다. 선형 탐색(O(n) 시간 복잡도)으로 기체 객체를 찾는 방식은 수십 대의 군집 환경에서 CPU 캐시 병목을 초래하므로, 이상적으로 O(1)의 속도를 보장하는 해시 테이블 동적 맵핑 체계가 요구된다.</p>
+<h3>2.1  C++ <code>std::unordered_map</code> 기반의 해시 맵핑 로직</h3>
+<p>MAVSDK와 같은 C++ 기반 관제 미들웨어에서는 내부적으로 <code>std::unordered_map</code> 또는 이와 유사한 해시 맵(Hash Map) 파생 자료구조를 사용하여 UUID를 키(Key)로, 기체 논리 인스턴스(Vehicle Logical Instance) 포인터를 값(Value)으로 저장한다.</p>
+<pre><code class="language-cpp">#include &lt;unordered_map&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+
+// 임의의 기체 논리 객체 클래스
+class VehicleInstance {
+public:
+    uint8_t current_sys_id;
+    // 상태 머신, 텔레메트리 버퍼 등
+};
+
+// UUID 문자열을 키로 사용하는 해시 테이블 구조
+std::unordered_map&lt;std::string, std::shared_ptr&lt;VehicleInstance&gt;&gt; vehicle_registry;
+
+// AUTOPILOT_VERSION 메시지 수신 시 처리 의사코드(Pseudocode)
+void OnAutopilotVersionReceived(uint8_t sys_id, const std::string&amp; hardware_uuid) {
+    auto it = vehicle_registry.find(hardware_uuid);
+    
+    if (it == vehicle_registry.end()) {
+        // [신규 기체 탐지] 해시 테이블에 동적 객체 할당 및 등록
+        auto new_vehicle = std::make_shared&lt;VehicleInstance&gt;();
+        new_vehicle-&gt;current_sys_id = sys_id;
+        vehicle_registry[hardware_uuid] = new_vehicle;
+    } else {
+        // [기존 기체 탐지] 재연결 또는 IP/SYSID 변경 상황에 대한 동적 업데이트
+        if (it-&gt;second-&gt;current_sys_id != sys_id) {
+            it-&gt;second-&gt;current_sys_id = sys_id; // 논리적 라우팅 경로 무결성 갱신
+        }
+    }
+}
+</code></pre>
+<p>위의 아키텍처는 기체가 비행 도중 무선 간섭으로 연결이 끊어지고 난 뒤 다른 네트워크 인터페이스(예: RF 모뎀에서 LTE 망으로 폴백(Fallback))로 재접속하더라도, 동일한 UUID를 매개체로 기존 인스턴스에 끊김 없이(Seamless) 데이터를 이어 붙여(Splicing) 로깅(Logging)하고 제어 루프를 연속시킬 수 있는 핵심 동력을 제공한다.</p>
+<h3>2.2  충돌 해소 메커니즘(Collision Resolution)</h3>
+<p>해시 함수는 본질적으로 입력 도메인이 무한하고 출력 도메인이 유한하기 때문에, 이론적으로 해시 충돌(Hash Collision)이 발생할 수 있다. 그러나 18바이트 길이의 강력한 마이크로컨트롤러 하드웨어 UID를 문자열(String) 비트열 형태로 그대로 해싱(Hashing)하거나 64비트 단일 정수로 변환하여 사용하는 구현에서는, 단일 국지망 내 군집 비행군(수백 대 규모)에서 충돌이 일어날 확률은 영(0)에 수렴한다.</p>
+<p>오히려 현실적인 맵핑 에러는 소프트웨어 시뮬레이션 환경(SITL, Software In the Loop)에서 의도치 않게 다수의 가상 인스턴스가 동일한 모의 UUID 템플릿 반환값을 복제하여 생성될 때 발생한다. 이때 PX4 시뮬레이션 구동 스크립트는 각 인스턴스 시작 포트 번호 등을 시드(Seed)로 섞어(Salt) 가상 UUID를 동적으로 다르게 파생시킴으로써 이종 맵핑 충돌을 원천적으로 차단해야 한다.</p>
+<h2>3.  동적 맵핑 생명주기(Lifecycle) 및 미아(Orphan) 인스턴스 수거</h2>
+<p>다중 에이전트 환경에서 기체는 배터리 방전이나 추락 등으로 언제든 네트워크에서 물리적으로 이탈할 수 있다. 해시 테이블에 무한정 백업된 인스턴스를 적재해 두면 지상 관제 시스템의 메모리 누수(Memory Leak)가 야기되고, 전체 가비지 컬렉션(Garbage Collection) 지연으로 이어질 수 있다.</p>
+<p>이를 방지하기 위해 UUID 해시 테이블 참조 로직에는 <strong>타임아웃(Timeout)</strong> 기반의 스위핑(Sweeping) 논리가 추가로 구동된다. 특정 UUID 객체에 대해 MAVLink <code>HEARTBEAT</code> 패킷이 10초(또는 지정된 임계값) 이상 업데이트되지 않을 경우, 해당 객체의 상태 열거형(Enum)이 <code>DISCONNECTED</code>로 전이된다. 이후 추가로 정해진 세션 유지 기간을 초과하면 해당 스마트 포인터 연계를 해제하여 해시 버킷 트리에서 완전히 제외시킴으로써 소프트웨어 안정성을 도모한다.</p>
+<p>결론적으로 UUID 기반 해시 매핑은 단순한 MAVLink <code>sysid</code> 추종을 넘어서, 하드웨어를 중심으로 변하지 않는 “식별의 축“을 관제 미들웨어에 제공한다. 이는 Ardupilot 시절의 정적 관리 체계에서 벗어나, 현대의 복잡계 에이전트 협업 체계를 구현하는 객체 지향적 관제 프로그래밍의 척추 역할을 수행한다.</p>
 
             </article>
             <footer>

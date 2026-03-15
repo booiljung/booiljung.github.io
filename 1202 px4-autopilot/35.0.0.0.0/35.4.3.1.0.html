@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:35.4.3.1 선형 가속도(Linear Acceleration) 및 각속도(Angular Velocity) 원시 데이터의 비동기 링 버퍼(Ring Buffer) 구현</title>
+    <title>BIJUNG:35.4.3.1. 선형 가속도(Linear Acceleration) 및 각속도(Angular Velocity) 원시 데이터의 비동기 링 버퍼(Ring Buffer) 구현</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,32 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>35.4.3.1 선형 가속도(Linear Acceleration) 및 각속도(Angular Velocity) 원시 데이터의 비동기 링 버퍼(Ring Buffer) 구현</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.4.3.1 선형 가속도(Linear Acceleration) 및 각속도(Angular Velocity) 원시 데이터의 비동기 링 버퍼(Ring Buffer) 구현</span></nav>
+                    <h1>35.4.3.1. 선형 가속도(Linear Acceleration) 및 각속도(Angular Velocity) 원시 데이터의 비동기 링 버퍼(Ring Buffer) 구현</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.4.3.1. 선형 가속도(Linear Acceleration) 및 각속도(Angular Velocity) 원시 데이터의 비동기 링 버퍼(Ring Buffer) 구현</span></nav>
                 </div>
             </header>
             <article>
-                <h1>35.4.3.1 선형 가속도(Linear Acceleration) 및 각속도(Angular Velocity) 원시 데이터의 비동기 링 버퍼(Ring Buffer) 구현</h1>
+                <h1>35.4.3.1. 선형 가속도(Linear Acceleration) 및 각속도(Angular Velocity) 원시 데이터의 비동기 링 버퍼(Ring Buffer) 구현</h1>
+<p>관성 측정 장치(IMU) 센서는 자이로스코프(각속도, <span class="math math-inline">rad/s</span>)와 가속도계(선형 가속도, <span class="math math-inline">m/s^2</span>) 데이터를 최소 1kHz 이상의 초고주파수로 쏟아낸다. 전통적인 선형 배열이나 동적 메모리 할당(Dynamic Allocation) 방식으로 이 거대한 스트림을 처리하려 들면, 힙(Heap) 메모리 단편화나 생성/소멸 오버헤드로 인해 실시간 운영체제(RTOS)의 타이밍 결정성(Determinism)이 치명적으로 붕괴된다.</p>
+<p>이러한 병목을 원천 차단하기 위해 PX4-Autopilot의 센서 하위 계층(Sensor Abstraction Layer)은 고정된 크기의 연속된 메모리 공간을 순환하며 재사용하는 비동기 링 버퍼(Ring Buffer, 또는 Circular Buffer) 아키텍처를 채택하고 있다. 본 절에서는 이 링 버퍼가 하드웨어 인터럽트(ISR)와 소프트웨어 태스크 간의 물리적 시간을 어떻게 연결하는지 구조적으로 분석한다.</p>
+<h2>1.  생산자-소비자(Producer-Consumer) 패턴과 잠금 없는(Lock-free) 동기화</h2>
+<p>링 버퍼 아키텍처는 근본적으로 1명의 생산자(데이터를 쓰는 주체)와 다수의 소비자(데이터를 읽는 주체) 모델로 동작한다.</p>
+<ol>
+<li><strong>생산자 (Sensor ISR)</strong>: SPI 버스를 통해 IMU 칩셋으로부터 원시(Raw) 데이터를 수집하는 하드웨어 인터럽트 서비스 루틴이다. 1kHz의 속도로 <code>head</code> 포인터를 1칸씩 전진시키며 메모리에 데이터를 덮어쓴다.</li>
+<li><strong>소비자 (EKF2 및 Telemetry)</strong>: 250Hz나 50Hz 단위로 깨어나는 소프트웨어 스레드들이다. 각자 고유한 관점의 <code>tail</code> 포인터를 보유하고 있으며, 깨어날 때마다 <code>head</code>와의 거리를 계산하여 지난번 읽은 시점 이후에 쌓인 모든 데이터를 한 번에(Bulk) 쓸어간다.</li>
+</ol>
+<p>중요한 것은 이 과정에서 링 버퍼가 <strong>락 프리(Lock-free)</strong> 방식으로 구현된다는 점이다. 엄격한 상호 배제(Mutex)를 사용할 경우, 최하단 하드웨어 인터럽트(ISR)가 사용자 응용 스레드에 의해 블로킹(Blocking)되는 최악의 우선순위 역전(Priority Inversion) 사태가 벌어질 수 있다. PX4는 원자적 연산(Atomic Operations) 기반의 인덱스 제어를 통해, 생산자가 락 대기 없이 무조건 데이터를 꽂아 넣을 수 있는 최우선 권한을 보장한다.</p>
+<h2>2.  오버런(Overrun) 및 데이터 손실 방어 기제</h2>
+<p>만약 메인 CPU가 다른 연산 부하(예: SD카드 로깅 I/O 지연)로 인해 일시적으로 <code>tail</code> 포인터 수거 작업을 못하고 지연되었다고 가정하자. 생산자인 IMU ISR은 1밀리초마다 무자비하게 전진하므로, 어느 순간 <code>head</code> 포인터가 한 바퀴를 돌아 아직 소비자가 읽지 않은 <code>tail</code> 포인터의 등 뒤를 덮어쓰게 되는 오버런(Overrun) 현상이 발생한다.</p>
+<p>PX4의 센서 버퍼 클래스는 이를 두 가지 방식으로 방어한다.</p>
+<ul>
+<li><strong>충분한 버퍼 심도(Buffer Depth)</strong>: 일반적인 uORB IMU 버퍼 큐(Queue)는 최소 수십 밀리초(ms) 이상의 데이터를 담아둘 수 있는 다중 슬롯 사이즈(예: <code>FIFO_SIZE = 32</code> 또는 그 이상)로 선언된다. 이는 시스템이 일시적인 스레딩 경합(Jitter) 상태에 빠지더라도 데이터가 유실되지 않도록 충격 흡수장치(Shock Absorber) 역할을 한다.</li>
+<li><strong>드롭 카운팅(Drop Counting)</strong>: 그럼에도 불구하고 오버런이 발생하여 포인터가 충돌했을 경우, 버퍼 로직은 에러로 멈추는 대신 가장 오래된 데이터를 포기(Overwrite)하고 <code>drop_count</code> 원자 변수를 1 증가시킨다. 이 카운트는 추후 MAVLink 텔레메트리의 시스템 상태 패킷이나 ULog 헬스 리포트에 기록되어, 개발자가 CPU 부하 한계를 진단하는 프로파일링 지표로 사용된다.</li>
+</ul>
+<h2>3.  원격 측정(Telemetry) 대역폭의 데시메이션(Decimation) 인프라</h2>
+<p>원시 IMU 데이터를 MAVLink의 <code>RAW_IMU</code> (ID: 27)나 <code>HIGHRES_IMU</code> (ID: 105) 패킷으로 지상 GCS에 스트리밍할 때도 이 링 버퍼 아키텍처는 빛을 발한다.</p>
+<p>무선 라디오 대역폭의 한계로 인해 관제소에서는 고작 50Hz 이하의 빈도로 원시 데이터를 요청하게 되는데, 텔레메트리 스레드는 1kHz로 달리는 링 버퍼를 모두 복사하지 않는다. 스레드가 알림(<code>poll</code>)을 받고 깨어난 시점에 누적된 여러 슬롯 중 <strong>가장 최신 슬롯 한 개</strong>만 샘플링(Sub-sampling)하거나, 누적된 슬롯들의 평균값을 산출(Down-sampling)하여 MAVLink 페이로드로 직렬화(Serialize)한다.</p>
+<p>다시 말해, 비동기 링 버퍼는 센서의 광폭적인 생성 속도(1kHz 이상), 제어 루프의 수학적 소비 속도(200Hz), 무선 텔레메트리의 물리적 송출 속도(50Hz)라는 3가지 이질적인 시공간 지평(Event Horizon)을 단 하나의 데이터 유실이나 블로킹 병목 없이 완벽하게 접합시키는 가장 아름답고 효율적인 메모리 파이프라인 디자인 코드이다.</p>
 
             </article>
             <footer>

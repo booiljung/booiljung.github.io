@@ -115,6 +115,28 @@
             </header>
             <article>
                 <h1>38.1.2 Commander 모듈의 다중 스레드(Multi-thread) 동시성(Concurrency) 제어 아키텍처</h1>
+<p>PX4-Autopilot은 단순한 마이크로컨트롤러(MCU)용 펌웨어를 넘어, 하부(Underlying) 운영체제로 NuttX RTOS(혹은 Linux/POSIX 환경의 SITL)를 구동하는 완전한 다중 스레드(Multi-thread) 운영 체제 기반의 마이크로 서비스 아키텍처(Microservices Architecture)를 채택하고 있다. 센서 캘리브레이션, EKF 기반 상태 추정(State Estimation), 자세 제어(Attitude Control), MAVLink 통신 등 수십 개의 프로세스와 스레드가 동시에 실행되는 이 환경에서, 기체의 최고 수준 권한(High-level Authority)을 관장하는 <code>commander</code> 모듈의 동시성(Concurrency) 제어는 비행의 안전과 직결되는 핵심적인 시스템 공학적 과제다.</p>
+<p>본 절에서는 <code>commander</code> 모듈이 다중 스레드 환경에서 데이터 무결성을 유지하고 교착 상태(Deadlock)를 회피하기 위해 어떠한 구조적 패러다임을 취하고 있는지 개괄한다.</p>
+<h2>1. 마이크로 서비스 아키텍처 하에서의 Commander 프로세스 독립성</h2>
+<p>과거의 모놀리식(Monolithic) 비행 제어기나 초창기 Ardupilot의 단일 메인 루프 구조와 달리, PX4-Autopilot의 모듈들은 커널 위에서 각각 독립된 스레드(NuttX Task)로 실행된다.<br />
+<code>commander</code> 모듈 역시 시스템 부팅 과정에서 <code>commander start</code> 명령에 의해 자신만의 스택(Stack) 공간과 컨텍스트(Context)를 보유한 독립 스레드로 생성된다.</p>
+<p>이러한 분리형 스레딩 모델은 큰 장점을 제공한다. 특정 센서 드라이버 스레드나 디스크 로깅(ULog) 스레드에서 I/O 병목(Bottleneck)이 발생하여 블로킹(Blocking)되더라도, 기체의 비행 모드 변경이나 Failsafe 처리를 담당하는 <code>commander</code> 스레드의 실행 흐름에는 전혀 지장을 주지 않아야 하기 때문이다.</p>
+<h2>2. 락 프리(Lock-free) 동시성 제어: uORB 기반 프로세스 간 통신(IPC)</h2>
+<p>다중 스레드 환경의 가장 큰 적은 전역 변수(Global Variable)에 대한 동시 다발적인 데이터 경합(Data Race) 현상이다. 두 개 이상의 스레드가 비행 모드 상태 변수에 동시에 쓰기 연산(Write Operation)을 시도하면 데이터가 오염(Corruption)될 수 있다. 전통적인 다중 스레드 프로그래밍에서는 이를 해결하기 위해 뮤텍스(Mutex), 세마포어(Semaphore)와 같은 명시적인 락(Lock) 객체를 사용하여 임계 구역(Critical Section)을 보호한다.</p>
+<p><strong>그러나 PX4의 <code>commander</code>는 공유 메모리 기반의 명시적 락(Lock) 메커니즘을 극도로 지양한다.</strong><br />
+비행 제어기에 뮤텍스를 남용할 경우, 우선순위 역전(Priority Inversion) 현상이나 교착 상태(Deadlock)의 위험에 노출되기 때문이다.</p>
+<p>대신 PX4는 **uORB (Micro Object Request Broker)**라는 발행-구독(Publish-Subscribe) 기반의 락 프리(Lock-free) 비동기 메시징 시스템을 매개체로 사용한다.</p>
+<ul>
+<li><code>commander</code> 모듈은 내부적으로 보유한 상태 머신(FSM)의 변수를 다른 어떤 외부 스레드도 직접 조작하지 못하게 메모리 상에서 철저히 은닉(Encapsulation)한다.</li>
+<li>센서 시스템, 통신 모니터 등 다른 스레드들은 자신의 상태를 변경해달라고 <code>commander</code>를 직접 호출하거나 변수를 수정하는 대신, uORB를 통해 ’상태 변경 요청 이벤트(Event Topic)’만을 발행(Publish)한다.</li>
+<li><code>commander</code> 스레드는 메인 이벤트 루프에서 이 메시지들을 차례대로 <code>poll()</code>(구독)하여, <strong>자기 자신의 스레드 컨텍스트 내부에서 순차적으로(직렬화하여) 상태를 갱신</strong>한다.</li>
+</ul>
+<p>이러한 설계 패러다임 변화를 통해 PX4는 다중 스레드 시스템에서 전통적인 락(Lock) 병목 없이도 완벽한 스레드 안전성(Thread-safety)을 확보할 수 있게 된다.</p>
+<h2>3. 스레드 스케줄링(Scheduling) 우선순위 전략</h2>
+<p>NuttX RTOS에서 스레드는 결정론적 응답성(Deterministic Responsiveness)을 확보하기 위해 선점형 스케줄링(Preemptive Scheduling) 방식으로 동작한다.</p>
+<p><code>commander</code> 모듈은 Rate Controller나 Attitude Controller와 같이 수백 Hz 단위의 초고속 주파수를 요구하는 제어 루프보다는 한 단계 낮은 기본(Default) 수준의 우선순위를 갖는다. 이는 <code>commander</code>가 관장하는 논리적 비행 상태 전이 (예: GCS의 비행 모드 변경 명령 수신 등)가 1ms 수준의 지연 차질로 기체를 추락시키지는 않지만, 자세 제어 루프의 지연은 기체의 즉각적 물리적 안정성을 침해할 수 있기 때문이다.</p>
+<p>그럼에도 불구하고 <code>commander</code>는 일반적인 텔레메트리 전송이나 파일 로깅 스레드보다는 높은 스케줄링 우선순위를 점유한다. 이는 통신 단절(Datalink Loss)이나 배터리 부족 시 즉각적으로 Failsafe 상태로 전이하여 기체를 보호해야 하기 때문이다. 이처럼 PX4는 다중 스레드 간의 실시간 제약(Real-time Constraint)을 엄격하게 수치화하여 계층적 우선순위 구조를 완성하였다.</p>
+<p>이어지는 하부 절에서는 이러한 다중 스레드 환경에서 부득이하게 발생하는 실시간 운영체제상의 문맥 교환(Context Switching) 오버헤드를 제어 공학적으로 어떻게 모델링하는지, 그리고 공유 객체 메모리 접근 시 적용되는 상호 배제(Mutual Exclusion)의 저수준 원리에 대해 면밀히 고찰한다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.5.3.1 시동(Arming) 및 이륙(Takeoff) 등 비가역적(Irreversible) 상태 천이 시의 원자성(Atomicity) 보장 기법</title>
+    <title>BIJUNG:37.5.3.1. 시동(Arming) 및 이륙(Takeoff) 등 비가역적(Irreversible) 상태 천이 시의 원자성(Atomicity) 보장 기법</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,82 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.5.3.1 시동(Arming) 및 이륙(Takeoff) 등 비가역적(Irreversible) 상태 천이 시의 원자성(Atomicity) 보장 기법</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.3.1 시동(Arming) 및 이륙(Takeoff) 등 비가역적(Irreversible) 상태 천이 시의 원자성(Atomicity) 보장 기법</span></nav>
+                    <h1>37.5.3.1. 시동(Arming) 및 이륙(Takeoff) 등 비가역적(Irreversible) 상태 천이 시의 원자성(Atomicity) 보장 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.3.1. 시동(Arming) 및 이륙(Takeoff) 등 비가역적(Irreversible) 상태 천이 시의 원자성(Atomicity) 보장 기법</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.5.3.1 시동(Arming) 및 이륙(Takeoff) 등 비가역적(Irreversible) 상태 천이 시의 원자성(Atomicity) 보장 기법</h1>
+                <h1>37.5.3.1. 시동(Arming) 및 이륙(Takeoff) 등 비가역적(Irreversible) 상태 천이 시의 원자성(Atomicity) 보장 기법</h1>
+<p>본 절에서는 무인항공기(UAV) 운영 사이클에서 가장 위험도가 높고 한 번 실행되면 물리적으로 되돌리기 극히 난해한 <strong>비가역적(Irreversible) 상태 천이</strong>, 특정하여 시동(Arming) 및 이륙(Takeoff) 명령 인가 과정에서 PX4-Autopilot이 어떻게 2단계 커밋(2PC) 논리를 차용하여 시스템 붕괴를 막고 <strong>원자성(Atomicity)</strong> 을 보장해 내는지를 심층 분석한다.</p>
+<p>본 기술 명세는 사전 비행 점검(Pre-flight Check) 로직이 모듈화된 PX4 Firmware v1.14 이상의 Commander 아키텍처 및 QGroundControl v4.3 이상의 안전 제어 백엔드를 기준으로 서술된다.</p>
+<hr />
+<h2>1.  비가역적 상태 천이(Irreversible State Transition)의 공학적 치명성</h2>
+<p>경량 항공 역학 시스템인 드론에 있어 비행 모드의 변경(예: Position 모드에서 Altitude 모드로의 전환)은 런타임 제어기 로직의 스위칭에 불과하여, 언제든지 조종기 스위치나 GCS 명령을 통해 원래 모드로 수 밀리초(ms) 안팎에 롤백(Rollback) 대처가 가능한 가역적(Reversible) 절차이다.</p>
+<p>그러나 이와는 대조적으로, 프로펠러에 수 백 암페어(A)의 극한 전류를 공급할 준비를 마치는 <strong>시동(Arming)</strong> 인가나, 지면의 지지력을 벗어나 중력에 대항하여 모터 RPM을 비상시키는 <strong>이륙(Takeoff)</strong> 명령은 에너지의 해방 스케일 차원이 다르다.</p>
+<ol>
+<li><strong>시동(Arming)</strong>: 한 번 인가되면 Actuator Mixers 릴레이가 풀리며 강력한 회전 동력이 대기한다. 만약 추정기(Estimator)의 롤(Roll)/피치(Pitch) 영점이 미세하게 틀어진 채로 이 상태에 억지로 진입한다면, 기체는 땅바닥에 붙은 상태로 전복(Flip)되어 모터나 탄소섬유 프레임이 대파되는 파국을 맞이한다.</li>
+<li><strong>이륙(Takeoff)</strong>: 땅에서 단 1cm라도 다리가 떨어지면 더 이상 가역적 롤백(이륙 전 대기 상태)은 논리적으로 불가능하다. 즉, <strong>무조건 비행을 어떻게든 안정시켜 유지하거나(Fly) 추락(Crash)하는 두 가지 결과</strong>만 남는다.</li>
+</ol>
+<p>이러한 비가역적 특성 탓에, 커맨더(Commander) 모듈은 GCS로부터 위 명령들을 수신할 경우 단순한 상태 비트 플래그만 변경하고 끝내는 오만함을 버리고, 모든 하위 센서 코어가 완벽한 합심을 이루었는지를 단 1비트의 거짓 없이 검증하는 철저한 <strong>원자성(Atomicity: 전부 아니면 전무)</strong> 보조 장치를 작동시켜야 한다.</p>
+<hr />
+<h2>2.  시동(Arming) 인가 시의 2PC 원자성 보장 파이프라인</h2>
+<p>조종사의 GCS 슬라이더 스와이프나 조종기 요(Yaw) 스틱 콤보를 통해 시동(Arm) 명령이 인가되었을 때, PX4 Commander 계층은 내부 <code>PreflightCheck::preflightCheck()</code> 함수 트리를 가동하여 1단계 보팅(Phase 1 Voting)을 수집한다.</p>
+<ol>
+<li><strong>Phase 1: 헬스 플래그(Health Flags) 교차 투표 징수</strong></li>
+</ol>
+<ul>
+<li><strong>Sensors</strong>: 가속도계/자이로스코프(IMU)의 바이어스(Bias)가 캘리브레이션 임계치 이하로 일치하는지, 이중/삼중화된 시스템 간의 편차(Inconsistency)가 공차 이내인지 투표한다.</li>
+<li><strong>Estimator (EKF2)</strong>: 자기장 간섭 지수(Mag Interference)가 양호한지, EKF 내부 상태 공분산(Covariance)이 발산하지 않고 안정적으로 수렴해 있는지 검사한다.</li>
+<li><strong>Power/Battery</strong>: 배터리 잔량이 이륙 후 비상 복귀(RTL) 궤적을 소화할 만큼 충분한 전력을 내재하고 있는지 BMS 데이터를 기반으로 투표한다.</li>
+<li><strong>Geofence/Home</strong>: 홈 포지션(Home Position) 반경이 펜스(Fence) 이내에 올바르게 고정(Locked-in)되었는지 확인한다.</li>
+</ul>
+<ol start="2">
+<li><strong>원자적 처리(Atomic Processing)</strong><br />
+위 조건 중 단 하나라도(예: 나침반에 미세한 자성 오류 포착) 부정(Abort) 신호가 발생하면, Commander는 모터 드라이버(PWM/DShot)에 대한 신호 개방 채널을 절대 활성화하지 않는다. <code>MAV_RESULT_DENIED</code> 패킷을 GCS에 반환하고 상태 이탈을 철두철미하게 거부한다. 오직 모든 모듈의 찬성(Commit Ready)이 확인된 <strong>찰나의 순간</strong> 시스템의 잠금 릴레이를 해제하고, <code>vehicle_status</code> 토픽에 <code>ARMING_STATE_ARMED</code>를 원자적으로 동시 기록 발행(Publish)한다.</li>
+</ol>
+<hr />
+<h2>3.  자동 이륙(Auto Takeoff) 시의 스풀러(Spool-up) 트랜잭션과 무결성</h2>
+<p>단순 시동을 넘어선 자동 이륙(Auto Takeoff) 명령의 경우는 한층 더 극단적인 공간 역학의 파괴력을 내포한다. 이륙은 명령 즉시 이뤄지는 것이 아니라, 물리적 관성을 극복하기 위한 수 초간의 모터 스풀업(Spool-up) 동기화 과정을 필수적으로 수반한다.</p>
+<ul>
+<li><strong>1단계: 이륙 공간 무결성 투표</strong>: 현재 비행 모드 컨트롤러(예: Auto 혹은 Guided 모드) 계층에 고도 타겟점(Takeoff Altitude) 파라미터가 유효한지, VIO 혹은 GPS가 해당 Z축 상승 궤적을 100% 추종(Tracking)할 보증을 서는지 투표한다.</li>
+<li><strong>2단계: 점진적 동력 커미트먼트(Commitment)와 이탈(Liftoff) 감지</strong>: 상태가 인가되면, 모터 출력이 호버스로틀(Hover Throttle) 대비 일정 비율까지 서서히 스풀업하며 양력을 축적하기 시작한다. 만약 스풀업 도중(아직 완전히 들뜨지 않은 찰나) 갑작스럽게 GPS Lock이 상실되는 등의 VETO 상황이 실시간 발생한다면?</li>
+<li><strong>임계 찰나의 순간 취소(Pre-Liftoff Mismatch Abort)</strong>: 기체의 가속도계가 Z축 방향의 단독 가속(이탈 선언)을 하기 바로 직전이라면, 이륙 트랜잭션은 즉시 파기되고 Throttle은 Idle로 강제 롤백된다. 기체는 이륙을 단념하고 지상에 머무른다.</li>
+</ul>
+<p>그러나 단 1cm라도 지면 접촉 모델(Landed State Detector)이 해제되었다면 롤백은 불가하므로, 비가역성(Irreversibility)의 물리적 루비콘강을 건너게 된다.</p>
+<hr />
+<h2>4.  시동 및 이륙 원자성 거브넌스 다이어그램 (Mermaid Flow)</h2>
+<p>커맨더단에서 Arming 및 Takeoff 비가역 명령을 인가하기 전, 각 모듈의 찬반 투표와 롤백의 임계 경계를 보여주는 흐름도이다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[GCS로부터 ARM 또는 AUTO_TAKEOFF 트랜잭션 명령 수신] 
+    --&gt; B[PX4 Commander 인스턴스: 사전 헬스 1차 투표 징수 개시]
+    
+    subgraph Pre-flight Hardware &amp; Logic Voting
+        B --&gt; C{센서 브로커: IMU 바이어스 및 Compass 간섭 공공장애 검사}
+        B --&gt; D{EKF2 관측기: GPS 3DFix / 오차 공분산 안정성 검사}
+        B --&gt; E{배터리 매니저: 최소 이륙 셀 전압 및 내부 저항 측정치 검사}
+    end
+
+    C -- 1개의 거부 발견 --&gt; F[1개 이상의 VETO 발생]
+    D -- 1개의 거부 발견 --&gt; F
+    E -- 1개의 거부 발견 --&gt; F
+    
+    F --&gt; G[트랜잭션 완전 파기 Abort: GCS에 DENIED 에러 코드 포워딩]
+    G --&gt; H[시동 릴레이 및 PWM 출력 채널 물리적 차단 상태 강제 락킹 지속]
+
+    C -- ALL PASS --&gt; I[만장일치 산출 완료: 상태 천이 진입 인가 결정]
+    D -- ALL PASS --&gt; I
+    E -- ALL PASS --&gt; I
+    
+    I --&gt; J[Action: Atomic State 토픽 발행 및 Actuator Mixer 전격 활성화]
+    
+    J --&gt; K{이륙 스풀업 진행 중 런타임 센서 중대 이상 돌발 감지 시나리오}
+    K -- 이탈 전 (Landed 플래그 유지) --&gt; L[마지막 가역구간 취소: Throttle Idle 강제 Cut 및 시동 차단 롤백]
+    K -- 물리적 이탈 감지 (Airborne) --&gt; M[롤백 불가: 비상 귀환 RTL 혹은 Hover Hold 비가역적 페일세이프 궤도 체인으로 전환 연계]
+</code></pre>
+<hr />
+<h2>5.  결론 및 요약 도출</h2>
+<p>무인 비행체의 관리에 있어 논리적 제어 상태를 뒤바꾸는 행위는 사이버 공간상에서는 단순히 1바이트 헥스(Hex) 코드의 조작일지 언정, 현실 물리 공간에서는 곧장 <strong>수 킬로그램 쇳덩어리가 수십 미터 상공으로 폭발력 있게 발사되는 비가역적인 행위</strong>로 치환된다.</p>
+<p>PX4-Autopilot 아키텍처는 시동(Arming)과 이륙(Takeoff)이라는 기동 사이클 최상단의 비가역 상태 천이를 보호 조치하기 위해, 단 한 치의 모듈 간 비동기나 센서 노이즈 충돌을 용납하지 않는 <strong>2PC 기반의 사전 만장일치 원자성(Atomicity)</strong> 보장 트리를 고수한다. 이 설계는 단기적으로는 “시동이 자꾸 거슬리게 잘 안 걸린다“는 조종자의 불만을 초래할지 모르나, 장기적인 군집 비행 혹은 시계 외(BVLOS) 임무 환경 하에서는 미세한 센서 편차로 억지 비행을 띄웠다가 공중 분해되는 파멸적 재앙을 지표(Ground) 공간에 사전 고립(Isolation)시켜 국소화해 내는, 항공 사이버 물리 시스템 통제의 절대적 방어막이자 최종 안전판으로 작용하게 된다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:28.3.3.1.1 Placement `new` 연산자를 활용한 고정 메모리 공간 내 객체 교체(Swap) 메커니즘</title>
+    <title>BIJUNG:28.3.3.1.1. Placement `new` 연산자를 활용한 고정 메모리 공간 내 객체 교체(Swap) 메커니즘</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,52 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>28.3.3.1.1 Placement `new` 연산자를 활용한 고정 메모리 공간 내 객체 교체(Swap) 메커니즘</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>28.3.3.1.1 Placement `new` 연산자를 활용한 고정 메모리 공간 내 객체 교체(Swap) 메커니즘</span></nav>
+                    <h1>28.3.3.1.1. Placement `new` 연산자를 활용한 고정 메모리 공간 내 객체 교체(Swap) 메커니즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>28.3.3.1.1. Placement `new` 연산자를 활용한 고정 메모리 공간 내 객체 교체(Swap) 메커니즘</span></nav>
                 </div>
             </header>
             <article>
-                <h1>28.3.3.1.1 Placement <code>new</code> 연산자를 활용한 고정 메모리 공간 내 객체 교체(Swap) 메커니즘</h1>
+                <h1>28.3.3.1.1. Placement <code>new</code> 연산자를 활용한 고정 메모리 공간 내 객체 교체(Swap) 메커니즘</h1>
+<p>앞 절에서 <code>FlightModeManager</code>가 컴파일 타임에 <code>_task_memory</code>라는 가장 거대한 객체 크기만큼의 고정된 빈방(메모리 블록)을 정적으로 미리 확보해 두었다는 것을 확인했다.</p>
+<p>그렇다면 비행 중 조종사가 수동 모드에서 자율 비행 모드로 스위치를 전환할 때, 이 빈방의 세입자(객체 인스턴스)를 힙(Heap) 메모리의 개입 없이 어떻게 갈아치우는 것일까? 그 해답은 현대 C++의 고급 메모리 제어 기법인 <strong>Placement <code>new</code> 연산자</strong>에 있다.</p>
+<h2>1.  일반 <code>new</code>와 Placement <code>new</code>의 결정적 차이</h2>
+<p>일반적인 데스크탑 C++ 프로그래밍에서 쓰이는 <code>new FlightTaskAuto()</code> 코드는 내부적으로 두 가지 작업을 순차적으로 수행한다.</p>
+<ol>
+<li><strong>메모리 구걸(Allocation)</strong>: 운영체제(OS)에게 “객체를 담을 메모리 공간 좀 할당해 줘“라고 요청한다. (이 과정에서 OS는 힙 영역을 뒤지고 잠금(Lock)을 걸며 엄청난 시간을 소모한다).</li>
+<li><strong>생성자 호출(Initialization)</strong>: 기적적으로 메모리를 받아오면 그 주소에 객체의 생성자를 실행하여 변수들을 초기화한다.</li>
+</ol>
+<p>하지만 PX4 비행 제어 루프의 0.002초(2ms) 데드라인 안에서 OS에게 1번 과정을 구걸하고 있을 시간적 여유는 없다.</p>
+<p>이에 PX4는 메모리 할당을 과감히 생략하고 2번(생성자)만 강제로 실행시키는 <strong>Placement <code>new</code></strong> 문법인 <code>new (메모리주소) 객체타입()</code>을 사용한다.</p>
+<h2>2.  모드 전환(Swap)의 마법: 파괴와 재창조</h2>
+<p><code>FlightModeManager::switchTask(int mode)</code> 함수 내부를 들여다보면, 새로운 객체로 갈아타는 스왑(Swap) 메커니즘이 다음과 같은 예술적인 2단계 코드로 구현되어 있다.</p>
+<h3>2.1 Step 1: 명시적 소멸자 호출 (Explicit Destructor Call)</h3>
+<pre><code class="language-cpp">// 1. 현재 메모리에 방을 빼라고 명령 (방 자체를 부수는 delete가 아님!)
+if (_current_task != nullptr) {
+    _current_task-&gt;~FlightTask();
+    _current_task = nullptr;
+}
+</code></pre>
+<p>보통 C++에서 <code>delete _current_task</code>를 쓰면 메모리 공간 자체를 OS에 반납해 버린다. 하지만 여기서는 메모리 방(<code>_task_memory</code>)은 그대로 놔둔 채, 오직 안에 살던 객체의 **소멸자(<code>~FlightTask()</code>)**만을 명시적으로 직접 호출하여 내부 리소스만 깔끔하게 정리하고 죽인다.</p>
+<h3>2.2 Step 2: 동일 공간에 Placement <code>new</code>로 새 객체 투하</h3>
+<pre><code class="language-cpp">// 2. 이미 확보해 둔 고정 메모리 1번지에 새로운 객체를 강제 덮어쓰기 생성
+switch (new_mode) {
+    case Mode::AUTO:
+        _current_task = new (&amp;_task_memory) FlightTaskAutoMapper();
+        break;
+    case Mode::MANUAL:
+        _current_task = new (&amp;_task_memory) FlightTaskManualPosition();
+        break;
+    // ...
+}
+</code></pre>
+<p><code>new (&amp;_task_memory)</code> 코드는 OS에게 힙 메모리를 달라고 징징대지 않는다. 대신 “내가 미리 찜해둔 <code>_task_memory</code> 주소가 여기 있으니, 묻지도 따지지도 말고 이 주소 위에 <code>FlightTaskAutoMapper</code>의 본체를 덮어쓰고 생성자를 돌려라!“라고 컴파일러에게 명령하는 것이다.</p>
+<h2>3.  Placement <code>new</code>가 부여한 하드 리얼타임(Hard Real-time)의 권능</h2>
+<p>이 교묘한 객체 스왑 메커니즘 덕분에, 비행 모드를 수천 번 전환하더라도 다음과 같은 압도적인 시스템적 이득을 챙길 수 있다.</p>
+<ul>
+<li><strong>Zero Allocation Time</strong>: 힙 메모리 탐색 및 OS 컨텍스트 스위칭 오버헤드가 0(Zero)이다. 새 모드는 1 CPU 클럭의 낭비도 없이 즉시 렌더링을 시작한다.</li>
+<li><strong>100% Determinism (결정론적 실행)</strong>: 통계적인 힙 파편화 확률과 무관하게, 항상 똑같은 시간(생성자 실행 시간)만에 O(1)의 복잡도로 모드 전환이 100% 보장된다.</li>
+</ul>
+<p>결과적으로 PX4 FMM은 수십 개의 비행 모드를 마치 스네이크 게임의 뱀이 허물을 벗듯, 한 칸의 메모리 블록 안에서 끊임없이 껍질(클래스 타입)만 갈아치우며 최소한의 리소스로 우주 방어급의 안정성을 구축해 낸 것이다.</p>
 
             </article>
             <footer>

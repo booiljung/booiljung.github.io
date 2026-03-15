@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:28.2.3.1.2 `hrt_abstime` 기반 정밀 델타 타임(dt) 계산 및 지터(Jitter) 보상</title>
+    <title>BIJUNG:28.2.3.1.2. `hrt_abstime` 기반 정밀 델타 타임(dt) 계산 및 지터(Jitter) 보상</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,39 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>28.2.3.1.2 `hrt_abstime` 기반 정밀 델타 타임(dt) 계산 및 지터(Jitter) 보상</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>28.2.3.1.2 `hrt_abstime` 기반 정밀 델타 타임(dt) 계산 및 지터(Jitter) 보상</span></nav>
+                    <h1>28.2.3.1.2. `hrt_abstime` 기반 정밀 델타 타임(dt) 계산 및 지터(Jitter) 보상</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>28.2.3.1.2. `hrt_abstime` 기반 정밀 델타 타임(dt) 계산 및 지터(Jitter) 보상</span></nav>
                 </div>
             </header>
             <article>
-                <h1>28.2.3.1.2 <code>hrt_abstime</code> 기반 정밀 델타 타임(dt) 계산 및 지터(Jitter) 보상</h1>
+                <h1>28.2.3.1.2. <code>hrt_abstime</code> 기반 정밀 델타 타임(dt) 계산 및 지터(Jitter) 보상</h1>
+<p>비행 제어 소프트웨어에서 PID 제어기나 적분기(Integrator) 필터 루틴이 가장 혐오하는 적은 ’부정확한 시간’이다.<br />
+<code>update(dt)</code> 함수에 던져지는 델타 타임(<code>dt</code>) 변수가 현실의 물리적 시간 흐름을 완벽하게 반영하지 못하고 널뛰기 시작하면, 적분기 항(<span class="math math-inline">I</span>)에 오차가 눈덩이처럼 누적(Wind-up)되어 드론은 결국 하늘에서 미친 듯이 진동하다가 추락하고 만다. <code>Flight Mode Manager</code> (이하 FMM)는 이 시간의 정확도를 사수하기 위해 마이크로초(<span class="math math-inline">\mu s</span>) 단위의 뼈를 깎는 혈투를 벌인다.</p>
+<h2>1.  운영체제 틱(OS Tick)의 한계와 <code>hrt_abstime</code>의 등장</h2>
+<p>일반적인 리눅스나 아두이노 수준의 어설픈 펌웨어 프로그래머들은 루프의 경과 시간을 재기 위해 <code>sleep()</code> 구조나 OS가 제공하는 밀리초(ms) 단위의 시스템 틱(System Tick) 타이머를 가져다 쓴다. (예: <code>millis()</code>)<br />
+하지만 NuttX RTOS 위에 올라간 PX4 생태계에서 1ms(1000<span class="math math-inline">\mu s</span>) 단위의 오차는 자율 비행 드론에게 목숨을 앗아가는 거대한 암초와 같다.</p>
+<p>이 때문에 PX4 코어 아키텍트는 OS 커널 타이머를 우회하여, ARM Cortex-M 마이크로컨트롤러 코어 하드웨어 실리콘 칩 레벨에서 직접 구동되는 초정밀 하드웨어 카운터 펄스를 직접 긁어오는 <strong>High-Resolution Timer (HRT)</strong> 추상화 인터페이스를 독자 구축했다.</p>
+<pre><code class="language-cpp">// FMM Run() 루프 진입 즉시 가장 먼저 수행되는 C++ 라인
+const hrt_abstime time_stamp_now = hrt_absolute_time();
+</code></pre>
+<p>FMM 데몬은 <code>Run()</code> 루프가 열리자마자 0.001 마이크로초라도 허투루 쓰지 않기 위해, 가장 윗단에서 저 <code>hrt_absolute_time()</code> 함수를 때려 현재 우주 불변의 절대 시간(부팅 후 흐른 마이크로초, 64bit 정수)을 1<span class="math math-inline">\mu s</span> 해상도로 가장 먼저 캡처링(Capturing)하여 캐제(Cache)해버린다.</p>
+<h2>2.  정밀 델타 타임(dt) 추출 공식과 메모리 백업</h2>
+<p>현재 절대 시간을 구했다면, 직전 루프(Previous Tick)에서 저장해두었던 과거의 절대 시간과의 냉정한 뺄셈 연산을 통해, 우리가 이번 루프에서 수식에 곱해댈 진정한 물리적 경과 시간 <code>dt</code>(Delta Time, 초 단위 Float)를 뽑아낸다.</p>
+<pre><code class="language-cpp">// 마이크로초 정수 뺄셈 후, 초(Second) 단위의 부동소수점 실수(float)로 변환
+float dt = (time_stamp_now - _time_stamp_last) / 1_000_000.0f;
+
+// 다음 루프 계산을 위해 현재 시간을 과거 변수로 덮어쓰기 (백업)
+_time_stamp_last = time_stamp_now;
+</code></pre>
+<p>이 간단명료해 보이는 2줄의 코드는 수학적으로 완벽한 폐쇄 루프(Closed-loop) 타임라인을 보장한다. FMM이 중간에 uORB 메시지를 읽느라 10<span class="math math-inline">\mu s</span>를 지연 먹었든, 커널 스케줄러가 잠시 다른 급한 인터럽트를 처리하느라 FMM 스레드 실행을 200<span class="math math-inline">\mu s</span> 동안 강제 정지(Preemption) 시켰든 간에, 저 <code>dt</code> 변수 안에는 하드웨어 시계 기반의 **‘실제로 지연된 물리적 시간 전체’**가 소수점 아래 6자리 정밀도로 고스란히 담겨있게 된다.</p>
+<h2>3.  스케줄링 흔들림(Jitter)의 흡수와 수식 보상</h2>
+<p>아무리 FMM이 EKF2의 <code>vehicle_local_position</code> 주파수(예: 400Hz) 인터럽트에 칼같이 콜백(Wake-up)을 걸어놨다 하더라도, 동시다발적인 센서 I/O와 OS 스레드 컨텍스트 스위칭(Context Switching)의 한계로 인해 <code>Run()</code>이 정확히 2.500ms(400Hz) 마다 칼같이 기상하는 것은 물리적으로 불가능하다.<br />
+어떤 루프에서는 2.450ms 만에 일찍 깨고, 어떤 루프에서는 시스템 부하로 2.800ms 만에 늦게 깨어나는 타임 흔들림 현상, 즉 **스케줄링 지터(Jitter)**가 필연적으로 발생한다.</p>
+<ul>
+<li><strong>Ardupilot 고정 루프(Hardcoded Rate)의 약점</strong>: 과거 Ardupilot 계열의 일부 루틴들은 속도를 위해 <code>dt</code>를 매번 계산하지 않고 <code>dt = 0.0025f</code> 로 하드코딩(상수 취급)하여 적분기 수식에 집어넣었다. 이 경우 지터가 발생하면 수식상의 시간과 현실의 물리 시간이 틀어지며 미세한 가속도 제어 오차가 발생한다.</li>
+<li><strong>FMM의 동적 <code>dt</code> 수식 연계 방어</strong>: FMM은 이 지터 현상 자체를 두려워하거나 OS 스케줄러를 원망하지 않는다. 흔들림(Jitter)을 하드웨어 타이머로 정확히 측정한 절대 시간 뺄셈 변수(방금 구한 가변 <code>dt</code> 실수형 값)에 고스란히 응축해 낸다.</li>
+</ul>
+<p>그리고 이 가변 <code>dt</code> 덩어리를 자식 객체인 <code>FlightTask</code>의 매트릭스 알고리즘(<code>update()</code>) 가상 함수 인자 파라미터로 그대로 밀어 넣어버린다. 결과적으로, 수학 객체 내부의 속도 가속도 미적분 항들은 이 출렁거리는 가변 <code>dt</code> 스텝 크기를 수식에 그대로 받아들여 적분 면적을 넓히거나 좁힘으로써, <strong>스케줄러의 타임 지터(Jitter) 에러를 로버스트(Robust)한 수학적 넓이 미적분 보상으로 우아하게 흡수 제거</strong>하는 극한의 제어 안정성을 달성해 낸다.</p>
 
             </article>
             <footer>

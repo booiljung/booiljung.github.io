@@ -115,6 +115,37 @@
             </header>
             <article>
                 <h1>38.6.3.1 <code>Vehicle.cc</code> 인스턴스의 <code>MAVLinkProtocol::receiveMessage</code> 라우팅 파이프라인 내 뮤텍스(Mutex) 락 제어 및 스레드 풀(Thread Pool) 관리</h1>
+<p>앞서 살펴본 <code>MAVLinkProtocol</code>에서 <code>Vehicle</code> 객체로 이어지는 라우팅 파이프라인이 단일 스레드 환경이라면 매우 평화롭겠지만, 현실의 QGroundControl(QGC) 백엔드는 초당 수천 개의 텔레메트리 패킷(Heartbeat, GPS, VIO, IMU 등)이 빗발치는 <strong>극한의 다중 스레드(Multi-threaded) 환경</strong>이다.</p>
+<h2>1. 데이터 레이스(Data Race)의 파국</h2>
+<p>QGC는 폭주하는 네트워크 I/O 병목을 해소하기 위해 Qt 프레임워크의 스레드 풀(<code>QThreadPool</code>)을 적극 활용한다.</p>
+<p>이 말은 곧, 스레드 A가 1번 드론의 <code>HEARTBEAT</code> 패킷을 파싱하여 <code>Vehicle::_flightMode</code> 변수를 “RTL“로 덮어쓰고 있는 정확히 그 찰나의 마이크로초에, 스레드 B가 동일한 1번 드론의 <code>SYS_STATUS</code> 패킷을 파싱하며 배터리 경고 로직을 위해 <code>_flightMode</code> 변수를 읽어내려 시도할 수 있다는 뜻이다.</p>
+<p>이러한 동시 접근은 C++에서 **데이터 레이스(Data Race)**를 유발하며, 이는 애플리케이션의 메모리를 오염시키고 즉각적인 세그멘테이션 폴트(Segmentation Fault) 크래시로 이어져 관제 화면이 통째로 꺼져버리는 대형 사고를 일으킨다.</p>
+<h2>2. 뮤텍스(Mutex)를 통한 우아한 상호 배제(Mutual Exclusion)</h2>
+<p>이러한 파국을 막기 위해 <code>Vehicle.cc</code> 내부의 <code>_mavlinkMessageReceived</code> 라우팅 파이프라인은 정교한 <strong>뮤텍스 락(Mutex Lock)</strong> 제어망으로 덮여 있다.</p>
+<pre><code class="language-cpp">// QGC 백엔드 상태 업데이트의 동시성 제어 (의사 코드)
+void Vehicle::_mavlinkMessageReceived(const mavlink_message_t&amp; message) {
+    if (message.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+        mavlink_heartbeat_t heartbeat;
+        mavlink_msg_heartbeat_decode(&amp;message, &amp;heartbeat);
+        
+        // --- 임계 구역 (Critical Section) 진입점 ---
+        // 객체 스코프 락: 이 블록을 빠져나갈 때까지 다른 어떤 스레드도 상태를 읽거나 쓸 수 없다.
+        QMutexLocker locker(&amp;this-&gt;_stateMutex); 
+        
+        if (this-&gt;_customMode != heartbeat.custom_mode) {
+            this-&gt;_customMode = heartbeat.custom_mode; // 상태 덮어쓰기 (안전함)
+            
+            // 락을 해제(Unlock)하기 *전에* 무거운 작업을 하면 전체 파이프라인이 막히므로 주의!
+        }
+    }
+}
+</code></pre>
+<p>스레드 A가 <code>QMutexLocker</code>를 획득하여 임계 구역(Critical Section)의 문을 걸어 잠그면, 스레드 B는 스레드 A가 볼일을 마치고 락을 풀 때까지 문밖에서 대기(Block)하게 된다. 이를 통해 <code>Vehicle</code> 객체의 내부 상태는 어떠한 다중 스레드 폭격 속에서도 단일 진실 공급원(Single Source of Truth)으로서의 무결성을 보장받는다.</p>
+<h2>3. 락 단위(Granularity)와 스레드 풀(Thread Pool)의 오프로딩</h2>
+<p>하지만 뮤텍스는 양날의 검이다. 만약 락을 걸어둔 채로 GUI를 업데이트하거나 파일 입출력 같은 무거운 작업을 수행하면, 대기 중인 모든 네트워크 수신 스레드들이 연쇄적으로 멈춰 서게(Deadlock 위험) 된다.</p>
+<p>QGC 개발진은 세밀한 락 단위(Fine-grained Locking)를 적용했다. <strong>메모리에 값을 덮어쓰는 그 찰나의 순간에만 락을 걸고 벗어난다.</strong></p>
+<p>그리고 만약 패킷 처리 과정에서 미션 업/다운로드나 대용량 FTP 전송처럼 수 초 이상 걸리는 무거운 로직이 발생하면, <code>MAVLinkProtocol</code> 스레드가 직접 짐을 지지 않는다. 즉시 해당 작업을 <code>QRunnable</code> 객체로 포장한 뒤 **<code>QThreadPool::globalInstance()</code>**의 뒷선으로 던져버린다(Offloading).</p>
+<p>이렇게 락 제어(무결성 보장)와 스레드 풀(부하 분산)의 절묘한 양동 작전을 통해, QGC 백엔드는 수십 대의 군집(Swarm) 드론이 초당 수만 개의 MAVLink 패킷을 쏟아내는 압력 속에서도 결코 블로킹되지 않고 매끄럽게 심장 박동을 파싱해 내는 것이다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,47 @@
             </header>
             <article>
                 <h1>37.1.2 개방 루프(Open-loop) 제어의 발산(Divergence) 위험성과 피드백 루프(Feedback Loop)의 필요성</h1>
+<p>비행 제어 시스템(Flight Control System) 내부의 자세 제어나 속도 제어뿐만 아니라, 지상 관제 시스템(GCS)이 무인항공기(UAV)를 원격으로 관제하는 거시적 동작 역시 하나의 거대한 제어 루프(Control Loop)로 간주할 수 있다. GCS 관점에서 제어 시스템을 설계할 때, 명령 하달 후 결과를 확인하지 않는 개방 루프(Open-loop) 방식과, 상태를 모니터링하며 지속적으로 교정(Correction)하는 폐루프(Closed-loop) 내지 피드백 루프(Feedback Loop) 방식은 시스템의 신뢰성과 직결된다. 본 절에서는 비결정적 통신 환경을 전제로 할 때 개방 루프 관제가 초래하는 상태 발산(State Divergence)의 수학적, 논리적 위험성을 분석하고, 이를 극복하기 위한 PX4-Autopilot의 피드백 설계 철학을 고찰한다.</p>
+<h2>1.  개방 루프(Open-loop) 관제 아키텍처의 구조적 결함</h2>
+<p>개방 루프 제어란 제어기(Controller)가 플랜트(Plant, 여기서는 UAV)로 제어 입력(Control Input)을 인가할 뿐, 그 결과로 나타나는 플랜트의 출력(Output)이나 상태(State)를 피드백(Feedback)으로 수신하지 않는 구조를 의미한다.</p>
+<h3>1.1  관측 불가성(Unobservability)에 의한 인지 발산</h3>
+<p>GCS 기반의 오프보드(Offboard) 에이전트가 개방 루프 형태로 기체에 웨이포인트(Waypoint) 이동 명령을 하달했다고 가정하자.<br />
+이상적인 환경이라면 기체는 정확한 궤적을 추종하겠지만, 현실에서는 돌풍(Gust), 프롭 손상, 혹은 MAVLink 통신 패킷 손실 등으로 인해 명령 불이행 또는 궤적 이탈이 발생한다.<br />
+이러한 외란(Disturbance) 요소 벡터를 <span class="math math-inline">w(t)</span>, 제어 입력을 <span class="math math-inline">u(t)</span>, 실제 기체의 상태를 <span class="math math-inline">x(t)</span>라 할 때, 추정 상태 <span class="math math-inline">\hat{x}(t)</span>와 실제 상태 <span class="math math-inline">x(t)</span> 간의 오차 변위(Error Variable) <span class="math math-inline">e(t) = \hat{x}(t) - x(t)</span>는 시간이 지남에 따라 필연적으로 발산(Diverge)하게 된다. 개방 루프 체계에서는 <span class="math math-inline">e(t)</span>를 교정할 수 있는 관측 측정치 <span class="math math-inline">y(t)</span>가 시스템으로 환류되지 않기 때문이다.</p>
+<h3>1.2  누적 오차에 의한 시스템 파국(Catastrophic Failure)</h3>
+<p>모드 전환이나 시동 단계에서의 개방 루프 제어는 더욱 치명적이다. 조종자가 ‘Auto-Mission’ 전환 버튼을 클릭하여 GCS가 해당 MAVLink 명령을 발송했을 때, 기체가 센서 캘리브레이션 미비 혹은 <code>ekf2</code> 이노베이션(Innovation) 오차 초과로 모드 전환을 거부(Reject)할 수 있다. 피드백이 없다면 GCS(또는 자율 관제 알고리즘)는 기체가 이미 ‘Auto’ 상태에 돌입했다고 오판(False Positive)하게 되며, 이어지는 상충된 자율 제어 명령들이 기체의 Failsafe를 자극하여 추락이나 런어웨이(Runaway) 현상을 유발하게 된다.</p>
+<h2>2.  피드백 루프(Feedback Loop) 기반의 GCS 상태 복원 메커니즘</h2>
+<p>이러한 발산 위험성을 차단하기 위해서는 GCS와 기체 사이에 강력한 피드백 루프, 즉 센서 텔레메트리와 상태 다이제스트(State Digest)를 지속적으로 교환하는 폐루프(Closed-loop) 아키텍처가 필수적이다. PX4와 QGroundControl(QGC)은 이에 대해 체계적인 폴링 및 콜백 메커니즘을 규정하고 있다.</p>
+<h3>2.1  하트비트(HEARTBEAT) 기반의 거시적 피드백</h3>
+<p>PX4-Autopilot은 상태 머신(State Machine)의 현재 위치를 <code>HEARTBEAT</code> 메시지(통상 1Hz 주기)를 통해 영속적으로 브로드캐스팅(Broadcasting)한다. 이를 수신하는 GCS는 내부의 차량 프록시 모델(Vehicle Proxy Model)을 갱신한다. 이는 Luenberger 관측기(Observer)가 플랜트의 상태를 추정하는 피드백 방정식과 논리적으로 동일한 역할을 수행하며, GCS의 인지 상태 오차 <span class="math math-inline">e(t)</span>를 0으로 강제 수렴(Convergence)시킨다.</p>
+<h3>2.2  명령어 응답(COMMAND_ACK) 기반의 미시적 트랜잭션 피드백</h3>
+<p>거시적 피드백만으로는 명령 인가 직후의 과도 응답(Transient Response)을 즉각적으로 추적하기 어렵다. 따라서 PX4는 GCS가 인가하는 <code>COMMAND_LONG</code> 혹은 <code>COMMAND_INT</code> 메시지에 대하여 필수적으로 <code>COMMAND_ACK</code> 피드백을 발생시킨다. 이 설계는 이산 사건 제어 시스템(DECS) 관점에서 플랜트가 제어 입력을 수용(Accepted), 임시 거부(Temporarily Rejected), 영구 거부(Denied)했는지를 결정론적으로 확약하는 매우 중요한 폐루프 경로이다.</p>
+<h2>3.  PX4와 Ardupilot 피드백 처리 메커니즘의 차이</h2>
+<p>피드백 루프의 철학은 두 오픈소스 진영 모두 공감하지만, GCS 레벨에서의 구현 강제력에는 차이가 존재한다.</p>
+<ul>
+<li><strong>Ardupilot (Mission Planner):</strong> 파라미터(<code>PARAM_VALUE</code>)나 비행 상태의 피드백 폴링(Polling)을 폭넓은 유연성 하에 지원한다. 사용자가 스틱 입력을 오버라이드(RC Override)할 때, 명시적인 모드 전환 피드백이 없더라도 제약 없이 개입이 가능하다. 이는 개방 루프 제어의 여지를 비교적 많이 남겨두는 실용주의적 접근이다.</li>
+<li><strong>PX4 (QGroundControl):</strong> <code>Commander</code>에 의한 피드백 루프 의존도가 극도로 높다. Offboard 제어를 위해 ROS2(uXRCE-DDS) 기반 혹은 MAVSDK 노드를 사용할 때, 기체는 GCS/에이전트로부터 연속적인 피드백(<code>SET_POSITION_TARGET_LOCAL_NED</code> 등 지정 주기, 예: 2Hz 이상 유지)을 확인하지 못하면 즉시 Data Link Loss Failsafe로 강제 천이시킨다. 즉, PX4는 제어 루프가 개방망(Open-loop)으로 변질되는 즉시 시스템을 Lock 상태로 전환하는 방어적 록-스텝(Lock-step) 메커니즘을 강제한다.</li>
+</ul>
+<h2>4.  GCS 피드백 루프의 로직 흐름도</h2>
+<p>폐루프 관제를 구현한 GCS의 통제 로직을 다이어그램으로 도식화하면 다음과 같다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[사용자/에이전트 제어 의도 발생] --&gt; B[GCS: 제어 입력 u 생성]
+    B --&gt;|MAVLink COMMAND_LONG| C((PX4 Autopilot Plant))
+    
+    C --&gt;|외란 w 및 기체 동역학| D{상태 변이 X_k}
+    D --&gt;|수용/거절| E[COMMAND_ACK]
+    D --&gt;|주기적 상태 발현| F[HEARTBEAT / SYS_STATUS]
+    
+    E --&gt; G(GCS 상태 관측기 Observer)
+    F --&gt; G
+    
+    G --&gt;|추정된 상태 e_t 계산| H{상태 오차 검출기}
+    H --&gt;|일치: 대기| I[Idle / 모니터링 유지]
+    H --&gt;|불일치: 보정 필요| B
+</code></pre>
+<p>다이어그램에서 볼 수 있듯, <code>COMMAND_ACK</code>와 <code>HEARTBEAT</code>은 GCS 관측기로 피드백되는 측정치 벡터 <span class="math math-inline">y</span>의 역할을 완벽하게 수행한다.</p>
+<h2>5.  결론</h2>
+<p>무인항공기 제어에서 GCS가 플랜트(UAV)의 상태 전이를 확신하는 개방 루프 관제는 통신 지연이나 노이즈가 개입될 경우 돌이킬 수 없는 상태 발산(State Divergence) 즉, 시스템의 탈선(Derailment)을 가져온다. PX4 아키텍처는 이를 원천적으로 봉쇄하기 위해 상태 동기화 및 트랜잭션 긍정 응답(ACK) 구조라는 다중 피드백 루프를 필수적으로 요구하며, 이는 추후 오프보드 제어 체계나 다중 에이전트(Swarm) 관제를 구축할 때 개발자가 반드시 준수해야 하는 안전 표준(Safety Standard)으로 작용한다.</p>
 
             </article>
             <footer>

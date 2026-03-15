@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.2.2.1 IEEE 754 단정밀도 부동소수점(Single-Precision Floating-Point)의 가수부(Mantissa) 비트 제한 분석</title>
+    <title>BIJUNG:39.2.2.1. IEEE 754 단정밀도 부동소수점(Single-Precision Floating-Point)의 가수부(Mantissa) 비트 제한 분석</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,45 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.2.2.1 IEEE 754 단정밀도 부동소수점(Single-Precision Floating-Point)의 가수부(Mantissa) 비트 제한 분석</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.2.2.1 IEEE 754 단정밀도 부동소수점(Single-Precision Floating-Point)의 가수부(Mantissa) 비트 제한 분석</span></nav>
+                    <h1>39.2.2.1. IEEE 754 단정밀도 부동소수점(Single-Precision Floating-Point)의 가수부(Mantissa) 비트 제한 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.2.2.1. IEEE 754 단정밀도 부동소수점(Single-Precision Floating-Point)의 가수부(Mantissa) 비트 제한 분석</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.2.2.1 IEEE 754 단정밀도 부동소수점(Single-Precision Floating-Point)의 가수부(Mantissa) 비트 제한 분석</h1>
+                <h1>39.2.2.1. IEEE 754 단정밀도 부동소수점(Single-Precision Floating-Point)의 가수부(Mantissa) 비트 제한 분석</h1>
+<h2>1.  개요</h2>
+<p>MAVLink 2.0 프로토콜의 표준 범용 제어 메시지인 <code>COMMAND_LONG</code>(#76)은 내부 데이터를 담는 7개의 슬롯(<code>param1</code> ~ <code>param7</code>)을 모두 32비트(4바이트) 길이의 단정밀도 부동소수점(<code>float</code>, Single-Precision Floating-Point) 자료형으로 규정하고 있다. 이러한 설계는 과거 8비트/16비트 마이크로컨트롤러 환경에서 매우 적합했으나, 오늘날의 고정밀 글로벌 웨이포인트(Mission Item)나 RTK-GPS 시스템에서는 수학적으로 극복 불가능한 한계를 드러낸다.</p>
+<p>본 절에서는 IEEE 754 단정밀도 부동소수점 표준의 메모리 레이아웃 원리를 심층적으로 해부하고, 특히 <strong>가수부(Mantissa)의 비트 제한</strong>이 드론의 분산 제어망(GCS <span class="math math-inline">\leftrightarrow</span> PX4-Autopilot) 상에서 어떠한 정밀도 손실(Precision Loss) 메커니즘을 유발하는지 공학적으로 분석한다.</p>
+<h2>2.  IEEE 754 32비트 단정밀도(Single-Precision) 메모리 아키텍처</h2>
+<p>IEEE(전기전자공학자협회) 754 표준은 컴퓨터가 실수를 처리하는 가장 보편적인 규약이다. C/C++ 언어에서 <code>float</code>로 선언되는 32비트 단정밀도 자료형은 메모리상에 다음과 같은 세 가지 논리적 블록으로 엄격하게 분리되어 적재된다.</p>
+<ol>
+<li><strong>부호 비트 (Sign Bit, 1비트)</strong>: 수치의 양수(<span class="math math-inline">0</span>) 또는 음수(<span class="math math-inline">1</span>) 여부를 결정한다.</li>
+<li><strong>지수부 (Exponent, 8비트)</strong>: 소수점의 위치를 나타내며, 수치의 절대적인 ’크기(Scale)’를 결정한다. 바이어스(Bias) 값 127을 사용하여 약 <span class="math math-inline">10^{-38}</span> 부터 <span class="math math-inline">10^{38}</span> 까지의 광범위한 다이내믹 레인지(Dynamic Range)를 제공한다.</li>
+<li><strong>가수부 (Mantissa 또는 Significand, 23비트)</strong>: 실질적인 ‘유효 숫자(Significant Digits)’ 정보를 담는 핵심 영역이다. 정규화(Normalization)를 통해 항상 <code>1.xxxx...</code> 형태를 취하므로, 숨겨진 1비트(Hidden Bit)를 포함하여 논리적으로는 24비트의 정밀도를 갖는다.</li>
+</ol>
+<h2>3.  가수부 23비트가 결정짓는 ’공간 해상도’의 수학적 한계</h2>
+<p>부동소수점 시스템에서 수의 ’범위(Range)’는 지수부가 담당하지만, 수의 ’<strong>정밀도(Precision)</strong>’는 오직 **가수부(Mantissa)**의 비트 길이에 종속된다.</p>
+<p>MAVLink <code>COMMAND_LONG</code>의 파라미터가 가지는 가수부 23비트(숨겨진 1비트 포함 24비트)가 표현할 수 있는 최대 상태의 수는 <span class="math math-inline">2^{24} = 16,777,216</span> 이다.<br />
+이를 우리가 통상적으로 사용하는 10진수 십진법 관점의 유효 숫자 자릿수로 환산해 보면 다음과 같은 수학적 결론이 도출된다.</p>
+<p><span class="math math-display"> \log_{10}(2^{24}) \approx 7.22 \text{ 자리} </span></p>
+<p>즉, 32비트 <code>float</code> 자료형은 입력된 실수를 이진수로 이산화(Discretization)할 때, <strong>10진수로 표현된 수치의 최대 7자리까지만 수학적 무결성을 보장</strong>할 수 있다. 8번째 자리부터는 컴퓨터 내부의 23비트 제한된 슬롯에 데이터를 욱여넣으면서 발생하는 절단 오차(Truncation Error) 혹은 반올림 오차(Rounding Error)라는 치명적인 노이즈가 개입하게 된다.</p>
+<h2>39.2.2.1.3. GCS(Double)와 PX4(Float) 간의 프로토콜 병목 현상</h2>
+<p>현대의 지상 관제 시스템(QGroundControl 등) 백엔드 로직은 대부분 64비트 환경의 C++나 Kotlin으로 구동되며, 지도상의 좌표 연산 및 임무 계획에 있어 64비트 배정밀도 부동소수점(<code>double</code>, 유효숫자 약 15~17자리 보장)을 기본 자료형으로 사용한다. 반면, MAVLink 통신망을 타기 위해 이 데이터가 <code>COMMAND_LONG</code> 패킷에 직렬화(Serialization)되는 순간 <code>float</code>로 강제 다운캐스팅(Downcasting)된다. 이 데이터 버스의 병목 현상이 드론 제어에 치명적인 정보 소실을 초래한다.</p>
+<p>예를 들어, GCS에서 정밀한 글로벌 위도 좌표를 드론에게 지시한다고 가정하자.</p>
+<ul>
+<li><strong>원본 GCS 좌표 (<code>double</code>)</strong>: <code>37.5665350</code> (북위, 유효숫자 <strong>9자리</strong>)</li>
+<li><strong>MAVLink <code>param5</code> 변환 (<code>float</code>)</strong>: C++ 컴파일러가 이를 23비트 가수부에 할당하려고 시도하면, 하위 자릿수가 손실되어 메모리상에는 대략 <code>37.56653??</code> 와 같은 오염된 값(Corrupted Value)이 적재된다.</li>
+</ul>
+<h2>39.2.2.1.4. 단위 공간에서의 오차 누적 및 물리적 결함 증명</h2>
+<p>이러한 가수부 비트 제한에 의한 절단 오차는 단순한 수학적 수치를 넘어, 무인기(PX4-Autopilot)의 실체적 비행 경로 이탈(Deviation)이라는 파괴적인 결과를 낳는다.</p>
+<p>지구방정식(WGS84) 모델에 따르면 지표면에서 위도/경도 <span class="math math-inline">1^\circ</span> (1도)는 대략 <strong><span class="math math-inline">111,320</span> 미터</strong>(<span class="math math-inline">111.32</span> km)에 해당한다.<br />
+앞선 예시에서 <code>float</code> 캐스팅으로 인해 보존된 유효숫자 7자리(소수점 아래 <span class="math math-inline">5</span>자리)의 최소 분해능 스텝 크기는 <span class="math math-inline">0.00001^\circ</span> 이다.</p>
+<ul>
+<li><strong><code>float</code> 기반 WGS84 최소 식별 해상도</strong>: <span class="math math-inline">111,320 \text{ m} \times 0.00001^\circ \approx 1.11 \text{ 미터}</span></li>
+</ul>
+<p>즉, <code>COMMAND_LONG</code> 메시지를 사용하여 글로벌 좌표 지시를 내릴 경우, **GCS가 지도에 찍은 목표점과 PX4가 수신하여 인식하는 목표점 간에는 태생적으로 최소 <span class="math math-inline">1.11</span> 미터 단위의 이산화 간격(계단 현상)**이 존재하게 된다.</p>
+<p>수백 킬로미터를 날아가는 고정익 드론에게 1미터의 오프셋은 무시할 수 있는 수준(Rounding noise)일지 모르나, <strong>센티미터 단위의 포지셔닝이 생명인 RTK 탑재 다목적 쿼드콥터나 실내 군집 비행(Swarm) 환경에서는 1미터의 목표점 이동은 그 즉시 충돌(Crash)을 의미</strong>하는 치명적 런타임 오류(Runtime Fault)가 된다.</p>
+<p>결론적으로, IEEE 754 단정밀도 부동소수점의 23비트 가수부 구조는 그 자체로는 훌륭한 메모리 최적화 규격이나, WGS84와 같은 거대 절대 좌표계를 센소 모터(Sensor-motor) 레벨의 정밀도로 담아내기에는 근본적인 정보 이론(Information Theory)적 한계를 지니고 있다. 이를 극복하기 위해 MAVLink 생태계는 정수형 스케일링(Integer Scaling)이라는 우회로를 창안하게 되며, 이에 대해서는 이후 장표에서 다루게 될 <code>COMMAND_INT</code> 아키텍처를 통해 상세히 논증한다.</p>
 
             </article>
             <footer>

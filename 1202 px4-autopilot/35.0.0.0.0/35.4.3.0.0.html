@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:35.4.3 고주파수(High-frequency) 관성 측정 장치(IMU) 스트림 구독 최적화 및 신호 처리</title>
+    <title>BIJUNG:35.4.3. 고주파수(High-frequency) 관성 측정 장치(IMU) 스트림 구독 최적화 및 신호 처리</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,38 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>35.4.3 고주파수(High-frequency) 관성 측정 장치(IMU) 스트림 구독 최적화 및 신호 처리</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.4.3 고주파수(High-frequency) 관성 측정 장치(IMU) 스트림 구독 최적화 및 신호 처리</span></nav>
+                    <h1>35.4.3. 고주파수(High-frequency) 관성 측정 장치(IMU) 스트림 구독 최적화 및 신호 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.4.3. 고주파수(High-frequency) 관성 측정 장치(IMU) 스트림 구독 최적화 및 신호 처리</span></nav>
                 </div>
             </header>
             <article>
-                <h1>35.4.3 고주파수(High-frequency) 관성 측정 장치(IMU) 스트림 구독 최적화 및 신호 처리</h1>
+                <h1>35.4.3. 고주파수(High-frequency) 관성 측정 장치(IMU) 스트림 구독 최적화 및 신호 처리</h1>
+<p>관성 측정 장치(IMU)는 자율 비행 시스템의 척수(Spinal Cord)와 같다. 비행 역학의 가장 미세한 변화를 감지하기 위해 PX4-Autopilot의 최신 하드웨어(Pixhawk 6 등)에 탑재된 자이로스코프(Gyroscope)와 가속도계(Accelerometer)는 통상 1kHz에서 최대 4kHz 혹은 8kHz의 초고도 주파수로 미가공(Raw) 샘플링 데이터를 쏟아낸다.</p>
+<p>만약 이토록 방대한 스트림을 시스템 내부의 간접 통신망인 uORB 메시지 버스를 통해 매 프레임마다 단순히 퍼블리싱(Publish)한다면, CPU(Microcontroller)는 컨텍스트 스위칭(Context Switching) 부하에 압사당하고 말 것이다. 본 절에서는 PX4가 이러한 고주파수 IMU 센서 데이터를 어떻게 다이렉트 및 비동기 방식으로 구독하여 시스템 대역폭을 최적화하고, 노이즈를 제어(Signal Processing)하는지 그 아키텍처를 분석한다.</p>
+<h2>1.  uORB 병목 방지를 위한 직접 메모리 접근 및 적분기(Integrator) 패턴</h2>
+<p>초창기 비행 제어기들은 IMU 센서 하드웨어 인터럽트가 발생할 때마다 메인 루프를 깨워 즉시 연산을 시도했다. 하지만 현대식 비행 제어 루프(예: EKF2, Attitude Controller)는 200Hz ~ 400Hz의 일관된 고정 사이클(Fixed Tick)로 동작하는 것을 선호한다. 이 1kHz 이상의 센서 생성 주기와 250Hz의 메인 루프 소비 주기 간의 비대칭성(Asymmetry)을 해결하기 위해 PX4는 **하드웨어 타이머 파이프라인(Hardware Timer Pipeline)과 센서 적분기(Integrator)**를 도입했다.</p>
+<ol>
+<li><strong>인터럽트 기반 직접 접근(DMA/SPI)</strong>: 센서 드라이버 블록은 uORB를 거치지 않고 다이렉트 메모리 액세스(DMA)나 버스 인터럽트를 통해 SPI 버스에서 센서 FIFO(First-In-First-Out) 레지스터를 고속으로 끌어온다.</li>
+<li><strong>콘 버퍼(Coning) 및 스컬 버퍼(Sculling) 적분</strong>: 1kHz로 수집되는 원시 각속도(<span class="math math-inline">\omega</span>)와 선형 가속도(<span class="math math-inline">a</span>) 샘플들은 즉각 uORB로 배출되지 않는다. 센서 드라이버 내부의 저수준 적분기(Low-level Integrator)가 이를 캐싱(Caching)하며, 델타 각도(<span class="math math-inline">\Delta \theta = \int \omega dt</span>)와 델타 속도(<span class="math math-inline">\Delta v = \int a dt</span>) 폼으로 누적 비례 적분한다.</li>
+<li><strong>uORB 벌크(Bulk) 발행</strong>: EKF2 루프가 활성화되는 250Hz 주기(즉 4번의 IMU 샘플링이 끝난 직후)에 도달해서야, 누적된 <span class="math math-inline">\Delta \theta</span> 와 <span class="math math-inline">\Delta v</span> 값과 스탬프(Timestamp)가 하나의 단일 버퍼 컨테이너(<code>sensor_combined</code> 토픽)에 담겨 uORB망으로 퍼블리싱된다.</li>
+</ol>
+<p>이 최적화 스퀘어(Square)를 통해 버스(uORB)의 호출 빈도는 <span class="math math-inline">1/4</span> 로 대폭 줄어들면서도 물리적 관성 적분 데이터는 단 1비트의 손실(Loss) 없이 보존된다.</p>
+<h2>2.  디지털 저역 통과 필터(Digital Low-Pass Filter, DLPF) 신호 처리</h2>
+<p>기체의 프로펠러와 모터 회전(통상 5,000 ~ 10,000 RPM, 즉 80Hz ~ 160Hz)에서 발생하는 물리적 진동파는 고주파수 IMU 스트림에 막대한 하모닉 노이즈(Harmonic Noise)를 투영한다. 이러한 백색 소음(White Noise)을 여과 없이 EKF2에 인가하면 적분 누적 오차가 기하급수적으로 폭발하게 된다.</p>
+<p>PX4 신호 처리 파이프라인은 두 가지 레이어에서 노이즈를 소거한다.</p>
+<ul>
+<li><strong>하드웨어 칩셋 내부 DLPF</strong>: ICM-20689나 BMI088 같은 최신 IMU 칩 자체의 레지스터를 구성하여 아날로그-디지털 변환(ADC) 직후에 안티-앨리어싱(Anti-aliasing) 폴링(Polling) 필터를 선행시킨다.</li>
+<li><strong>소프트웨어 2차 버터워스 필터(2nd-order Butterworth Filter)</strong>: 센서 모듈 내에서 <code>IMU_GYRO_CUTOFF</code> 파라미터(예: 기본값 30Hz ~ 50Hz)를 기준으로 소프트웨어 수학적 필터링을 한 번 더 거친다. 고주파수의 잡음 대역을 베어내고(Cut-off) 기동 역학이 담긴 저주파수 코어 신호만을 매끄럽게 추출한다.</li>
+</ul>
+<h2>3.  텔레메트리 파이프라인(MAVLink RAW_IMU) 비동기 샘플링 하향</h2>
+<p>지상 관제소나 엔지니어링 툴(QGroundControl의 MAVLink Inspector 등)에서 실시간 진동 모델을 시각적으로 관측하기 원할 때, <code>HIGHRES_IMU</code> 나 <code>RAW_IMU</code> 메시지를 요청하게 된다.</p>
+<p>하지만 앞서 언급했듯 수백 Hz의 속도로 쏟아지는 uORB 버퍼 버스를 그대로 900MHz 텔레메트리 라디오와 같은 협대역 무선 채널(Narrowband RF)에 밀어넣을 수는 없다. 따라서 <code>mavlink</code> 모듈 스레드는 이 <code>sensor_combined</code> 토픽을 비동기 폴링한 후, GCS에서 설정한 전송 대역폭(예: MAV_DATA_STREAM_EXTRA1 = 10Hz 또는 50Hz) 역치에 맞추어 데시메이션(Decimation, 다운샘플링)을 강제 집행한다.</p>
+<p>이처럼 PX4의 고주파수 IMU 처리 생태계는:</p>
+<ol>
+<li><strong>저수준 하드웨어에서의 누적 적분(Integrator)</strong> 으로 스레드 호출 부하를 은닉하고,</li>
+<li><strong>고급 디지털 시그널 프로세싱(DSP)</strong> 으로 진동 간섭을 격리하며,</li>
+<li><strong>비동기 데시메이션 전략</strong> 으로 MAVLink 라디오 채널의 대역폭 생존율을 보호하는 입체적인 계층적 방어 아키텍처(Hierarchical Defense Architecture)를 취하고 있다.</li>
+</ol>
 
             </article>
             <footer>

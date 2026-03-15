@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.3.3.3 외부 교란(Disturbance) 유입 시 상태 오버라이드(State Override) 권한의 스케줄링 우선순위(Priority Scheduling) 배정</title>
+    <title>BIJUNG:37.3.3.3. 외부 교란(Disturbance) 유입 시 상태 오버라이드(State Override) 권한의 스케줄링 우선순위(Priority Scheduling) 배정</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,67 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.3.3.3 외부 교란(Disturbance) 유입 시 상태 오버라이드(State Override) 권한의 스케줄링 우선순위(Priority Scheduling) 배정</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.3.3.3 외부 교란(Disturbance) 유입 시 상태 오버라이드(State Override) 권한의 스케줄링 우선순위(Priority Scheduling) 배정</span></nav>
+                    <h1>37.3.3.3. 외부 교란(Disturbance) 유입 시 상태 오버라이드(State Override) 권한의 스케줄링 우선순위(Priority Scheduling) 배정</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.3.3.3. 외부 교란(Disturbance) 유입 시 상태 오버라이드(State Override) 권한의 스케줄링 우선순위(Priority Scheduling) 배정</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.3.3.3 외부 교란(Disturbance) 유입 시 상태 오버라이드(State Override) 권한의 스케줄링 우선순위(Priority Scheduling) 배정</h1>
+                <h1>37.3.3.3. 외부 교란(Disturbance) 유입 시 상태 오버라이드(State Override) 권한의 스케줄링 우선순위(Priority Scheduling) 배정</h1>
+<p>자율 비행 시스템이 작동하는 환경은 이상적인 실내 테스트 베드와 달리 기상 악화(Gusts of Wind), 자기장 교란(Magnetic Interference), 조류 충돌(Bird Strike) 등 예측 불가능한 비선형적 물리적 교란(External Disturbance)이 상수로서 존재한다. 이러한 극한 상황에서 PX4-Autopilot은 단순히 센서 데이터를 추종하는 것을 넘어, 현재 실행 중인 제어 상태(State)를 강제로 박탈(Override)하고 더 안전한 하위 제어 루프로 권한을 스케줄링하는 <strong>동적 권한 우선순위 배정(Dynamic Priority Scheduling)</strong> 아키텍처를 가동한다.</p>
+<h2>1.  외부 교란과 제어 포화(Control Saturation)의 메커니즘</h2>
+<p>외부 교란이 임계치를 초과하여 유입되면, 오토파일럿의 PID 제어기는 이를 보상하기 위해 액츄에이터(모터)에 최대 출력을 요구하게 된다.</p>
+<ul>
+<li><strong>포화 발생(Saturation)</strong>: 예를 들어, 초속 20m/s의 돌풍이 불어 기체를 뒤집으려 할 때, 위치 제어기(Position Controller)는 기체를 원래 좌표에 유지시키기 위해 뱅크각(Bank Angle)을 한계치(예: 45도)까지 틀 것을 요구한다. 이 과정에서 특정 모터의 PWM 출력이 100% 한계에 도달하는 제어 포화(Saturation) 현상이 발생한다.</li>
+<li>자세가 무너진 상태에서 무리하게 “원래 위치(Position)“를 고수하려 들면, 위치 오차 적분(Integral Windup)이 폭주하여 결국 자세 제어(Attitude Control) 루프마저 붕괴하고 기체는 추락한다.</li>
+<li>따라서 시스템은 물리적 한계점(Physical limit)에 부딪혔을 때, 생존을 위해 “위치 고수“라는 상위 목표를 임시 포기하고 “수평 자세 회복“이라는 하위(하지만 더 원초적인) 목표로 **상태 오버라이드(State Override)**를 단행해야 한다.</li>
+</ul>
+<h2>2.  PX4의 계층적 권한 스케줄링(Hierarchical Priority Scheduling)</h2>
+<p>PX4 커맨더와 <code>FlightTask</code> 계층은 외부 교란에 맞서기 위해, 제어 루프를 하향식(Top-Down)으로 격하(Demotion)시키는 스케줄링 큐를 둔다.</p>
+<h3>2.1  위치 제어 상실 시 자세 제어로의 강등 (Position to Attitude Fallback)</h3>
+<p>GPS 기반 <code>Mission</code> 모드나 <code>Hold</code> 모드 비행 중에 강한 교란(예: GPS Spoofing 또는 심각한 자기장 폭풍에 의한 방향 상실)이 감지되면, EKF2는 위치와 속도 혁신(Innovation) 분산이 게이트를 넘었음을 커맨더에 알린다.</p>
+<p>커맨더는 즉각적으로 자율 경로 추종 권한을 박탈(Override)하고 비행 모드를 <strong>Altitude 모드(기압계 고도만 유지, XY 평면은 바람에 밀려가는 상태)</strong> 기복은 **Stabilized 모드(수평 자세만 유지, 고도와 XY 모두 수동 제어)**로 강등(Demotion)시킨다.<br />
+이를 통해 잘못된 전역 위치 신호를 맹신하여 기체가 가속 충돌하는 Fly-away 현상을 방어한다.</p>
+<h3>2.2  공기역학적 실속(Stall) 및 고정익(Fixed-wing) 오버라이드</h3>
+<p>고정익(Plane) 플랫폼의 경우 오버라이드 로직이 더 복잡하다. 강한 하강 기류(Downdraft)나 급격한 선회로 인해 항공기가 실속 속도(Stall Speed) 이하로 떨어지려 하면(TECS, Total Energy Control System이 이를 감지), 오토파일럿은 조종자의 스로틀(Throttle) 스틱 명령을 완전히 무시(Override)한다.</p>
+<p>조종자가 스로틀을 내리고 피치 스틱을 위로 당겨도(고도를 높이려고 함), TECS 로직의 스케줄링 우선순위가 인간의 입력을 오버라이드하여 **기수를 강제로 숙이고(Pitch Down) 스로틀을 최대로 전개(Full Throttle)**하여 대기 속도를 회복한다. 이는 비행 역학적 생존(Aerodynamic Survival)이 그 어떤 임무 명령이나 인간의 인지 오판보다 스케줄링 우선순위(Priority)를 갖음을 의미한다.</p>
+<h2>3.  오버라이드 권한의 트리거 및 복구(Recovery) 논리 모델 도표</h2>
+<pre><code class="language-mermaid">graph TD
+    subgraph Control Loops
+        P_Loop[Position Control / Auto]
+        V_Loop[Velocity Control]
+        A_Loop[Attitude Control / Manual]
+        R_Loop[Rate Control / Actuator]
+    end
+
+    subgraph Disturbance Monitor
+        D_Wind[Extreme Wind Gust]
+        D_GPS[GPS Loss / Spoofing]
+        D_TECS[Stall Warning - TECS]
+    end
+
+    subgraph Priority Scheduler (Override)
+        Fallback1{Demote to Velocity/Attitude?}
+        Fallback2{Stall Prevention Override}
+    end
+
+    P_Loop --&gt; V_Loop
+    V_Loop --&gt; A_Loop
+    A_Loop --&gt; R_Loop
+
+    D_GPS --&gt; Fallback1
+    D_Wind --&gt; Fallback1
+    Fallback1 -- Block Position &amp; Veto --&gt; A_Loop
+    
+    D_TECS --&gt; Fallback2
+    Fallback2 -- Block Human Pitch Input --&gt; A_Loop
+    
+    A_Loop -. Wait for Ground Truth Stability .-&gt; P_Loop
+</code></pre>
+<p>위의 단계에서 <span class="math math-inline">P\_Loop</span>(위치 제어)가 깨지면 즉각적으로 <span class="math math-inline">A\_Loop</span>(자세 제어)로 제어 권한을 낮춘다. 교란 요소가 해소되고 센서 융합이 다시 정상치(Valid)로 돌아오면, 조종자의 재승인(Mode Switch Toggle) 하에 서서히 원상 복구한다.</p>
+<h2>4.  제어 공학적 결론</h2>
+<p>통신망과 제어 상태기를 연동하는 GCS 개발 관점과 비교해 볼 때, 기체 내부의 <strong>상태 오버라이드 스케줄링 시스템</strong>은 순수한 동역학적 댐퍼(Dynamical Damper)의 역할을 한다.<br />
+Ardupilot과 PX4 모두 이러한 Fallback 메커니즘을 내장하고 있으나, 최신 PX4의 uORB 메시징 구조 하에서는 <code>vehicle_control_mode</code> 토픽의 플래그(Flag) 비트맵을 직접 변조함으로써 매우 원자적(Atomic)이고 즉각적인 스위칭을 단행한다.</p>
+<p>외부 교란 유입 상황에서 조종자의 명령(또는 원격 ROS 2 위치 제어 명령)을 100% 확률로 묵살(Override)하는 우선순위 배정 방식은, 자동화 제어(Automated Control)에 있어서 시스템의 생존(Survival Vector)이 임무 완수(Mission Completion)보다 무조건 최상위의 라우팅(Routing) 노드를 선점해야만 한다는 현대 비행 제어 공학의 방어 철학을 대변한다.</p>
 
             </article>
             <footer>

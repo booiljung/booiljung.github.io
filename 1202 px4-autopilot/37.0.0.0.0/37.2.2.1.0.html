@@ -115,6 +115,59 @@
             </header>
             <article>
                 <h1>37.2.2.1 임계 구역(Critical Section) 내 상태 변이 시의 뮤텍스(Mutex) 및 세마포어(Semaphore) 상호 배제 원리</h1>
+<p>실시간 운영체제(RTOS) 환경에서 구동되는 비행 제어 소프트웨어는 필수적으로 다중 스레드(Multi-thread) 간의 자원 경합(Resource Contention) 문제에 직면한다. PX4-Autopilot은 uORB를 통한 비동기 락 프리(Lock-free) 통신을 전역 아키텍처의 근간으로 삼고 있으나, 시스템의 가장 핵심적인 논리 상태(Logical State)를 실제로 평가하고 변이(Transition)시키는 커맨더(Commander) 모듈의 심장부에서는 여전히 엄격한 메모리 상호 배제(Mutual Exclusion)가 요구된다. 본 절에서는 이러한 임계 구역(Critical Section) 내에서 동시성 충돌을 방어하기 위해 적용된 뮤텍스(Mutex) 및 세마포어(Semaphore)의 철학과 적용 원리를 분석한다.</p>
+<h2>1.  커맨더 내부의 임계 구역(Critical Section) 정의</h2>
+<p>임계 구역이란 두 개 이상의 스레드가 동시에 접근해서는 안 되는 공유 데이터(Shared Data) 구조체나 메모리 세그먼트를 조작하는 코드 영역을 뜻한다. 커맨더 스레드 내부에서, 기체의 무장 상태(Arming State)나 내비게이션 모드(Nav State)를 나타내는 C++ 열거형(Enum) 및 변수들을 읽고 덮어쓰는(Read-Modify-Write) 일련의 블록이 바로 임계 구역에 해당한다.</p>
+<h3>1.1  원자성(Atomicity) 파괴의 위험성</h3>
+<p>만약 상태 전환 코드가 뮤텍스로 보호받지 못한다면, 스텝(Step) A에서 현재 상태를 확인하고, 스텝 B 조건 검사를 거쳐 스텝 C에서 새로운 상태를 기록하는 찰나의 순간에 운영체제의 컨텍스트 스위칭(Context Switching)이 발생할 수 있다. 이때 다른 우선순위 스레드가 개입하여 상태를 오염시킨다면, 커맨더 로직은 무결성이 파괴된 엉뚱한 비행 상태를 uORB로 퍼블리싱하는 대재앙을 맞이하게 된다.</p>
+<h2>2.  PX4의 상호 배제(Mutual Exclusion) 구현 기법</h2>
+<p>PX4는 NuttX RTOS가 제공하는 POSIX 스레드(pthreads) 라이브러리를 기반으로 동시성 제어를 수행한다. 커맨더 로직 내에서는 데드락(Deadlock)과 우선순위 역전(Priority Inversion)을 피하기 위해 매우 보수적인 상호 배제 전략을 사용한다.</p>
+<h3>2.1  <code>pthread_mutex_t</code>를 활용한 상태 보호</h3>
+<p>커맨더 클래스는 전역 상태 객체를 보호하기 위해 전용 뮤텍스(Mutex) 객체를 보유한다. 주요 상태 전이 함수가 호출될 때, 함수의 최상단에서 <code>pthread_mutex_lock()</code> 연산이 수행되어 잠금을 획득(Acquire)하며, 로직 평가와 상태 변형이 모두 끝난 직후 <code>pthread_mutex_unlock()</code>을 통해 즉시 잠금을 해제(Release)한다.</p>
+<ul>
+<li><strong>최소 영역 잠금(Minimal Locking Scope):</strong> 블로킹 지연(Blocking Latency)을 방지하기 위해, 파일 I/O나 uORB 송수신 등 시간이 오래 걸리는 작업은 임계 구역 밖으로 분리하고 오직 상태 변수 산술 연산 구간만 뮤텍스로 감싸 보호한다.</li>
+</ul>
+<h3>2.2  플래그(Flag) 기반의 세마포어(Semaphore)적 활용</h3>
+<p>일부 이벤트 대기 흐름에서는 단순 스핀락(Spinlock)이나 이진 세마포어(Binary Semaphore) 패턴이 사용된다. 예를 들어, 메인 커맨더 루프가 유휴 시간(Idle time)에 휴면(Sleep) 상태에 있다가, 센서나 사용자로부터 중요한 상태 전이 트리거 이벤트가 발생했을 때 이진 세마포어를 통해 시그널을 주고받아 즉시 프로세서를 점유하고 깨어나는(Wake-up) 메커니즘을 동반한다.</p>
+<h2>3.  커맨더 상태 트랜잭션의 원자성(Atomic Transaction) 보장 체계</h2>
+<p>PX4의 상태 전이는 다단계(Multi-step) 검증으로 이루어지기 때문에 이 모든 스텝이 ’하나의 원자 단위’처럼 실행되어야 한다.</p>
+<ol>
+<li><strong>Lock:</strong> 글로벌 상태 뮤텍스 잠금 획득.</li>
+<li><strong>Evaluate:</strong> 현재 상태 파악 및 전제 조건(Pre-flight Check) 검증 실행.</li>
+<li><strong>Transition:</strong> 유효할 경우(Valid), 타겟 상태 변수 덮어쓰기. 무효할 경우(Invalid), 변수 유지 및 오류 코드 리턴.</li>
+<li><strong>Unlock:</strong> 뮤텍스 해제 수반.</li>
+<li><strong>Publish:</strong> (임계 구역 외부에서) 갱신된 상태를 <code>vehicle_status</code> 토픽으로 uORB 브로드캐스팅.</li>
+</ol>
+<p>PX4와는 대조적으로 Ardupilot은 메인 스케줄러(Scheduler)의 순차 주기 내에서 상태 변이를 조건문 형태로 분산 처리하는 경향이 보다 짙다. 반면 PX4는 철저히 뮤텍스 락 기반의 원자적 C++ 객체 지향 메서드(<code>arming_state_transition()</code>)를 통과하도록 강제함으로써 상태 오염의 가능성을 공학적으로 봉쇄한다.</p>
+<h2>4.  뮤텍스 제어 흐름 및 상호 배제 다이어그램</h2>
+<p>커맨더 내부 스레드의 임계 구역 처리 논리를 시퀀스로 도식화하면 다음과 같다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant OS as RTOS Scheduler
+    participant Cmd_Thread as 커맨더 메인 스레드
+    participant Mutex as State Mutex Lock
+    participant State_Mem as 시스템 상태 메모리 (Shared Data)
+    participant Other_Thread as 타이머/인터럽트 스레드
+
+    Note over Cmd_Thread: 새로운 모드 변경 이벤트 획득
+    Cmd_Thread-&gt;&gt;Mutex: 1. pthread_mutex_lock() 요청
+    Mutex--&gt;&gt;Cmd_Thread: 락 획득 성공 (임계 구역 진입)
+    
+    Other_Thread-&gt;&gt;Mutex: 상태 읽기/쓰기 시도
+    Note right of Other_Thread: 락이 풀릴 때까지 대기 (Blocked)
+    
+    Cmd_Thread-&gt;&gt;State_Mem: 2. 현재 상태 Read (예: STANDBY)
+    Cmd_Thread-&gt;&gt;Cmd_Thread: 3. 변이 전제 조건 분기 평가
+    Cmd_Thread-&gt;&gt;State_Mem: 4. 새 상태 Write (예: ARMED)
+    
+    Cmd_Thread-&gt;&gt;Mutex: 5. pthread_mutex_unlock() 해제
+    Note left of Cmd_Thread: 임계 구역 탈출
+    
+    Mutex--&gt;&gt;Other_Thread: 락 획득 권한 이양
+    Other_Thread-&gt;&gt;State_Mem: 갱신된 무결성 상태 Read
+</code></pre>
+<p>위 도해처럼, <code>Other_Thread</code>가 컨텍스트 스위칭을 통해 끼어들려 하더라도 코어 데이터가 변형되는 스텝 2~4 사이에는 철저한 상호 배제가 보장됨을 알 수 있다.</p>
+<h2>5.  결론</h2>
+<p>다중 스레드 운영체제가 제공하는 비동기적 효율성의 이면에는 공유 메모리를 파괴할 수 있는 경쟁 상태의 그림자가 짙게 깔려 있다. PX4-Autopilot은 글로벌 아키텍처 수준에서는 uORB를 활용하여 블로킹 없는 유연함을 지향하지만, 커맨더(Commander) 최심부의 상태 변이 로직 안에서는 고전적이면서도 가장 확실한 뮤텍스 기반의 임계 구역 상호 배제 기법을 교과서적으로 적용하고 있다. 이로써 <code>Takeoff</code>나 <code>Failsafe</code> 와 같이 비행체의 운명을 가르는 결정적인 상태 전이 트랜잭션은 중간에 다른 스레드의 간섭을 1클럭 틱(Clock Tick)조차 허용하지 않는 완벽한 원자성을 보장받는다.</p>
 
             </article>
             <footer>

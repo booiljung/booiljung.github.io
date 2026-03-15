@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.6.3.2 Ardupilot의 조건부 허용(Conditional Acceptance) 및 자율적 예외 보상(Autonomous Exception Compensation) 모델</title>
+    <title>BIJUNG:37.6.3.2. Ardupilot의 조건부 허용(Conditional Acceptance) 및 자율적 예외 보상(Autonomous Exception Compensation) 모델</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,46 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.6.3.2 Ardupilot의 조건부 허용(Conditional Acceptance) 및 자율적 예외 보상(Autonomous Exception Compensation) 모델</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.6.3.2 Ardupilot의 조건부 허용(Conditional Acceptance) 및 자율적 예외 보상(Autonomous Exception Compensation) 모델</span></nav>
+                    <h1>37.6.3.2. Ardupilot의 조건부 허용(Conditional Acceptance) 및 자율적 예외 보상(Autonomous Exception Compensation) 모델</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.6.3.2. Ardupilot의 조건부 허용(Conditional Acceptance) 및 자율적 예외 보상(Autonomous Exception Compensation) 모델</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.6.3.2 Ardupilot의 조건부 허용(Conditional Acceptance) 및 자율적 예외 보상(Autonomous Exception Compensation) 모델</h1>
+                <h1>37.6.3.2. Ardupilot의 조건부 허용(Conditional Acceptance) 및 자율적 예외 보상(Autonomous Exception Compensation) 모델</h1>
+<p>PX4의 무관용 방어적 설계와 대비되는 지점에 위치한 Ardupilot은 외부 명령 수용에 있어 유연성(Flexibility)과 시스템 스스로의 예외 처리(Exception Handling) 능력을 극대화한 ‘조건부 허용(Conditional Acceptance)’ 패러다임을 취하고 있다. 본 절에서는 지상 관제 시스템(GCS)이 Ardupilot 기반 기체에 명령을 내릴 때, 기체 내부에서 어떠한 자율적 보상(Autonomous Exception Compensation) 기전이 작동하는지 소스 코드 및 아키텍처 관점에서 분석한다.</p>
+<h2>1.  조건부 허용(Conditional Acceptance) 패러다임의 원리</h2>
+<p>Ardupilot은 MAVLink를 통한 외부 개입이나 모드(Mode) 변경 요청에 대해 상대적으로 낮은 문턱(Threshold)을 제공한다. 기체의 현재 센서 상태가 일시적으로 불안정하거나 이전에 수신된 데이터 스트림이 없더라도, 치명적인 하드웨어 결함이 아닌 이상 명령을 일단 수용(<code>MAV_RESULT_ACCEPTED</code>)하는 경향이 짙다.</p>
+<h3>1.1  타임아웃(Timeout) 없는 Guided 모드 대기</h3>
+<p>가장 대표적인 예가 Ardupilot의 <code>GUIDED</code> 모드(PX4의 Offboard에 해당)이다. PX4는 Offboard 진입 전 반드시 지속적인 제어 주파수(예: 2Hz 이상)가 입력되어야 하지만, Ardupilot은 현재 전송되는 셋포인트(Setpoint)가 하나도 없더라도 GCS가 <code>GUIDED</code> 모드로 전환을 요청하면 이를 즉각 승인한다.</p>
+<ul>
+<li><strong>자율적 상태 유예</strong>: 명령 스트림이 없으면 기체는 내부 제어 루틴에 의해 현재 위치에 자율적으로 공간 고정(Loiter/Hover) 상태를 유지하거나 마지막으로 수신했던 속도 벡터를 점진적으로 0으로 감속시키며 대기(Wait) 상태에 돌입한다.</li>
+<li><strong>미들웨어 개발의 이점</strong>: 이러한 유연성은 미들웨어 설계자가 통신 스레드와 제어 스레드를 엄격하게 동기화(Synchronization)해야 하는 부담을 대폭 경감시켜 준다. ROS 2 노드를 작성할 때 단순히 <code>SetMode</code> 서비스를 호출해 두고, 필요할 때마다 간헐적으로 타겟 위치를 던져주는 이벤트 드리븐(Event-driven) 방식의 설계가 가능해진다.</li>
+</ul>
+<h2>2.  자율적 예외 보상(Autonomous Exception Compensation) 모델</h2>
+<p>Ardupilot은 센서 레벨의 노이즈나 일시적 신호 소실이 발생했을 때, 상위 비행 모드를 강제로 드롭(Drop)시키기보다 EKF3(Extended Kalman Filter 3) 추정기와 코어 루프 내에서 자체적으로 오차를 덮어쓰거나(Override) 보상하는 기능을 갖추고 있다.</p>
+<h3>2.1  EKF3 다중 코어(Multi-core) 기반 레인 전환(Lane Switching)</h3>
+<p>Ardupilot의 최신 EKF3 아키텍처는 센서 이중화/삼중화 환경에서 매우 유연한 레인(Lane) 전환 메커니즘을 지원한다.</p>
+<pre><code class="language-cpp">// Ardupilot EKF3 코어의 혁신(Innovation) 기반 자율 보상 논리 (구조적 요약)
+if (primary_core_innovation &gt; INNOVATION_TOLERANCE) {
+    // 1번 GPS의 잡음이 튀어 오차가 임계치를 초과함
+    if (secondary_core_healthy) {
+        switch_primary_to(secondary_core); // 조용히 백업 코어로 교체
+        // 비행 모드(AUTO/GUIDED)는 외부로 알림 없이 그대로 유지됨
+    }
+}
+</code></pre>
+<p>PX4였다면 이 과정에서 엄격한 Failsafe 로직이 맞물려 기체가 하위 모드로 튕겨져 나갔을 수 있는 상황에서도, Ardupilot은 내부 필터의 공분산(Covariance) 허용 오차폭(Tolerance Margin)을 최대한 활용하여 유연하게 버틴다. 외부 GCS 입장에서는 모드 천이 없이 비행이 매끄럽게 유지되는 것처럼 체감된다.</p>
+<h3>2.2  예외 보상 로직의 명과 암</h3>
+<p>이러한 포용력(Tolerance)은 드론 딜리버리나 야외 자동 맵핑(Mapping)과 같이 부분적인 GPS 섀도우(Shadow) 구간이나 일시적 간섭이 많은 환경에서 임무 성공률을 극도로 끌어올리는 원동력이 된다.</p>
+<p>하지만 **“기능이 유지된다고 해서 완벽한 상태임을 보장하지 않는다”**는 맹점을 GCS 아키텍트가 숙지해야 한다. 기체가 내부적으로 보상(Compensation) 한계치에 다다르며 간신히 궤적을 유지하고 있는지, 아니면 아주 깨끗한 상태로 비행하는지를 GCS는 MAVLink <code>SYS_STATUS</code>나 <code>EKF_STATUS_REPORT</code> 메시지를 모니터링하여 자발적으로 짐작해야 한다.</p>
+<h2>3.  통합(Integration) 미들웨어 관점에서의 결론</h2>
+<p>Ardupilot의 이러한 조건부 허용 및 자율 보상 설계 아키텍처는, GCS 및 에이전트 미들웨어의 초기 통합(Integration) 속도를 매우 빠르게 만들어 주는 결정적 요인이다.</p>
+<p>그러나 함정에 빠지지 않기 위해 미들웨어 개발자는 다음을 준수해야 한다.</p>
+<ol>
+<li><strong>ACK의 과신 금지</strong>: <code>MAV_CMD_NAV_WAYPOINT</code> 전송 후 <code>ACCEPTED</code>가 떨어졌다고 하여 기체의 EKF가 완벽히 수렴(Converged)했다고 가정해서는 안 되며, 별도의 감시자(Observer) 노드가 물리적 오차(<code>nav_controller_output</code>)를 크로스체크해야 한다.</li>
+<li><strong>사일런트 페일(Silent Fail) 대비</strong>: 기체가 내부적으로 센서 레인을 넘나들며 악전고투(Struggle)하고 있는 상태를 사용자(원격 조종사)가 눈치채지 못할 수 있으므로, QGroundControl과 같은 GCS의 프론트엔드는 EKF 분산(Variance) 알람을 더욱 보수적으로 설정하여 청각적/시각적 경고를 제공하도록 프롬프트(Prompt)를 설계해야 한다.</li>
+</ol>
+<p>요약하자면, Ardupilot은 제어 수용성(Acceptability)의 주도권을 오토파일럿 내부의 자율 치유(Self-healing) 및 유지(Hold) 로직에 강하게 부여함으로써, 불규칙한 외부 명령과 거친 통신 환경 속에서도 유연하고 중단 없는 임무 수행을 지향하는 실용주의적 아키텍처를 완성하였다고 평가할 수 있다.</p>
 
             </article>
             <footer>

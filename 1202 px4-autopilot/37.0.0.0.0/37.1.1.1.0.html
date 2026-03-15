@@ -115,6 +115,50 @@
             </header>
             <article>
                 <h1>37.1.1.1 반이중(Half-Duplex) 통신망에서의 시분할 다중화(TDM) 병목 현상과 상태 지연(Latency) 관계</h1>
+<p>무인항공기(UAV) 지상 관제 시스템(GCS)과 PX4-Autopilot 간의 텔레메트리(Telemetry) 통신은 대부분 비용과 전력 효율성의 이점 때문에 전이중(Full-Duplex) 방식이 아닌 반이중(Half-Duplex) 방식의 RF 모뎀(예: SiK Radio)을 채택하고 있다. 이러한 물리 계층의 한계는 논리 계층에서의 시분할 다중화(Time-Division Multiplexing, TDM) 메커니즘을 강제하며, 이는 다중 통신 노드 개입 시 심각한 통신 병목 현상과 상태 지연(Latency) 증폭을 유발한다. 본 절에서는 이러한 TDM 병목이 제어 시스템에 미치는 동역학적 영향을 분석한다.</p>
+<h2>1.  반이중(Half-Duplex) 통신망의 구조적 한계</h2>
+<p>전이중(Full-Duplex) 통신은 송신(Tx)과 수신(Rx) 채널이 물리적으로 분리되어 있거나 주파수 분할 다중화(FDD)를 통해 동시 통신이 가능한 반면, 반이중(Half-Duplex) 통신은 단일 주파수 채널을 시분할 방식으로 번갈아 사용해야 한다.<br />
+즉, GCS가 기체로 제어 명령을 송출하는 순간에는 기체가 내려보내는 센서 텔레메트리 데이터를 수신할 수 없으며, 그 역도 성립한다. 이를 해결하기 위해 사용되는 대표적인 기법이 시분할 다중화(TDM)이다.</p>
+<h3>1.1  시분할 다중화(TDM)와 듀티 사이클(Duty Cycle)</h3>
+<p>SiK Radio 펌웨어를 비롯한 반이중 모뎀들은 주어진 통신 시간을 짧은 슬롯(Time Slot)으로 나누어, 짝수 슬롯에서는 기체가 송신하고 홀수 슬롯에서는 GCS가 송신하는 방식을 취한다.<br />
+이때 송신에 할당되는 시간의 비율을 듀티 사이클(Duty Cycle)이라고 한다. 만약 기체의 <code>HEARTBEAT</code>이나 <code>ATTITUDE</code> 메시지가 많아 기체의 듀티 사이클이 100%에 가깝게 포화(Saturation)하게 되면, GCS 측에서 전송하는 조종 명령(Control Command)이 물리 채널을 점유할 시간 슬롯을 확보하지 못해 송신 버퍼(Tx Buffer)에 체류하게 된다. 이를 **TDM 병목 현상(TDM Bottleneck)**이라 한다.</p>
+<h2>2.  TDM 병목 현상이 발생시키는 제어상태 지연(Latency)</h2>
+<p>이산 사건 제어 시스템(DECS) 관점에서, TDM 병목에 의한 전송 지연 <span class="math math-inline">\tau_{TDM}</span>은 시스템 제어의 안전 여유(Stability Margin)를 직접적으로 훼손하는 요인이다.</p>
+<h3>2.1  명령어 큐잉(Queueing) 지연의 누적</h3>
+<p>GCS에서 비행 모드를 ’Position’에서 ’Return’으로 변경하는 <code>COMMAND_LONG</code> 메시지를 발급했다고 가정하자.</p>
+<ol>
+<li>GCS의 MAVLink 송신 버퍼 큐(Queue)에 명령이 인입된다.</li>
+<li>하드웨어 RF 모뎀은 현재 기체의 수신 타임 슬롯이 배정될 때까지 대기(Wait)한다.</li>
+<li>무선 채널 점유 상태(Clear Channel Assessment, CCA)를 확인한 후 전송을 개시한다.</li>
+</ol>
+<p>이 과정에서 기체 텔레메트리 트래픽이 과도하여 GCS에 할당된 타임 슬롯이 극도로 축소되어 있다면, 큐잉 지연 시간 <span class="math math-inline">\tau_q</span>와 채널 접근 지연 시간 <span class="math math-inline">\tau_{acc}</span>가 기하급수적으로 증가한다. M/M/1 큐잉 이론(Queueing Theory)에 따르면, 채널 이용률(Utilization, <span class="math math-inline">\rho</span>)이 1에 근접할수록 대기 지연(Waiting Delay)은 점근적으로 무한대에 가까워지는 특성을 띤다.</p>
+<h3>2.2  GCS 상태 동기 불일치(Desynchronization)의 발생</h3>
+<p>TDM 병목에 의한 레이턴시 증가는 단순한 명령 수행 지연을 넘어, GCS-UAV 간 프록시 상태 머신의 동기 불일치(State Desynchronization)를 야기한다.<br />
+예를 들어, GCS가 ’명령 전송 완료’로 인지하고 다음 논리 단계를 수행하려 하나, 실제 명령은 RF 모뎀의 TDM 송신 대기열에 묶여 기체 내 PX4 커맨더(Commander)에는 도달조차 하지 않은 상태(Ghost State)가 연출될 수 있다.</p>
+<h2>3.  PX4와 GCS의 대응 메커니즘 분석</h2>
+<p>반이중 통신망이 내재하는 TDM 병목과 지연 한계를 회피하기 위해 PX4 생태계는 여러 대응 설계 패턴을 지원한다.</p>
+<h3>3.1  트래픽 셰이핑(Traffic Shaping) 및 비대칭 듀티 사이클 설정</h3>
+<p>PX4는 실시간으로 양방향 통신 트래픽을 모니터링하여, 송수신 측의 듀티 사이클을 비대칭(Asymmetric)으로 설정하도록 허용한다. 일반적인 자율 비행 관찰 시나리오에서는 하향 링크(Downlink, UAV <span class="math math-inline">\rightarrow</span> GCS)의 데이터 량이 상향 링크(Uplink, GCS <span class="math math-inline">\rightarrow</span> UAV)보다 압도적으로 많기 때문에, 다운링크에 더 넓은 타임 슬롯을 동적으로 할당하는 방식이 유리하다.</p>
+<h3>3.2  MAVLink 라우팅 및 주입 제어 흐름(Sequence Flow)</h3>
+<p>명령어 지체가 치명적 결과를 낳는 수동 짐벌 제어나 매뉴얼 스틱 입력(<code>MANUAL_CONTROL</code> 메시지)의 경우, TDM 병목을 회피하기 위해 다중화 메커니즘을 흐름도(Flowchart) 레벨에서 최적화한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[GCS 조종 명령 생성] --&gt; B{명령 우선순위 큐 분배}
+    
+    B --&gt;|High (MANUAL_CONTROL)| C[GCS RF Tx Buffer: 최우선 슬롯 대기]
+    B --&gt;|Low (PARAM_REQUEST)| D[GCS RF Tx Buffer: 하위 슬롯 대기]
+    
+    E[기체 텔레메트리 쏟아짐] --&gt; F{SiK TDM 스케줄러}
+    
+    F &lt;--&gt;|Tx/Rx 물리 슬롯 전환| C
+    
+    C --&gt;|전송 성공| G[Air Interface]
+    G --&gt; H[PX4 MAVLink Receiver]
+    H --&gt; I[PX4 Commander: 상태 신속 전이]
+</code></pre>
+<h3>3.3  Ardupilot과의 설계 관점 비교</h3>
+<p>Ardupilot은 전통적으로 SRn(Stream Rate) 파라미터를 통해 고정적인 전송 주기를 강제하여 채널 포화를 방어하려는 경향이 강하나, TDM 계층이 이미 붐비는(Congested) 상황에서의 대응력은 상대적으로 약할 수 있다. PX4의 경우 uORB 메시지 관리를 통해 내부 퍼블리셔의 대역폭 소모를 근본적으로 모듈화하고 억제하여, MAVLink 통신 데몬 수준에서 동적 백프레셔(Backpressure)를 걸어주는 기법을 점진적으로 도입하고 있다.</p>
+<h2>4.  결론</h2>
+<p>반이중 통신망에서의 TDM 병목 현상은 데이터를 주고받는 물리적 시간이 파편화(Fragmentation)됨으로써 필연적으로 발생하는 제어상태 지연(<span class="math math-inline">\Delta \tau</span>)의 주원인이다. GCS 프론트엔드/백엔드 개발자 및 통신 통합 설계자는 통상적인 이더넷(Ethernet) 전이중 환경에서의 개발 직관을 탈피해야 하며, 레이턴시에 민감하지 않도록 타임아웃(Timeout) 윈도우를 넉넉하게 산정하고 송수신 듀티 사이클 불균형을 고려한 비동기 지연 내성(Delay-tolerant) 관제 아키텍처를 구현해야 한다.</p>
 
             </article>
             <footer>

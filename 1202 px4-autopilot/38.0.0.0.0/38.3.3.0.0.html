@@ -115,6 +115,33 @@
             </header>
             <article>
                 <h1>38.3.3 GCS 메모리 아키텍처 내 디지털 트윈(Digital Twin) 추정 모델 구축</h1>
+<p>지연 시간(<span class="math math-inline">\tau</span>)과 관측의 사각지대(<span class="math math-inline">\Delta t</span>)라는 분산 시스템의 태생적 악조건을 수학적으로 방어하기 위해, 현대적인 지상 관제 시스템(GCS)은 도착하는 MAVLink 패킷을 단순 출력(Print)하는 과거의 터미널 방식에서 완전히 탈피했다.</p>
+<p>그 대신, GCS는 자신의 거대한 RAM 메모리 공간 내부에 하늘에 떠 있는 기체의 소프트웨어적 복제본, 즉 <strong>디지털 트윈(Digital Twin)</strong> 객체를 인스턴스화(Instantiation)하여 상태를 추정하고 보정하는 고도화된 아키텍처를 채택하고 있다.</p>
+<h2>1. QGroundControl의 <code>Vehicle</code> 클래스: 디지털 트윈의 본체</h2>
+<p>PX4 생태계의 레퍼런스 GCS인 QGroundControl(QGC) 소스 코드를 심층 분석해보면, 이 디지털 트윈의 실체는 명확히 **<code>Vehicle</code> C++ 클래스(<code>src/Vehicle/Vehicle.cc</code>)**로 귀결된다.</p>
+<p>무선 텔레메트리를 통해 새로운 System ID와 Component ID를 가진 <code>HEARTBEAT</code> 패킷이 처음으로 QGC에 도달하는 순간, QGC의 통신 라우터(<code>MAVLinkProtocol</code>)는 즉각 힙(Heap) 메모리에 새로운 <code>Vehicle</code> 객체를 동적으로 생성(New)한다.</p>
+<p>이 <code>Vehicle</code> 객체는 하늘에 있는 실제 PX4 오토파일럿의 상태를 고스란히 흉내 내는 수많은 내부 캐시(Cache) 변수들을 멤버로 보유한다.</p>
+<ul>
+<li><code>_flightMode</code>: 마지막으로 수신된 비행 모드</li>
+<li><code>_armed</code>: 무장 상태 여부</li>
+<li><code>_coordinate</code>: 최종 GPS 좌표</li>
+<li><code>_roll</code>, <code>_pitch</code>, <code>_yaw</code>: 최신 자세각</li>
+</ul>
+<h2>2. 관찰자 패턴(Observer Pattern)을 통한 비동기 UI 동기화</h2>
+<p>GCS는 이 디지털 트윈 추정 모델을 기반으로 프론트엔드(UI)와 백엔드 통신을 완벽하게 디커플링(Decoupling)한다. 여기서 맹활약하는 것이 객체 지향의 <strong>관찰자 패턴(Observer Pattern)</strong>, 구체적으로는 QGC가 사용하는 Qt 프레임워크의 <strong>Signal &amp; Slot 아키텍처</strong>다.</p>
+<p>사건의 흐름은 다음과 같은 파이프라인을 탄다.</p>
+<ol>
+<li><strong>데이터 수신</strong>: <code>ATTITUDE</code> 패킷이 백그라운드 스레드에서 수신된다.</li>
+<li><strong>트윈 갱신</strong>: 파싱된 데이터가 특정 <code>Vehicle</code> 객체로 라우팅되어 내부 멤버 변수 <code>_roll</code>을 덮어쓴다(Cache Update).</li>
+<li><strong>이벤트 발행 (Signal)</strong>: <code>Vehicle</code> 객체는 데이터 갱신 즉시 <code>rollChanged()</code>라는 비동기 신호(Signal)를 이벤트 큐에 방출(Emit)한다.</li>
+<li><strong>UI 렌더링 (Slot)</strong>: 이 신호를 구독(Subscribe)하고 있던 QML 기반의 프론트엔드 컴포넌트(예: 메인 화면의 수평의(Artificial Horizon) 인스트루먼트)가 슬롯(Slot) 콜백 함수를 통해 활성화되어, 오직 변경된 값에 대해서만 화면을 새로 고침(Repaint)한다.</li>
+</ol>
+<p>이 구조 덕분에, QGC의 인터페이스는 MAVLink 패킷 스트림의 이산적인 주기나 패킷 드롭율에 직접적으로 블로킹(Blocking)되지 않으며, 오직 메모리 속 ’디지털 트윈 모델’의 상태 전이에만 반응하는 극도로 부드럽고 리액티브(Reactive)한 관제 환경을 제공한다.</p>
+<h2>3. 영차 유지(Zero-Order Hold) 모델의 한계점</h2>
+<p>비행 모드 전환(‘Mission’ <span class="math math-inline">\rightarrow</span> ‘RTL’)과 같은 논리적인 이산 변수(Discrete Variable)의 경우, 다음 패킷이 올 때까지 이전 값을 그대로 유지하는 <strong>영차 유지(Zero-Order Hold, ZOH)</strong> 캐싱 메커니즘만으로도 충분하다. 사용자는 모드가 한 번 바뀌면 다음 지시가 있을 때까지 그 모드가 지속될 것이라고 자연스럽게 인지한다.</p>
+<p>그러나 위치, 속도, 자세와 같은 고기동 연속 변수(Continuous Variable)를 ZOH 방식으로 렌더링하면, <span class="math math-inline">\Delta t</span> 시간 동안 화면 속 드론이 제자리에 멈춰 있다가 패킷이 도착하는 순간 순간이동을 하는 ’계단 현상(Stuttering, Jitter)’이 발생하게 된다.<br />
+또한 텔레메트리 지연 시간 <span class="math math-inline">\tau</span>를 전혀 보상하지 못해, 화면에 보이는 위치는 기체의 “현재“가 아닌 “과거“의 궤적이 된다.</p>
+<p>이러한 ZOH 캐싱 모델의 관측 오차를 수학적으로 타파하기 위해, 최고급 GCS 시스템 내부의 디지털 트윈은 수신된 과거의 데이터에 미적분학의 힘을 빌려 기체의 현재를 “예측“하는 기술을 적용한다. 그 핵심 알고리즘이 38.3.3.2절에서 다룰 선형 외삽법(Linear Extrapolation) 수치 해석이다.</p>
 
             </article>
             <footer>

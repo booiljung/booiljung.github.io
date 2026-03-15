@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.2.1.3 독립 스레드에서의 유효 프레임 카운팅 및 조종기 입력 데이터 uORB 퍼블리싱 조건문 분석</title>
+    <title>BIJUNG:29.2.1.3. 독립 스레드에서의 유효 프레임 카운팅 및 조종기 입력 데이터 uORB 퍼블리싱 조건문 분석</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,50 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.2.1.3 독립 스레드에서의 유효 프레임 카운팅 및 조종기 입력 데이터 uORB 퍼블리싱 조건문 분석</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.1.3 독립 스레드에서의 유효 프레임 카운팅 및 조종기 입력 데이터 uORB 퍼블리싱 조건문 분석</span></nav>
+                    <h1>29.2.1.3. 독립 스레드에서의 유효 프레임 카운팅 및 조종기 입력 데이터 uORB 퍼블리싱 조건문 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.1.3. 독립 스레드에서의 유효 프레임 카운팅 및 조종기 입력 데이터 uORB 퍼블리싱 조건문 분석</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.2.1.3 독립 스레드에서의 유효 프레임 카운팅 및 조종기 입력 데이터 uORB 퍼블리싱 조건문 분석</h1>
+                <h1>29.2.1.3. 독립 스레드에서의 유효 프레임 카운팅 및 조종기 입력 데이터 uORB 퍼블리싱 조건문 분석</h1>
+<p>본 소절에서는 <code>rc_input</code> 디바이스 드라이버가 단순히 프로토콜을 디코딩(Decoding)하는 계층을 넘어서, 시스템의 안정성을 능동적으로 모니터링하기 위해 백그라운드 독립 스레드(Independent Thread) 상에서 어떻게 유효 프레임(Valid Frame)을 카운팅(Counting)하고, 무결성이 엄격하게 입증된 조종기 입력 데이터만을 선택적으로 uORB 시스템에 퍼블리싱(Publishing)하는지 그 핵심 조건문 아키텍처를 C++ 소스 수준에서 심도 있게 분석한다.</p>
+<h2>1.  독립적 워커 스레드(Worker Thread) 아키텍처와 비동기 폴링(Polling) 루프</h2>
+<p>하드웨어 인터럽트(ISR)나 DMA 콜백이 수신 버퍼에 데이터를 적재한 이후, 이를 꺼내어 파싱하고 <code>input_rc</code> 버스에 태우는 일련의 무거운 소프트웨어 처리는 ISR 컨텍스트 내부가 아닌 별도로 분리 생성된 워커 스레드(Worker Thread, 보통 NuttX Work Queue 내에 할당됨)에서 비동기적으로 수행된다.</p>
+<p>독립 스레드 분리 설계의 가장 거대한 공학적 이점은 조종기 신호 처리 작업이 FC(Flight Controller)의 메인 제어 루프나 이더넷/센서 I/O 등 다른 핵심 시스템 스레드의 실행 흐름(Execution Flow)을 블로킹(Blocking)하지 않는다는 것이다. <code>rc_input</code> 스레드는 시스템 부팅 직후 독립된 생명 주기를 가지며 무한 루프 속에 돌입한다. 이 루프는 전통적인 <code>sleep()</code> 기반의 휴면이 아닌, 세마포어(Semaphore)나 폴링 API(<code>px4_poll</code>)를 통한 이벤트 드리븐(Event-driven) 방식으로 대기하다가, 수신 버퍼에 새로운 통신 뭉치가 담겼다는 신호(Signal)가 도달할 때에만 즉각적으로 깨어나 활성화된다.</p>
+<p>이 워커 스레드의 코어 런루프(Run-loop) 내부에는 프로토콜 디코딩 엔진 외에도, 통신의 신뢰도를 통계적으로 계측하기 위한 프레임 카운터 생태계가 함께 구현되어 있다.</p>
+<h2>2.  유효 프레임 카운팅(Valid Frame Counting) 및 통신 품질(Link Quality) 추적기</h2>
+<p>서드파티 송수신기(Transceiver)가 공중에서 마주하는 혹독한 전파 환경(RF Interference) 메타데이터를 정량화하기 위하여 소프트웨어는 디코딩 성공 횟수와 실패(CRC 에러, 길이 부족 등) 횟수를 변수에 누적 계측한다.</p>
+<pre><code class="language-cpp">// 수신 프레임 무결성 및 통신 품질 메타데이터 추적 논리 구조 (개념화)
+uint32_t valid_frame_count = 0;   // 정상적으로 체크섬을 통과한 완벽한 프레임 조각 누적 수
+uint32_t parse_error_count = 0;   // 바이트 깨짐, 동기화 실패, 길이 부족으로 인한 파싱 폐기 횟수
+uint64_t last_valid_rx_time = 0;  // 마지막으로 정상 프레임을 수신한 시스템 마이크로초 타임스탬프
+
+// 메인 루프 내부 파서 구동 시점
+if (decoder_parse_success(buffer)) {
+    valid_frame_count++;          
+    last_valid_rx_time = hrt_absolute_time();
+    
+    // 링크 품질(Link Quality) 혹은 RSSI 대역폭 소프트웨어 추론 연산
+    float link_quality = calculate_link_quality(valid_frame_count, parse_error_count);
+    
+    // ... [퍼블리싱 단계로 진입] ...
+} else {
+    parse_error_count++;
+    // 손상된 프레임이므로 하위 파이프라인 퍼블리싱 전면 강제 중단
+}
+</code></pre>
+<p>이러한 프레임 계측기(Frame Counter)는 단순한 로그(Log) 기록용을 넘어선다. GCS(QGroundControl) 화면에 표시되는 조종기 신호 강도 척도나, 시스템 내부적으로 통신 음영 지대 진입을 예견하는 칼만 필터(Kalman Filter)의 상태 모니터링 예측 인자로 적극 활용된다. 특히 SBUS 등의 규격에서는 프레임 자체에 하드웨어 레벨의 ‘프레임 누락(Frame Drop)’ 비트가 존재함에도 불구하고, 소프트웨어 단에서 이와 별도로 소프트웨어 파싱 에러 율(Parse Error Rate)을 교차 검증(Cross-validation)함으로써 이중의 안전 척도를 수립하게 된다.</p>
+<h2>3.  uORB 퍼블리싱 릴리즈의 안전장치(Safeguard) 조건문 아키텍처</h2>
+<p>파싱 머신을 무사히 빠져나온 정수형 배열 채널 데이터라 할지라도, 이를 곧장 전역 공유 메모리에 살포(Broadcast)하여 드론의 액추에이터를 직접 움직이게 놔두는 것은 대단히 위험한 행위이다. PX4는 <code>input_rc_s</code> 토픽 퍼블리싱(API <code>orb_publish()</code>) 코드를 호출하기 직전, 최후의 보루로서 철옹성 같은 다중 조건문 가드(Guard Condition)를 세워둔다.</p>
+<ol>
+<li><strong>채널 임계치 미달(Channel Underflow) 방어 조건문</strong>:<br />
+최소한으로 확보되어야 할 기본 4축 비행 조종 채널(롤, 피치, 요, 스로틀) 데이터조차 완성되지 못한 불완전한 파싱 프레임은 무자비하게 폐기된다. <code>if (decoded_channels &lt; MIN_SUPPORTED_CHANNELS)</code>라는 방어선이 동작하여, 쓰레기 값(Garbage Value)이 섞인 배열이 모터 제어 루프로 유입되는 최악의 기구학적 오작동을 원천 봉쇄한다.</li>
+<li><strong>이중 타임스탬프 유효성 및 락인 검증</strong>:<br />
+현재 수신된 프레임의 타임스탬프(<code>timestamp_sample</code>)가 논리적으로 이전에 수신된 과거 프레임의 인덱스보다 오히려 타임라인이 역행(Backwards)하는 시간 왜곡 노이즈 충돌 현상이거나 타임아웃 윈도우 한계를 이미 심각하게 초과한 낡은 잔여 캐시 데이터로 판별될 경우 조건문은 <code>false</code>를 뱉고 퍼블리싱 로직을 드롭(Drop)한다.</li>
+<li><strong>페일세이프(Failsafe) 플래그 덮어쓰기 바이패스</strong>:<br />
+디코더가 정상 채널을 추출했더라도, 하드웨어 수신기 칩셋이 패킷 헤더 내에 명기한 ‘Failsafe/RC Lost’ 비트 마스크가 켜져(Triggered) 있다면, 커널 로직은 기존 프레임의 배열값들을 완전히 무시해 버리고(<code>Ignore values</code>) 오직 <code>rc_failsafe = true</code>라는 치명적 플래그 객체만을 씌워 uORB로 고립 방송한다. 상위 시스템(Commander)에게 “하프 프레임 찌꺼기에 연연하지 말고 즉각 RTL 혹은 강제 비행 종료 비상 탈출을 개시하라“는 긴급 단일 전문을 송달하기 위함이다.</li>
+</ol>
+<p>결론적으로, 독립 스레드에 밀봉된 <code>rc_input</code> 모듈의 끝단 퍼블리싱 조건 영역은 물리적 전파의 파동이 논리적 자율 비행의 지배 역학(Flight Protocol)으로 편입되기 위해 통과해야만 하는 가장 보수적이고 엄격한 소프트웨어적 출입국 관리소(Immigration Checkpoint)와 같은 핵심 역할을 수행한다. 이 방어선이 있기에 PX4 시스템은 상공의 예측할 수 없는 전파 노이즈 폭풍 속에서도 고결한 비어 있는(Void) 명령 체계의 안정성을 기적처럼 수호해 낸다.</p>
 
             </article>
             <footer>

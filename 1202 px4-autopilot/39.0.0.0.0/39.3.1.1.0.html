@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.3.1.1 발생지 명령어 고유 식별자(Command ID)와 응답 패킷의 1:1 매핑 알고리즘</title>
+    <title>BIJUNG:39.3.1.1. 발생지 명령어 고유 식별자(Command ID)와 응답 패킷의 1:1 매핑 알고리즘</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,51 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.3.1.1 발생지 명령어 고유 식별자(Command ID)와 응답 패킷의 1:1 매핑 알고리즘</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.3.1.1 발생지 명령어 고유 식별자(Command ID)와 응답 패킷의 1:1 매핑 알고리즘</span></nav>
+                    <h1>39.3.1.1. 발생지 명령어 고유 식별자(Command ID)와 응답 패킷의 1:1 매핑 알고리즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.3.1.1. 발생지 명령어 고유 식별자(Command ID)와 응답 패킷의 1:1 매핑 알고리즘</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.3.1.1 발생지 명령어 고유 식별자(Command ID)와 응답 패킷의 1:1 매핑 알고리즘</h1>
+                <h1>39.3.1.1. 발생지 명령어 고유 식별자(Command ID)와 응답 패킷의 1:1 매핑 알고리즘</h1>
+<h2>1. 서론: 1:1 매핑의 시스템 버스(System Bus) 수준 요구사항</h2>
+<p>드론 지상 관제 시스템(GCS: Ground Control Station)과 비행 제어기(Flight Controller) 간의 제어 프레임워크는 기본적으로 원격 프로시저 호출(RPC: Remote Procedure Call) 구조와 유사한 양상을 띤다. GCS에서 조종자가 특정 기능을 활성화하거나, 자율 비행 에이전트 측 ROS2 노드가 임무(Mission)를 하달할 때, 시스템은 송신된 제어 패킷(<code>COMMAND_LONG</code> 등)과 수신될 결과 패킷(<code>COMMAND_ACK</code>)을 논리적으로 연결해야 한다. 이 상호 참조를 결속하는 알고리즘이 바로 MAVLink 프로토콜의 ’발생지 명령어 고유 식별자(Command ID) 기반 1:1 매핑’이다.</p>
+<p>본 장에서는 PX4(펌웨어 v1.14 기준)와 QGroundControl(v4.3 기준)의 아키텍처 내부에서 이 1:1 매핑이 어떠한 스레드 세이프(Thread-safe)한 비동기 큐(Asynchronous Queue) 자료구조를 통해 달성되는지 심층적으로 논의한다.</p>
+<h2>2. :1 매핑 알고리즘의 동작 메커니즘</h2>
+<p><code>COMMAND_ACK</code> 패킷 설계의 핵심은 단일 16비트(bit) 정수형 <code>command</code> 필드에 있다. 이 필드는 단순히 명령어 열거형(Enum) 숫자를 반환하는 것을 넘어, 메모리 상의 ’대기 중인 명령 해시 테이블(Pending Command Hash Table)’의 인덱스 키(Key)로 기능한다.</p>
+<h3>2.1 QGroundControl과 PX4 간의 인메모리(In-Memory) 매핑 로직</h3>
+<ol>
+<li><strong>송신측 (QGroundControl) 해시 테이블 등록 (Registration)</strong><br />
+GCS에서 비행체로 <code>MAV_CMD_DO_REPOSITION</code>(#192)과 같은 제어 명령을 보낼 때, QGroundControl의 C++ 백엔드인 <code>VehicleCommandManager</code> 클래스는 내부적으로 고정 슬롯(Fixed Slot) 배열이나 해시 테이블에 현재 타임스탬프(Timestamp)와 함께 <code>192</code>라는 고유 식별자를 기록한다. 또한, 이 기록 객체(Record Object)에는 타임아웃(Timeout) 콜백이 바인딩된다.</li>
+<li><strong>수신측 (PX4 Commander) 상태 평가 및 콜백</strong><br />
+PX4 내부의 <code>commander</code> 디먼은 uORB를 통해 <code>vehicle_command</code> 토픽을 수신하면, 이를 <code>vehicle_command_ack</code>로 처리한 후 다시 MAVLink 파이프라인으로 넘긴다. 이때 페이로드 생성 함수는 원본 메시지의 <code>command</code> 필드(<code>192</code>)를 그대로 하드카피(Hard-copy)하여 응답 구조체에 주입한다.</li>
+<li><strong>송신측 (QGroundControl) 식별자 충돌 회피 (Collision Resolution) 및 팝(Pop)</strong><br />
+응답이 GCS로 되돌아오면 메인 텔레메트리 파서(Telemetry Parser)는 즉각 테이블에서 해당 ID(<code>192</code>)를 조회(Lookup)한다. 매치율(Match Rate) 100%가 확인되면 대기 중이던 콜백 함수(Callback Function)가 <code>MAV_RESULT</code> 코드 0(설정 성공) 혹은 기타 에러 코드와 함께 비동기로 실행(Resolve)되며 메모리에서 제거(Pop)된다.</li>
+</ol>
+<pre><code class="language-mermaid">classDiagram
+    class VehicleCommandManager {
+        - std::map~int, AckWaitItem~ pendingCommands
+        + sendCommand(MAV_CMD cmd)
+        + handleCommandAck(mavlink_command_ack_t* ack)
+        - verifyMapping(int command_id, int sys_id) bool
+    }
+    class AckWaitItem {
+        + MAV_CMD expected_command
+        + uint32_t timestamp_sent
+        + int max_retries
+    }
+    VehicleCommandManager --&gt; AckWaitItem : 해시 매핑 생성 및 관리
+</code></pre>
+<h2>3. Ardupilot과의 1:1 매핑 큐(Queue) 관리 차이</h2>
+<p>비단 PX4 뿐만 아니라 전 세계 무인기 생태계를 양분하고 있는 Ardupilot 역시 MAVLink를 사용하므로 기본적인 1:1 매핑 알고리즘 자체는 공유한다. 하지만 두 시스템 간에는 응답 지연 시 GCS에서 큐를 비워내는 아키텍처 철학이 상이하다. 맞춤형 GCS를 개발하거나 ROS2로 자율 에이전트 시스템을 꾸릴 때 이 부분은 치명적인 버그의 원인이 되곤 한다.</p>
+<ul>
+<li><strong>PX4-Autopilot의 엄격한 동기성 (Strict Synchrony)</strong>:<br />
+명령 전달 시점으로부터 특정 타임아웃(예: 500ms) 구간 내에 식별자 매칭이 되지 않으면 QGroundControl과 PX4 로직은 매우 신속하게 해당 <code>Command ID</code> 해시를 만료(Expire)시켜버리고, 이후 도착하는 ’지연된 매핑 메시지(Stale ACK)’는 좀비 패킷(Zombie Packet)으로 간주하여 즉시 파기한다.</li>
+<li><strong>Ardupilot의 유연한 비동기 지연 허용 (Permissive Latency Tolerance)</strong>:<br />
+Ardupilot 환경에서는 다중 큐잉(Multiple Queuing) 시 간혹 GCS가 이전 매핑 레코드를 꽤 길게 유지하는 경향성을 띤다. 네트워크 지연(Latency)이 심한 환경(예: 장거리 SATCOM 연동)에서 매핑이 늦게 완료되더라도 이를 수용하고 에이전트 상태를 사후 갱신(Post-Update)해주는 로직에 더 특화되어 있다.</li>
+</ul>
+<h2>4. 비동기 프로그래밍 모델에서의 한계점 및 시퀀스(Sequence) ID의 부재</h2>
+<p>현재 MAVLink 2.0 프로토콜 레벨에서 <code>COMMAND_ACK</code> 매핑 알고리즘이 가진 가장 큰 태생적 한계는 <strong>동일한 명령을 연속으로 두 번 송신했을 때 각각의 ACK를 완벽하게 구별해낼 <code>Sequence ID</code>가 존재하지 않는다는 것</strong>이다.</p>
+<p>예를 들어 GCS에서 카메라 트리거 명령(<code>MAV_CMD_IMAGE_START_CAPTURE</code>)을 0.1초 간격으로 2번 보냈다고 가정하자. 두 응답 모두 동일한 <code>command</code> ID 필드 값을 가지고 돌아오므로, GCS의 매핑 알고리즘은 첫 번째 응답이 첫 번째 명령에 대한 것인지, 혹은 운 나쁘게 첫 번째 응답은 유실되고 두 번째 명령에 대한 응답이 빠르게 먼저 도착한 것인지 식별할 보장된 방법이 없다. 따라서 고정밀 관제 시스템 설계 시, 한 명령어의 1:1 매핑 루프가 완전히 <code>Pop</code> 되기 전까지 동일 ID 명령의 전송을 뮤텍스(Mutex)로 직렬화(Serialization)하거나, ROS2 DDS QoS 계층으로 올려 시퀀스 무결성을 별도로 담보하는 방식론을 도입해야만 한다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.5.4.1 교착 상태(Deadlock) 및 라이브락(Livelock) 방지를 위한 비대칭적(Asymmetric) 상태 권한 위임(Delegation) 로직</title>
+    <title>BIJUNG:37.5.4.1. 교착 상태(Deadlock) 및 라이브락(Livelock) 방지를 위한 비대칭적(Asymmetric) 상태 권한 위임(Delegation) 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,82 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.5.4.1 교착 상태(Deadlock) 및 라이브락(Livelock) 방지를 위한 비대칭적(Asymmetric) 상태 권한 위임(Delegation) 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.4.1 교착 상태(Deadlock) 및 라이브락(Livelock) 방지를 위한 비대칭적(Asymmetric) 상태 권한 위임(Delegation) 로직</span></nav>
+                    <h1>37.5.4.1. 교착 상태(Deadlock) 및 라이브락(Livelock) 방지를 위한 비대칭적(Asymmetric) 상태 권한 위임(Delegation) 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.4.1. 교착 상태(Deadlock) 및 라이브락(Livelock) 방지를 위한 비대칭적(Asymmetric) 상태 권한 위임(Delegation) 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.5.4.1 교착 상태(Deadlock) 및 라이브락(Livelock) 방지를 위한 비대칭적(Asymmetric) 상태 권한 위임(Delegation) 로직</h1>
+                <h1>37.5.4.1. 교착 상태(Deadlock) 및 라이브락(Livelock) 방지를 위한 비대칭적(Asymmetric) 상태 권한 위임(Delegation) 로직</h1>
+<p>본 절에서는 무인항공기(UAV)와 지상 관제 시스템(GCS) 간의 통신 단절 후 재연결 시점(Link Recovery), 혹은 다중 에이전트(Multi-Agent) 간의 통제권 인수인계 과정에서 발생할 수 있는 치명적인 제어 상태의 <strong>교착 상태(Deadlock)</strong> 와 <strong>라이브락(Livelock)</strong> 을 원천적으로 분쇄하기 위해 PX4-Autopilot 아키텍처가 채택한 <strong>비대칭적 상태 권한 위임(Asymmetric State Delegation)</strong> 로직을 심층 문헌 설계 측면에서 분석한다.</p>
+<p>본 기술 명세는 PX4 Firmware v1.14의 <code>Commander</code> 상태 제어기 및 QGroundControl v4.3 이상의 다중 오퍼레이터(Multi-Operator) 분산 통제 환경 파라미터를 기준으로 논리 전개된다.</p>
+<hr />
+<h2>1.  분산 제어 환경에서의 대칭적 권한 병합이 야기하는 재앙</h2>
+<p>과거의 나이브(Naive)한 드론 관제 아키텍처나 초창기 학술 목적의 멀티 에이전트 GCS 시스템들은, GCS 1번, GCS 2번, 그리고 기체(UAV) 본연의 자율 제어기(Companion Computer)가 논리적으로 모두 <strong>동등한(Symmetric) 상태 결정 권한</strong>을 보유하게끔 설계되었다.</p>
+<p>이러한 대칭적(Symmetric) 설계망 하에서 통신이 단절되었다가 재연결되는 복구 찰나의 순간, 아래와 같은 참혹한 분산 컴퓨팅의 원초적 저주(Curse of Distributed Computing)가 비행체 제어 루프를 습격하게 된다.</p>
+<h3>1.1 ) 교착 상태 (Deadlock)의 창궐</h3>
+<p>통신 음영 지대를 막 빠져나온 UAV는 스스로 살기 위해 <code>RTL(Return)</code> 모드를 선언하고 활성화하려 시도한다. 그러나 정확히 동일한 밀리초(ms)에 연결을 회복한 메인 GCS는 자신이 캐싱해 둔 이전 미션 타겟으로 복귀시키기 위해 <code>Mission</code> 모드 재개 명령을 강제로 꽂아 넣는다.<br />
+서로가 자신이 가진 상태(State)가 진정한 권위(Authority)라 믿고 상대방의 패킷을 무효화(NACK)하길 반복하면서, 결국 그 어느 모드로도 천이하지 못하고 제어 블록(Control Block) 루틴이 무한 대기에 빠지는 논리적 <strong>데드락(Deadlock)</strong> 에 갇힌다. 기체는 허공에 뜬 채로 연료가 소진될 때까지 표류(Drift)한다.</p>
+<h3>1.2 ) 라이브락 (Livelock)의 악순환 진동</h3>
+<p>교착 상태를 피하기 위해 “가장 최신의 메시지 핑(Ping)을 이긴 것으로 간주한다“는 규칙을 설계했다고 치자.<br />
+UAV가 “나는 <code>RTL</code>이다“를 전송하고 비행을 돌린다 -&gt; GCS 수신 후 UI를 <code>RTL</code>로 바꾼 직후, 운영자가 당황하여 <code>Hold</code>를 클릭 전송 -&gt; UAV 수신 후 <code>Hold</code>로 중지 -&gt; 이를 감지한 컴패니언 컴퓨터 스크립트가 “가만있으면 안 됨!” 이라 판단하여 다시 <code>Mission</code> 전송…<br />
+이처럼 개체들이 끊임없이 상태를 뒤집으면서 활발하게 통신은 주고받으나, 정작 실제 비행 궤적이라는 유의미한 거시적 작업(Macro Work)은 단 1m도 진행하지 못하고 제자리에서 명령의 스파이크만 튀기는 병적 진동 현상인 <strong>라이브락(Livelock)</strong> 패턴이 펼쳐진다.</p>
+<hr />
+<h2>2.  비대칭적 권한 위임(Asymmetric Delegation) 통제 철학</h2>
+<p>PX4 아키텍처는 위와 같은 파탄을 근본적으로 멸절시키기 위해 <strong>비대칭적 상태 권한 위임(Asymmetric State Delegation)</strong> 이라는 무자비할 정도로 수직적인 통제 철학을 적용하였다. 이는 특정 런타임 환경적 조건(예: Data Link Loss)하에서는 오직 단 하나의 노드만이 <strong>절대적 상태 결정 권위(Absolute Authority)</strong> 를 가지며, 나머지 예하 노드들은 철저한 추종자(Follower) 모델로 종속되도록 권한을 수렴 비대칭화 시키는 구조다.</p>
+<h3>2.1 권위주의적 마스터(Master) 계층의 동적 스위칭</h3>
+<ol>
+<li><strong>정상 통신(Nominal) 상태</strong>: 메인 GCS가 상태 결정 권위(<span class="math math-inline">A_{gcs}</span>)를 가진 마스터(Master)로 군림한다. UAV 커맨더는 들어오는 제재(Maneuver) 명령을 검증하여 순종 수용한다.</li>
+<li><strong>단절 및 Failsafe 상태 (Link Loss)</strong>: 물리적인 통신이 끊어지는 그 순간, PX4 Firmware 내부의 <code>Commander</code> 상태 트리는 시스템의 모든 논리적 권위를 기체 내부의 자율 예외 처리기(<span class="math math-inline">A_{uav}</span>)로 <strong>100% 비대칭적 위임 배속(Delegation)</strong> 시킨다.</li>
+</ol>
+<h3>2.2 재연결(Link Recovery) 시점의 항복(Yield) 및 수동적 동기화</h3>
+<p>음영 지역을 벗어나 통신이 복구되는 찰나(Recovery Threshold), 연결이 회복되었다고 해서 GCS가 즉각적으로 과거의 권위를 다시 빼앗아오지(Preempt) 못한다.<br />
+이 시기 GCS 백엔드의 통신 클래스는 자신에게 권위가 없음을 인지하고, 앞서 언급한 라이브락(Livelock)을 회피하기 위해 모든 쓰기(Write/Command) 채널을 스스로 닫고 철저한 <strong>수동적 수신기(Passive Listener)</strong> 로 강등 전위(State Handover)한다.</p>
+<ul>
+<li><strong>교착(Deadlock)의 분쇄</strong>: GCS는 어떠한 천이 명령도 날리지 않으므로, 충돌(Collision)이나 데드락이 성립할 전제 조건 자체가 파괴된다.</li>
+<li><strong>권위의 스무스한 인계(Graceful Handover)</strong>: GCS가 기체의 현재 생존 자율 궤도 모드(예: <code>RTL</code>)를 100% 읽어 들이고 프론트엔드 UI 변수까지 완벽히 일치(Sync)시킨 뒤, 오퍼레이터 인간이 수동으로 “권한 되찾기(Take Control)” 조이스틱 해제 액션을 취할 때 비로소 <span class="math math-inline">A_{gcs}</span> 권위가 부활한다.</li>
+</ul>
+<hr />
+<h2>3.  시스템 식별자(SYSID, COMPID)를 통한 멀티 에이전트 권한 분리</h2>
+<p>이 비대칭적 권위는 단일 GCS-단일 기체의 1:1 관계를 넘어, 여러 대의 모바일 GCS와 Companion Computer가 엉겨 붙은 거대 네트워크에서도 명확한 차등 분기 룰(Rule)로 작동한다.</p>
+<p>MAVLink 프로토콜의 라우팅 필드에는 <code>System ID (SYSID)</code>와 <code>Component ID (COMPID)</code>가 존재한다. PX4의 커맨더는 설정 파라미터(<code>COM_RC_OVERRIDE</code>, <code>NAV_DLL_ACT</code> 등)와 MAVLink 식별자를 조합하여 <strong>“어떤 ID의 발신자가 보낸 명령만을 권위 있는 것으로 취급할 것인가”</strong> 에 해당하는 <strong>화이트리스트 통제 토폴로지(Whitelist Control Topology)</strong> 를 형성한다.</p>
+<p>가령 지상군이 휴대하는 태블릿 QGC(ID: 255)와, 기체 등에 업혀있는 젯슨 나노 AI 비전 컴퓨터(ID: 191)가 동시에 존재할 때, PX4는 현재의 비행 모드 속성 필드에 따라 이 둘 사이의 권한(Authority) 가중치를 엄격하게 비대칭 차등화한다.</p>
+<ul>
+<li><code>Offboard</code> 모드가 아닐 때는 컴패니언 컴퓨터(ID: 191)가 날리는 수만 개의 속도 제어 벡터를 완전히 <strong>무시(Discard)</strong> 하여 라이브락 진동을 백지화한다.</li>
+<li>반면 <code>Offboard</code> 모드 진입이 인가된 순간, 태블릿 GCS(ID: 255)의 잡다한 경로 간섭 명령을 무시하고 오직 컴패니언(ID: 191)의 명령만을 마스터 권한으로 수용한다.</li>
+</ul>
+<hr />
+<h2>4.  비대칭적 권한 위임 오토마타 (Mermaid Diagram)</h2>
+<p>UAV와 GCS 간 통신 환경의 변화에 따라, 상태 변경(State Mutation)의 ’결정 권한(Authority)’이 양측 노드 사이를 어떻게 비대칭적으로 이동 및 위임(Delegation) 하는지 마르코프 체인(Markov Chain)형 오토마타로 도시한다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; State_Nominal
+
+    state "Phase 1. 정상 통신 상태 (Nominal)" as State_Nominal {
+        Note right of GCS_Master : GCS가 상태 주도권(Authority) 보유
+        GCS_Master --&gt; UAV_Follower : 제어 명령 100% 반영
+    }
+
+    State_Nominal --&gt; State_Distress : 통신 RF 링크 완전 단절 (DLL 감지)
+
+    state "Phase 2. 페일세이프 자율 생존 (Blind Isolation)" as State_Distress {
+        Note left of UAV_Master : 권한이 UAV Failsafe 엔진으로 100% 비대칭적 위임
+        UAV_Master --&gt; UAV_Master : 독자적인 FSM 상태 구동 (e.g. Return, Hold)
+    }
+
+    State_Distress --&gt; State_Recovery : 통신 RF 링크 복원 (HEARTBEAT 감지)
+
+    state "Phase 3. 수동적 동기화 보정기 (Read-only Pull)" as State_Recovery {
+        Note right of GCS_Passive : GCS는 쓰기 권위 박탈, 오직 강제 상태 읽음(Sync)
+        UAV_Master --&gt; GCS_Passive : 강제 상태 로드 (Livelock/Deadlock 원천 방지)
+    }
+
+    State_Recovery --&gt; State_Nominal : GCS 관제사의 능동적 스틱 재개입 (Take-over)
+</code></pre>
+<p>위상도의 <code>Phase 3 -&gt; Phase 1</code> 로 넘어가는 임계 구간을 보면, 단순한 통신의 재접속 자체만으로는 GCS가 결코 권한을 탈환하지 못함을 알 수 있다. 인간(Human)의 의지 혹은 스크립트의 명시적 <code>Take Control</code> 액션이라는 거름망을 거쳐야만 비로소 권위가 복원되며, 이 엄격한 <strong>단방향 수동 동기화 클램프(Clamp)</strong> 가 제어기의 지옥불인 데드락과 라이브락을 미연에 봉쇄하는 철옹성의 위용을 자랑한다.</p>
+<hr />
+<h2>5.  결론 및 요약 도출</h2>
+<p>현대의 상용 비행 관제 통신망 설계는 분산 제어 이론에서 파생된 환상(Illusion), 즉 “모든 제어 주체가 평등하고 대칭적으로 정보를 협상(Negotiation)하여 최적의 상태를 도출할 수 있을 것이다“라는 순진무구한 대칭적 접근을 완벽히 타파해 내었다.</p>
+<p>PX4-Autopilot 아키텍처는 통신 복구라는 불확실성의 시공간 늪에서 제어 충돌(Deadlock)과 병적 무한 진동(Livelock) 현상을 제압하기 위해, <strong>비대칭적 상태 권한 위임(Asymmetric State Delegation)</strong> 이라는 단호하고 매정한 룰을 미들웨어 최하단에 하드코딩(Hardcoding)하였다.<br />
+연결이 끊기면 기체 자신이 무소불위의 권력을 쥔 마스터가 되고, 다시 연결이 닿아도 GCS가 기체의 상태 결정을 겸허하게 먼저 받아쓰고 100% 위상 동기화를 이루기 전까지는 감히 천이 명령을 끼워 넣지 못하도록 철권통치를 발동한다. 결론적으로 이러한 계층적이고 비동시적인 권한의 토스(Toss) 및 딜리게이션 처리 구조는, 거대한 이종 멀티 에이전트 시스템(System of Systems)이 수시로 통신방해를 겪으면서도 결코 제어 불능의 수학적 교착 공간으로 수렴하지 않게 하는 가장 위대하고 강고한 런타임 아키텍처 코어로 군림하고 있다.</p>
 
             </article>
             <footer>

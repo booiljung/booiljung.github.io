@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:28.4.3.1.1 현재 기체 상태(Actual State)를 신규 모드의 초기 제어 목표로 강제 주입(Initialization Reset)</title>
+    <title>BIJUNG:28.4.3.1.1. 현재 기체 상태(Actual State)를 신규 모드의 초기 제어 목표로 강제 주입(Initialization Reset)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,43 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>28.4.3.1.1 현재 기체 상태(Actual State)를 신규 모드의 초기 제어 목표로 강제 주입(Initialization Reset)</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>28.4.3.1.1 현재 기체 상태(Actual State)를 신규 모드의 초기 제어 목표로 강제 주입(Initialization Reset)</span></nav>
+                    <h1>28.4.3.1.1. 현재 기체 상태(Actual State)를 신규 모드의 초기 제어 목표로 강제 주입(Initialization Reset)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>28.4.3.1.1. 현재 기체 상태(Actual State)를 신규 모드의 초기 제어 목표로 강제 주입(Initialization Reset)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>28.4.3.1.1 현재 기체 상태(Actual State)를 신규 모드의 초기 제어 목표로 강제 주입(Initialization Reset)</h1>
+                <h1>28.4.3.1.1. 현재 기체 상태(Actual State)를 신규 모드의 초기 제어 목표로 강제 주입(Initialization Reset)</h1>
+<p>범프리스 트랜스퍼(Bumpless Transfer)를 수학적으로 달성하기 위한 첫 번째 단추는 오차 방정식을 강제로 0으로 묵사발 내버리는 것이다.</p>
+<p>이 작업을 PX4 내에서는 ‘제어 목표 초기화(Setpoint Initialization)’ 또는 ’리셋(Reset)’이라고 부른다.</p>
+<h2>1.  <code>activate()</code> 함수의 숨겨진 임무</h2>
+<p>앞서 다루었듯, FMM이 새로운 <code>FlightTask</code> 객체를 스왑하여 메모리에 올리면 가장 먼저 단 한 번 <code>checkActivationConditions()</code>를 호출하여 자격 심사를 하고, 그 직후 <strong><code>activate()</code> 함수</strong>를 단 한 번 실행하여 초기화를 진행한다.</p>
+<p>이 <code>activate()</code> 함수의 가장 중요한 진정한 임무가 바로, 이전 모드가 남기고 간 쓰레기(가비지) 목표값들을 싹 다 지우고, 현재 기체의 **물리적 실제 상태(Actual State)**를 **새로운 목표값(Setpoint)**으로 덮어씌우는 일이다.</p>
+<pre><code class="language-cpp">// FlightTaskManualAltitude.cpp 내부의 `activate()` 함수 예시
+bool FlightTaskManualAltitude::activate(vehicle_local_position_s last_setpoint)
+{
+    // 1. 부모 클래스(기본 초기화) 호출
+    bool ret = FlightTaskManual::activate(last_setpoint);
+
+    // 2. 현재 내 기압계(Sensor) 고도가 몇 미터인가?
+    float current_actual_z = _sub_vehicle_local_position.get().z;
+
+    // 3. 사용자의 조종기 값을 무시하고, 첫 Z축 셋포인트를 '현재 센서 고도'로 강제 주입!
+    _position_setpoint(2) = current_actual_z;
+    _velocity_setpoint(2) = 0.0f; // 수직 속도 목표도 0으로 포맷
+
+    return ret;
+}
+</code></pre>
+<h2>2.  0(Zero) 오차의 마법</h2>
+<p>만약 기체가 수동(Manual) 모드로 10미터 상공을 날고 있다가 조종사의 치명적인 실수로 고도를 잃으며 7미터까지 곤두박질치는 찰나에, 기겁한 조종사가 ‘고도 유지(Altitude)’ 스위치를 켰다고 상상해 보자.</p>
+<p>만약 이 리셋(Reset) 로직이 없다면, 고도 유지 모드는 깨어나자마자 “원래 내가 알던 10미터로 돌아가야지!“라며 강박적으로 10미터를 목표값(<span class="math math-inline">r(t)=10</span>)으로 뱉어낼 것이다. 기체의 현재 실제 고도(<span class="math math-inline">y(t)=7</span>)와의 오차는 무려 3미터다. 제어기는 이 3미터를 1초 만에 복구하기 위해 모터 4개가 찢어지라 풀파워(100% PWM) 명령을 내릴 것이고 드론은 하늘로 발작하듯 튕겨버릴 것이다(Bump).</p>
+<p>하지만 PX4의 <code>activate()</code> 리셋 로직 덕분에, 스위치를 켜는 그 7미터 찰나의 구간에서 새로운 목표값은 강제로 7미터(<span class="math math-inline">r(t)=7</span>)로 타협을 본다.<br />
+결과적으로 오차항 <span class="math math-inline">e(t) = r(t) - y(t) = 7 - 7 = 0</span> 이 성립된다. 오차가 0이므로 PID 제어기는 아무런 스파이크 전압을 모터에 쏘지 않는다. 드론은 7미터 상공에서 소름 돋을 정도로 스무스하게 낙하를 멈추고 크림처럼 부드럽게 고도를 유지(Hovering)하기 시작한다.</p>
+<h2>3.  속도 벡터의 관성 승계</h2>
+<p>이러한 현재 상태의 강제 주입은 위치(Position) 지표뿐만 아니라 속도(Velocity) 벡터에도 동일하게 적용된다.</p>
+<p>드론이 5m/s의 엄청난 속도로 전진 돌진(Forward)하다가 조종사가 조종기 스틱을 탁! 하고 중앙으로 놓으며 포지션(Position) 모드로 진입했다고 치자.<br />
+스틱이 한가운데(Deadzone)이므로 요구되는 목표 속도는 <span class="math math-inline">0m/s</span> 가 되어야 맞다. 하지만 <code>activate()</code> 함수는 첫 사이클에 이 목표값을 바로 0으로 세팅하지 않는다.</p>
+<p>일단 첫 루프에서는 셋포인트를 실제 기체가 이미 가지고 있는 물리적 관성 속도인 <span class="math math-inline">5m/s</span>로 똑같이 맞춰준 뒤(오차 0), 다음 절(28.4.3.2)에서 설명할 하위 모션 플래너(Slew Rate Limiter)에게 뒷수습을 넘겨 점진적으로 5 <span class="math math-inline">\rightarrow</span> 4 <span class="math math-inline">\rightarrow</span> 3 <span class="math math-inline">\rightarrow</span> 0 으로 브레이크를 천천히 밟도록 유도한다. 이것이 바로 조종사를 안심시키는 PX4 <strong>범프리스 트랜스퍼</strong>의 정수다.</p>
 
             </article>
             <footer>

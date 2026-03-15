@@ -115,6 +115,47 @@
             </header>
             <article>
                 <h1>38.2.4.1 센서 이중화(Redundancy) 상실 및 저전압(Undervoltage) 상태의 결함 허용(Fault Tolerance) 트리거 변환 과정</h1>
+<p>최신 Pixhawk(예: Pixhawk 5X, 6C)와 같은 고신뢰성 하드웨어는 단일 장애점(Single Point of Failure)을 제거하기 위해 자이로스코프, 가속도계, 기압계 등을 2중 또는 3중으로 중복 탑재(Redundancy)한다. PX4의 <code>commander</code> 시스템과 확장 칼만 필터(EKF2)는 이러한 다중 센서 입력을 실시간으로 모니터링하며, 결함 허용(Fault Tolerance) 컴퓨팅 환경을 구축한다.</p>
+<p>앞서 다룬 <code>SYS_STATUS</code>의 비트맵 인코딩 이론은 단순한 0과 1의 통신 규격을 넘어, 이 거대한 센서 퓨전 생태계의 붕괴와 생존을 결정짓는 트리거(Trigger) 시퀀스로 작동한다.</p>
+<h2>1. 센서 이중화 상실(Redundancy Loss)의 처리 기법</h2>
+<p>만약 3중화된 IMU 중 첫 번째 IMU(SPI 버스 1)에 하드웨어적 단선이 발생했다고 가정하자.</p>
+<ol>
+<li>센서 드라이버는 즉시 해당 파트를 <code>Offline</code>으로 처리한다.</li>
+<li>EKF2 추정기(Estimator)는 상태 공분산(State Covariance) 품질이 양호한 백업 IMU 2로 센서 레인(Sensor Lane)을 매끄럽게 절체(Switching)한다.</li>
+<li>통신 모듈은 <code>SYS_STATUS</code>의 <code>health</code> 비트맵에서 IMU 파트의 일부 플래그를 변이시킨다.</li>
+<li><strong>결정적 차이점</strong>: 이 상황에서 비행 제어기(PX4)는 여전히 제어권을 완벽히 장악하고 있다. 따라서 <code>HEARTBEAT</code> 메시지의 거시적 생명 주기 상수인 <code>system_status</code>는 여전히 **<code>MAV_STATE_ACTIVE</code>(정상 비행)**를 유지한다. 단지 GCS 화면에 UI 경고로 “Redundancy Loss: IMU 1 Failed” 메시지만 조용히 띄울 뿐이다.</li>
+</ol>
+<p>이를 통해 PX4는 치명적이지 않은 고장으로 인해 미션이 강제로 중단되는 것을 방지하는 결함 허용성(Fault Tolerance)을 달성한다. (Ardupilot 역시 EK3 Affinity 기반의 레인 스위칭 로직으로 본질적으로 동일한 이중화 방어 기제를 구동한다.)</p>
+<h2>2. 완전한 센서 결함(Complete Failure)의 에스컬레이션(Escalation)</h2>
+<p>반면, 백업 센서마저 모조리 파괴되거나 물리적으로 단절되어 “비행 불가능” 상태로 판정될 때는 시스템이 다른 차원의 트리거 변환 과정을 거친다.</p>
+<ol>
+<li>모든 IMU의 <code>health</code> 비트가 0(Clear)으로 전환된다.</li>
+<li>즉시 <code>HEARTBEAT</code> 필드의 <code>system_status</code>가 <code>MAV_STATE_ACTIVE</code>에서 **<code>MAV_STATE_CRITICAL</code>**로 에스컬레이션(격상)된다.</li>
+<li>PX4의 안전장치 스테이트 머신(Failsafe State Machine)이 강제 개입(Preemption)하여 모터 정지(Kill Switch), 펌프 활성화 전 낙하산 산개(Parachute Deployment) 등의 궁극적인 물리적 방어 기제를 즉각 발동시킨다. 조종사의 RC 입력은 철저히 무시된다.</li>
+</ol>
+<h2>3. 전력 시스템: 저전압(Undervoltage) 상태의 페일세이프 트리거</h2>
+<p>센서뿐만 아니라 동력원의 고갈(Brownout) 역시 38.2.4절의 시스템 건전성 비트맵 인프라를 그대로 공유한다.</p>
+<p>비행 제어기는 파워 모듈(Power Module) 인터페이스를 통해 배터리의 전압(<span class="math math-inline">V</span>)과 전류(<span class="math math-inline">A</span>)를 실시간 아날로그-디지털 변환(ADC)으로 획득한다. 만약 전압이 파라미터(<code>BAT_CRIT_VOLT</code>)로 정의된 임계점 이하로 자유 낙하한다면, 이는 이중화로 커버할 수 없는 시스템의 근본적 소멸 위기다.</p>
+<ol>
+<li><code>SYS_STATUS</code> 내 배터리 관련 건강 상태 비트맵(Battery Health Bit)이 가장 먼저 소거(0)된다.</li>
+<li><code>HEARTBEAT</code>의 <code>system_status</code>가 즉각 <code>MAV_STATE_CRITICAL</code>로 변환된다.</li>
+<li>PX4 <code>commander</code> 모듈은 GCS의 명령을 기다릴 여유 없이 자체적으로 수립된 Failsafe 플랜에 따라 강제 착륙(Land) 혹은 이륙 지점 복귀(RTL) 루틴을 강제 인젝션(Injection)한다.</li>
+</ol>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; MAV_STATE_ACTIVE : 이륙 성공
+    
+    state MAV_STATE_ACTIVE {
+        [*] --&gt; IMU1_Failure
+        IMU1_Failure --&gt; EKF2_LaneSwitching : IMU2로 절체 (비행 유지)
+    }
+    
+    MAV_STATE_ACTIVE --&gt; MAV_STATE_CRITICAL : Bat_Volt &lt; BAT_CRIT_VOLT
+    MAV_STATE_ACTIVE --&gt; MAV_STATE_CRITICAL : 모든 IMU Health 비트 0
+    
+    MAV_STATE_CRITICAL --&gt; Auto_RTL : 페일세이프 트리거 발동
+    MAV_STATE_CRITICAL --&gt; Auto_Land : 전원 완전 소실 임박
+</code></pre>
+<p>결론적으로, GCS 개발자는 기체의 생존을 보장하기 위해 화려한 3D 지도 렌더링보다 당장 날아오는 <code>HEARTBEAT</code>의 1바이트짜리 <code>system_status</code> 변수가 <code>ACTIVE</code>에서 <code>CRITICAL</code>로 변이하는 그 찰나의 순간을 백그라운드 스레드에서 가장 높은 우선순위로 감시해야 하는 통신 공학적 숙명을 지닌다.</p>
 
             </article>
             <footer>

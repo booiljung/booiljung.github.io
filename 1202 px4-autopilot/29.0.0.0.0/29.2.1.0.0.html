@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.2.1 UART/SBUS/CRSF 인터럽트 처리 및 제어 신호 퍼블리싱 (`src/drivers/rc_input`)</title>
+    <title>BIJUNG:29.2.1. UART/SBUS/CRSF 인터럽트 처리 및 제어 신호 퍼블리싱 (`src/drivers/rc_input`)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,49 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.2.1 UART/SBUS/CRSF 인터럽트 처리 및 제어 신호 퍼블리싱 (`src/drivers/rc_input`)</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.1 UART/SBUS/CRSF 인터럽트 처리 및 제어 신호 퍼블리싱 (`src/drivers/rc_input`)</span></nav>
+                    <h1>29.2.1. UART/SBUS/CRSF 인터럽트 처리 및 제어 신호 퍼블리싱 (`src/drivers/rc_input`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.1. UART/SBUS/CRSF 인터럽트 처리 및 제어 신호 퍼블리싱 (`src/drivers/rc_input`)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.2.1 UART/SBUS/CRSF 인터럽트 처리 및 제어 신호 퍼블리싱 (<code>src/drivers/rc_input</code>)</h1>
+                <h1>29.2.1. UART/SBUS/CRSF 인터럽트 처리 및 제어 신호 퍼블리싱 (<code>src/drivers/rc_input</code>)</h1>
+<p>본 소절에서는 외부 무선 조종기(RC, Radio Controller) 수신기(Receiver) 하드웨어 칩셋으로부터 비행 제어기(FC, Flight Controller)의 물리적 직렬 포트(Serial Port)로 유입되는 UART, SBUS, CRSF 등 다양한 이기종 통신 프로토콜 프레임이 <code>src/drivers/rc_input</code> 디바이스 드라이버 커널 모듈에서 어떠한 인터럽트(Interrupt) 처리 및 캡처 과정을 거쳐 전역 uORB 미들웨어 시스템으로 릴리즈(Release, Publishing)되는지 그 통합적인 소스 레벨 파이프라인 아키텍처를 분석한다.</p>
+<h2>1.  하드웨어 타이머와 비동기 인터럽트(Asynchronous Interrupt) 기반의 커널 I/O 수신 아키텍처</h2>
+<p>초창기 단순한 아날로그 PWM(Pulse Width Modulation) 신호 처리 방식과 달리, 현대의 고성능 드론 시스템은 SBUS, CRSF(Crossfire), Spektrum DSM, ST24 등 초고속 디지털 직렬(Digital Serial) 비동기 통신 버스를 채택하여 조종 신호의 해상도(Resolution)와 스루풋(Throughput) 지연 시간을 혁신적으로 개선하였다. PX4의 <code>rc_input</code> 드라이버는 이러한 고속 데이터 스트림의 병목 현상을 타개하기 위해, 전통적인 무한 폴링(Polling) 대기 루프가 아닌 NuttX RTOS 기반의 정통적인 이벤트 구동(Event-driven) 하드웨어 인터럽트 아키텍처 체계를 채택하고 있다.</p>
+<p>FC 보드의 주처리장치(MCU, 예: STM32 컨트롤러) 내부의 시리얼(UART/SPI) 주변기기 컨트롤러는 수신기 핀(RX Pin)을 통해 특정 바이트가 수신 버퍼 래치(Latch)에 적재될 때마다 즉각적인 하드웨어 인터럽트(Hardware Interrupt)를 발생시킨다. 이때, 수십 us 단위의 가혹한 지연 요구조건(Latency Requirement)을 충족시키기 위해 <code>rc_input</code> 드라이버에 종속된 ISR(Interrupt Service Routine, 인터럽트 서비스 루틴)은 운영체제의 문맥 교환(Context Switching) 오버헤드 없이 최우선적으로 호출된다.</p>
+<p>이 ISR 커널 단계에서 수행되는 작업은 극도로 경량화되어 있다. 프로토콜의 체크섬(Checksum) 무결성을 검증하거나 16비트 채널 값을 완전히 디코딩(Decoding)하는 무거운 소프트웨어 연산은 인터럽트 루틴 내부에서 의도적으로 배제(Defer)된다. ISR은 단지 포트에서 수신된 원시 바이트(Raw Byte) 더미를 안전한 링 버퍼(Ring Buffer) 형태의 메모리풀에 신속하게 적재(Push)해 둔 채 커널 문맥을 즉시 시스템에 반환하며, <code>rc_input</code> 모듈의 메인 워커 스레드(Worker Thread)를 깨우는 락(Lock) 해제 시그널(Semaphore/Condition Variable)만 조용히 트리거하고 소멸하는 최적화 패러다임을 따른다.</p>
+<h2>2.  프로토콜 파서(Protocol Parser) 스위칭 머신 및 다중화 디코딩 소스 흐름</h2>
+<p>인터럽트 루틴에 의해 잠에서 깨어난 <code>rc_input</code> 데몬의 메인 스레드는 링 버퍼에 축적된 원시 바이트 더미를 꺼내어 순차적인 파싱 머신망(Parsing Machine Network)에 밀어 넣는다. PX4 소스 트리의 위대함은 바로 서드파티 하드웨어 벤더(Vendor)마다 일률적이지 않고 제각각 중구난방인 시리얼 규격들을 통합 처리하는 이 <strong>동적 디코딩 백엔드(Dynamic Decoding Backend)</strong> 소프트웨어 구조에 있다.</p>
+<pre><code class="language-cpp">// src/drivers/rc_input/RCInput.cpp (파싱 로직의 일반화된 개념적 소스 트리 요약)
+void RCInput::Run()
+{
+    // ... (링 버퍼에서 시리얼 바이트 배열 streamRead() 추출) ...
+
+    bool rc_updated = false;
+    uint16_t rc_values[input_rc_s::RC_INPUT_MAX_CHANNELS] {}; // 채널 임시 컨테이너
+
+    // 1. 다중 프로토콜 지원을 위한 상태 파서(State-Parser) 체인 구동
+    if (sbus_parse(timestamp, rx_buf, len, rc_values, &amp;num_channels, &amp;sbus_failsafe, &amp;sbus_frame_drops, &amp;sbus_frame_strips)) {
+        rc_updated = true;
+        // SBUS 프레임 디코드 (역상전압, 100k baudrate, 11bit 가변 스케일링 체계 해석)
+    } else if (crsf_parse(timestamp, rx_buf, len, rc_values, &amp;num_channels, input_rc_max_channels)) {
+        rc_updated = true;
+        // CRSF 프레임 디코드 (400k+ baudrate, 텔레메트리 양방향 송수신 및 헤더 타입 캡슐화 해제)
+    } // ... 기타 DSM, ST24, SUMD 등 연속적인 파싱 폴백(Fallback) 체인 구조 ...
+
+    if (rc_updated) {
+        // ... (성공적으로 디코딩된 배열을 uORB 발행 대기열로 포워딩) ...
+    }
+}
+</code></pre>
+<p>제시된 코어 논리 흐름에서 엿볼 수 있듯, 소프트웨어는 바이트 단위의 싱크(Sync) 헤더 시그니처가 무엇인지에 따라 해당 프로토콜의 C/C++ 파싱 라이브러리 함수(예: <code>sbus_parse</code>)를 재귀적 시도로 호출한다. 예를 들어 Futaba SBUS 통신 표준일 경우, 프레임이 25바이트 고정 규격(<code>0x0F</code> 시작, <code>0x00</code> 종료 바이트 등)인지, 역상 비트와 11비트 체계인지를 소프트웨어가 검증하고 채널 배열로 비트 시프트 연산을 수행하여 정수형 값들을 <code>rc_values</code> 메모리로 선형 축출해 낸다. 반대로 최신형 TBS CRSF 프로토콜이 감지될 경우에는, 헤더 내의 패킷 길이(Length) 필드와 CRC 검증식을 참조하여 동적(Dynamic) 프레임 파싱을 수행함으로써 유효 채널 데이터를 완성한다. 이 과정에서 프로토콜 종속적인 하드웨어 한계 지식(Knowledge)이 온전히 해당 파서 엔진 내부 스코프(Scope) 안에만 차폐(Encapsulation) 격리되는 객체 지향적 모듈화의 정수를 보여준다.</p>
+<h2>3.  원시 신호 무결성 검증 및 <code>input_rc</code> 버스 퍼블리싱(Publishing)</h2>
+<p>디코딩 엔진에서 쏟아져 나온 <code>[1502, 1100, 1920, 1500, ...]</code> 형태의 정수형 RC 채널 배열과 추출된 각종 상태 플래그(페일세이프, 프레임 누락 등) 기호들은 곧장 비행 두뇌로 승격(Publishing)되지 않는다. <code>rc_input</code> 드라이버의 임무 종결점인 릴리즈 페이즈(Release Phase)에서는 시스템 오작동을 초래할 수 있는 고스트(Ghost) 입력이나 치명적인 스턱(Stuck) 데이터 파동을 사전에 소멸시키기 위해 강력한 조건문 기반 무결성 위생 검열 구획이 마련되어 있다.</p>
+<ol>
+<li><strong>동적 채널 유효성 검사</strong>: 디코딩 파서가 반환한 총 채널 개수(<code>num_channels</code>)가 드론 최소 동작 필요 요건인 4채널(Roll, Pitch, Yaw, Throttle 기구학 축) 미만으로 하회할 경우, 해당 루프에서 디코딩된 백엔드 페이로드 컨테이너는 심각한 오염 데이터(Corrupted Data)로 판정되어 폐기(Drop)된다.</li>
+<li><strong>페일세이프(Failsafe) 핀 하드웨어 바이패스 룰</strong>: 수신기 칩셋에서 노이즈로 훼손된 데이터 프레임의 체크섬 불일치를 반복 검출하면, 내부적으로 <code>sbus_failsafe</code> 와 유사한 치명적 무선 단절 신호 비트를 강제 활성화 시킨 채 빈 껍데기 프레임을 송출한다. <code>rc_input</code> 데몬 모듈은 이 트리스테이트 비트를 캐치하면, 수집된 배열 데이터의 신뢰성을 <span class="math math-inline">0\%</span> 로 묵살(Override)하고 uORB 토픽 구조체 내의 <code>rc_failsafe</code>, <code>rc_lost</code> 불 값 멤버 변수에 ‘경고(True)’ 각인을 새겨 최상위 커맨더 모듈이 비상 RTL(Return to Launch) 상태 머신을 발동하도록 촉구한다.</li>
+<li><strong>최종 uORB <code>input_rc</code> 릴리즈</strong>: 모든 관문을 통과한 티 없는 순수 16비트 정수 배열 데이터 세트와 더불어 칩셋이 패킷을 수집 완료한 절대 마이크로초 시스템 시간(Timestamp) 지표가 비로소 융합 팩킹된다. 드론 메인 커널은 최하단 커널 객체 인스턴스인 <code>_input_rc_pub.publish(input_rc_msg)</code> 코어 API 호출을 실행함으로써 시스템 전역 uORB 버스 네트워크 공유 메모리상에 고주파 주기(예를 들어 SBUS는 약 100Hz 틱레이트)로 화사하게 방송(Broadcast)되어, 뒷단의 복잡한 비행 제어기(<code>manual_control</code> 데몬 및 믹싱 매트릭스 모듈) 들이 곧바로 이 무결점의 조종자 의도 파동을 수신해 갈 수 있는 단단한 마중물을 마련한다.</li>
+</ol>
 
             </article>
             <footer>

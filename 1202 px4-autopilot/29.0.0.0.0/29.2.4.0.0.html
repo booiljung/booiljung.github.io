@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.2.4 다중 관제(RC vs GCS) 충돌 해결 및 다중화(Multiplexing) 시스템</title>
+    <title>BIJUNG:29.2.4. 다중 관제(RC vs GCS) 충돌 해결 및 다중화(Multiplexing) 시스템</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,74 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.2.4 다중 관제(RC vs GCS) 충돌 해결 및 다중화(Multiplexing) 시스템</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.4 다중 관제(RC vs GCS) 충돌 해결 및 다중화(Multiplexing) 시스템</span></nav>
+                    <h1>29.2.4. 다중 관제(RC vs GCS) 충돌 해결 및 다중화(Multiplexing) 시스템</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.4. 다중 관제(RC vs GCS) 충돌 해결 및 다중화(Multiplexing) 시스템</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.2.4 다중 관제(RC vs GCS) 충돌 해결 및 다중화(Multiplexing) 시스템</h1>
+                <h1>29.2.4. 다중 관제(RC vs GCS) 충돌 해결 및 다중화(Multiplexing) 시스템</h1>
+<p>본 소절에서는 PX4-Autopilot이 단일 조종기(RC Controller)의 지배를 벗어나 지상 관제 시스템(GCS, QGroundControl 등), 동반 컴퓨터(Companion Computer), 심지어 조이스틱(Joystick) 등 다원화된 제어 소스(Control Sources)로부터 동시다발적인 수동 조작 인풋(Manual Inputs)을 수신할 때, 시스템 붕괴를 막고 단일한 제어 주체(Single Source of Truth)를 확립하는 <strong>다중화(Multiplexing)</strong> 메커니즘을 심도 있게 분석한다.</p>
+<p>하드웨어 수신기 모듈(<code>rc_input</code>)과 MAVLink 수신 처리 객체(<code>mavlink_receiver</code>) 사이의 구조적 관계를 해부하고, 이 이질적인 물리 매체들이 PX4의 핵심 중추인 <code>manual_control_setpoint</code> 토픽을 점유하기 위해 어떠한 우선순위 경합(Priority Contention)과 충돌 해결(Conflict Resolution) 알고리즘을 거치는지 C++ 소프트웨어 아키텍처 수준에서 기술한다.</p>
+<h2>1.  이기종(Heterogeneous) 통신 매체 간의 제어 권한 충돌의 기구학적 위협</h2>
+<p>전통적인 RC 항공기 모델과 달리, 최신 자율 비행 시스템(UAS)은 다음과 같은 복수의 통신 채널을 동시에 개방하고 있다.</p>
+<ol>
+<li><strong>전통적 하드웨어 RC 링크</strong>: 2.4GHz 또는 900MHz 대역폭의 물리적 수신기 (SBUS, CRSF, Spektrum 등). 가장 반응성이 빠르고 저지연성(Low-latency)을 담보한다.</li>
+<li><strong>MAVLink 기반 데이터 링크(Data Link)</strong>: 와이파이(Wi-Fi), 4G/LTE, 5G망을 통해 GCS 애플리케이션(QGC)에 연결된 PC 조이스틱이나 게임패드(Gamepad) 조작 데이터를 송출하는 고수준(High-level) 텔레메트리 채널.</li>
+</ol>
+<p>만약 조종자 A가 필드에서 물리 스틱을 앞으로 밀고(Pitch Down), 동시에 원격지 통제실의 오퍼레이터 B가 QGC 상의 조이스틱을 뒤로 당긴다면(Pitch Up), 비행 제어기(FC)는 모순된 역학적 지시 기댓값 사이에서 방향성을 상실하는 이른바 <strong>‘스플릿 브레인(Split-Brain)’</strong> 상태에 빠져 기체가 통제 불능 추락 상태로 직행할 수 있다. PX4는 커널 내부의 다중화기(Multiplexer) 노드를 통해 이러한 치명적 경합을 직렬화(Serialization)하고, 오직 단일 제어 벡터만을 하부 액추에이터 알고리즘으로 하달하는 엄격한 독점(Monopoly) 정책을 시행한다.</p>
+<h2>2.  통합 uORB 메시지 인터페이스 채택과 추상화 층면(Abstraction Layer)의 구축</h2>
+<p>다중 통신 소스의 충돌을 해결하는 PX4의 첫 번째 소프트웨어 공학적 성과는 입력 소스의 완벽한 추상화(Abstraction)이다. 과거의 드론 펌웨어들처럼 하드웨어 인터럽트 ISR이 직접 제어 변수를 덮어쓰거나 MAVLink 콜백 함수가 개별적으로 자세 제어기를 찌르는 무결절성(Coupling) 구조를 철저히 배격한다.</p>
+<p>대신, 직렬 포트를 통해 들어오는 하드웨어 RC 신호나 이더넷 TCP/UDP 스택을 구슬러 내려오는 MAVLink 조이스틱 패킷 모두 종국에는 <code>manual_control_setpoint_s</code> 라는 하나의 통일된 스키마(Schema)를 지닌 uORB 메시지 인스턴스로 정규화(Normalization, 29.2.2절 참조)된다.</p>
+<pre><code class="language-cpp">// 수동 제어 인풋의 추상화 인터페이스를 상징하는 uORB 메시지 규격
+struct manual_control_setpoint_s {
+    uint64_t timestamp;        // 시스템 타임스탬프 (경합 제어의 최우선 지표)
+    uint64_t timestamp_sample; // 실제 신호 취득 샘플링 시간
+    bool valid;                // 메타데이터 유효성 플래그
+    
+    // 데이터 소스를 명시하는 식별자(Identifier) 필드
+    uint8_t data_source;       // 예: 1 = 하드웨어 RC, 2 = MAVLink 조이스틱 등
+    
+    // 이질적 미디어를 막론하고 통일된 -1.0 ~ 1.0 무차원 공력 통제 벡터
+    float roll;
+    float pitch;
+    float yaw;
+    float throttle;
+    
+    // ... 스위치 상태 플래그 등 ...
+};
+</code></pre>
+<p>시스템 아키텍처 관점에서, 하드웨어를 전담하는 <code>rc_update</code> 워커 스레드와 네트워크를 청취하는 <code>mavlink_receiver</code> 스레드는 서로의 존재를 전혀 알지 못한 채 각자의 고립된 컨텍스트 공간 내에서 독립적으로 위 uORB 메시지를 굽어(Publish) 올릴 수 있는 ’발행 권한’만을 동등하게 부여받는다. 이를 통해 PX4 커널은 매체 간의 코드 결합도(Coupling)를 <span class="math math-inline">0</span> 으로 억제하는 모듈화(Modularity)의 정수를 달성한다.</p>
+<h2>3.  타임스탬프 래칭(Latching) 기반의 소스 선택기(Source Selector) 알고리즘 체계</h2>
+<p>다수의 발행자(Publisher)가 동일한 <code>manual_control_setpoint</code> 토픽 우물에 데이터를 쏟아붓더라도 혼돈이 발생하지 않는 이유는, 이를 구독(Subscribe)하여 소비하는 상위 커맨더(Commander)나 비행 모드 관리자(Flight Mode Manager)의 수신단 쪽에 <strong>소스 선택기(Source Selector)</strong> 라 불리는 일종의 방화벽 대리 루틴(Proxy Routine)이 굳건하게 버티고 있기 때문이다.</p>
+<p>이 다중화 알고리즘의 핵심 판별 기준은 사용자가 사전에 정의한 시스템 매개변수(Parameter, <code>COM_RC_IN_MODE</code>)와 절대 타임스탬프(System Absolute Time)의 유효성 교차 검증이다.</p>
+<pre><code class="language-cpp">// src/modules/manual_control/ManualControlSelector.cpp 내부 스코핑 기반의 개념적 경합 해결 논리
+void ManualControlSelector::update_multiplexer(uint64_t now) {
+    // 1. 소스 우선순위 결정: 파라미터 COM_RC_IN_MODE 파악
+    // 모드 0: RC Only (조이스틱 패킷은 도착해도 원천 폐기)
+    // 모드 1: Joystick Only (RC 수신기가 꽂혀있어도 철저히 무시됨)
+    // 모드 2: RC and Joystick Fallback (다중화 모드)
+    
+    // 2. 다중화 혼용 모드(Fallback)에서의 타임아웃 래칭(Latching) 역학
+    if (_rc_input.is_valid() &amp;&amp; (now - _rc_input.timestamp &lt; RC_TIMEOUT_US)) {
+        // 하드웨어 RC 신호가 아직 생생하게 살아있는 경우, 
+        // 하드웨어 링크의 절대 우위(Absolute Precedence)를 보장하여 조이스틱의 개입을 원천 차단함
+        _active_source = DataSource::RC; 
+        _selected_setpoint = _rc_input;
+        
+    } else if (_joystick_input.is_valid() &amp;&amp; (now - _joystick_input.timestamp &lt; JOYSTICK_TIMEOUT_US)) {
+        // RC 신호가 침묵(Timeout)하거나 끊어졌을 때 비로소 조이스틱 입력을 예비(Fallback) 회선으로 채택
+        _active_source = DataSource::JOYSTICK;
+        _selected_setpoint = _joystick_input;
+        
+    } else {
+        // 두 소스 모두 타임아웃 도달 시, 치명적 신호 유실(Signal Lost) 방어 태세 전환
+        _active_source = DataSource::NONE;
+        // 시스템 페일세이프(Failsafe) 플래그 강제 발동
+    }
+}
+</code></pre>
+<p>안정성(Safety)을 최우선으로 삼는 PX4 개발진의 철학에 따라 혼용 모드(<code>COM_RC_IN_MODE = 2</code>)에서는 어떠한 상황에서도 하드웨어 RC 링크(예: 조종기 라디오 통신)가 <strong>무조건적 우선권(Preemptive Priority)</strong> 을 점유한다. OS 커널 수준의 다중 스레드 락(Mutex)에 의존하는 대신, 각 데이터 프레임에 찍힌 64비트 정밀 타임스탬프의 최신화(Freshness) 여부를 잣대로 데이터의 유통 기한(Timeout)을 만료시켜버림으로써 경합을 해소하는 것이다.</p>
+<p>이를 통해 물리 조종기를 잡은 현장 담당자(Pilot)는 GCS 소프트웨어가 혹여 해킹당하거나 버그로 인해 잘못된 MAVLink 스트림을 남발하더라도 언제든지 스틱을 쳐서(Override) 기체의 절대 제어권을 물리적으로 탈환(Take-over)할 수 있다는 무결성의 확신을 확보할 수 있게 된다. PX4의 다중화 시스템은 단순한 네트워크 파서의 집합이 아니라 기능 안전(Functional Safety)을 사수하는 이중 보완적 투표(Voting) 메커니즘 체계라고 정의해야 옳다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:35.6.4 임무 진행률 비동기 모니터링 및 페이로드 이벤트 콜백(Event Callback) 핸들링</title>
+    <title>BIJUNG:35.6.4. 임무 진행률 비동기 모니터링 및 페이로드 이벤트 콜백(Event Callback) 핸들링</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,29 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>35.6.4 임무 진행률 비동기 모니터링 및 페이로드 이벤트 콜백(Event Callback) 핸들링</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.6.4 임무 진행률 비동기 모니터링 및 페이로드 이벤트 콜백(Event Callback) 핸들링</span></nav>
+                    <h1>35.6.4. 임무 진행률 비동기 모니터링 및 페이로드 이벤트 콜백(Event Callback) 핸들링</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 35. MAVSDK를 활용한 MAVLink 제어 프로그래밍</a> / <span>35.6.4. 임무 진행률 비동기 모니터링 및 페이로드 이벤트 콜백(Event Callback) 핸들링</span></nav>
                 </div>
             </header>
             <article>
-                <h1>35.6.4 임무 진행률 비동기 모니터링 및 페이로드 이벤트 콜백(Event Callback) 핸들링</h1>
+                <h1>35.6.4. 임무 진행률 비동기 모니터링 및 페이로드 이벤트 콜백(Event Callback) 핸들링</h1>
+<p>수십 킬로미터 밖 시야각 너머(BVLOS, Beyond Visual Line of Sight) 영역에서 완전 자율 비행(Fully Autonomous Flight)을 수행 중인 무인항공기(UAV)의 항법 추종 상태를 지상 관제소(GCS) 소프트웨어가 실시간으로 관찰하고 하드웨어 페이로드(Payload)를 정밀 제동하는 과정은, 단순한 선형 데이터 폴링(Polling) 방식의 코드 뭉치로는 결코 그 혹독한 정밀도와 동시성을 보장해 낼 수 없다.</p>
+<p>PX4 비행 제어기 코어 데몬과 관제소 측의 MAVSDK 프론트엔드 간에 좁게 이어진 텔레메트리 파이프라인 상에서, 임무 스케줄러가 뱉어내는 궤적 진행률을 시스템이 어떻게 비동기적으로 스니핑(Sniffing)하고, 기체 하단에 적재된 물리적 페이로드(카메라, 짐벌 모터, 투하 액추에이터 등)의 구동을 위해 어떠한 이벤트 드리븐(Event-driven) 콜백 아키텍처 패턴을 융합 연동하는지 그 핵심 C++ 메커니즘을 상세히 분석한다.</p>
+<h2>1.  맹목적 무선 폴링(Polling)의 폐해와 비동기 구독(Subscribe) 아키텍처의 도입</h2>
+<p>초창기 조잡한 관제 소프트웨어 애플리케이션들은 “기체가 지금 어느 3차원 좌표에 있으며, 몇 번째 웨이포인트(Waypoint) 인덱스를 깨고 날아가고 있는가?“를 알아내기 위해, 매초 수십 회씩 기체 백엔드에 바보 같은 핑(Ping)을 주기적으로 날려 상태 변수를 반복적으로 캐묻는 무식한 폴링(Continuous Polling) 방식을 어설프게 채택했다. 그러나 이는 대역폭이 비좁고 패킷 손실률이 높은 <span class="math math-inline">900\text{MHz}</span> 무선 텔레메트리 채널에 막대한 쓰레기 트래픽 과부하(Overhead)를 유발하였고, 정작 아주 중요한 기체 충돌 회피 제어 명령 패킷이 통신 큐(Queue) 베드에서 속절없이 지연되는 치명적인 제어 병목 현상을 초래했다.</p>
+<p>현대 MAVSDK 통신 미들웨어는 이 아날로그적인 대역폭 낭비를 완전히 혁파하기 위해 완벽한 디자인 패턴 레벨의 비동기식 <strong>옵저버 패턴(Event Observer) 및 토픽 구독(Topic Subscription) 아키텍처</strong>를 채택하였다.</p>
+<ul>
+<li><strong>상태 변화의 능동적 브로드캐스트(State Event Broadcast)</strong>: 지상 관제소가 묻지 않아도, PX4의 <code>Navigator</code> 모듈은 내부 유한 상태 머신(FSM)의 <code>mission_current_index</code> 가 <span class="math math-inline">+1</span> 변경되는 바로 그 극적인 물리적 도달 찰나(예: 수용 반경에 진입하여 웨이포인트 N을 깬 순간)에만, 기체 스스로가 매우 가벼운 독립적 <code>MISSION_ITEM_REACHED</code> 인터럽트 이벤트 메시지 캡슐 단 하나를 무선 스트림 위로 쏘아 올린다.</li>
+<li><strong>백그라운드 스레드 워커 콜백(Callback) 비동기 후킹</strong>: MAVSDK 클라이언트는 초당 <span class="math math-inline">60\text{Hz}</span> 로 렌더링 되고 있는 무거운 메인 UI 스레드 타임라인을 단 1밀리초도 블로킹(Blocking)하지 않는다. 대신, 백그라운드 뒷단에 매복한 무한 루프 통신 워커(Worker) 스레드 채널에서 이 이빨 빠진 비정기적 인터럽트 메시지 플래그를 실시간으로 낚아챈다. 이후 개발자가 코드에 사전에 바인딩(Binding)해 둔 람다(Lambda) 함수나 C++ 이벤트 콜백(Event Callback) 핸들러 포인터를 순식간에 트리거(Trigger) 시켜, 관제 모니터 화면의 임무 프로그레스 바(Progress Bar) 퍼센티지를 부드럽게 한 칸 끌어 올리거나 백업 로컬 DB에 로그를 기록하는 비동기적 트랜잭션을, 사용자의 버벅거림 체증 없이 완벽하게 비차단(Non-blocking)으로 수행해 내는 것이다.</li>
+</ul>
+<h2>2.  무선 지연(Latency)의 지옥 속에서의 페이로드(Payload) 이벤트 구동 강력 동기화 방어</h2>
+<p>단순한 UI 픽셀 레벨의 위치 진행률 파악을 넘어서, 시스템 설계 상의 가장 예민하고 까다로운 동역학 쟁점은 바로 물리적 구동계이다. 기체가 시속 <span class="math math-inline">50\text{km/h}</span> (<span class="math math-inline">13.8\text{m/s}</span>) 로 거칠게 허공을 가르며 날아가는 아찔한 동적 모션 한가운데에서, 지도 매핑의 정확한 GSD(Ground Sample Distance) 픽셀 중첩률을 확보하기 위해 카메라 셔터를 터뜨리거나 구조 보급 물품을 핀 포인트로 투하하는 <strong>페이로드 액추에이터 제어(Payload Actuator Control)</strong> 의 시공간 하드 동기화(Hard Synchronization) 문제이다.</p>
+<ul>
+<li><strong>미션 아이템 내장 액션(Embedded Payload Action Chunk)</strong>: 앞장들에서 보았듯 거대한 임무 배열 메모리 덩어리는 단순한 3차원 위치 좌표(<span class="math math-inline">X, Y, Z</span>)의 나열로 끝나지 않는다. <code>MAV_CMD_DO_SET_CAM_TRIGG_DIST</code> (일정 거리 간격 메가픽셀 셔터 발사) 나 <code>MAV_CMD_DO_SET_SERVO</code> (PWM 서보모터 구동 투하 래치 오픈) 와 같은 순수 하드웨어 제어 명령 캡슐들이, 특정 공간 노드 인덱스 배열 좌표 틈지막 사이사이에 지뢰처럼 무수히 시퀀셜하게 심어져(Embedded) 있다.</li>
+<li><strong>PX4 커맨더(Commander)의 온보드 실시간 하드 인터럽트 분기</strong>: 놀랍게도 이 페이로드 제어 사일로는 공중 통신의 개입을 배제한다. 기체 탑재 PX4 스케줄러가 특정 공간 좌표를 베기 위해 도달한 순간 이 숨겨진 페이로드 명령 캡슐을 읽어 들이면, 이 명령은 하단 위치 제어 모터 믹서 루프로 내려가는 대신, 즉각 기체 I/O 프로세서(FMU 하드웨어 핀 아웃 서브시스템) 레이어로 다이렉트 바이패스(Bypass) 분기 우회해 버린다.</li>
+<li>즉, 무선 패킷의 핑퐁(Ping-pong)을 거치지 않으므로, 지상 관제소 측의 물리적 개입 지연이나 무선 대기권 전파 통신 지연(RF Latency) 딜레이 한랭 전선에 단 <span class="math math-inline">1\text{ms}</span> 의 변수 영향도 받지 않고, 기체 내부 온보드 로컬 하드웨어 클럭 타이머의 극단적인 나노초(ns) 정밀도 속에서 셔터 릴리즈 펄스 폭 변조(PWM) 전기 신호가 렌탈 드롭 장치 후크나 카메라 핫슈(Hot-shoe) 핀으로 지체 없이 정확하게 꽂히게 되는 것이다.</li>
+</ul>
+<p>결론적으로 PX4의 하드웨어 페이로드 구동 콜백 메커니즘은, 텔레메트리 무선 통신의 끔찍한 불확실성(Jitter/Latency)을 아키텍처 단에서 완전히 배제한 <strong>‘독립적 온보드 자율 하드 리얼타임(Hard Real-time) 트리거’</strong> 방식을 고집스럽게 고수하며, 이를 지상에서 스니핑하여 지켜보는 관제소의 진행률 모니터링은 무선 트래픽 오버헤드 낭비가 <span class="math math-inline">0\%</span> 에 수렴하는 <strong>‘순수 비동기 이벤트 구독(Event Subscription Dispatcher)’</strong> 패턴 방식으로 완벽히 분리 격리 설계되었다. 이는 원격 거점 통신 모니터링 레이어와 근거리 기체 물리 액추에이션(Actuation) 로컬 레이어 간의 스레드 책임을 예술적으로 분리해 낸, 다중 동시성 소프트웨어(Multithreaded Concurrency Software) 무인기 아키텍처의 가장 찬란하고 견고한 표본이라 할 수 있다.</p>
 
             </article>
             <footer>

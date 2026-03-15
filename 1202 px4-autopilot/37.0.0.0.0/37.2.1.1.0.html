@@ -115,6 +115,55 @@
             </header>
             <article>
                 <h1>37.2.1.1 밀리 기계(Mealy Machine) 기반의 입력-상태 천이 함수(Input-State Transition Function) 매핑 구조</h1>
+<p>무인항공기(UAV)의 유한 상태 기계(FSM)를 설계할 때, 시스템의 출력(Output)이 기체의 현재 상태(State)에 의해서만 결정되느냐, 혹은 현재 상태와 외부 입력(Input)의 조합에 의해 결정되느냐에 따라 무어 기계(Moore Machine)와 밀리 기계(Mealy Machine)로 구분된다. PX4-Autopilot의 커맨더(Commander) 모듈은 조종자의 스틱 조작이나 GCS의 MAVLink 명령에 대해 지연 없는 즉각적인 반응(Immediate Response)을 도출하기 위해 밀리 기계 형식의 아키텍처를 채택하고 있다. 본 절에서는 밀리 기계의 이론적 배경과 PX4 소스 코드 내에서 입력-상태 천이 함수가 어떻게 수학적으로 매핑(Mapping)되는지 분석한다.</p>
+<h2>1.  무어 기계(Moore Machine)와 밀리 기계(Mealy Machine)의 제어공학적 차이</h2>
+<p>오토마타 이론에서 상태 머신의 출력 함수(Output Function, 보통 <span class="math math-inline">\lambda</span>로 표기)의 정의에 따라 두 기계가 분류된다.</p>
+<ul>
+<li><strong>무어 기계:</strong> <span class="math math-inline">\lambda(q)</span> 형태로, 출력이 전적으로 현재 상태 <span class="math math-inline">q</span>에만 의존한다. 시스템이 새로운 상태에 완전히 진입한 후에야 출력이 발생하므로 본질적으로 1클럭 주기(Clock Cycle) 수준의 지연(Delay)이 동반된다.</li>
+<li><strong>밀리 기계:</strong> <span class="math math-inline">\lambda(q, \sigma)</span> 형태로, 출력이 현재 상태 <span class="math math-inline">q</span>와 지속적으로 유입되는 현재 입력 <span class="math math-inline">\sigma</span>의 조합에 의해 즉시 결정된다. 입력이 변하면 상태 전이 완료를 기다리지 않고도 엣지(Edge) 상에서 즉각적인 제어 출력 수정이 가능하다.</li>
+</ul>
+<p>PX4와 같은 무인기 제어 플랫폼에서, 20ms 수준의 짧은 레이턴시를 요구하는 모터 제어(Motor Control)나 Failsafe 트리거는 무어 기계의 지연을 허용할 수 없다. 따라서 외부 입력(RC 스위치, GCS 명령)이 인입되는 순간 상태 변이와 동시에 제어 명령을 즉각 출력하는 밀리 기계 모델이 필수적이다.</p>
+<h2>2.  PX4 전이 함수(Transition Function)의 밀리 기계 매핑 구조</h2>
+<p>PX4 커맨더 로직 내에서 밀리 기계의 입력-상태 천이 함수 공간은 다중 스위치 논리(Switch-case Logic)와 uORB 메시징 네트워크의 융합으로 구현된다.</p>
+<h3>2.1  입력 벡터(Input Vector) <span class="math math-inline">\sigma</span>의 세분화</h3>
+<p>밀리 기계의 입력 알파벳 <span class="math math-inline">\Sigma</span>는 커맨더 모듈 내에서 단일 이벤트가 아닌 다차원 입력 벡터 <span class="math math-inline">\sigma</span>로 처리된다. <span class="math math-inline">\sigma = [cmd_{rc}, cmd_{mav}, flag_{ekf}, flag_{batt}]^T</span> 와 같이 조종자 명령, GCS 통제 명령, 위치 추정기 정상 플래그, 배터리 상태 플래그 등이 동시에 평가된다.</p>
+<h3>2.2  출력 함수(Output Function) <span class="math math-inline">\lambda(q, \sigma)</span>의 구현</h3>
+<p>오토파일럿은 현재 비행 모드 <span class="math math-inline">q</span> (예: <code>POSCTL</code>) 상태에서 MAVLink 이동 명령 <span class="math math-inline">\sigma</span> 가 수신될 때, 단순히 상태만 유지하는 것이 아니라 내부의 위치 제어기(Position Controller) 모듈을 향해 목표 궤적 수정 명령(Output)을 uORB 토픽(<code>vehicle_local_position_setpoint</code>) 형태로 즉각 발송한다. 이는 전형적인 <span class="math math-inline">\lambda(q, \sigma)</span> 밀리 기계 아키텍처의 동작이며, <code>Commander</code> С++ 소스의 메인 루프 내부에서 이벤트를 폴링(Polling)하고 즉시 액션 함수를 콜백(Callback)하는 구조로 나타난다.</p>
+<h2>3.  예외 처리(Exception Handling)와 가드 조건(Guard Condition)</h2>
+<p>밀리 기계의 토폴로지 내에서 상태 전이 함수 <span class="math math-inline">\delta(q, \sigma) \rightarrow q&#39;</span> 가 물리적으로 위험한 상태 <span class="math math-inline">q&#39;</span> 로 시스템을 밀어넣는 것을 방지하기 위해 PX4는 가드 조건(Guard Condition) 논리를 도입한다.</p>
+<ul>
+<li><strong>안전 인터락(Safety Interlock):</strong> <span class="math math-inline">\delta</span> 함수가 실행되기 직전, Boolean 대수에 기반한 <code>arming_state_transition()</code> 등의 필터 객체가 <span class="math math-inline">\sigma</span>의 유효성을 검사한다.</li>
+<li>예를 들어, <span class="math math-inline">q = \text{STANDBY}</span> 상태에서 <span class="math math-inline">\sigma = \text{ARM\_COMMAND}</span> 가 입력되었을 때, GPS 3D Fix가 확보되지 않았다면 가드 조건이 <code>False</code>를 반환하여 상태 전이를 거부(Reject)하고 <span class="math math-inline">\lambda</span>는 사용자에게 경고 메시지 토픽을 출력한다.</li>
+</ul>
+<h2>4.  커맨더 모듈의 밀리 기계 흐름도</h2>
+<p>PX4 내부의 상태 천이 및 즉각적 출력 발생 과정을 밀리 기계 다이어그램으로 도식화하면 다음과 같다.</p>
+<pre><code class="language-mermaid">graph TD
+    %% Node format: State
+    %% Edge format: Input / Output Action (Mealy Machine convention)
+    
+    Q1((INIT))
+    Q2((STANDBY / DISARMED))
+    Q3((ARMED / GROUND))
+    Q4((TAKEOFF))
+    Q5((POSCTL / AIRBORNE))
+    
+    Q1 --&gt;|Boot Complete &amp; Calib OK / Publish Sys_Status| Q2
+    
+    Q2 --&gt;|RC Arming Switch ON [Guard: GPS OK] / Engage Motors &amp; Publish Armed| Q3
+    Q2 -.-&gt;|RC Arming Switch ON [Guard: GPS FAIL] / Publish Audio Alarm| Q2
+    
+    Q3 --&gt;|Takeoff CMD / Set Throttle Setpoint| Q4
+    
+    Q4 --&gt;|Altitude Target Reached / Switch Control Loop to Position| Q5
+    
+    Q5 --&gt;|RC Stick Input / Realtime Setpoint Update| Q5
+    Q5 --&gt;|RTL CMD / Trigger Return Trajectory| Q_RTL((AUTO_RTL))
+    
+    %% Note how edges contain both the trigger (Input) and the immediate action (Output)
+</code></pre>
+<p>다이어그램의 엣지(화살표)에 <code>입력 / 출력</code> 형식이 명시된 것은 밀리 기계의 가장 핵심적인 특징이다. <span class="math math-inline">Q_5</span>(<code>POSCTL</code>) 상태에서 제어 스틱 입력(<code>RC Stick Input</code>)이 발생하면, 상태 자체는 <span class="math math-inline">Q_5</span>에 머무르지만 엣지를 순회하며 즉각적으로 <code>Realtime Setpoint Update</code>라는 출력을 비행 제어기로 발산한다.</p>
+<h2>5.  결론</h2>
+<p>비행 제어 소프트웨어에서 1밀리초(ms) 단위의 응답 지연은 곧 기체 동역학의 불안정성(Instability)으로 이어진다. PX4-Autopilot은 이러한 한계를 극복하기 위해 무어 기계의 상태 의존적 출력 방식 대신, 입력과 상태의 결합 연산으로 출력을 도출하는 밀리 기계 아키텍처를 <code>Commander</code> 로직 깊숙이 통합하였다. 시스템 설계자는 커스텀 비행 제어 모듈을 개발할 때, 입력 이벤트가 uORB 메시지로 어떻게 전파되며, 이로 인해 유발되는 상태 전이가 어떤 즉각적인 MAVLink ACK나 액추에이터 출력을 보장하는지 밀리 기계의 매핑 사상(Mapping Mapping) 안에서 엄밀히 추적해야 한다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,26 @@
             </header>
             <article>
                 <h1>38.4.3.1 시퀀스 번호의 이산 불연속성(Discrete Discontinuity) 분석을 통한 네트워크 혼잡 윈도우(Congestion Window) 크기 추정</h1>
+<p>기본적으로 MAVLink 텔레메트리 스트리밍은 인터넷의 UDP(User Datagram Protocol) 철학을 따른다. TCP(Transmission Control Protocol)처럼 수신자가 데이터를 잘 받았는지 확인(ACK)하고, 그에 맞춰 송신 속도를 조절하는 자체적인 흐름 제어(Flow Control)나 혼잡 윈도우(Congestion Window, cwnd) 조절 메커니즘을 내장하고 있지 않다.</p>
+<p>비행 제어기(FC)가 모뎀의 물리적 한계는 무시한 채 <code>MAV_1_RATE</code> 설정값에 맞춰 초당 수백 개의 패킷을 UART 포트로 마구 쏟아내면, 텔레메트리 모뎀의 작은 송신 버퍼(Tx Buffer)는 순식간에 차오르고 넘쳐흐르는 패킷들을 꼬리표부터 가차 없이 잘라버린다(Tail-drop).</p>
+<h2>1. 하드웨어 제어의 한계와 애플리케이션 계층(Application Layer) 방어망</h2>
+<p>만약 비행 제어기와 텔레메트리 모뎀 간에 하드웨어 흐름 제어(Hardware Flow Control, CTS/RTS 핀 배열)가 완벽하게 결선되어 있고 활성화되어 있다면, 모뎀은 버퍼가 터지기 직전 CTS 물리 핀을 당겨 FC에게 “그만 보내라“고 외칠 수 있다. (PX4와 Ardupilot 모두 이 기능을 강력히 권장한다.)</p>
+<p>그러나 경량화나 하드웨어 제약으로 인해 CTS/RTS 라인이 생략된 시스템에서는 FC 소프트웨어인 PX4(또는 MAVSDK 백엔드)가 <strong>애플리케이션 계층(Application Layer) 단에서 스스로 모뎀의 혼잡도를 추리(Deduction)</strong> 해내야 한다. 그 유일한 단서가 바로 앞서 다룬 **시퀀스 번호의 이산 불연속성(Discrete Discontinuity, <span class="math math-inline">\Delta_{loss}</span>)**이다.</p>
+<h2>2. 역추적(Reverse-engineering)을 통한 혼잡 윈도우(cwnd) 추정</h2>
+<p>수신 측(GCS)은 시퀀스 번호에 구멍이 송송 뚫리는 불연속성 패턴을 추적하여 상향 통신망의 **혼잡 윈도우 크기(Congestion Window Size)**를 거꾸로 추정(Reverse-estimate)해 낸다. 여기서 혼잡 윈도우란 “현재 RF 링크가 버퍼 오버플로우 없이 단 한 번의 전송 사이클 동안 소화해 낼 수 있는 최대 데이터 잔여량“을 의미한다.</p>
+<ol>
+<li>
+<p><strong>승수적 감소(Multiplicative Decrease)</strong>:<br />
+불연속성의 크기 <span class="math math-inline">\Delta_{loss}</span>가 갑자기 급증하여 PLR(패킷 손실률)이 특정 임계치(예: 10%)를 돌파하면, GCS나 FC의 관제 데몬은 이를 “현재 발생시키는 트래픽 양이 네트워크의 병목 대역폭(Bottleneck Bandwidth)과 모뎀 큐의 깊이를 완전히 초과했다“는 수치 해석적 증거로 받아들인다.<br />
+비행 제어기는 즉각 필수적이지 않은 대용량 데이터(IMU 고속 스트림, GPS 원시 데이터 등)의 발행 주기를 절반 이하로 폭력적으로 깎아내려(승수적 감소), 모뎀이 숨을 쉴 수 있는 공간을 강제로 만들어낸다.</p>
+</li>
+<li>
+<p><strong>가산적 증가(Additive Increase)</strong>:<br />
+이후 일정 시간 동안 수신된 패킷들의 시퀀스 번호가 단 하나의 이빨도 빠지지 않고 완벽히 연속(<span class="math math-inline">\Delta_{loss} = 0</span>)되어 도달한다면, 시스템은 RF 혼잡(Congestion)이 해소되었다고 판단한다.<br />
+아키텍처는 보수적인 정책을 취하며, 깎아내렸던 스트림 전송 속도를 서서히 점진적으로(가산적 증가) 원래의 타겟 레이트(<code>MAV_1_RATE</code>)를 향해 올려보면서 현재 통신망이 감당할 수 있는 새로운 윈도우 천장(Ceiling)을 조심스럽게 탐색한다.</p>
+</li>
+</ol>
+<p>결과적으로 시퀀스 번호의 불연속성은 단순한 에러 로깅용 숫자가 아니라, 폭주하는 FC와 좁디좁은 RF 튜브 사이에서 데이터가 교착(Deadlock)되거나 질식(Suffocation)하는 것을 막아주는 가장 우아한 소프트웨어적 피드백 루프로 작동하게 된다.</p>
 
             </article>
             <footer>

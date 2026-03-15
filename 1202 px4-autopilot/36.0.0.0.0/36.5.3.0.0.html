@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:36.5.3 범용 비동기 송수신기(UART) 병목 해소를 위한 직접 메모리 접근(DMA)의 분산-수집(Scatter-Gather) I/O 모델링</title>
+    <title>BIJUNG:36.5.3. 범용 비동기 송수신기(UART) 병목 해소를 위한 직접 메모리 접근(DMA)의 분산-수집(Scatter-Gather) I/O 모델링</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,58 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>36.5.3 범용 비동기 송수신기(UART) 병목 해소를 위한 직접 메모리 접근(DMA)의 분산-수집(Scatter-Gather) I/O 모델링</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 36. 지상 관제 시스템(GCS) 통신 아키텍처 개요</a> / <span>36.5.3 범용 비동기 송수신기(UART) 병목 해소를 위한 직접 메모리 접근(DMA)의 분산-수집(Scatter-Gather) I/O 모델링</span></nav>
+                    <h1>36.5.3. 범용 비동기 송수신기(UART) 병목 해소를 위한 직접 메모리 접근(DMA)의 분산-수집(Scatter-Gather) I/O 모델링</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 36. 지상 관제 시스템(GCS) 통신 아키텍처 개요</a> / <span>36.5.3. 범용 비동기 송수신기(UART) 병목 해소를 위한 직접 메모리 접근(DMA)의 분산-수집(Scatter-Gather) I/O 모델링</span></nav>
                 </div>
             </header>
             <article>
-                <h1>36.5.3 범용 비동기 송수신기(UART) 병목 해소를 위한 직접 메모리 접근(DMA)의 분산-수집(Scatter-Gather) I/O 모델링</h1>
+                <h1>36.5.3. 범용 비동기 송수신기(UART) 병목 해소를 위한 직접 메모리 접근(DMA)의 분산-수집(Scatter-Gather) I/O 모델링</h1>
+<h2>1.  개요 및 UART 통신 병목 현상의 본질 (Introduction to UART Bottlenecks)</h2>
+<p>최신 상용 및 연구용 드론에 탑재되는 PX4-Autopilot 아키텍처는 수많은 외부 모듈과의 유선 통신 인터페이스로 범용 비동기 송수신기(Universal Asynchronous Receiver-Transmitter, UART)를 전면적으로 채택하고 있다. 글로벌 포지셔닝 시스템(GPS), 지상 관제 시스템(GCS/QGroundControl)을 위한 텔레메트리 라디오, 그리고 컴패니언 컴퓨터(Companion Computer, 예: Raspberry Pi)와의 직렬 통신은 모두 고대역폭의 UART 포트를 요구한다.</p>
+<p>기존의 순차적(Programmed I/O, PIO) 제어 방식에서는 UART 수신 버퍼에 1바이트의 데이터가 도착할 때마다 중앙 처리 장치(CPU)에 하드웨어 인터럽트(Hardware Interrupt)를 발생시켜 데이터를 메인 메모리로 복사해야 했다. 이는 초당 수십만 번의 인터럽트 컨텍스트 스위칭(Context Switching)을 유발하며, 결과적으로 자세 제어(<span class="math math-inline">400\text{Hz}</span>)와 구동기 할당(Actuator Allocation) 처리를 전담하는 코어 비행 루프에 막대한 병목 현상(Bottleneck)과 지연 시간 지터(Latency Jitter)를 초래한다. 이러한 물리적 한계를 극복하기 위해 PX4는 직접 메모리 접근(Direct Memory Access, DMA) 방식의 고차원 모델링을 전면 도입하였다.</p>
+<h2>2.  직접 메모리 접근(DMA) 및 AHB 버스 매트릭스 아키텍처 (DMA Architecture)</h2>
+<p>직접 메모리 접근(DMA)은 CPU의 개입 없이 메모리(SRAM)와 주변장치(Peripherals, 예: UART 레지스터) 간에 데이터를 능동적으로 전송하는 독립된 하드웨어 서브시스템이다. PX4가 주로 포팅되는 마이크로컨트롤러(MCU)인 ARM Cortex-M7/M4 계열(예: STM32F7, STM32H7) 환경 내부에는 멀티포트 AHB(Advanced High-performance Bus) 매트릭스가 내장되어 있다.</p>
+<p>이 버스 매트릭스 모델에서 DMA 컨트롤러는 독자적인 버스 마스터(Bus Master)로 동작한다. 즉, CPU가 비행 역학(Flight Dynamics) 수학 연산에 매진하고 있는 동일한 클럭 사이클 동안, DMA 컨트롤러는 백그라운드에서 백색 잡음(White Noise) 수준의 미미한 버스 경합(Cycle Stealing)만을 유발한 채 UART 데이터 바이트를 메모리에 연속적으로 적재한다. 작업이 모두 완료되거나 버퍼의 절반이 찼을 때만 단 1회의 하드웨어 인터럽트를 발생시켜 CPU를 호출하므로 시스템 부하(Overhead)를 극적으로 경감시킨다.</p>
+<h2>3.  분산-수집(Scatter-Gather) I/O 계층 모델링 이론 (Scatter-Gather Model)</h2>
+<p>단순한 일대일(블록 단위) DMA 전송 기법을 넘어서, PX4의 대규모 통신 아키텍처는 분산-수집(Scatter-Gather) I/O 모델 기반의 심화된 메모리 관리를 수행한다.</p>
+<p>MAVLink 프로토콜의 패킷 구조를 생각해 보면, 하나의 완성된 패킷은 헤더(Header), 페이로드(Payload), 데이터 서명(Signature), 그리고 체크섬(Checksum) 등의 의미론적 청크(Chunk)로 나뉜다. 이 조각난 청크들은 물리적인 램(RAM) 공간 상에 연속된 주소로 존재하지 않고 일련의 파편화(Fragmentation)된 분산(Scatter) 상태로 존재하게 된다.</p>
+<p>Scatter-Gather 기반 DMA 모델은 여러 파편화된 메모리 주소 및 전송 크기 정보를 포함한 <strong>채널 설명자 리스트(Linked List of Channel Descriptors)</strong> 체인을 구성한다. DMA 컨트롤러는 첫 번째 블록(예: MAVLink 헤더)의 전송이 끝나면 CPU의 개입을 기다리지 않고 곧바로 하드웨어 차원에서 체인 포인터를 따라 두 번째 블록(예: 페이로드) 주소로 점프하여 연속된 수집(Gather) 전송을 이어나간다.</p>
+<h3>3.1  Scatter-Gather DMA 및 UART 통신망 토폴로지 다이어그램</h3>
+<pre><code class="language-mermaid">graph TD;
+    subgraph RAM Memory Pool
+        M1[Buffer 1: MAVLink Header]
+        M2[Buffer 2: Payload &lt;br&gt; e.g., ATTITUDE_QUATERNION]
+        M3[Buffer 3: Checksum &amp; Signature]
+    end
+
+    subgraph DMA Controller 
+        C[Scatter-Gather Linked List Descriptor Table]
+        C --&gt;|1. Fetch Addr/Length| M1
+        C --&gt;|2. Next Node| M2
+        C --&gt;|3. Next Node| M3
+        M1 -.-&gt;|DMA Stream| TX[UART TX FIFO Register]
+        M2 -.-&gt;|DMA Stream| TX
+        M3 -.-&gt;|DMA Stream| TX
+    end
+
+    subgraph External
+        TX --&gt;|Baudrate: 921600 bps| GCS[Radio Modem / GCS]
+    end
+
+    style M2 fill:#e3f2fd,stroke:#1565c0
+    style C fill:#fff3e0,stroke:#ef6c00
+    style TX fill:#ffebee,stroke:#c62828
+</code></pre>
+<h2>4.  NuttX 직렬 포트 드리븐 아키텍처 (NuttX Serial Driver and DMA)</h2>
+<p>Ardupilot은 전통적으로 자체 C++ 기반의 <code>AP_HAL</code> 내부에 독자적인 시리얼 포트 링 버퍼(Ring Buffer)와 인터럽트 체제를 직접 구축하였다. 반면, PX4는 하단 운영체제인 NuttX RTOS의 파일 시스템(VFS) 직렬 드라이버 인프라스트럭처에 강하게 결합된다.</p>
+<p>NuttX의 시리얼 드라이버 아키텍처(<code>drivers/serial/serial.c</code>)는 내부적으로 상위 절반(Upper-Half)과 하위 절반(Lower-Half)으로 나뉘어 DMA 처리를 캡슐화한다.</p>
+<ol>
+<li><strong>하프-트랜스퍼 (Half-Transfer, HT) 및 풀-트랜스퍼 (Full-Transfer, TC) 관리:</strong> 고속 주파수의 텔레메트리 스트림이 유입될 때 버퍼 오버플로우를 막기 위하여, 링 버퍼 사이즈의 절반에 도달할 때 인터럽트(HT)를 발생시켜 CPU가 전송 완료된 앞쪽 절반의 데이터를 파싱(Parsing)하도록 유도하는 이중 버퍼링(Ping-Pong) 메커니즘을 적극적으로 차용한다.</li>
+<li><strong>데이터 캐시 무효화 (Cache Invalidation/Cleaning):</strong> 고성능 Cortex-M7 프로세서는 L1 데이터 캐시를 탑재하고 있다. DMA가 메인 메모리를 조작할 때 CPU 캐시에 쓰레기(Stale) 값이 남아있는 <strong>캐시 일관성(Cache Coherency)</strong> 위반 문제가 발생할 수 있으므로, 드라이버 레벨에서 전송 직전에 <code>SCB_CleanDCache_by_Addr()</code>와 같은 원자적 정비 루틴을 선제적으로 호출하여 메모리 오염을 원천적으로 막아낸다.</li>
+</ol>
+<h2>5.  결론 (Conclusion)</h2>
+<p>고밀도 무인항공기 관제 환경에서 대량의 센서 통신 로드맵은 필연적으로 중앙 프로세서의 I/O 병목이라는 물리적 장벽에 부딪히게 된다. PX4-Autopilot은 단순한 폴링(Polling)이나 소프트웨어 단위의 문자 복사에 의존하는 구시대적 아키텍처를 과감히 탈피하고, 운영체제 하부 계층에 깊게 파고든 직접 메모리 접근(DMA) 기술과 지능형 분산-수집(Scatter-Gather) 결합 모델을 탑재함으로써 이 난제를 근본적으로 극복하였다.<br />
+이는 장차 대규모 멀티 스웜(Swarm) 환경이나 고해상도 VIO 비전 제어 데이터가 인터페이스를 점유하더라도, 비행 제어 루프의 하드 리얼타임(Hard Real-time) 특성을 어떠한 상황에서도 굳건하게 보호하는 가장 강력한 기계적 방어선으로 작용한다.</p>
 
             </article>
             <footer>

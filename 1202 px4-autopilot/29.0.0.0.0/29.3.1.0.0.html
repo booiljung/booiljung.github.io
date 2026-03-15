@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.3.1 기체 동역학 아키텍처별 매뉴얼 제어 분기 (`src/modules/commander/commander.cpp`)</title>
+    <title>BIJUNG:29.3.1. 기체 동역학 아키텍처별 매뉴얼 제어 분기 (`src/modules/commander/commander.cpp`)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,62 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.3.1 기체 동역학 아키텍처별 매뉴얼 제어 분기 (`src/modules/commander/commander.cpp`)</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.3.1 기체 동역학 아키텍처별 매뉴얼 제어 분기 (`src/modules/commander/commander.cpp`)</span></nav>
+                    <h1>29.3.1. 기체 동역학 아키텍처별 매뉴얼 제어 분기 (`src/modules/commander/commander.cpp`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.3.1. 기체 동역학 아키텍처별 매뉴얼 제어 분기 (`src/modules/commander/commander.cpp`)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.3.1 기체 동역학 아키텍처별 매뉴얼 제어 분기 (<code>src/modules/commander/commander.cpp</code>)</h1>
+                <h1>29.3.1. 기체 동역학 아키텍처별 매뉴얼 제어 분기 (<code>src/modules/commander/commander.cpp</code>)</h1>
+<p>본 소절에서는 비행 제어기(FC)의 최상위 두뇌 역할을 수행하는 <code>Commander</code> 모듈이 조종자의 ‘수동 모드(Manual Mode)’ 전환 요청을 수신했을 때, 현재 설정된 기체 프레임(Airframe)의 역학적 특성에 따라 제어 흐름(Control Flow)을 어떻게 분기(Branching)하는지 그 상태 머신(State Machine) 소스 코드를 해부한다. PX4는 단일 펌웨어로 멀티로터, 고정익, VTOL, 지상 로버(Rover) 등 이질적인 기구학 모델을 통제하는 만큼, 수동 제어의 개입 허용 수준 역시 아키텍처별로 엄격하게 차등 적용된다.</p>
+<h2>1.  <code>Commander</code> 모듈의 중앙 상태 머신(State Machine)과 모드 라우팅 임무</h2>
+<p><code>src/modules/commander/commander.cpp</code> 파일은 PX4 시스템 내에서 모드 전환(Mode Transition), 시동(Arming), 그리고 페일세이프(Failsafe) 발동 등 기체의 운명을 결정짓는 모든 고수준(High-level) 상태 전이를 관장하는 코어 커널이다.</p>
+<p>조종자가 RC 송신기의 플라이트 모드 스위치를 조작하여 MAVLink <code>SET_MODE</code> 커맨드나 uORB <code>manual_control_setpoint</code> 의 보조 채널(Auxiliary Channel) 신호를 변경하면, 이 트리거(Trigger)는 최종적으로 <code>Commander</code> 내부의 <code>set_main_state()</code> 함수 군(Family)으로 귀결된다. 이때 커맨더는 사용자의 요청을 맹목적으로 승인(Ack)하지 않으며, 현재 기착된 하드웨어의 종류를 명시하는 <code>vehicle_status_s</code> 의 메타데이터를 기반으로 수락, 거부, 혹은 대안 모드(Fallback)로의 우회를 결정한다.</p>
+<h2>2.  기체 아키텍처 구분을 위한 구조적 추상화(Abstraction) 매개변수</h2>
+<p>PX4는 수천 가지의 프레임 조합을 지원하기 위해, 빌드 시점이나 런타임에 개별 기종을 하드코딩(Hard-coding)하는 대신 비행 동역학을 추상화한 플래그(Flag) 집합을 사용한다. <code>Commander</code> 루틴이 매뉴얼 제어의 뎁스(Depth)를 결정할 때 참조하는 주요 불리언(Boolean) 변수는 다음과 같다.</p>
+<ul>
+<li><code>is_rotary_wing</code>: 기체가 정지 상태에서 제자리 체공(Hovering) 능력이 있는 헬리콥터나 멀티로터 타입인지를 명시한다.</li>
+<li><code>is_fixed_wing</code>: 전진 비행을 통해 양력(Lift)을 얻는 고정익(Fixed-wing) 타입인지를 명시한다.</li>
+<li><code>is_vtol</code>: 수직 이착륙(VTOL) 기체의 경우, 현재 형태가 호버링 기반의 멀티로터 모드인지 전진 비행 기반의 고정익 모드인지에 따라 위 두 상태를 런타임에 동적으로 토글(Toggle)한다.</li>
+<li><code>is_rover</code>: 2차원 평면 위를 주행하는 지상 차량(UGV)이나 수상정(USV) 모델임을 의미한다.</li>
+</ul>
+<p>조종자가 스틱 통제권을 온전히 돌려받는 수동 제어 모드 진입 조건문은, 바로 위 상태 변수들과 결합하여 기계적인 분기 트리(Decision Tree)를 형성하게 된다.</p>
+<h2>3.  매뉴얼 제어(Manual Control) 진입을 향한 기동 전제조건(Pre-condition) 검증</h2>
+<p>커맨더가 매뉴얼 모드(Main State: <code>MAIN_STATE_MANUAL</code>)로의 전이를 검토할 때, 소스 코드 레벨에서는 다음과 같은 다중 제약 조건(Multiple Constraints) 검사가 수행된다.</p>
+<pre><code class="language-cpp">// src/modules/commander/state_machine_helper.cpp 의 매뉴얼 모드 진입 뼈대 (개념적 재구성)
+transition_result_t set_main_state(vehicle_status_s &amp;status, bool &amp;changed)
+{
+    // ... 전단부 안전성 검사 생략 ...
+    case commander_state_s::MAIN_STATE_MANUAL:
+        // 1. 수동 제어 신호(RC 혹은 조이스틱)가 시스템에 확보되어 있는가?
+        if (status.rc_signal_lost) {
+            // 통신이 끊긴 상태에서 매뉴얼 모드로의 진입은 자살 행위이므로 원천 거부(Denied)
+            return TRANSITION_DENIED;
+        }
+
+        // 2. 멀티로터 시스템에 대한 바이패스(Bypass) 강제 우회 로직 (29.3.1.1절 참조)
+        if (status.is_rotary_wing) {
+            // 멀티로터는 순수 매뉴얼 제어를 수용할 수 없음.
+            // 대신 자세 안정화(Stabilized) 모드로 상태를 조용히 훔쳐서(Hijack) 매핑함
+            status.nav_state = vehicle_status_s::NAVIGATION_STATE_STAB; 
+            changed = true;
+            return TRANSITION_CHANGED;
+        }
+
+        // 3. 고정익 및 로버에 대한 직접 제어(Direct Passthrough) 승인 (29.3.1.2절 참조)
+        if (status.is_fixed_wing || status.is_rover) {
+            // 기체가 동적으로 안정하거나 지면에 닿아 있으므로 순수 매뉴얼 개입 허용
+            status.nav_state = vehicle_status_s::NAVIGATION_STATE_MANUAL;
+            changed = true;
+            return TRANSITION_CHANGED;
+        }
+
+        return TRANSITION_DENIED;
+    // ... 생략 ...
+}
+</code></pre>
+<p>위 C++ 로직 모의 코드에서 명확히 드러나듯, <code>MAIN_STATE_MANUAL</code> 이라는 사용자의 동일한 스위치 조작 요청(Intention)에 대해서도 커널 내부에서 믹서(Mixer)로 향하는 길은 두 갈래로 나뉜다.<br />
+멀티로터는 스스로 균형을 잡을 수 없는 태생적 불안정성 때문에 자이로스코프(Gyroscope) 피드백 루프가 반드시 켜져 있는 <code>NAVIGATION_STATE_STAB</code> 으로 강제 우회(Fallback)되며, 날개의 항력과 양력에 기댈 수 있는 고정익은 피드백 제어기가 완전히 소거된 백지 상태의 <code>NAVIGATION_STATE_MANUAL</code> 세계로 비로소 안내된다.</p>
+<p>이러한 <code>Commander</code> 의 지능적인 방어 운전(Defensive Programming)이야말로 PX4가 전 세계 항공우주 공학자들에게 산업 표준(Industry Standard) 펌웨어로 칭송받는 근본적 이유 중 하나이다. 조종자는 기종이 바뀔 때마다 조종기 스위치 맵핑을 갈아엎을 필요 없이 동일한 매뉴얼 단추를 친숙하게 조작하면 되며, 치명적 추락의 방패와 아날로그 제어의 칼은 소프트웨어 커널이 알아서 런타임에 동적으로 기구학 법칙에 맞게 쥐여주는 것이다.</p>
 
             </article>
             <footer>

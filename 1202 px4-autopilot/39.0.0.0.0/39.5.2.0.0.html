@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.5.2 발송 대기 큐(Pending Command Queue)의 임계 구역(Critical Section) 관리</title>
+    <title>BIJUNG:39.5.2. 발송 대기 큐(Pending Command Queue)의 임계 구역(Critical Section) 관리</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,58 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.5.2 발송 대기 큐(Pending Command Queue)의 임계 구역(Critical Section) 관리</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.5.2 발송 대기 큐(Pending Command Queue)의 임계 구역(Critical Section) 관리</span></nav>
+                    <h1>39.5.2. 발송 대기 큐(Pending Command Queue)의 임계 구역(Critical Section) 관리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.5.2. 발송 대기 큐(Pending Command Queue)의 임계 구역(Critical Section) 관리</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.5.2 발송 대기 큐(Pending Command Queue)의 임계 구역(Critical Section) 관리</h1>
+                <h1>39.5.2. 발송 대기 큐(Pending Command Queue)의 임계 구역(Critical Section) 관리</h1>
+<p>지상 관제 시스템(GCS)과 무인기 간의 명령어 무결성을 보장하기 위해 QGroundControl(QGC)은 송신된 지시 사항 모서리에서 확실한 응답(<code>COMMAND_ACK</code>)을 수신할 때까지 상태를 추적하는 <strong>발송 대기 큐(Pending Command Queue)</strong> 패턴을 사용한다. PX4-Autopilot과 같은 고신뢰성 펌웨어 환경에서는 비상 정지나 임무 모드(Mission Mode) 전환 등 치명적 명령이 무선 링크의 패킷 드롭으로 인해 무시되는 것을 절대 허용하지 않으므로, 이 대기 큐의 안전한 설계는 GCS 아키텍처의 핵심 관건이다.</p>
+<p>특히 다중 스레드(Multi-thread) 런타임에서 이루어지는 이 대기 큐 메모리 접근은 필연적으로 **임계 구역(Critical Section)**을 형성하므로, 이를 방어하는 락(Lock) 체계에 대한 공학적 분석이 필요하다.</p>
+<h2>1.  발송 대기 큐(Pending Command Queue)의 역할과 생명 주기</h2>
+<p>발송 대기 큐는 단순한 선입선출(FIFO) 전송 버퍼가 아니다. 이는 명령이 MAVLink 인터페이스를 통해 네트워크로 빠져나간 직후부터 생성되어, 드론으로부터의 ACK 수신, 혹은 최대 재시도(Maximum Retries) 횟수 초과에 따른 실패 판정 시까지 유지되는 수명 파이프라인(Stateful Pipeline) 객체이다.</p>
+<h3>1.1  대기 큐 요소(Element)의 상태 구조</h3>
+<p>명령어 대기 큐의 각 원소(보통 C++의 힙 할당 객체나 구조체)는 다음과 같은 런타임 맥락을 포함하여 관리된다.</p>
+<ul>
+<li><strong>원본 패킷 정보</strong>: 재전송 시 사용될 <code>COMMAND_LONG</code> 또는 <code>COMMAND_INT</code> 페이로드 전체.</li>
+<li><strong>예상 응답 정보</strong>: 매칭되어야 하는 명령어 ID (예: <code>MAV_CMD_NAV_TAKEOFF</code>).</li>
+<li><strong>타이머(Timer)</strong>: 마지막 전송 시점을 기록한 타임스탬프 혹은 콜백 타이머.</li>
+<li><strong>재시도 카운트(Retry Count)</strong>: 전송이 몇 번 시도되었는지 기록. (PX4-Autopilot 제어의 경우 일반적으로 3~5회로 제한)</li>
+</ul>
+<h3>1.2  스레드 접근 주체(Actors)</h3>
+<p>이 대기 큐 런타임 공간에는 세 가지 다른 제어 흐름(스레드)이 독립적으로 비동기 진입을 시도한다.</p>
+<ol>
+<li><strong>명령어 삽입 주체 (UI/비즈니스 스레드)</strong>: 사용자가 HUD에서 이륙 버튼을 누르면 새로운 대기 명세를 큐에 <code>Push</code> 한다.</li>
+<li><strong>응답 해소 주체 (파서/네트워크 스레드)</strong>: 기체로부터 <code>COMMAND_ACK</code>가 도착하면, 큐에서 해당 ID를 탐색하여 <code>Remove(Delete)</code> 한다.</li>
+<li><strong>타임아웃 감시 주체 (타이머/워치독 스레드)</strong>: 주기적 타이머 루프가 큐 전체를 순회(<code>Iterate</code>)하며 만료된 명령이 있는지 점검하고 재전송을 트리거한다.</li>
+</ol>
+<h2>2.  임계 구역(Critical Section)의 정의와 경합 조건(Race Condition)</h2>
+<p>서로 다른 3개의 독립된 스레드가 동일한 메모리 주소(대기 큐 자료형, 예: <code>std::list</code> 혹은 <code>QMap</code>)를 조작할 때 발생하는 소스 코드 블록을 **임계 구역(Critical Section)**이라고 부른다. 만약 아무런 차단 장치 없이 동시다발적 메모리 접근이 일어날 경우 심각한 동시성 결함이 발생한다.</p>
+<h3>2.1  재전송과 ACK 수신의 경합 (Race Condition 탐구)</h3>
+<p>가장 흔하게 발생하는 오류 시나리오는 다음과 같다.</p>
+<ul>
+<li><strong>상황</strong>: 통신 링크의 지연으로 GCS가 500ms(타임아웃 한계점) 안에 ACK를 받지 못했다.</li>
+<li><strong>스레드 A(타이머)</strong>: 타이머가 만료되었음을 인지하고, 큐에서 객체를 꺼내어(Read) 네트워크로 패킷을 재전송하려 준비한다.</li>
+<li><strong>스레드 B(수신부)</strong>: 바로 그 1~2ms 찰나의 순간에 드론의 지연된 <code>COMMAND_ACK</code>가 도착한다. 수신 스레드는 큐에 접근하여 성공으로 간주하고 해당 객체를 파괴(<code>delete</code> 또는 <code>free</code>)해버린다.</li>
+<li><strong>결과</strong>: <code>스레드 A</code>는 삭제된 메모리의 포인터(Dangling Pointer)를 통하여 재전송 패킷을 만들려 시도하다가 Segment Fault가 발생, GCS가 크래시(Crash)된다.</li>
+</ul>
+<h2>3.  임계 구역 보호를 위한 동시성 제어 아키텍처</h2>
+<p>위와 같은 파국적 메모리 충돌을 막기 위해 QGC 및 전문적인 무인기 스웜(Swarm) 제어기는 정교한 락(Lock) 메커니즘을 사용해 임계 구역을 엄격히 보호한다.</p>
+<h3>3.1  독점적 상호 배제(Mutex)의 적용</h3>
+<p>가장 보편적인 방어선은 <code>std::mutex</code>(표준 C++) 혹은 <code>QMutex</code>(Qt 프레임워크)를 자료구조 래퍼(Wrapper) 클래스 내부에 배치하는 것이다.</p>
+<ul>
+<li>대기 큐 원소의 추가(<code>enqueue</code>), 삭제(<code>dequeue</code>), 순회(<code>iterate</code>) 등 모든 멤버 함수 도입부에 <code>QMutexLocker</code>(또는 <code>std::lock_guard</code>)를 적용한다.</li>
+<li>큐에 대한 조작(Push, Pop)은 본질적으로 연산에 소요되는 O(N) 순회가 매우 빠르게(마이크로초 단위) 종료되기 때문에, Mutex 방식이 가장 직관적이고 커널에 크게 부담을 주지 않는 확실한 해답이다.</li>
+</ul>
+<h3>3.2  상태 전이 모델로의 복귀(De-coupling) 최적화</h3>
+<p>모든 스레드 단계에서 Mutex 코스트가 우려될 경우, 다중 스레드의 임의 접근 자체를 차단하는 <strong>스레드 단일화 기법</strong>도 쓰인다.<br />
+QEventLoop를 활용하여, 수신 스레드가 큐 메모리를 직접 삭제하게 두는 것이 아니라 <strong>오직 비즈니스(Vehicle) 스레드 단 한 곳에서만</strong> 대기 큐를 조작하게 만드는 방식이다.</p>
+<ul>
+<li>수신 스레드는 <code>ACK</code>가 오면 메모리에 손대지 않고 <code>Vehicle</code> 스레드로 “결과 통보 시그널“만을 던진다.</li>
+<li>워치독 타이머 역시 인터럽트 시그널만을 <code>Vehicle</code> 이벤트 루프에 날린다.</li>
+<li><code>Vehicle</code> 스레드 내의 동기적인 루틴만이 대기 큐를 조작하므로, 큐 자체가 암묵적인 스레드 안전성(Thread-safety)을 확보하며 복잡한 Mutex 버그를 근본적으로 차단할 수 있다.</li>
+</ul>
+<p>이처럼 발송 대기 큐(Pending Queue)의 관리는 GCS의 생명줄이 되는 통신 신뢰성과 앱 안정성을 좌우한다. 임계 구역의 철저한 관리는 물리적인 전파 통신의 불리함을 논리적인 재전송 공학으로 통제하는 자율 비행 기반 시스템 설계의 필수불가결한 아키텍처라고 할 수 있다.</p>
 
             </article>
             <footer>

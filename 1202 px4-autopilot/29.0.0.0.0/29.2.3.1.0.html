@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.2.3.1 스틱 짐벌 마모를 고려한 데드존(Deadzone) 필터링: 분기 예측(Branch Prediction) 최적화가 적용된 필터 소스</title>
+    <title>BIJUNG:29.2.3.1. 스틱 짐벌 마모를 고려한 데드존(Deadzone) 필터링: 분기 예측(Branch Prediction) 최적화가 적용된 필터 소스</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,55 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.2.3.1 스틱 짐벌 마모를 고려한 데드존(Deadzone) 필터링: 분기 예측(Branch Prediction) 최적화가 적용된 필터 소스</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.3.1 스틱 짐벌 마모를 고려한 데드존(Deadzone) 필터링: 분기 예측(Branch Prediction) 최적화가 적용된 필터 소스</span></nav>
+                    <h1>29.2.3.1. 스틱 짐벌 마모를 고려한 데드존(Deadzone) 필터링: 분기 예측(Branch Prediction) 최적화가 적용된 필터 소스</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.3.1. 스틱 짐벌 마모를 고려한 데드존(Deadzone) 필터링: 분기 예측(Branch Prediction) 최적화가 적용된 필터 소스</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.2.3.1 스틱 짐벌 마모를 고려한 데드존(Deadzone) 필터링: 분기 예측(Branch Prediction) 최적화가 적용된 필터 소스</h1>
+                <h1>29.2.3.1. 스틱 짐벌 마모를 고려한 데드존(Deadzone) 필터링: 분기 예측(Branch Prediction) 최적화가 적용된 필터 소스</h1>
+<p>본 소절에서는 PX4-Autopilot의 수동 제어 파이프라인에서 하드웨어 노후화(Aging)로 인한 치명적 잔떨림을 소프트웨어적으로 방어하는 <strong>데드존(Deadzone) 필터링</strong>의 상세 구현을 파헤친다. 특히, 초당 수백 번씩 호출되는 핫 루프(Hot Loop) 내에서 데드존 필터가 야기할 수 있는 CPU 파이프라인 스톨(Pipeline Stall)을 방지하기 위해 PX4 커널에 적용된 <strong>분기 예측(Branch Prediction) 최적화</strong> 기법을 C++ 소스 수준에서 집중 조명한다.</p>
+<h2>1.  짐벌 마모(Gimbal Wear) 현상과 영점 탈선(Center Drift)의 수학적 방어의 필요성</h2>
+<p>전위차계(Potentiometer) 기반의 저가형 조종기뿐만 아니라 최고급 홀 센서(Hall Effect Sensor) 짐벌조차도 오랜 기간 비행에 노출되면 기계적 스프링의 탄성 피로도(Fatigue)가 누적되어 스틱을 정중앙(Trim)에 놓았을 때 완벽한 영점을 회복하지 못하는 이른바 <strong>‘중립 이탈(Center Drift)’</strong> 현상을 겪게 된다. 사용자가 손을 뗀 상태에서도 <span class="math math-inline">1500\mu s</span>가 아닌 <span class="math math-inline">1506\mu s</span> 나 <span class="math math-inline">1494\mu s</span> 와 같이 미세하게 편향된 원시 값이 수신되며, 제어 사이클이 반복될수록 이 오차는 지속적으로 변동(Fluctuate)하는 특성을 지닌다.</p>
+<p>만약 이 미세한 잔떨림 값들을 29.2.2.1절의 선형 정규화를 거쳐 <span class="math math-inline">\pm0.012f</span> 같은 실수로 환산한 뒤, 자세 제어기(Attitude Controller)의 목표 각속도로 들이붓는다면, 드론의 로터는 호버링 중에도 틱(Tic) 증상처럼 불규칙하게 요동치게 되며 결과적으로 모터 과열과 배터리 광탈을 초래한다. 이를 방지하기 위해 사용자 파라미터 <code>RCx_DZ</code> (Deadzone)가 도입되며, 커널은 중앙 트림값을 중심으로 이 반경 내에 들어온 모든 입력 신호를 완벽한 양자 제로(<span class="math math-inline">0.0f</span>) 상태로 억압(Nullify)하는 수학적 단절 평면(Truncation Plane)을 생성해야 한다.</p>
+<h2>2.  분기문(Branch) 기반 데드존 필터의 함정과 CPU 파이프라인 스톨 현상</h2>
+<p>일반적인 임베디드 프로그래머가 데드존 필터를 구현할 때 가장 흔하게 저지르는 실수는 조건 분기문(If-else)을 남발하는 직관적 코딩이다.</p>
+<pre><code class="language-cpp">// [비-최적화 데드존 로직 예시 - CPU 파이프라인에 치명적]
+float apply_deadzone_naive(float value, float deadzone) {
+    if (value &gt; deadzone) {
+        return (value - deadzone) / (1.0f - deadzone);
+    } else if (value &lt; -deadzone) {
+        return (value + deadzone) / (1.0f - deadzone);
+    } else {
+        return 0.0f; // 데드존 내부
+    }
+}
+</code></pre>
+<p>조종자가 스틱을 움직이는 와중에는 입력 값 <code>value</code> 가 데드존 경계(Boundary)를 수시로 넘나들게 된다. 현대의 ARM Cortex-M 계열 마이크로프로세서는 파이프라인 효율을 극대화하기 위해 ’분기 예측기(Branch Predictor)’를 가동하는데, 위와 같이 스레스홀드(Threshold) 경계에서 조건이 난수(Random)처럼 참/거짓을 교차로 반전하는 코드 루프에서는 분기 예측 실패율(Miss Rate)이 기하급수적으로 치솟는다. 예측에 실패한 CPU는 미리 파이프라인에 페치(Fetch)해둔 명령어들을 전부 플러시(Flush)하고 지연 루프(Stall) 사이클을 낭비해야 하므로, 수백 Hz로 펌프질되는 Flight Controller의 실시간성(Real-time Constraints)에 크나큰 위협이 된다.</p>
+<h2>3.  PX4 <code>math::deadzone</code> 함수 내부의 대수학적(Algebraic) 최적화 로직 분석</h2>
+<p>이러한 하드웨어 아키텍처의 약점을 원천 봉쇄하기 위해, PX4 <code>src/lib/mathlib</code> 의 데드존 유틸리티는 조건 분기문(<code>if-else</code>)을 산술 논리와 단일 함수 합성으로 치환(Substitution)하여 컴파일러가 조건부 이동(Conditional Move, CMOV 계열 명령어)이나 부호 추출(Sign Extraction) 단일 인스트럭션으로 기계어를 번역할 수 있도록 코드를 고도로 최적화(Optimization) 해두었다.</p>
+<pre><code class="language-cpp">// src/lib/mathlib/math/filter/LinearInterpolation.cpp 구현에 영감을 준 최적화 아키텍처 모델
+// 분기 예측 실패를 최소화하기 위한 대수학적 데드존 및 스케일링 동시 처리 로직
+
+float apply_deadzone_optimized(float value, float deadzone)
+{
+    // 1. 값의 절대 크기를 파악 (FPU의 fabs 명령어 1사이클로 처리 가능, 분기 없음)
+    float abs_value = fabsf(value);
+
+    // 2. 데드존 이하의 값은 강제로 음수로 만들어버림
+    float travel = abs_value - deadzone;
+
+    // 3. fmaxf 연산을 통해 음수는 강제로 0.0f로 절삭 (FPU VMAXNM 명령어로 1사이클 처리 가능)
+    // 이 단계에서 분기문(If-else) 없이 수학적으로 완벽한 데드존 Truncation이 이루어짐
+    travel = fmaxf(travel, 0.0f);
+
+    // 4. 부호(Sign)를 다시 살려내기 위한 코프 사인(Copysign) 혹은 부호 매크로 적용
+    // 5. 남은 유효 행정 거리(1.0f - deadzone)에 대한 선형 스케일링 비율 도출
+    // math::sign(value) 함수 역시 (value &gt; 0) ? 1 : -1 처럼 보이지만 내부적으로는 분기 없는 비트 마스킹으로 구현됨
+    return math::signNoZero(value) * (travel / (1.0f - deadzone));
+}
+</code></pre>
+<p>위 런타임 코드는 <code>fabsf</code> (절댓값)와 <code>fmaxf</code> (최댓값 반환), 그리고 부호 보존기(<code>sign</code>)라는 일련의 순수 순차적 수학 함수들을 파이프라인식으로 늘어놓은 것이다. 이 코드 블록 내부에는 그 어떠한 제어 흐름 분기(Control Flow Divergence) 명령어인 <code>if</code>나 <code>goto</code>가 아예 존재하지 않는다(Branchless Programming).</p>
+<p>결과적으로, 스틱 짐벌의 아날로그 노이즈가 데드존 한계선 <span class="math math-inline">\pm0.05</span> 부근에서 초당 수백 번씩 <span class="math math-inline">0.049</span> 와 <span class="math math-inline">0.051</span> 을 요동치며 교차하더라도, CPU의 분기 예측기는 실패할 대상 자체가 없기 때문에 파이프라인이 단 한 번의 스톨링(Stalling) 없이 고속도로처럼 시원하게 관통된다. 가장 하구(Down-stream)에 위치한 이 단순한 수학 유틸리티 함수 하나에마저도 운영체제 커널 수준의 최적화 철학이 관철되어 있다는 사실은, PX4 비행 제어 스택이 산업 표준(Industry Standard)의 강건함(Robustness)을 어떻게 집요하게 수호해 내는지 입증하는 훌륭한 단면이다.</p>
 
             </article>
             <footer>

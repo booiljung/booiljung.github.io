@@ -115,6 +115,27 @@
             </header>
             <article>
                 <h1>38.4.2.2 관측 지연 분산(Variance) 기반의 가드 타임(Guard Time) 설정 및 오탐지(False Positive) 확률 최소화 기법</h1>
+<p>앞선 38.4.2.1절에서 우리는 지수 평활화를 통해 ’평균적인 패킷 도달 간격(<span class="math math-inline">\mu_n</span>)’을 구했다. 그러나 타임아웃 임계치를 정확히 이 <span class="math math-inline">\mu_n</span> 값으로 설정하는 것은 자살 행위와 다름없다.<br />
+도달 시간 분포가 정규 분포(Gaussian)를 따른다고 가정할 때, 정상적인 패킷의 정확히 절반(50%)은 평균 타임(<span class="math math-inline">\mu_n</span>)보다 미세하게 ‘늦게’ 도착할 것이기 때문이다.</p>
+<p>따라서 <span class="math math-inline">\mu_n</span> 너머로 패킷이 정상적으로 지연될 수 있는 여유 공간, 즉 **가드 타임(Guard Time, <span class="math math-inline">T_{guard}</span>)**을 확보해야 한다. 문제는 이 가드 타임을 얼마나 넓게 잡을 것인가이다.</p>
+<h2>1. 동적 분산(Jitter)의 실시간 추정</h2>
+<p>고정된 가드 타임(예: 무조건 +1초)을 주면, 다시 정적 타임아웃 딜레마로 빠진다. 고도화된 타임아웃 알고리즘은 가드 타임의 크기 자체를 현재 네트워크의 <strong>지터(Jitter) 심각도</strong>, 즉 **관측 지연 분산(Variance)**에 비례하여 팽창시키고 수축시킨다.</p>
+<p>분산(<span class="math math-inline">V_n</span>) 혹은 평균 절대 편차(MAD, Mean Absolute Deviation) 역시 메모리 절약을 위해 동일한 1차 지수 평활화(IIR) 필터를 거쳐 실시간으로 갱신된다.</p>
+<p><span class="math math-display"> V_n = \beta \cdot |I_n - \mu_n| + (1 - \beta) \cdot V_{n-1} </span></p>
+<ul>
+<li><span class="math math-inline">V_n</span>: 추정된 현재 지터(도달 시간의 변동성) 앰플리튜드</li>
+<li><span class="math math-inline">|I_n - \mu_n|</span>: 최신 패킷이 ’예상 도착 시간’에서 빗나간 절대 오차</li>
+<li><span class="math math-inline">\beta</span>: 분산용 평활화 계수 (예: 0.2)</li>
+</ul>
+<h2>3시그마(<span class="math math-inline">3\sigma</span>) 법칙과 최종 타임아웃 임계치 산출</h2>
+<p>이제 GCS나 PX4 커맨더는 다음 MAVLink <code>HEARTBEAT</code> 패킷을 기다리며 워치독(Watchdog) 타이머를 가동한다. 이때 타이머의 최종 폭발 임계치(<span class="math math-inline">T_{threshold}</span>)는 다음과 같이 정의된다.</p>
+<p><span class="math math-display"> T_{threshold} = \mu_n + k \cdot V_n </span></p>
+<p>여기서 뒷부분인 <span class="math math-inline">k \cdot V_n</span> 이 바로 동적으로 숨을 쉬는 **가드 타임(Guard Time)**이다.<br />
+통계학의 경험 법칙(Empirical Rule)에 따라 승수 <span class="math math-inline">k</span>를 3으로 설정하면(<span class="math math-inline">3\sigma</span>에 준함), 예측 가능한 정상적 지터 스파이크의 99.7%를 타임아웃 없이 안전하게 포용할 수 있다.</p>
+<p>이 우아한 수학적 모델 덕분에, PX4의 감시망은 극심하게 요동치는 비가시권 통신망(큰 <span class="math math-inline">V_n</span>)에서는 가드 타임을 확 늘려 <strong>“불필요한 RTL 오탐지(False Positive) 확률을 0.3% 미만으로 최소화”</strong> 하면서도, 반대로 매우 깨끗하던 통신망(거의 0에 수렴하는 <span class="math math-inline">V_n</span>)에서 돌발적인 먹통이 발생하면 가드 타임이 타이트해져 있어 단 1~2초 만에 단호하게 비상 탈출을 트리거(Trigger)할 수 있게 된다.</p>
+<h2>2. Ardupilot의 하드웨어 의존적 융합 접근법과의 비교</h2>
+<p>순수하게 소프트웨어 지표(수신 시점 측정)에 수학적 통계 모델을 씌워 방어막을 구축하는 PX4의 철학과 달리, Ardupilot은 물리 계층(Physical Layer)에서 올라오는 정보에 조금 더 귀를 기울이는 경향이 있다.</p>
+<p>Ardupilot은 MAVLink를 통해 모뎀 머신(SiK, RFD900 등)이 직접 보고하는 <code>RADIO_STATUS</code> 메시지 속의 큐오버 플로우 플래그나 H/W 기반의 송수신 에러 카운트를 정적 타임아웃(Timer-based Failsafe) 로직과 강력하게 결합(Hybrid)하여 사용한다. PX4가 “관측된 현상(수신시간)의 통계적 필터링“에 집중한다면, Ardupilot은 “모뎀 펌웨어 자체의 하드웨어적 진단 결과“를 더 원초적으로 신뢰하여 오탐지를 막는 설계 철학의 차이를 보여준다.</p>
 
             </article>
             <footer>

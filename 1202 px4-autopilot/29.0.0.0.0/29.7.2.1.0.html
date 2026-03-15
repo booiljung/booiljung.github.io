@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.7.2.1 짐벌 락(Gimbal Lock) 근접 시 쿼터니언 미분 발산 방지: 피치 각도의 수직 한계 임계점 부근에서 특이점(Singularity)을 우회하고 계산 값을 클리핑하는 소스 코드</title>
+    <title>BIJUNG:29.7.2.1. 짐벌 락(Gimbal Lock) 근접 시 쿼터니언 미분 발산 방지: 피치 각도의 수직 한계 임계점 부근에서 특이점(Singularity)을 우회하고 계산 값을 클리핑하는 소스 코드</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,55 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.7.2.1 짐벌 락(Gimbal Lock) 근접 시 쿼터니언 미분 발산 방지: 피치 각도의 수직 한계 임계점 부근에서 특이점(Singularity)을 우회하고 계산 값을 클리핑하는 소스 코드</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.7.2.1 짐벌 락(Gimbal Lock) 근접 시 쿼터니언 미분 발산 방지: 피치 각도의 수직 한계 임계점 부근에서 특이점(Singularity)을 우회하고 계산 값을 클리핑하는 소스 코드</span></nav>
+                    <h1>29.7.2.1. 짐벌 락(Gimbal Lock) 근접 시 쿼터니언 미분 발산 방지: 피치 각도의 수직 한계 임계점 부근에서 특이점(Singularity)을 우회하고 계산 값을 클리핑하는 소스 코드</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.7.2.1. 짐벌 락(Gimbal Lock) 근접 시 쿼터니언 미분 발산 방지: 피치 각도의 수직 한계 임계점 부근에서 특이점(Singularity)을 우회하고 계산 값을 클리핑하는 소스 코드</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.7.2.1 짐벌 락(Gimbal Lock) 근접 시 쿼터니언 미분 발산 방지: 피치 각도의 수직 한계 임계점 부근에서 특이점(Singularity)을 우회하고 계산 값을 클리핑하는 소스 코드</h1>
+                <h1>29.7.2.1. 짐벌 락(Gimbal Lock) 근접 시 쿼터니언 미분 발산 방지: 피치 각도의 수직 한계 임계점 부근에서 특이점(Singularity)을 우회하고 계산 값을 클리핑하는 소스 코드</h1>
+<p>무인항공기(UAV)의 자세(Attitude)를 표현하는 가장 직관적인 수학적 모델은 롤(Roll), 피치(Pitch), 요(Yaw)로 구성된 3차원 오일러 각(Euler Angles)이다. 그러나 오일러 각은 회전 순서에 종속적이며, 특정 각도(일반적으로 피치 <span class="math math-inline">\theta = \pm 90^\circ</span>)에 도달했을 때 두 회전 축이 겹쳐지며 자유도 중 하나를 상실하는 <strong>짐벌 락(Gimbal Lock)</strong> 현상을 태생적 한계로 띠고 있다.</p>
+<p>이 특이점(Singularity) 부근에서는 자이로스코픽 회전 운동학의 코리올리(Coriolis) 분모 연산 부하가 기하급수적으로 증가하며, 결과적으로 미분값이 무한대(Infinity)로 발산하여 제어루프가 붕괴된다. PX4-Autopilot은 이 치명적 예외 상황을 원천 차단하기 위해 자세 제어 루프의 전 영역을 무차원 4원수 체계인 **쿼터니언(Quaternion)**으로 승격(Elevation)시켜 연산한다. 본 장에서는 PX4 소스 코드 내에서 피치 각도가 수직 임계점에 도달했을 때 이 특이점을 어떻게 우회하고 방어하는지 심층 분석한다.</p>
+<h2>1.  짐벌 락 수학적 특이점과 쿼터니언 대수학(Algebra) 적용</h2>
+<p>오일러 각의 운동학적 미분 방정식은 각속도(Angular Velocity, <span class="math math-inline">\omega</span>)와 자세(Attitude, <span class="math math-inline">\Phi</span>) 간의 관계를 다음과 같이 정의한다.</p>
+<p><span class="math math-display">
+\begin{bmatrix} \dot{\phi} \\ \dot{\theta} \\ \dot{\psi} \end{bmatrix} = \begin{bmatrix} 1 &amp; \sin\phi \tan\theta &amp; \cos\phi \tan\theta \\ 0 &amp; \cos\phi &amp; -\sin\phi \\ 0 &amp; \sin\phi \sec\theta &amp; \cos\phi \sec\theta \end{bmatrix} \begin{bmatrix} p \\ q \\ r \end{bmatrix}
+</span></p>
+<p>위 수식(테이블 셀로 치환 가능한 변환 행렬)에서 확인 가능하듯, 피치 각도 <span class="math math-inline">\theta \rightarrow \pm 90^\circ</span> 에 수렴할수록 <span class="math math-inline">\tan(\theta)</span> 와 <span class="math math-inline">\sec(\theta)</span> 는 통제 불가능한 값으로 발산한다.</p>
+<p>PX4-Autopilot(<code>v1.14</code> 기준)의 자세 제어 아키텍처(<code>src/modules/mc_att_control</code>)는 조종사의 스틱 입력(Euler Setpoint)을 수신하는 즉시 이를 쿼터니언 매트릭스(<span class="math math-inline">\mathbf{q} = q_0 + q_1 i + q_2 j + q_3 k</span>)로 스코프를 씌운다. 쿼터니언 미분학은 <span class="math math-inline">\tan(\theta)</span>를 사용하지 않고 단순히 행렬의 선형 덧셈과 곱셈으로만 구성되므로 짐벌 락 특이점이 존재하지 않는다.</p>
+<h2>2.  수직 한계 임계점 피치(Pitch) 클리핑(Clipping) 소스 코드 분석</h2>
+<p>특이점 문제가 수학적으로 해결되었다 하더라도, 안정화 모드(Stabilized Mode)에서는 기체가 수직으로 곤두서는(<span class="math math-inline">\approx \pm 90^\circ</span>) 물리적 극복 한계치 자체를 모빌리티 안전상 차단해야 한다. 이를 **목표 자세 클리핑(Setpoint Clipping)**이라 부른다.</p>
+<p>PX4의 다중 로터 제어기 구현부인 <code>AttitudeControl.cpp</code>와 수동 비행 매퍼 모듈에서는, 스틱 입력으로 계산된 타겟 쿼터니언(<span class="math math-inline">\mathbf{q}_d</span>)의 수직 틸트 벡터 성분을 추출하여 파라미터 한계(<code>MPC_MAN_TILT_MAX</code>)와 비교한다.</p>
+<pre><code class="language-cpp">// 수동 제어(Manual Control)에서 생성된 오일러 각 목표값을 쿼터니언으로 스큐(Skew)
+math::Quaternion q_target = Eulerf(roll_setpoint, pitch_setpoint, yaw_setpoint);
+
+// 1. Z축(수직축) 위상의 코사인 성분을 추출 (q_target을 3차원 투영)
+float tilt_cos = q_target(0)*q_target(0) - q_target(1)*q_target(1) - q_target(2)*q_target(2) + q_target(3)*q_target(3);
+
+// 2. 파라미터 임계치 코사인 성분과 비교 (예: MPC_MAN_TILT_MAX = 45도 -&gt; cos(45) )
+float tilt_limit_cos = cosf(math::radians(_param_mpc_man_tilt_max.get()));
+
+if (tilt_cos &lt; tilt_limit_cos) {
+    // 3. 기체가 한계 피치(수직 임계점)를 넘어서 뒤집히려 할 때 (짐벌 락 근접 방어)
+    // 쿼터니언 각도를 클리핑하고 다시 정규화(Normalization) 수행
+    q_target = limit_tilt(q_target, _param_mpc_man_tilt_max.get());
+    q_target.normalize(); // 부동소수점 오차 누적으로 인한 쿼터니언 모듈러스 이탈 방지
+}
+</code></pre>
+<p>이 방어벽의 핵심은 <code>limit_tilt</code> 연산 이후 반드시 수반되는 **<code>q_target.normalize()</code>**이다. 클리핑 이후 쿼터니언 벡터의 크기(Norm)가 <span class="math math-inline">1.0</span>에서 벗어나면 이 값은 에러 연산기(Error Calculator)로 유입되어 제어기 발산을 유발할 수 있다. PX4는 연산 직후 정규화를 강제 수행하여 이러한 누수 스펙트럼을 방지한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[조종기 RC Pitch/Roll 스틱 수신] --&gt; B[Euler Setpoint 생성]
+    B --&gt; C[Euler to Quaternion 변환]
+    C --&gt; D[Z축 벡터 투영식 계산]
+    D --&gt; E{수직 한계 임계값 (Tilt Max) 초과?}
+    E -- Yes --&gt; F[특이점 우회 클리핑 로직 동작]
+    F --&gt; G[Quaternion 정규화 (Normalization)]
+    G --&gt; H[제어 오류 추출기로 전달]
+    E -- No --&gt; H
+</code></pre>
+<h2>3.  Ardupilot 조향 제한 로직(ANGLE_MAX)과의 뎁스(Depth) 차이</h2>
+<p>Ardupilot은 전통적으로 루프 전면에 <code>ANGLE_MAX</code> 파라미터를 두고, 오일러 각 단계(Degree/Radian)에서 선형적으로 값의 상하단을 제단(Saturation)하는 방식을 채택했다. 이는 코드가 직관적이고 연산 비용이 가볍다는 장점이 있으나, 다축의 연계된 극단적 제어 명령(Roll과 Pitch를 동시에 끝까지 미는 행위)하에서는 의도치 않은 비선형 곡률을 만들어내는 단점(사각 박스형 클리핑 파라독스)이 존재했다.</p>
+<p>반면, PX4-Autopilot은 스틱 입력을 벡터 그 자체(Vector Norm)의 회전 공간으로 변환한 다음, <span class="math math-inline">Z</span>축 기저 벡터와의 사잇각(Tilt)을 스칼라(Scalar)로 도출하여 클리핑한다. 이는 원통형(Cylindrical) 한계 범위를 만들어내어 조종사가 스틱을 대각선으로 최대로 물리더라도 모든 축에서 균일하고 스무스(Smooth)한 한계 제어를 보장한다.</p>
+<p>결과적으로 PX4 소스 코드의 <span class="math math-inline">Z</span>축 투영 및 쿼터니언 정규화 아키텍처는, 극단 자세와 짐벌 락(Gimbal Lock) 발산이라는 동역학의 최대 위협(Menace)으로부터 코어 제어기를 격리하는 가장 진보한 수학적-소프트웨어적 인터락(Interlock) 장치이다.</p>
 
             </article>
             <footer>

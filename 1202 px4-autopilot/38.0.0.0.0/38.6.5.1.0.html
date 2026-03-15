@@ -115,6 +115,34 @@
             </header>
             <article>
                 <h1>38.6.5.1 POSIX 스레드(Pthreads) 타이머 인터럽트(Timer Interrupt) 서비스 루틴(ISR) 기반의 백그라운드 Heartbeat 감시 프로토타입 구현</h1>
+<p>이전 절에서 다룬 <code>sleep()</code> 스레드를 이용한 타임스탬프 뺄셈 루프는 개념적으로 단순하지만, 폴링(Polling)의 한계를 완전히 벗어나진 못했다. 루프가 초당 2번씩 깨어난다는 것은 운영체제 입장에서 불필요한 컨텍스트 스위칭(Context Switching)을 유발하여 CPU 자원을 소모함을 의미한다.</p>
+<p>자원 제약이 극심한 라즈베리 파이 제로(Raspberry Pi Zero)나 STM32 같은 마이크로컨트롤러 기반의 Custom GCS(또는 임무 컴퓨터)에서는 이마저도 사치다. 극한의 효율을 위해 우리는 C/C++ **POSIX 타이머(POSIX Timer)**와 **시그널 핸들러(Signal Handler)**를 이용한 인터럽트 주도형(Interrupt-driven) 아키텍처로 넘어가야 한다.</p>
+<h2>1. POSIX <code>timer_create</code>와 타임아웃 시그널</h2>
+<p>이 패러다임의 핵심은 애플리케이션 스레드가 직접 시간을 재지 않고, 운영체제(커널)의 하드웨어 타이머에게 알람 시계를 맞춰두는 것이다.</p>
+<ol>
+<li><strong>타이머 설정</strong>: 관제 프로그램이 켜지면 C++ 백엔드는 <code>timer_create()</code> 시스템 콜을 호출하여 OS 타이머를 생성하고, 타임아웃을 3초(3000ms)로 맞춘다.</li>
+<li><strong>시그널 바인딩</strong>: 타이머가 0이 되었을 때 OS가 발생시킬 특정 리눅스 시그널(예: <code>SIGRTMIN</code>)을 지정하고, 이 시그널을 맞았을 때 즉각적으로 실행될 콜백 함수, 즉 **인터럽트 서비스 루틴(ISR, Interrupt Service Routine)**을 등록(<code>sigaction</code>)한다.</li>
+</ol>
+<pre><code class="language-cpp">// ISR 기반 Watchdog의 개념적 프로토타입
+timer_t watchdog_timer;
+
+// 1. 통신 단절 시 OS가 강제로 실행할 ISR (비상사태 핸들러)
+void data_link_loss_isr(int sig) {
+    printf("명박동 정지!: 3초간 HEARTBEAT 수신 안 됨. RTL 절차 돌입!\n");
+    trigger_rtl_command(); 
+}
+
+// 2. 초기 3초 카운트다운 알람 시계 작동 시작
+setup_posix_timer(&amp;watchdog_timer, 3000, data_link_loss_isr);
+</code></pre>
+<h2>2. 하트비트에 의한 타임아웃 유산(Resetting the Timer)</h2>
+<p>타이머가 맹렬히 0을 향해 카운트다운을 하고 있을 때, 우리의 텔레메트리 수신 스레드가 마침내 드론으로부터 1Hz 규격의 신선한 <code>HEARTBEAT</code> 패킷을 받아 파싱해 낸다.</p>
+<p>이 순간, 수신 스레드는 즉각 <code>timer_settime()</code>을 호출하여 <strong>타이머의 남은 시간을 다시 3초로 꽉 채워버린다(Reset/Kick).</strong></p>
+<p>드론과 GCS 간의 무선 통신이 건강하게 유지되어 1초마다 하트비트가 꼬박꼬박 도착한다면, 3초짜리 타이머는 0에 도달해 비상벨을 울릴 기회를 영원히 얻지 못하고 끊임없이 1초마다 3초로 되돌려지는 영겁의 굴레에 빠진다.</p>
+<h2>3. 제로 오버헤드(Zero-Overhead)의 성취</h2>
+<p>이 구조의 우아함은 평상시(무선 링크가 정상일 때) 감시 데몬을 위해 소모되는 CPU 주기가 **0(Zero)**이라는 점이다. 아무런 백그라운드 루프도 돌지 않으며, 오직 패킷이 도착했을 때 변수 값(타이머 레지스터) 하나를 톡 쳐주는 비용만 발생한다.</p>
+<p>그러다 만약 기체가 산 뒤로 넘어가 통신이 끊어지면, 타이머에 밥을 주던 수신 스레드는 침묵한다. 결국 3초 뒤 하드웨어 타이머가 0에 도달하고, 리눅스 커널은 즉각 <code>SIGRTMIN</code> 시그널을 발생시켜 커스텀 GCS 프로세스의 실행 흐름을 무자비하게 끊어버린 뒤 등록해 둔 <code>data_link_loss_isr()</code> 함수를 실행시킨다.</p>
+<p>이와 같은 <strong>POSIX 하드웨어 타이머 + 시그널 기반의 인터럽트 주도형 워치독</strong>은 그 어떠한 통신 파이프라인 마비나 메인 루프 데드락 상황에서도 독립성과 극한의 반응 속도를 보장하는, 항공우주 등급(Aerospace Grade)의 관제 시스템이 선택할 수 있는 가장 신뢰성 높은 최후의 방어 기술이다.</p>
 
             </article>
             <footer>

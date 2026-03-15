@@ -115,6 +115,27 @@
             </header>
             <article>
                 <h1>38.5.2 스플릿 브레인(Split-Brain) 증후군 억제 아키텍처</h1>
+<p>제어 네트워크 내의 지연(Delay)과 경쟁 상태(Race Condition)를 넘어서면, 분산 시스템(Distributed Systems)이 겪을 수 있는 가장 치명적이고 본질적인 재앙인 <strong>스플릿 브레인(Split-Brain) 증후군</strong>과 마주하게 된다.</p>
+<p>스플릿 브레인이란, 통신망이 여러 갈래로 찢어지거나 복구되는 과정에서 두 개 이상의 제어 노드가 서로 “내가 이 무인기를 통제하는 유일한 권력자다“라고 착각하여, 하나의 기체에 상충하는 물리적 명령을 동시에 쏟아붓는 통제권 분열 현상을 말한다.</p>
+<h2>1. 다중 노드(Multi-Node) 관제 생태계의 위험성</h2>
+<p>현대의 고도화된 PX4 아키텍처 기반 시스템은 단순한 ’조종기 1대 - 드론 1대’의 1:1 종속 관계를 벗어난 지 오래다. 전형적인 산업용 드론은 다음의 다중 노드들을 동시에 연결(Multiplexing)하여 운용한다.</p>
+<ol>
+<li><strong>지상 주 관제장비 (Primary GCS)</strong>: 현장의 노트북 (예: QGroundControl, SysID: 255)</li>
+<li><strong>보조/원격 관제시스템 (Secondary GCS)</strong>: LTE를 타고 접속된 수백 km 밖 본사의 클라우드 웹 대시보드</li>
+<li><strong>기체 탑재 임무 컴퓨터 (Companion Computer)</strong>: 젯슨 나노(Jetson Nano) 등에서 돌아가는 ROS2 자율 비행 노드 (SysID: 1, CompID: 191)</li>
+<li><strong>비행 제어기 (Flight Controller)</strong>: 픽스호크 내부의 PX4 Commander (SysID: 1, CompID: 1)</li>
+</ol>
+<p>만약 기체가 통신 음영 지역에 진입하여 LTE 망은 끊어지고(본사 통제 상실), Wi-Fi 망은 파편적으로 살아있는(현장과 임무 컴퓨터 통제 유지) 상황이 벌어졌다고 하자. 통신이 복구된 직후, 본사의 웹 대시보드는 당황하여 기체를 살리기 위해 <code>Return</code>(복귀) 명령을 내리고, 기체 내부의 임무 컴퓨터(ROS2)는 눈앞의 장애물을 피하기 위해 <code>Offboard</code>(자율 회피) 제어 명령을 동시에 내린다면 어떻게 될까?</p>
+<h2>2. PX4의 권한 계층(Hierarchy)과 제어권 락킹(Locking) 방어망</h2>
+<p>이러한 명령의 난립이 기체를 추락시키는 것을 억제하기 위해, PX4 커맨더(<code>commander.cpp</code>)는 단순히 먼저 도착한 MAVLink 패킷을 처리하는 선입선출(FIFO) 방식을 거부한다. 대신, 아키텍처 깊숙한 곳에 **상태 기반 제어권 락킹(State-based Control Locking)**과 <strong>엄격한 토큰(Token) 교대 구조</strong>를 스며들게 했다.</p>
+<ol>
+<li><strong>SysID/CompID 기반의 트래픽 필터링</strong>: PX4는 모든 발신자의 신분증(<code>System ID</code>, <code>Component ID</code>)을 감시한다. 운용자가 사전에 파라미터로 “Primary GCS“를 지정해 두었다면, 비상시에는 오직 그 특정 ID에서 날아오는 페일세이프 해제(Override) 커맨드만을 신뢰한다.</li>
+<li><strong>능동 제어(Active Control) 대 수동 감시(Passive Monitor)</strong>: 스플릿 브레인을 막는 최고의 방법은 ’왕관’을 오직 한 놈만 쓸 수 있게 하는 것이다.<br />
+예를 들어 기체가 <code>Offboard</code> 모드에 진입하면, 제어권(왕관)은 온전히 Companion Computer(ROS2)에게 넘어간다. 이때 지상의 GCS 두 대는 강제로 <strong>수동 감시자(Passive Monitor)</strong> 상태로 전락하며, 이들이 보내는 미세한 위치 조정(Reposition)이나 웨이포인트(Mission) 커맨드는 PX4에 의해 ’권한 없음(Rejected)’으로 가차 없이 튕겨 나간다.</li>
+<li><strong>강제 탈취(Preemptive Revocation)</strong>: 수동 관전자로 전락한 지상 GCS가 제어권을 되찾을 수 있는 유일한 방법은, <code>Return</code>, <code>Hold</code>, <code>Manual</code> 등 비상 회피 스위치에 준하는 <strong>상위 계층 모드 전환 명령</strong>을 강제로 때려 넣는 것뿐이다. 이 최상위 명령이 접수되는 순간, PX4는 Companion Computer로부터 제어권 토큰을 압수(Revocation)해 버리며, 이후 ROS2가 보내는 수백 개의 <code>SET_POSITION_TARGET_LOCAL_NED</code> 패킷 스트림은 쓰레기통으로 폐기된다.</li>
+</ol>
+<h2>3. 통제권 단일화의 철학</h2>
+<p>이처럼 PX4는 다수의 에이전트가 “동시에” 제동(Brake)과 가속(Accel) 페달을 밟는 것을 시스템적으로 원천 차단한다. 누구의 명령을 따를 것인가를 경합(Race)시키는 것이 아니라, 철저한 신분증 검사와 모드(Mode)라는 논리적 감옥을 통해 한순간에 단 하나의 마스터(Master)만을 섬기는 <strong>제어권 단일화(Single Point of Control)</strong> 철학. 이것이 복잡하게 얽힌 현대 무인기 통신망에서 스플릿 브레인 파국을 억제하는 가장 견고한 방파제이다.</p>
 
             </article>
             <footer>

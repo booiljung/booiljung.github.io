@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:36.6.1 샤논-하틀리 정리(Shannon-Hartley Theorem) 기반 고잡음 UAV 환경에서의 최대 채널 용량(Channel Capacity) 도출</title>
+    <title>BIJUNG:36.6.1. MAVLink System/Component 식별자 매핑을 위한 해시 테이블(Hash Table) 충돌 해결(Collision Resolution) 및 탐색 복잡도 분산</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,58 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>36.6.1 샤논-하틀리 정리(Shannon-Hartley Theorem) 기반 고잡음 UAV 환경에서의 최대 채널 용량(Channel Capacity) 도출</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 36. 지상 관제 시스템(GCS) 통신 아키텍처 개요</a> / <span>36.6.1 샤논-하틀리 정리(Shannon-Hartley Theorem) 기반 고잡음 UAV 환경에서의 최대 채널 용량(Channel Capacity) 도출</span></nav>
+                    <h1>36.6.1. MAVLink System/Component 식별자 매핑을 위한 해시 테이블(Hash Table) 충돌 해결(Collision Resolution) 및 탐색 복잡도 분산</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 36. 지상 관제 시스템(GCS) 통신 아키텍처 개요</a> / <span>36.6.1. MAVLink System/Component 식별자 매핑을 위한 해시 테이블(Hash Table) 충돌 해결(Collision Resolution) 및 탐색 복잡도 분산</span></nav>
                 </div>
             </header>
             <article>
-                <h1>36.6.1 샤논-하틀리 정리(Shannon-Hartley Theorem) 기반 고잡음 UAV 환경에서의 최대 채널 용량(Channel Capacity) 도출</h1>
+                <h1>36.6.1. MAVLink System/Component 식별자 매핑을 위한 해시 테이블(Hash Table) 충돌 해결(Collision Resolution) 및 탐색 복잡도 분산</h1>
+<h2>1.  개요 및 MAVLink 식별자 체계 (Introduction to MAVLink ID Systems)</h2>
+<p>다수의 무인항공기(UAV)와 지상 관제 시스템(GCS), 그리고 카메라 짐벌이나 RTK GPS 베이스 스테이션과 같은 복잡한 외부 임무 장비들이 하나의 네트워크를 구성할 때, 이들을 고유하게 구분하는 주소 체계가 필요하다. MAVLink 2.0 프로토콜은 각각의 논리적 노드(Node)를 식별하기 위하여 8비트 크기의 **시스템 ID(System ID, 1~255)**와 **컴포넌트 ID(Component ID, 1~255)**의 조합을 근간으로 삼는다.</p>
+<p>예를 들어 GCS(통상 System ID 255)가 특정한 드론 1호기(System ID 1)의 카메라 컴포넌트(Component ID 100)로 줌(Zoom) 제어 명령을 전송할 때, 중앙의 PX4-Autopilot MAVLink 미들웨어 모듈은 수신된 패킷의 목적지 ID 조합을 읽고 이 패킷을 어느 UART 인터페이스 또는 uORB 토픽으로 전달(Routing)할지 즉시 조회(Lookup)해야 한다. 이러한 고속 패킷 라우팅의 핵심 성능 지표는 바로 “얼마나 빨리 목적지 주소록을 검색할 수 있는가“에 달렸으며, 이를 위해 해시 테이블(Hash Table) 자료구조가 적극적으로 도입된다.</p>
+<h2>2.  메모리 제약과 해시 테이블(Hash Table) 필요성 (Memory Constraints &amp; Hash Tables)</h2>
+<p>8비트 변수 두 개(SysID, CompID)가 가질 수 있는 조합의 수는 총 <span class="math math-inline">256 \times 256 = 65,536</span> 개이다.<br />
+가장 이상적이고 탐색 속도가 빠른(시간 복잡도 <span class="math math-inline">O(1)</span>) 자료구조는 크기 65,536짜리 직접 매핑 이차원 배열(Direct Mapping 2D Array)을 선언하는 것이다. 그러나 메모리 한계가 엄격한 임베디드 RTOS(NuttX) 환경에서 이 거대한 희소 배열(Sparse Array)을 라우팅 채널마다 동적 또는 정적으로 할당하는 것은 SRAM 메모리의 심각한 낭비를 초래한다.</p>
+<p>반면 링크드 리스트(Linked List)를 구성하여 순차 탐색(Sequential Search)을 진행할 경우 메모리 오버헤드는 거의 없으나, 활성 컴포넌트 대수가 늘어날수록 최대 탐색 시간 복잡도가 <span class="math math-inline">O(N)</span>으로 치솟는다. 이는 초당 1,000개 이상의 MAVLink 패킷이 쏟아지는 환경에서 즉각적인 지터(Jitter) 스파이크와 지연 폭주를 유발하는 치명적 맹점이 된다.<br />
+따라서 메모리를 적게 차지하면서도 탐색 복잡도를 상수 시간 <span class="math math-inline">O(1)</span> 수준으로 끌어내리는 <strong>해시 테이블(Hash Table)</strong> 기반의 식별자 매핑 설계가 필요충분조건이 된다.</p>
+<h2>3.  PX4 라우터의 해시 함수 설계 및 충돌 해결 기법 (Hash Function &amp; Collision Resolution)</h2>
+<p>MAVLink 라우팅 모듈은 각 패킷 헤더에서 추출된 System ID 와 Component ID를 연쇄(Concatenation)하거나 논리적 XOR 연산을 가하여 16비트 혹은 최적화된 비트 크기의 해시 키(Hash Key)를 생성한다. 그 후, 이를 전체 해시 버킷(Bucket)의 사이즈(예: <span class="math math-inline">M</span>개)로 나누는 모듈러(Modulo) 연산 $H(k) = k \pmod{M} $ 등을 거쳐 메모리 인덱스를 산출한다.</p>
+<h3>3.1  해시 충돌(Hash Collision)과 탐색 복잡도</h3>
+<p>불가피하게 서로 다른 두 장비 ID 조합이 같은 배열 인덱스를 가리키는 충돌 현상(Collision)이 발생할 수 있다. PX4 네트워크 스택 내에서는 이를 해소하기 위해 주로 두 가지 고전 절차 중 캐시 지역성(Cache Locality)이 우수한 기법으로 최적화 방향을 잡는다.</p>
+<ol>
+<li><strong>개방 주소법 (Open Addressing / Linear Probing):</strong> 체이닝(Chaining) 방식처럼 동적 메모리 할당(malloc)과 포인터 점프를 거듭하면 MCU의 L1 데이터 캐시에서 캐시 미스(Cache Miss) 확률이 폭증한다. 따라서 선형 탐사나 이차 탐사 방식의 개방 주소법을 사용하면 메모리 공간 상의 연속성을 띠기 때문에, 하드웨어 프리페처(Hardware Prefetcher)의 도움을 받아 탐색 오버헤드를 비약적으로 줄일 수 있다.</li>
+<li><strong>Move-to-Front / 캐시 히트(Cache Hit) 최적화:</strong> <span class="math math-inline">O(1)</span>에 접근하기 위한 소프트웨어적 분산 트릭이다. <code>HEARTBEAT</code>나 주요 센서 전송 목적지와 같이 절대다수의 탐색 요청이 벌어지는 노드의 주소값을 레지스터 단위 스택이나 해시 블록의 최상단에 마킹(Caching)해 두어, 전체 해시 테이블 스캔이라는 최악의 시나리오(<span class="math math-inline">O(N)</span>)를 원천 차단한다.</li>
+</ol>
+<h2>4.  MAVLink 식별자 라우팅 구조의 메커니즘 (Mermaid Diagram)</h2>
+<pre><code class="language-mermaid">graph TD;
+    subgraph Incoming Packet Analysis
+        P[Incoming MAVLink Packet] --&gt; EX[Extract SysID &amp; CompID]
+        EX --&gt; HF[Hash Function: Generate Key]
+    end
+
+    subgraph Hash Table (Routing Manager)
+        HF --&gt; HI{Calculate Bucket Index}
+        HI --&gt; B1[Bucket N]
+        B1 --&gt;|Match?| Check{Collision Exists?}
+        Check -- Yes --&gt; PR[Linear Probing: Search Next Slot]
+        PR --&gt; Check
+        Check -- No / Found --&gt; IF[Retrieve Destination Interface]
+    end
+
+    subgraph Packet Forwarding
+        IF --&gt; T1[Forward to TELEM1]
+        IF --&gt; T2[Forward to TELEM2 / Companion]
+        IF --&gt; uO[Forward to uORB Inter-thread Bus]
+    end
+
+    style P fill:#ffebee,stroke:#c62828
+    style HI fill:#fff3e0,stroke:#e65100
+    style Check fill:#e3f2fd,stroke:#1565c0
+    style IF fill:#e8f5e9,stroke:#2e7d32
+</code></pre>
+<h2>5.  결론 (Conclusion)</h2>
+<p>PX4-Autopilot의 MAVLink 라우터 컴포넌트는 수백수천 조각으로 구성된 초연결 무인기 생태계를 결함 없이 안내하기 위해 탄생하였다. System ID와 Component ID 매핑에 도입된 해시 테이블 최적화 기법은 단순한 메모리 절약 차원을 넘어서서, 방대한 분산-복합(Distributed-Complex) 트래픽 인프라 환경에서 탐색 복잡도 분산을 통해 패킷 딜레이를 소멸시킨다.<br />
+Ardupilot과 달리 PX4가 멀티 코어 구조나 스웜(Swarm) 비행과 같은 다변적 아키텍처 지원에 유연할 수밖에 없는 근본적인 핵심이 바로 이러한 기초 컴퓨터 산술 공학(해시 충돌 방어 및 캐싱)의 섬세한 이식이 밑바탕 되었기 때문이다.</p>
 
             </article>
             <footer>

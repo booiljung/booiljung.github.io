@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.7.3.1 제어 시스템 지연(Latency) 계산 쿼리: 입력 제어 토픽의 타임스탬프와 액추에이터 출력 토픽의 타임스탬프 간 시스템 클럭 델타값을 추출하는 로깅 분석 기법</title>
+    <title>BIJUNG:29.7.3.1. 제어 시스템 지연(Latency) 계산 쿼리: 입력 제어 토픽의 타임스탬프와 액추에이터 출력 토픽의 타임스탬프 간 시스템 클럭 델타값을 추출하는 로깅 분석 기법</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,65 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.7.3.1 제어 시스템 지연(Latency) 계산 쿼리: 입력 제어 토픽의 타임스탬프와 액추에이터 출력 토픽의 타임스탬프 간 시스템 클럭 델타값을 추출하는 로깅 분석 기법</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.7.3.1 제어 시스템 지연(Latency) 계산 쿼리: 입력 제어 토픽의 타임스탬프와 액추에이터 출력 토픽의 타임스탬프 간 시스템 클럭 델타값을 추출하는 로깅 분석 기법</span></nav>
+                    <h1>29.7.3.1. 제어 시스템 지연(Latency) 계산 쿼리: 입력 제어 토픽의 타임스탬프와 액추에이터 출력 토픽의 타임스탬프 간 시스템 클럭 델타값을 추출하는 로깅 분석 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.7.3.1. 제어 시스템 지연(Latency) 계산 쿼리: 입력 제어 토픽의 타임스탬프와 액추에이터 출력 토픽의 타임스탬프 간 시스템 클럭 델타값을 추출하는 로깅 분석 기법</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.7.3.1 제어 시스템 지연(Latency) 계산 쿼리: 입력 제어 토픽의 타임스탬프와 액추에이터 출력 토픽의 타임스탬프 간 시스템 클럭 델타값을 추출하는 로깅 분석 기법</h1>
+                <h1>29.7.3.1. 제어 시스템 지연(Latency) 계산 쿼리: 입력 제어 토픽의 타임스탬프와 액추에이터 출력 토픽의 타임스탬프 간 시스템 클럭 델타값을 추출하는 로깅 분석 기법</h1>
+<p>레이싱 드론(Racing Drone)과 같이 극도로 민첩한 반응성이 요구되는 아크로(Acro) 비행이나, 외부 외란(Disturbance) 기각 성능이 중요한 정밀 호버링(Hovering)의 성공 여부는 비행 제어기(Flight Controller)의 **엔드투엔드 지연(End-to-End Latency)**에 의해 좌우된다. 조종기 스틱의 물리적 입력이 수신기에 도달한 시점부터 모터에 PWM(혹은 DShot) 명령이 인가되기까지의 시간이 고무줄처럼 늘어나거나 일정하지 않다면, 제어 루프는 예측 가능한 위상 여유(Phase Margin)를 상실하여 진동(Oscillation)을 일구게 된다.</p>
+<p>이 장에서는 PX4-Autopilot의 ULog 파일에 파싱된 uORB 토픽들의 타임스탬프(Timestamp)를 기반으로 시스템 레이턴시(Latency)를 정밀하게 추출하고 산술적으로 분석하는 기법을 알아본다.</p>
+<h2>1.  uORB 타임스탬프(Timestamp) 및 hrt_absolute_time() 아키텍처</h2>
+<p>PX4 내부의 모든 uORB 메시지 구조체(스니펫)는 첫 번째 필드로 항상 고해상도 타임스탬프(<code>uint64_t timestamp</code>)를 가진다.</p>
+<p>이 타임스탬프는 NuttX RTOS 상에서 동작하는 마이크로컨트롤러(MCU)의 하드웨어 타이머 카운터를 베이스로 하는 **기록 클럭(hrt, High-Resolution Timer)**을 활용하여 마이크로초(<span class="math math-inline">\mu s</span>) 단위로 매핑된다. 따라서 PX4 펌웨어 내 어떤 스레드에서 생성된 메시지라 할지라도 모두 전역적이고 일관된 절대 시간축을 공유한다.</p>
+<h2>2.  레이턴시 델타값(<span class="math math-inline">\Delta t</span>) 산출 로직</h2>
+<p>수동 제어의 순수 시스템 지연을 도출하기 위해서는 통신망 자체의 시간 손실(RC 텔레메트리 딜레이)을 제외하고, 펌웨어 내부에서 인터럽트를 처리하고 알고리즘이 연산에 소모한 순수 <strong>연산 파이프라인 지연</strong>을 스코핑(Scoping)해야 한다.</p>
+<ul>
+<li><span class="math math-inline">T_{in}</span>: <code>input_rc</code> 메시지가 퍼블리시(Publish) 된 시각. (UART/SBUS 프로토콜 디코딩 완료 시점)</li>
+<li><span class="math math-inline">T_{out}</span>: 해당 입력이 제어 루프를 거쳐 <code>actuator_outputs</code> 메시지로 퍼블리시 된 시각.</li>
+</ul>
+<p>이상적인 지연시간 <span class="math math-inline">\Delta t</span> 는 다음과 같이 표현된다.</p>
+<p><span class="math math-display">
+\Delta t = T_{out} - T_{in}
+</span></p>
+<p>하지만 ULog 파일 내에서 이 두 이벤트를 직접 매칭하는 것은 까다롭다. <code>input_rc</code>는 조종기 수신 프레임 레이트(약 50~150Hz)로 발행되는 반면, <code>actuator_outputs</code>는 자이로스코프(IMU) 폴링 레이트나 메인 루프 레이트(주로 400Hz 이상)에 맞춰 발행되기 때문이다.</p>
+<h3>2.1  PyULog 기반 동기화 스크립트 도출</h3>
+<p>분석가는 Python의 <code>pyulog</code> 라이브러리와 <code>pandas</code>를 활용하여 두 타임스탬프의 근접 이웃(Nearest Neighbor)을 찾아 델타 쿼리를 작성할 수 있다.</p>
+<pre><code class="language-python"># PyULog를 활용한 지연시간 추출 쿼리 (의사 코드)
+from pyulog import ULog
+import pandas as pd
+
+ulog = ULog('flight_log.ulg')
+
+# 데이터셋 추출
+rc_data = ulog.get_dataset('input_rc').data
+act_data = ulog.get_dataset('actuator_outputs').data
+
+# Timestamp (마이크로초)
+time_rc = rc_data['timestamp']
+time_act = act_data['timestamp']
+
+# 특정 스틱 펄스(예: Roll 축이 특정 임계치를 넘는 순간)의 이벤트 시퀀스 확보
+event_idx = find_step_input(rc_data['values[0]'])  
+t_in = time_rc[event_idx]
+
+# t_in 직후에 반응한 최초의 액추에이터 출력 변화 탐색
+t_out = find_first_response_after(t_in, act_data['output[0]'], time_act)
+
+latency_us = t_out - t_in
+print(f"시스템 발생 레이턴시: {latency_us / 1000.0} ms")
+</code></pre>
+<p>이와 같은 교차 동기화(Cross-Synchronization) 검증을 거치면, 인터럽트 핸들러부터 믹서(Mixer) 또는 Control Allocation 루틴을 통과하여 최종 모터 드라이버 배열이 할당되기까지 걸린 시간을 정확히 도출할 수 있다. PX4-Autopilot의 최적화된 펌웨어(Cortex-M7, 480MHz 기준) 환경의 경우 이 연산 파이프라인 레이턴시는 대개 <span class="math math-inline">1~3ms</span> 안팎으로 집계된다.</p>
+<h2>3.  지연(Latency)의 병목 인자 및 아키텍처별 특징</h2>
+<p>계산된 <span class="math math-inline">\Delta t</span> 값이 정상 궤도(예: <span class="math math-inline">5ms</span> 이내)를 현저히 초과한다면 다음과 같은 소프트웨어 병목을 의심하고 디버깅해야 한다.</p>
+<ol>
+<li><strong>uORB 트래픽 정체 (Traffic Congestion):</strong> 메시지를 구독하는 모듈이 과부하 상태에 빠져 <code>input_rc</code> 폴링이 지연됨.</li>
+<li><strong>EKF2 스케줄링 지연:</strong> 상태 추정기(Estimator)가 IMU 버퍼를 융합하는 연산(<code>EKF2.cpp</code>)이 과도한 CPU 클럭을 선점(Preemption)하여 <code>mc_att_control</code> 스레드의 Wake-up 타임이 밀림.</li>
+<li><strong>Control Allocation (믹서) 부하:</strong> 기체의 액추에이터 매트릭스가 비정상적으로 크거나, 역행렬 연산 시 캐시 미스(Cache Miss) 발생.</li>
+</ol>
+<h3>3.1  Ardupilot과의 로깅 기반 지연 분석 아키텍처 차이</h3>
+<p>Ardupilot 시스템은 단일 스레드를 기반으로 하는 거대한 수퍼 루프(Super Loop) 아키텍처를 채택하고 있어, 내부 제어 스택 간의 스레드 문맥 전환(Context Switching)에 따른 무작위 딜레이(Jitter)가 매우 적다는 특징을 갖는다. 따라서 <span class="math math-inline">\Delta t</span> 가 상대적으로 결정론적(Deterministic)이다.</p>
+<p>반면, PX4-Autopilot은 독립적인 다중 스레드 구동(uORB 기반 통신) 방식을 띠므로, 작업의 선점(Preemption) 우선순위에 따라 지연 델타값의 분산(Variance)이 더 클 수 있다. 따라서 PX4 디버깅 시에는 단순히 평균 지연(Average Latency) 뿐만 아니라, 지연의 최대치(Max Latency Peak)가 허용 가능한 위상 여유를 파괴하지 않는지를 파이썬 기반 데이터 커널 밀도 추정(Kernel Density Estimation) 스크립트로 꼼꼼히 규명해야만 한다.</p>
 
             </article>
             <footer>

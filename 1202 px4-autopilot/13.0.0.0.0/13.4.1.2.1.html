@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:13.4.1.2.1 Bit 0(수평 위치), Bit 1(수직 고도), Bit 2(3D 속도), Bit 3(Dual Blend) 활성화에 따른 칼만 필터 측정 업데이트(Measurement Update) 분기 로직</title>
+    <title>BIJUNG:13.4.1.2.1. Bit 0(수평 위치), Bit 1(수직 고도), Bit 2(3D 속도), Bit 3(Dual Blend) 활성화에 따른 칼만 필터 측정 업데이트(Measurement Update) 분기 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,73 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>13.4.1.2.1 Bit 0(수평 위치), Bit 1(수직 고도), Bit 2(3D 속도), Bit 3(Dual Blend) 활성화에 따른 칼만 필터 측정 업데이트(Measurement Update) 분기 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 13. RTK GPS 시스템의 이해 및 베이스/로버 구성</a> / <span>13.4.1.2.1 Bit 0(수평 위치), Bit 1(수직 고도), Bit 2(3D 속도), Bit 3(Dual Blend) 활성화에 따른 칼만 필터 측정 업데이트(Measurement Update) 분기 로직</span></nav>
+                    <h1>13.4.1.2.1. Bit 0(수평 위치), Bit 1(수직 고도), Bit 2(3D 속도), Bit 3(Dual Blend) 활성화에 따른 칼만 필터 측정 업데이트(Measurement Update) 분기 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 13. RTK GPS 시스템의 이해 및 베이스/로버 구성</a> / <span>13.4.1.2.1. Bit 0(수평 위치), Bit 1(수직 고도), Bit 2(3D 속도), Bit 3(Dual Blend) 활성화에 따른 칼만 필터 측정 업데이트(Measurement Update) 분기 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>13.4.1.2.1 Bit 0(수평 위치), Bit 1(수직 고도), Bit 2(3D 속도), Bit 3(Dual Blend) 활성화에 따른 칼만 필터 측정 업데이트(Measurement Update) 분기 로직</h1>
+                <h1>13.4.1.2.1. Bit 0(수평 위치), Bit 1(수직 고도), Bit 2(3D 속도), Bit 3(Dual Blend) 활성화에 따른 칼만 필터 측정 업데이트(Measurement Update) 분기 로직</h1>
+<p>EKF2(Extended Kalman Filter) 알고리즘의 심장부는 ’예측(Prediction)’과 ’보정 혹은 측정 업데이트(Measurement Update)’의 끊임없는 순환이다. 앞서 다룬 <code>EKF2_GPS_CTRL</code> 비트마스크 파라미터는 단순한 환경설정이 아니라, 이 ‘측정 업데이트’ 단계에서 칼만 필터가 어떤 관측 방정식(<span class="math math-inline">z = Hx + v</span>)을 전개할 것인지를 실시간으로 결정하는 C++ 제어 흐름 분기점(Branching Point)이다.</p>
+<p>본 절에서는 <code>src/lib/ecl/EKF/</code> 경로에 위치한 EKF 코어 수학 라이브러리를 해부하여, 각 비트 플래그가 활성화되었을 때 칼만 필터가 어떻게 혁신 분산(Innovation Variance)을 구하고 상태 벡터(State Vector)를 교정해 나가는지 그 로직을 상세히 파헤친다.</p>
+<h2>1.  분기 로직의 대전제: 센서 지연 보상 (Time Delay Compensation)</h2>
+<p>비트에 따른 스위칭 로직이 발동하기 전, 모든 GPS 측정치(Measurement)는 하나의 관문을 거친다. 외부에서 들어온 GPS 데이터는 통상 속도가 느리고 수십 밀리초(<span class="math math-inline">\text{ms}</span>) 전의 과거 데이터이다.<br />
+따라서 <code>Ekf::fuseGps()</code> 함수는 가장 먼저 현재의 EKF 상태 벡터를 과거 시간(GPS 타임스탬프)으로 링 버퍼(Ring Buffer)를 통해 되감기(Rewind)한다. 모든 하위 비트 검열 로직은 이 지연 보상된(Delayed) 상태를 기준으로 진행된다.</p>
+<h2>2.  개별 비트(Bit) 활성화에 따른 Measurement Update 해부</h2>
+<p>비트마스크가 파싱된 뒤 수행되는 개별 함수 분기 로직은 다음과 같다.</p>
+<h3>2.1  Bit 0: 수평 위치 (Horizontal Position) 융합</h3>
+<p>가장 기본적인 측위의 토대가 되는 비트(<span class="math math-inline">1</span>)이다. 위상 중심과 기하학적 중심이 고려된 GPS의 위경도 데이터가 NED(North-East-Down) 로컬 평면의 <span class="math math-inline">(X, Y)</span> 벡터로 변환되어 필터에 유입된다.</p>
+<pre><code class="language-cpp">// src/lib/ecl/EKF/gps_control.cpp 유사 로직
+if (_control_status.flags.gps_pos) {
+    // 1. 측정 모델: H 행렬은 위치 상태 변수에 대한 편미분 자코비안
+    // 2. 측정 잔차(Innovation) 연산: obs_x - state_x
+    float innov_x = _gps_sample_delayed.pos(0) - _state.pos(0);
+    float innov_y = _gps_sample_delayed.pos(1) - _state.pos(1);
+    
+    // 3. 혁신 분산(Innovation Variance) 연산 및 칼만 이득(Kalman Gain) 적용
+    fuseHorizontalPosition(innov_x, innov_y, _gps_pos_var);
+}
+</code></pre>
+<ul>
+<li><strong>물리적 의미</strong>: IMU(가속도계)를 2번 적분하여 도출한 기체의 ’추정(Estimated) XY 위치’가, 실제 GPS가 꽂아준 ’절대 좌표’와 얼마나 틀어졌는지를 비교하여 보정한다. 드리프트(Drift)를 제건하는 가장 강력한 족쇄 역할을 한다.</li>
+</ul>
+<h3>2.2  Bit 1: 3D 속도 (3D Velocity) 융합</h3>
+<p>고정밀 드론 비행, 특히 RTK 시스템의 정지 비행(Hovering) 능력을 극대화시키는 비트(<span class="math math-inline">2</span>)이다.</p>
+<pre><code class="language-cpp">if (_control_status.flags.gps_vel) {
+    Vector3f innov_vel = _gps_sample_delayed.vel - _state.vel;
+    
+    // 수평 속도 융합
+    fuseHorizontalVelocity(innov_vel(0), innov_vel(1), _gps_vel_var);
+    // 수직 속도 융합
+    fuseVerticalVelocity(innov_vel(2), _gps_vel_var);
+}
+</code></pre>
+<ul>
+<li><strong>물리적 의미</strong>: u-blox F9P 칩셋 등은 반송파 도플러 편이(Doppler Shift)를 이용해 기체의 즉각적인 3차원 분력 속도를 산출한다. 필터가 이 속도를 신뢰하게 되면 바람에 의한 밀림(Slip) 같은 비선형적인 관성 오차를 즉각적으로 차단한다.</li>
+<li><strong>비고</strong>: 이 비트가 꺼져있고 위치 비트(Bit 0)만 켜져 있다면, 필터는 위치의 변화량(<span class="math math-inline">\Delta POS / \Delta T</span>)을 기반으로 간접적으로 속도를 유도하므로 반응성(Latency)이 심하게 떨어진다.</li>
+</ul>
+<h3>2.3  Bit 2: 수직 고도 (Vertical Position) 융합</h3>
+<p>기본 <code>EKF2_GPS_CTRL</code> 구조에서 고도(Altitude) 융합은 보통 별도의 파라미터(<code>EKF2_HGT_MODE</code> = 1, GPS 고도 사용)로 통제되지만, 폭넓은 의미의 Measurement Update에서 GPS의 수직 분산이 개입하는 로직이다.</p>
+<ul>
+<li>RTK GPS는 기압계만큼 주파수가 빠르지는 않지만, 열기(Heat)나 돌풍(Gust)에 의한 압력 변화를 받지 않으므로 장기적인 절대 고도 유지에 탁월하다. 수직 속도(Bit 1의 Z축 성분)와 결합하여 고도 홀딩(Altitude Hold)의 강건성을 극적으로 향상시킨다.</li>
+</ul>
+<h3>2.4  Bit 3: 듀얼 블렌드 / 요(Dual Antenna Yaw) 융합</h3>
+<p>Moving Base(듀얼 안테나) 시스템을 위해 특별히 고안된 <span class="math math-inline">8</span> 번째 값의 비트이다.<br />
+관성 측정 장치(IMU)와 지자기 센서(Magnetometer)의 융합 패러다임을 송두리째 뒤바꾸는 분기점이다.</p>
+<pre><code class="language-cpp">if (_control_status.flags.gps_yaw) {
+    // GPS 수신기가 넘겨준 헤딩(Heading) 각도
+    float measured_yaw = _gps_sample_delayed.yaw;
+    float innov_yaw = wrap_pi(measured_yaw - _state.quat_nominal.get_euler_yaw());
+    
+    // 지자기 센서(Mag) 연산 블록을 Bypass/Deaden 시키고 GPS Yaw 우선 융합
+    fuseGpsYaw(innov_yaw, _gps_yaw_var);
+}
+</code></pre>
+<ul>
+<li><strong>물리적 의미</strong>: 이 블록을 타게 되면, EKF 구조 내부에 존재하던 지자기 센서에 할당된 칼만 이득(Gain) 가중치를 강제로 내팽개치고(혹은 자력계 사용을 아예 <code>false</code> 로 만듦), 앞-뒤 GPS 안테나 간의 베이스라인 벡터가 가리키는 진북(True North) 기반의 벡터를 절대적인 요(Yaw) 각도 기준으로 맹신하게 된다.</li>
+<li>철탑, 고압 송전선, 교량 하부 등 지자기 교란이 극심한 장소에서도 드론이 안정적으로 헤딩(Heading)을 유지하며 직진할 수 있는 이유가 바로 이 C++ 분기 로직 하나에 담겨 있는 것이다.</li>
+</ul>
+<h2>3.  요약: 융합 분기(Fusion Branching)의 미학</h2>
+<p>결론적으로 EKF2 소스 코드 내부에서 이 비트들은 단순한 ‘If-Else’ 문 이상의 가치를 지닌다. 이것은 오차 공분산 행렬(<span class="math math-inline">P</span>)의 어떤 부분(Row/Col)을 업데이트하고 무시할 것인지를 재봉질하는 수학적 스위치 체계이다. 엔지니어가 <code>EKF2_GPS_CTRL</code> 에 적절한 숫자를 부여하는 행위는, 칼만 필터가 복잡한 대자연의 노이즈 속에서 어떤 GPS 센서 신호를 붙잡고 기체의 위치와 동역학 상태(<span class="math math-inline">x</span>)를 재건(Reconstruction)할 것인지 그 길안내를 해주는 가장 근원적인 튜닝 과정이다.</p>
 
             </article>
             <footer>

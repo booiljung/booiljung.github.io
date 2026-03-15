@@ -115,6 +115,48 @@
             </header>
             <article>
                 <h1>37.4.1.2 시간 동기화(Time Synchronization) 오차 보정을 위한 단조 증가 시간(Monotonic Time) 타임스탬프 맵핑</h1>
+<h2>1.  이산 시간 시스템 관제에서의 센서 데이터 시계열 왜곡 문제</h2>
+<p>지상 관제 시스템(GCS)이 무인기(UAV)의 이산 시간 기반 섀도우 상태 기계(Shadow State Machine)나 원격 관측기(Observer)를 시스템적으로 정교하게 운용하기 위해서는, 송신측과 수신측 두 분산 시스템 간의 이산 상태 데이터가 완전히 동일하게 일치된 물리적 시간 축(Time Axis) 위에서 해석되어야만 한다. 그러나 PX4-Autopilot이 작동하는 기체 탑재 컴퓨터(Companion Computer 또는 Flight Controller)와 QGroundControl(QGC)이 동작하는 태블릿 또는 지상 데스크톱 컴퓨터는 물리적으로 분리된 채 서로 다른 주파수의 클록 발생기(Clock Generator)와 이기종 운영체제 스케줄러를 가지고 작동한다.</p>
+<p>특히 무선 채널 통신의 대역폭 한계와 전파 간섭으로 인해 MAVLink 텔레메트리 패킷이 GCS에 수학적으로 규칙적인 일정한 간격으로 도달하지 않고 뭉쳐서 도착하는 지터(Jitter) 현상이나 가변 통신 지연(Variable Latency) 현상이 일상적으로 발생한다. 만약 GCS 측이 패킷 메시지를 수신한 획득 순간의 로컬 시스템 시각(System Time)을 기준으로 하여 데이터를 무작정 로깅하거나 상태 관측기에 주입하게 되면, 센서 퓨전 데이터나 상태 변화의 인과 관계(Causality)가 무너지고 시간 축이 심하게 왜곡되는 시계열 앨리어싱(Time-Series Aliasing) 현상이 발생하여, 결과적으로 GCS 섀도우 관측기의 발산(Divergence) 오류를 초래한다.</p>
+<h2>2.  단조 증가 시간(Monotonic Time)의 공학적 도입 배경</h2>
+<p>일반적인 퍼스널 컴퓨터 및 범용 운영체제의 실시간 클록(RTC, Real-Time Clock)이나 데이타 프로토콜에 의한 UTC 기반의 일반 시간(Time of Day)은, 네트워크 타임 프로토콜(NTP) 서버 동기화나 OS 사용자의 수동 개입 연산에 의해 시간이 임의로 앞으로 점프하거나(Forward) 심지어 과거로 역행(Backward)할 수 있는 수학적 불안정성을 내포하고 있다.<br />
+실제 물리 세계를 제어하는 비행 제어기(Flight Controller)의 타임스탬프 검증 로직에서 센서 시간의 역행 현상은, 미분 연산자(예: PID 제어기의 D 텀 항 계산, 시야각 변화율의 미분 계산 등) 공식을 적용할 때 <span class="math math-inline">\Delta T</span> 임계값인 음수의 역시간이 분모에 들어가게 만들어 치명적인 무한대 발산 제어 오류 및 소프트웨어 패닉(System Panic)을 유발하게 된다.</p>
+<p>따라서 PX4-Autopilot의 핵심 기반을 이루는 메시지 버스 미들웨어(uORB)와 MAVLink 메시지 아키텍처 네트워크는 이러한 오류 발생 여지를 절대적으로 방지하기 위해 **단조 증가 시간(Monotonic Time)**에 기반하여 모든 타임스탬프를 엄격하게 생성한다. 단조 증가 시간은 하드웨어 부팅이 인가된 시점(<code>boot_time</code>)을 정확히 0으로 기준 삼아, 마이크로초(Microsecond, <span class="math math-inline">\mu s</span>) 단위의 정밀도로 오직 선형적으로 증가(increment)만 하는 안전한 영구 카운터 타임스탬프이다. 이는 소프트웨어 레벨이나 NTP 시스템 외란에 의해 시간이 역전되지 않음을 수학적으로 보장(Mathematical Guarantee)하는 관제 공학의 제1 방어선이다.</p>
+<h2>3.  MAVLink TIMESYNC 프로토콜 기반의 오프셋 맵핑(Offset Mapping) 보정 연산 체계</h2>
+<p>GCS와 UAV는 각자 독자적이자 서로 다른 시점의 부팅 시작 단조 증가 시간 축을 가지므로, 두 시스템 간의 단조 증가 타임스탬프 밸류(Value)의 직접적인 절대값 비교는 무의미하다. 이를 해결하기 위해 PX4 개발 생태계는 MAVLink의 표준인 <code>TIMESYNC</code> 메시지 규격을 적극적으로 활용하여 두 텔레메트리 시스템 간의 단조 증가 클록 오프셋 편차(Clock Offset)를 실시간으로 지속 추정(Estimate)하고 보정 맵핑(Mapping)하는 구조를 프레임워크 내부에 구현한다.</p>
+<p><code>TIMESYNC</code> 타임 동기화 프로토콜 연산은 본질적으로 산업용 표준인 IEEE 1588 정밀 시간 프로토콜(PTP, Precision Time Protocol) 연산식을 MAVLink 체계에 맞춰 경량화한 모델 형태이다.</p>
+<p><span class="math math-display"> \Delta T_{offset} = \frac{(T_{rcv, gcs} - T_{snd, gcs}) + (T_{snd, uav} - T_{rcv, uav})}{2} </span></p>
+<ul>
+<li><span class="math math-inline">T_{snd, gcs}</span>: GCS가 최초 동기화 요청 핑 패킷을 발송한 GCS 측 단조 증가 틱(Tick) 시간</li>
+<li><span class="math math-inline">T_{rcv, uav}</span>: UAV가 상기 패킷을 수신한 시점의 UAV 측 단조 증가 틱 시간</li>
+<li><span class="math math-inline">T_{snd, uav}</span>: UAV가 응답 퐁(Pong) 패킷을 발송한 시점의 UAV 측 단조 시간</li>
+<li><span class="math math-inline">T_{rcv, gcs}</span>: GCS가 상기 응답 패킷을 최종 수신한 GCS 로컬 단조 시간</li>
+</ul>
+<p>GCS인 QGC 플랫폼은 백그라운드 스레드를 통해 주기적으로 상기 연산을 폴링 수행하여 오프셋 값 <span class="math math-inline">\Delta T_{offset}</span>을 지속적으로 갱신하여 구하고, 이 계산 도출값을 즉각적으로 로컬 이동 평균 필터(Moving Average Filter)나 지수 평활 필터(Exponential Smoothing Filter) 연산기에 통과시켜 대칭이 무너진 비대칭적 무선 통신 지연 폭증으로 인한 외란 노이즈를 부드럽게 제거한다.</p>
+<p>결과적으로 GCS 섀도우 엔진은 UAV에서 무선으로 도달한 데이터 페이로드 패킷 내부의 고유 타임스탬프(<span class="math math-inline">T_{packet, uav}</span>)를 디코딩해 접했을 때, 이를 자신만의 독립적인 MAVLink 관측기 타임라인(<span class="math math-inline">T_{observer, gcs}</span>) 관점으로 다음과 같이 완벽한 무손실의 등가 변환을 수행할 수 있다.</p>
+<p><span class="math math-display"> T_{observer, gcs} = T_{packet, uav} - \Delta T_{offset} </span></p>
+<p>이 동기 구조 체계를 통해 GCS는 네트워크 수신 지연 현상과 전혀 무관하게, 대상 데이터가 실제 비행체 하드웨어 내부에서 리얼타임으로 발생했던 ’과거의 가장 정확한 해당 찰나의 발생 순간’을 공학적으로 재구성(Reconstruct)하여 로컬 섀도우 FSM 로직 보드에 안전하게 주입할 수 있다.</p>
+<h2>4.  타임스탬프 맵핑 아키텍처의 다이어그램 시퀀스 모델</h2>
+<p>이러한 수 <span class="math math-inline">\mu s</span> 레벨의 정밀한 단조 증가 기반 타임스탬프 맵핑 동기화 연산이 GCS 백엔드 단에서 이산 비동기 수신 데이터를 처리하는 데 어떻게 적용되고 방어 기작으로 작용하는지 다음의 시퀀스 모델로 도식화할 수 있다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant OS as UAV OS (NuttX RTOS)
+    participant uORB as PX4 uORB &amp; MAVLink Sender
+    participant Radio as Telemetry RF Link Layer
+    participant QGC as QGC LinkManager
+    participant FSM as QGC Shadow FSM Observer
+
+    OS-&gt;&gt;uORB: 센서 퓨전/상태 업데이트 통보 (Monotonic Time = 1250000 µs)
+    uORB-&gt;&gt;uORB: MAVLink 페이로드 헤더에 발생 시간 1250000 강제 기록
+    uORB-&gt;&gt;Radio: 스트림 방출 (RF 네트워크 전파 시작)
+    Note over Radio: 가변적 통신 지연(Latency) 및 패킷 지터(Jitter) 간섭 구간
+    Radio-&gt;&gt;QGC: 패킷 혼돈 도달 (현재 GCS Monotonic = 3400500 µs 기준 지연 도달)
+    QGC-&gt;&gt;QGC: 동기화 된 오프셋(ΔT) 적용하여 데이터 송신 원본 시간으로 맵핑 역산
+    QGC-&gt;&gt;FSM: 단순 수신 시간이 아닌, 역산 지연 보정된 이산 타임스탬프와 함께 상태 갱신 인가
+    FSM-&gt;&gt;FSM: 시간 역전 패킷은 내부 알고리즘에 의해 자동 버림(Drop) 판정 및 FSM 최신성 보장
+</code></pre>
+<p>다이어그램 로직에서 단적으로 보이듯, GCS 수신 타임스탬프 오프셋 맵핑을 온전히 거친 데이터만이 최종적으로 QGC 섀도우 FSM 코어 시스템에 인가된다. 만약 비정상적 지연으로 인하여 <span class="math math-inline">\Delta T_{offset}</span> 맵핑을 거쳐 역산된 메시지 시간의 과거값이, 이전에 QGC FSM이 이미 갱신 처리한 최신 타임스탬프 틱(Tick)보다 과거의 값으로 판별된다면, 이는 지연 전송으로 인해 늦게 도착한 뒤섞인(Out-of-order) 무의미한 과거의 텔레메트리 쓰레기 패킷으로 간주되어 상태 오염을 방지하기 위해 예외 없이 안전하게 폐기(Drop)된다.</p>
+<h2>5.  결론: 분산 상태 동기화 역학 무결성(Integrity)의 제1원칙</h2>
+<p>고도화된 PX4-Autopilot 및 QGroundControl 간의 분산 관제 인프라 아키텍처 스택에 있어, 시간 영역(Time Domain)의 절대적인 일점 동기화 일관성 유지는 원격 통제 제어 무결성을 물리적으로 확보하기 위한 가장 근본적인 전제조건이자 소프트웨어 관제망의 제1 원칙이다. 시스템 시간(Time of Day)의 역행 가능성을 수학적으로 영구 배제하기 위한 단조 증가 시간(Monotonic Time) 체계의 전면적인 채택과, 지터(Jitter) 진동 주파수로 심각하게 오염되는 공중 무선 통신망에서 원본 발생 시그널을 수학적으로 역산하기 위한 <code>TIMESYNC</code> 기반의 맵핑 오프셋 추정 필터 모델은, 향후 도입이 다변화될 고난도 자율 비행망 통신 관제(BVLOS, 저궤도 위성 통신망 도입 및 이기종 멀티 로버 관제) 구조 설계 코어에서 결코 단 1 바이트조차 생략되거나 간과되어서는 안 될 시스템의 가장 중추적이고 본질적인 공학 메커니즘이다.</p>
 
             </article>
             <footer>

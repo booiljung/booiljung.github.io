@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.3.3.1 MAV_RESULT_IN_PROGRESS 상태의 폴링(Polling) 간격 조절 및 네트워크 대역폭 점유율 최적화</title>
+    <title>BIJUNG:39.3.3.1. MAV_RESULT_IN_PROGRESS 상태의 폴링(Polling) 간격 조절 및 네트워크 대역폭 점유율 최적화</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,45 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.3.3.1 MAV_RESULT_IN_PROGRESS 상태의 폴링(Polling) 간격 조절 및 네트워크 대역폭 점유율 최적화</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.3.3.1 MAV_RESULT_IN_PROGRESS 상태의 폴링(Polling) 간격 조절 및 네트워크 대역폭 점유율 최적화</span></nav>
+                    <h1>39.3.3.1. MAV_RESULT_IN_PROGRESS 상태의 폴링(Polling) 간격 조절 및 네트워크 대역폭 점유율 최적화</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.3.3.1. MAV_RESULT_IN_PROGRESS 상태의 폴링(Polling) 간격 조절 및 네트워크 대역폭 점유율 최적화</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.3.3.1 MAV_RESULT_IN_PROGRESS 상태의 폴링(Polling) 간격 조절 및 네트워크 대역폭 점유율 최적화</h1>
+                <h1>39.3.3.1. MAV_RESULT_IN_PROGRESS 상태의 폴링(Polling) 간격 조절 및 네트워크 대역폭 점유율 최적화</h1>
+<h2>1. 서론: 상태 구독과 무선 대역폭 한계의 상충 관계</h2>
+<p>비동기 장기 실행(Long-Running) 명령어 처리 시 필수적으로 수반되는 <code>MAV_RESULT_IN_PROGRESS</code> 플래그는 그 본질 상 다수의 연속된 패킷 송신(Streaming)을 요구한다. 그러나 전통적인 무인기 관제망은 57600 bps 수준의 저대역폭 SiK 텔레메트리(Telemetry) 라디오나, 패킷당 과금이 발생하는 고비용/고지연 위성 통신(SATCOM) 채널에 기대어 있는 경우가 많다.</p>
+<p>만약 비행 제어기 내부의 센서 캘리브레이션 루프가 200Hz로 동작하며 매 루프마다 <code>IN_PROGRESS</code> 비율(%)을 계산하여 GCS로 퍼블리시(Publish)한다면, 텔레메트리 버퍼는 순식간에 포화(Saturation)되어 기체의 치명적인 자세 제어 정보(Attitude State)마저 통신 차단(Hol-blocking)을 겪게 될 것이다. 본 장에서는 PX4(펌웨어 v1.14 기준)가 아키텍처 레벨에서 어떻게 이 폴링(Polling) 간격을 조절하고 네트워크 점유율을 최적화하는지 분석한다.</p>
+<h2>2. uORB 퍼블리싱 레이트 제한(Rate Limiting) 아키텍처</h2>
+<p>PX4의 비동기 작업 스레드(Background Worker)는 센서나 플래시 메모리 등 하드웨어의 I/O 작업 속도에 맞추어 매우 빠르게 구동된다. 그러나 이렇게 빠르게 갱신되는 상태 값을 MAVLink 스트림으로 그대로 내보내는 것을 방지하기 위해 2계층형(2-Tier) 속도 디커플링(Rate Decoupling) 메커니즘을 사용한다.</p>
+<ol>
+<li><strong>워커 스레드 내부의 타이머 브레이크(Timer Brake)</strong>:<br />
+캘리브레이션 모듈 자체 구현부(<code>commander.cpp</code> 및 하위 모듈)에서는 매 틱(Tick)마다 <code>vehicle_command_ack</code> 메시지를 uORB 로컬 버스에 던지지 않는다. 시스템 절대 시간(hrt_absolute_time)을 활용하여 이전 퍼블리시 시점으로부터 특정 간격(일반적으로 200ms~1000ms, 1Hz~5Hz)이 경과했을 때만 토픽을 갱신하도록 스로틀링(Throttling) 논리가 하드코딩되어 강제된다.</li>
+<li><strong>MAVLink 스트리밍 모듈의 큐 동적 할당(Dynamic Queue Allocation)</strong>:<br />
+텔레메트리 대역폭을 관리하는 <code>mavlink_messages.cpp</code>의 커스텀 스트림(Stream) 로직은, 현재 할당된 시리얼 포트 버퍼(Serial Port Buffer)의 잔여 공간을 주기적으로 폴링한다. 대역폭이 비좁아 병목(Bottleneck) 현상이 발생하면 자세, 배터리 등 High-priority 텔레메트리 패킷을 양보하지 않고, IN_PROGRESS ACK 패킷의 송신 큐(Buffer Ring) 점유율을 일시적으로 지연시키거나 누락(Drop)시켜 네트워크 생존성(Network Survivability)을 담보한다.</li>
+</ol>
+<pre><code class="language-mermaid">flowchart TD
+    A[Calibration Worker Thread (200Hz)] --&gt; B{경과 시간 &gt; 500ms ?}
+    B --&gt;|No| A
+    B --&gt;|Yes| C[uORB vehicle_command_ack 퍼블리시 (2Hz)]
+    
+    C --&gt; D[MAVLink Receiver / Streaming Module]
+    D --&gt; E{현재 Serial 버퍼 여유 상태 검사}
+    E --&gt;|여유 부족| F[ACK 전송 보류 (대역폭 방어)]
+    E --&gt;|여유 충분| G[MAVLink 패킷 직렬화 및 전송]
+    F --&gt; D
+    
+    G --&gt; H[QGroundControl UART 수신 버퍼]
+</code></pre>
+<h2>3. Ardupilot과의 텔레메트리 대역폭 관리 철학 차이</h2>
+<p>스트리밍 대역폭 방어라는 동일한 목표를 두고 PX4와 Ardupilot은 상이한 소프트웨어 패턴을 보여준다.</p>
+<ul>
+<li><strong>PX4-Autopilot의 퍼블리시-서브스크라이브 분리 (Pub-Sub Decoupling)</strong>:<br />
+PX4는 로컬 IPC(Inter-Process Communication) 규격인 uORB가 워커와 네트워크 모듈 사이의 버퍼 구실을 완벽히 해낸다. 워커는 대역폭을 낭비하지 않는 적절한 이산 시간(Discrete Time)에만 토픽을 업데이트하고, MAVLink 모듈은 그 값을 비동기적으로 긁어갈 뿐이다. GCS가 상태 요청 간격을 동적으로 제어하지 않더라도 시스템 내 자체 타이머로 보장되는 안정적인 레이트 리미팅(Rate Limiting)이 형성된다.</li>
+<li><strong>Ardupilot의 지연 시간 의존형 텍스트 스팸 (Delayed Text Spamming)</strong>:<br />
+Ardupilot의 백그라운드 태스크 스케줄러(AP_Scheduler)는 메인 루프 사이클의 잉여 시간에 <code>STATUSTEXT</code>나 ACK 등을 몰아서 처리하는 패턴을 지닌다. 특히 캘리브레이션 텍스트 응답이 단기간에 집중적으로 방출되어 저속 시리얼 모뎀의 송신 큐를 막는 버그가 과거 여러 차례 보고된 바 있다. 이를 극복하기 위해 Ardupilot은 최근에서야 지연 큐(Delayed Queue)를 차등 도입했으나, PX4처럼 Publish 단부터 원천적으로 Hz(헤르츠)를 제어하는 방식 통일성 면에서는 다소 분절된 양상을 띤다.</li>
+</ul>
+<p>QGroundControl 측면에서도 이러한 1~5Hz 대역의 <code>IN_PROGRESS</code> 폴링은 최적의 지점으로 취급된다. 인간 조종자의 시지각(Visual Perception) 해상도를 만족하면서도, GCS 측 백엔드 타이머 리셋(Timeout Reset) 이벤트 핸들링에 과부하를 주지 않기 때문이다. 이 아키텍처는 결과적으로 ’사용자 경험(UX) 극대화’와 ‘네트워크 자원 절약’ 사이의 공학적 모순을 유연한 타이머 설계로 해결한 교과서적 사례이다.</p>
 
             </article>
             <footer>

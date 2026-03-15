@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.6.1.2 PX4의 커스텀 비행 모드(Custom Mode) 비트 시프트(Bit Shift) 연산 기반 다차원 매핑(Multi-dimensional Mapping) 구조</title>
+    <title>BIJUNG:37.6.1.2. PX4의 커스텀 비행 모드(Custom Mode) 비트 시프트(Bit Shift) 연산 기반 다차원 매핑(Multi-dimensional Mapping) 구조</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,54 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.6.1.2 PX4의 커스텀 비행 모드(Custom Mode) 비트 시프트(Bit Shift) 연산 기반 다차원 매핑(Multi-dimensional Mapping) 구조</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.6.1.2 PX4의 커스텀 비행 모드(Custom Mode) 비트 시프트(Bit Shift) 연산 기반 다차원 매핑(Multi-dimensional Mapping) 구조</span></nav>
+                    <h1>37.6.1.2. PX4의 커스텀 비행 모드(Custom Mode) 비트 시프트(Bit Shift) 연산 기반 다차원 매핑(Multi-dimensional Mapping) 구조</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.6.1.2. PX4의 커스텀 비행 모드(Custom Mode) 비트 시프트(Bit Shift) 연산 기반 다차원 매핑(Multi-dimensional Mapping) 구조</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.6.1.2 PX4의 커스텀 비행 모드(Custom Mode) 비트 시프트(Bit Shift) 연산 기반 다차원 매핑(Multi-dimensional Mapping) 구조</h1>
+                <h1>37.6.1.2. PX4의 커스텀 비행 모드(Custom Mode) 비트 시프트(Bit Shift) 연산 기반 다차원 매핑(Multi-dimensional Mapping) 구조</h1>
+<p>PX4-Autopilot은 Ardupilot과 달리 MAVLink의 <code>custom_mode</code> 필드를 단일 1차원 열거형(Enumeration) 값으로 사용하지 않는다. 대신, 32비트(Bit) 정수형 공간을 여러 구역으로 분할하여 다이얼(Dial)처럼 동시에 여러 속성을 표현할 수 있는 다차원 매핑(Multi-dimensional Mapping) 구조를 채택하였다. 본 절에서는 PX4가 비트 시프트(Bit Shift) 연산을 통해 기체의 비행 모드 의도(Intent)를 어떻게 캡슐화하고 GCS 미들웨어와 동기화하는지 분석한다.</p>
+<h2>1.  PX4의 MAVLink <code>custom_mode</code> 비트 필드 아키텍처</h2>
+<p>MAVLink의 <code>HEARTBEAT</code>이나 <code>COMMAND_LONG</code> 메시지에서 모드 설정을 위해 사용되는 <code>custom_mode</code>는 <code>uint32_t</code> (32비트 부호없는 정수) 자료형이다. PX4는 이 32비트 공간을 단순한 ID로 취급하지 않고, 다음과 같은 바이트(Byte) 단위의 서브 필드(Sub-field)로 엄격하게 분할하여 사용한다.</p>
+<ul>
+<li><strong>Main Mode (8 bits)</strong>: 기체의 주된 비행 상태 (예: Manual, Altitude, Position, Auto, Offboard)</li>
+<li><strong>Sub Mode (8 bits)</strong>: Main Mode가 ‘Auto(자동)’ 등일 때, 하위의 구체화된 임무 형태 (예: Ready, Takeoff, Loiter, Mission, Return, Land)</li>
+<li><strong>Reserved / Custom (16 bits)</strong>: 추가적인 플래그나 확장을 위해 예약된 공간</li>
+</ul>
+<h3>1.1  비트 시프트(Bit Shift) 기반 상태 인코딩 및 디코딩 연산</h3>
+<p>PX4 소스 코드 내에서 모드를 정의하고 해석하는 과정을 살펴보면, 비트 시프트 연산자(<code>&lt;&lt;</code>, <code>&gt;&gt;</code>)와 비트 마스크(Bit Mask) 논리 연산자(<code>&amp;</code>, <code>|</code>)가 광범위하게 활용된다.</p>
+<p>GCS(예: QGroundControl) 애플리케이션이나 ROS2 미들웨어에서 특정 커스텀 모드로 상태를 변환하라는 명령을 패킹(Packing)할 때, 그 논리는 아래와 같은 C/C++ 매크로(Macro) 또는 인라인(Inline) 함수 형태로 구현된다.</p>
+<pre><code class="language-cpp">// PX4 커스텀 모드 생성 관련 비트 시프트 예시 (단순화)
+#define PX4_CUSTOM_MAIN_MODE_AUTO 4
+#define PX4_CUSTOM_SUB_MODE_AUTO_RTL 5
+
+uint32_t get_px4_custom_mode(uint8_t main_mode, uint8_t sub_mode) {
+    uint32_t custom_mode = 0;
+    // Main Mode를 16비트 좌측 시프트, Sub Mode를 24비트 좌측 시프트
+    custom_mode |= (uint32_t)main_mode &lt;&lt; 16;
+    custom_mode |= (uint32_t)sub_mode &lt;&lt; 24;
+    return custom_mode;
+}
+
+// 추출 (Decoding) 로직
+uint8_t extract_main_mode(uint32_t custom_mode) {
+    return (custom_mode &gt;&gt; 16) &amp; 0xFF;
+}
+</code></pre>
+<p>이 연산 구조는 한 번의 32비트 페이로드 전송만으로 시스템이 두 가지 직교하는 축(차원)에 대한 정보(어떤 큰 범주에 속해 있는지, 그리고 세부적으로 무엇을 하고 있는지)를 원자적 트랜잭션(Atomic Transaction)으로 전달받을 수 있게 해 준다.</p>
+<h2>2.  다차원 매핑 구조의 아키텍처적 강점</h2>
+<h3>2.1  차원 폭발 억제 및 확장성(Scalability) 확보</h3>
+<p>Ardupilot 형태의 1차원 열거형은 새로운 동작이 추가될 때마다 모드 목록이 한없이 늘어나는 문제가 있다. 반면 PX4의 비트 분할 구조는 상위 <code>main_mode</code>의 의미를 훼손하지 않으면서 <code>sub_mode</code>에 새로운 기능을 독립적으로 부여할 수 있다.<br />
+예를 들어, ’미션(Mission)’과 ’복귀(RTL)’는 모두 자동 모드 통제 하에 궤적을 추종하는 속성을 지니므로 둘 다 <code>main_mode = AUTO</code>의 범주에 속한다. 이처럼 모드의 카테고리화가 MAVLink 패킷 자체에 내재(Embodied)되어 있으므로, 추상화 계층 관점에서 상태 전반을 파악하는 리소스(Memory Footprint)가 절약된다.</p>
+<h3>2.2  방어적 프로그래밍과 상태 천이 예외 처리의 분리</h3>
+<p>비트 시프트로 패킹된 명령이 전달되면, PX4의 <code>commander</code> 모듈은 우선 Main Mode를 디코딩하여 현재 시스템 상태(Global Position 유효성 등)가 이 범주를 수용할 수 있는지 거시적으로 평가한다. 그 다음 Sub Mode를 디코딩하여 세부 진입 조건을 검증하는 다단(Multi-stage) 상태 전이 검사를 수행한다. 이는 복잡한 로직에서도 방어적 프로그래밍(Defensive Programming)을 설계하기 용이하게 만들며, 예외(Exception) 발생 지점을 명확하게 추적할 수 있도록 돕는다.</p>
+<h2>3.  GCS 미들웨어 설계자의 대응 로직</h2>
+<p>QGroundControl(펌웨어 버전 v4.3 기준)의 <code>PX4FirmwarePlugin</code> 클래스를 분석해 보면, 이러한 PX4 특유의 비트 시프트 매핑을 다루기 위한 어댑터 패턴(Adapter Pattern)이 잘 연동되어 있다. QGC 내부의 차량(Vehicle) 관리 객체는 UI로부터 들어오는 직관적인 모드 변경 요청(예: “Return” 버튼 클릭)을 가로채어, 아래와 같이 PX4 전용 다차원 커스텀 모드 비트로 변환하는 작업을 거친다.</p>
+<ul>
+<li><code>Return</code> 명령 ➔ <code>main_mode: AUTO (4)</code> / <code>sub_mode: RTL (5)</code> ➔ <code>0x05040000</code> 형태의 32비트 레지스터 값으로 연산.</li>
+<li>변환된 32비트 값은 MAVLink의 비트 마스크와 결합되어 비로소 송신 큐(Tx Queue)에 실리게 된다.</li>
+</ul>
+<p>결과적으로, PX4의 커스텀 모드 비트 시프트 설계는 통신 대역폭 낭비 없이 상태 트리의 계층성을 유지하는 훌륭한 공학적 해법이다. 이러한 철학은 추후 ROS2 uXRCE-DDS 퍼블리싱(Publishing) 과정에서도 다차원 정보를 안전하게 역직렬화(Deserializing)하는 데 중요한 기준이 된다.</p>
 
             </article>
             <footer>

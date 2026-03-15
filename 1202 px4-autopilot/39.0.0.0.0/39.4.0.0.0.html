@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.4 PX4/NuttX RTOS 명령어 수신 파이프라인 및 uORB 인터-프로세스 통신(IPC) 브릿징</title>
+    <title>BIJUNG:39.4. PX4/NuttX RTOS 명령어 수신 파이프라인 및 uORB 인터-프로세스 통신(IPC) 브릿징</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,53 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.4 PX4/NuttX RTOS 명령어 수신 파이프라인 및 uORB 인터-프로세스 통신(IPC) 브릿징</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.4 PX4/NuttX RTOS 명령어 수신 파이프라인 및 uORB 인터-프로세스 통신(IPC) 브릿징</span></nav>
+                    <h1>39.4. PX4/NuttX RTOS 명령어 수신 파이프라인 및 uORB 인터-프로세스 통신(IPC) 브릿징</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.4. PX4/NuttX RTOS 명령어 수신 파이프라인 및 uORB 인터-프로세스 통신(IPC) 브릿징</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.4 PX4/NuttX RTOS 명령어 수신 파이프라인 및 uORB 인터-프로세스 통신(IPC) 브릿징</h1>
+                <h1>39.4. PX4/NuttX RTOS 명령어 수신 파이프라인 및 uORB 인터-프로세스 통신(IPC) 브릿징</h1>
+<h2>1. 서론: 물리적 텔레메트리(Telemetry)와 논리적 제어기(Controller)의 분리 설계</h2>
+<p>무인항공기의 지상 관제 시스템(GCS)이 전송한 제어 명령(MAVLink Packet)이 기체의 안테나를 거쳐 최종 목적지인 비행 제어 알고리즘(Flight Control Algorithm)에 도달하기까지의 과정은, 이질적인 프로토콜 타워(Protocol Tower)를 차례대로 통과하는 복합적인 파이프라인(Pipeline) 설계의 극치라 할 수 있다.</p>
+<p>이 과정에서 펌웨어 아키텍처가 짊어지는 가장 큰 과제는 ’비동기적인 외부 통신망의 I/O 지터(Jitter)’로부터 초고속으로 동기화되어야 할 ’실시간 제어 루프(Real-time Control Loop)’를 완벽히 격리(Isolation)하는 것이다. 본 장에서는 PX4(v1.14 기준)가 기반으로 삼고 있는 NuttX 실시간 운영체제(RTOS)의 하드웨어 인터럽트(IRQ) 레벨부터, MAVLink 프로토콜의 파싱(Parsing), 그리고 최종적으로 PX4의 핵심 미들웨어(Middleware)인 uORB를 통한 프로세스 간 통신(Inter-Process Communication, IPC) 브릿징(Bridging)에 이르기까지 명령어 수신 파이프라인의 전체 생애 주기(Lifecycle)를 통시적으로 분석한다.</p>
+<h2>2. 아키텍처 개요: 직렬화된 바이트 스트림에서 데이터 버스(Data Bus)로의 전환</h2>
+<p>PX4의 명령어 수신 파이프라인은 네트워크 인터페이스에서 발생한 전기적 신호를 커널(Kernel) 단위 블록을 거쳐 의미론적 데이터 구조체(Semantic Data Structure)로 승격시키는 세 가지 핵심 계층으로 구분된다.</p>
+<ol>
+<li><strong>물리 및 디바이스 드라이버 계층 (Hardware &amp; RTOS Layer)</strong>:<br />
+텔레메트리 라디오(UART)나 컴패니언 컴퓨터(UDP)로부터 들어오는 바이트 스트림(Byte Stream)은 일차적으로 NuttX RTOS의 시리얼 드라이버나 네트워크 스택에 의해 수신된다. 이 단계에서는 데이터의 의미를 묻지 않고 오직 직접 메모리 접근(DMA)이나 인터럽트 서비스 루틴(ISR)을 통해 물리적 버퍼 오버플로우(Buffer Overflow) 없이 데이터를 RAM으로 끌어올리는 데 집중한다.</li>
+<li><strong>미들웨어 변환 계층 (MAVLink Receiver Module)</strong>:<br />
+물리 버퍼에 쌓인 데이터 조각들은 <code>mavlink_receiver</code> 디먼(Daemon)에 의해 MAVLink 2.0 프로토콜 규격에 맞춰 프레이밍(Framing)되고 무결성(CRC)이 검증된다. 완벽한 하나의 패킷으로 조립된 후에는 비로소 페이로드(Payload) 압축이 풀리며(Deserialization), MAVLink C 구조체(C-Struct)로 역직렬화된다.</li>
+<li><strong>내부 버스 브릿징 계층 (uORB IPC Bridging)</strong>:<br />
+역직렬화된 구조체는 그 자체로 각 서브 디먼들에게 산발적으로 뿌려지지 않는다. PX4 철학의 핵심인 퍼블리시-서브스크라이브(Publish-Subscribe) 패턴에 따라, MAVLink 메시지는 기체 내부의 공용어인 uORB 토픽(예: <code>vehicle_command</code> 구조체)으로 1:1 동형 매핑(Isomorphic Mapping)된 후 시스템 공용 버스에 발행(Publish)된다.</li>
+</ol>
+<pre><code class="language-mermaid">graph TD
+    subgraph Hardware / RTOS Layer (NuttX)
+        A[물리 매체: UART / UDP / USB] --&gt;|Interrupt / DMA| B(NuttX 커널 공간 Rx 버퍼)
+    end
+    
+    subgraph Middleware Layer (MAVLink App)
+        B --&gt;|POSIX read()| C{mavlink_receiver 모듈}
+        C --&gt;|Byte Parsing &amp; CRC 검증| D[MAVLink 구조체 조립 완료]
+        D --&gt;|Deserialization| E[ID 확인 및 uORB 토픽으로 매핑]
+    end
+    
+    subgraph Logical Bus Layer (uORB)
+        E --&gt;|orb_publish()| F[(uORB: vehicle_command)]
+    end
+    
+    subgraph Target Application (Commander)
+        F --&gt;|orb_check() / orb_copy()| G[비행 제어 상태 머신 진입]
+    end
+</code></pre>
+<h2>3. 비동기 통신과 uORB ব্র릿징을 통한 성능적 이점 (Ardupilot 대비)</h2>
+<p>네트워크 패킷을 내부 버스 메커니즘으로 이관하는 아키텍처는 시스템 전반에 강력한 확장성(Scalability)과 안전성(Safety)을 부여한다.</p>
+<ul>
+<li><strong>PX4의 ‘디커플링(Decoupling)’ 및 마이크로 커널(Micro-kernel) 양식</strong>:<br />
+uORB 버스를 도입함으로써 <code>mavlink_receiver</code> (통신 전담) 디먼과 <code>commander</code> (제어 전담) 디먼 간에는 서로의 런타임 존재 여부나 메모리 주소를 알 필요가 없는 완벽한 디커플링이 성립된다. MAVLink 처리부가 과다한 트래픽으로 인해 병목(CPU Spiking)을 일으키더라도, 시스템 절대 시간(hrt_absolute_time) 기반으로 격리되어 스케줄링되는 자세 제어(Rate Controller) uORB 토픽의 갱신 주기는 결코 침해받지 않는다.</li>
+<li><strong>Ardupilot의 모놀리식(Monolithic) 프레임워크와의 대비</strong>:<br />
+Ardupilot(v4.x 계열)은 하이레벨 관점에서는 HAL(Hardware Abstraction Layer)을 통해 하드웨어를 추상화하지만, 모듈 간의 통신 부문에서는 전통적인 전역 변수 공유나 싱글톤(Singleton) 객체의 메서드 간 직접 호출 패턴을 폭넓게 유지하고 있다(<code>GCS_MAVLink</code> 클래스의 라우팅 구조 등). 이는 단일 쓰레드 스케줄러(AP_Scheduler) 하에서 런타임 오버헤드를 극단적으로 줄이는 데 유용하나, 특정 MAVLink 패킷 파싱 루틴이나 직렬 버퍼 지연이 전체 메인 루프 지터(Main Loop Jitter)를 야기할 가능성이 상대적으로 열려 있다.</li>
+</ul>
+<p>결과적으로 PX4의 통신 처리 파이프라인 설계는 외부로부터의 무질서한 데이터 유입을 MAVLink 역직렬화라는 정제기(Purifier)를 거쳐 uORB라는 규칙적인 배관(Plumbing)으로 안전하게 이송하는, 분산 운영체제의 디자인 패턴을 임베디드 드론 펌웨어에 성공적으로 이식한 모델이다. 하위 장들에서는 이 파이프라인을 이루는 각 컴포넌트들의 세부 기술적 구현체들을 심층 해부할 것이다.</p>
 
             </article>
             <footer>

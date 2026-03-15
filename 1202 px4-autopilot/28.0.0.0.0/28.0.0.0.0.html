@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</a> / <span>Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>Chapter 28. PX4 비행 모드(Flight Mode) 시스템 아키텍처</h1>
+<p>무인 항공기(UAV)의 제어 시스템에서 비행 모드(Flight Mode)는 조종사의 입력(User Intent)과 자율 비행 알고리즘의 명령을 기체 동역학계가 이해할 수 있는 수학적 제어 목표(Setpoint)로 변환하는 핵심적인 추상화(Abstraction) 계층이다. 본 장에서는 최신 PX4-Autopilot(버전 1.14 이상 기준)의 비행 모드 시스템 아키텍처를 심층적으로 분석하고, 센서 및 제어 시스템과 어떻게 유기적으로 연동되는지 규명한다.</p>
+<h2>1.  제어 스택(Control Stack) 내 비행 모드의 위상</h2>
+<p>PX4-Autopilot의 아키텍처 철학은 명확한 모듈화(Modularity)와 시스템 간의 결합도(Coupling) 최소화에 있다. 제어 파이프라인 관점에서 비행 모드 관리자(Flight Mode Manager) 모듈은 상태 추정기(Estimator)와 하위 제어기(Controller) 사이에 위치하는 중간 계층(Middle Layer) 역할을 수행한다.</p>
+<p>전체적인 로직의 흐름은 다음과 같다.</p>
+<ol>
+<li><strong>Sensors &amp; Estimator 계층</strong>: 관성측정장치(IMU), 위성항법장치(GPS), 비전 센서 등으로부터 원시 데이터(Raw Data)를 취합하여 EKF2(Extended Kalman Filter 2) 모듈이 현재 기체의 3차원 위치 밎 자세 최적 추정치(State Estimate)를 산출한다.</li>
+<li><strong>Flight Mode Manager 계층 (궤적 생성기)</strong>: 지상 관제 시스템(QGroundControl v4.3 이상 권장)의 MAVLink 명령이나 RC(조종기) 입력을 기반으로 현재 활성화된 비행 모드에 따른 로직을 수행한다. 이 계층에서는 위치, 속도, 자세 등에 대한 대상 궤적 요소, 즉 제어 목표(Setpoint)를 생성한다.</li>
+<li><strong>Controller 계층</strong>: 생성된 제어 목표와 현재 추정된 상태값의 오차(Error)를 기반으로 다중 루프(Cascade) PID 제어 알고리즘을 수행하여 개별 제어면(Control Surface)이나 구동기(Actuator)의 회전 속도(PWM/DShot) 제어 신호를 계산한다.</li>
+</ol>
+<p>이러한 분리형(Decoupled) 아키텍처 설계를 통해 개발자는 새로운 비행 기능을 추가하더라도 하위 PID 제어기 로직이나 융합 필터 알고리즘을 전혀 수정할 필요가 없다는 공학적 확장 가능성(Scalability)을 보장받는다.</p>
+<h2>2.  PX4와 Ardupilot의 비행 모드 설계 철학 비교</h2>
+<p>오픈소스 비행 제어 소프트웨어 생태계를 양분하는 두 플랫폼인 PX4-Autopilot과 Ardupilot(ArduCopter/ArduPlane)은 비행 모드를 구현하는 시스템 아키텍처 설계에서 뚜렷한 차이를 보인다.</p>
+<ul>
+<li><strong>PX4-Autopilot</strong>: Publish-Subscribe 디자인 패턴에 기반한 비동기 통신 시스템인 uORB(Micro Object Resource Broker)를 중심으로 데이터가 순환한다. 비행 모드는 <code>FlightTask</code>라는 C++ 가상(Virtual) 클래스를 상속받아 구현되며, 런타임 환경에서 다형성(Polymorphism)을 활용하여 메모리 할당 없이 동적으로 태스크 콘텍스트를 스위칭(Context Switching)하는 플러그인(Plugin) 형태의 객체 지향적 구조를 띤다.</li>
+<li><strong>Ardupilot</strong>: 상대적으로 전역 변수(Global Variable) 참조와 거대한 싱글톤(Singleton) 컨텍스트 중심의 절차지향적 구조를 일부 상속받아 활용한다. <code>mode.cpp</code>와 같은 코어 로직 내에 각 모드의 제어 조건문 루프들이 강하게 결합되어 있어, 코어 실행 루프(Monolithic Loop) 스레드의 오버헤드나 분기 비용에 직접적인 영향을 받는 구조를 갖는다.</li>
+</ul>
+<p>PX4의 모듈 기반 방식은 제어 로직 간의 간섭을 원천적으로 차단하므로, 추후 다뤄질 ROS2 기반의 자율 에이전트 연동망 구성(Offboard Mode 기반의 uXRCE-DDS 통신) 설계 목적에 있어 높은 안정성을 갖는다.</p>
+<h2>3.  상태 머신(State Machine)과 네비게이션 상태(Navigation State)</h2>
+<p>소프트웨어 내부에서 기체의 비행 모드는 **네비게이션 상태(Navigation State, <code>nav_state</code>)**라는 상태 머신 변수로 관리된다. 커맨더(Commander) 모듈은 파일럿이나 지상 관제소로부터 모드 스위칭 명령을 수신하면, 사전에 정의된 안전 조건들을 점검하여 해당 모드로의 전이(State Transition) 가능 여부를 판단한다.</p>
+<p>예를 들어, 현재 비전 오도메트리(VIO) 데이터 단절이나 GPS 스푸핑(Spoofing)으로 인해 위치 추정 신뢰도(Position Validity Flag)가 임계점을 넘지 못하면, 시스템은 위치 제어(Position Control, <code>POSCTL</code>) 상태로의 전환 명령을 거부(Reject)하거나 고도 제어(Altitude Control, <code>ALTCTL</code>) 수준으로 폴백(Fallback) 조치한다.</p>
+<p>다음은 다양한 1차원 센서와 공간 제어 센서 정보 개입 여부에 따라 구분해 본 시스템 내부 모드 전환 허용 가능성(Feasibility) 논리 시퀀스이다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; MANUAL : 초기화 및 RC/명령 연결
+    
+    state "자세/고도 추정 의존 구역" as SafeZone {
+        MANUAL --&gt; STAB : IMU 데이터 유효 확인
+        STAB --&gt; ALTCTL : 기압계/거리 센서 고도 유효성 확립
+    }
+    
+    state "공간 궤적 추정 의존 구역" as AdvancedZone {
+        ALTCTL --&gt; POSCTL : 로컬/글로벌 3D 위치(GPS, VIO) 추정 확립
+        POSCTL --&gt; AUTO_MISSION : 임무 경로(Mission Item) 다운로드 통과
+        AUTO_MISSION --&gt; OFFBOARD : MAVLink / ROS2 세션 하트비트 연동 완료
+    }
+    
+    AdvancedZone --&gt; AUTO_RTL : 배터리 부족 이벤트 또는 데이터 링크 단절 (Data Link Loss)
+    AUTO_RTL --&gt; AUTO_LAND : 홈/지정 착륙 위치 도달
+    AUTO_LAND --&gt; [*] : 지면 착지 완충(Touchdown) 및 시동 해제(Disarming)
+</code></pre>
+<p>이렇듯 Commander 내부에 구현된 강건한 보호 무결성 검증망(Integrity Check Net) 덕분에, 어떠한 결함 데이터가 입력되더라도 비행 모드 생성기는 물리적으로 파괴적인 제어 궤적을 맹목적으로 추종하지 않는다.</p>
+<p>본 장에서는 이후의 절을 통하여 제어 권한 위임 체계 메커니즘, <code>flight_mode_manager</code> 모듈의 Work Queue 스케줄링 위상, C++ 베이스 클래스의 템플릿 메서드 패턴 적용 사례, 그리고 각 기체 동역학 형태(고정익, 멀티로터, 무인 틸트로터 VTOL)에 따른 모드 아키텍처 개별 분화 메커니즘에 대해 심층적인 소스 코드 레벨 분석을 전개할 것이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

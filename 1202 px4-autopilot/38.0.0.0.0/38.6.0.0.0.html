@@ -115,6 +115,26 @@
             </header>
             <article>
                 <h1>38.6 소스 코드 레벨의 Heartbeat 파이프라인 및 백엔드(Backend) 연동 구현 기술</h1>
+<p>지금까지 우리는 상태 불일치(State Mismatch)와 분산 합의(Distributed Consensus)라는 거시적인 관제 시스템 체계와 수학적 모델링을 살펴보았다. 이제 시선을 돌려, 이러한 거대한 통신 이론들이 실제 비행 제어기(Pixhawk) 내부의 실리콘 칩부터 지상 관제 화면(UI)에 이르는 기나긴 여정 속에서 어떻게 <strong>C++ 소스 코드 레벨로 구현</strong>되어 있는지 파헤쳐 볼 차례이다.</p>
+<p>단 한 줄의 “Return 모드로 전환됨“이라는 메시지가 운용자의 화면에 출력되기까지, MAVLink Heartbeat 데이터는 결코 단순한 직렬 통신(Serial) 메아리처럼 움직이지 않는다. 현세대 PX4 생태계는 고도의 비동기성(Asynchrony)과 스레드 안전성(Thread Safety)을 요구하는 거대한 소프트웨어 파이프라인을 구축하고 있다.</p>
+<h2>1. 계층(5-Layer) Heartbeat 연동 파이프라인 아키텍처</h2>
+<p>PX4와 QGroundControl(또는 커스텀 MAVSDK 기반 GCS)을 관통하는 상태 동기화 파이프라인은 크게 5개의 독립적인 소프트웨어 도메인 계층으로 분절화(Decoupled)되어 있다.</p>
+<ol>
+<li><strong>Layer 1. 진리 창출 계층 (The Source - PX4 펌웨어)</strong><br />
+우주에서 유일한 진실 공급원(Single Source of Truth)인 <code>commander.cpp</code> 내부의 상태 머신 루프다. 기체의 모든 센서와 페일세이프 상태를 종합 판단하여 <code>vehicle_status_s</code>라는 uORB(Micro Object Request Broker) C 구조체 토픽을 생성하고 발행(Publish)한다.</li>
+<li><strong>Layer 2. 직렬화 및 스케줄링 계층 (The Serialization - PX4 MAVLink 모듈)</strong><br />
+<code>mavlink_messages.cpp</code>가 백그라운드에서 활동하며 이전 계층이 발행한 uORB 토픽을 구독(Subscribe)한다. 메모리 구조체를 바이트 스트림 단위의 유효한 MAVLink 패킷으로 직렬화하고, 대역폭을 낭비하지 않도록 정확히 1Hz 주기의 하드웨어 타이머에 맞춰 UART 포트로 밀어낸다.</li>
+<li><strong>Layer 3. 미들웨어 수신 계층 (The Relay/API - MAVSDK / Companion API)</strong><br />
+상공의 무선 통신망을 건너 GCS나 임무 컴퓨터(Jetson Nano)에 도달한 UDP 패킷을 가장 먼저 낚아채는 파수꾼이다. 네트워크 소켓의 블로킹을 막기 위해 철저히 비동기 이벤트 루프(Event Loop)와 콜백(Callback) 패턴으로 작동하며, 바이트 조각들을 다시 의미 있는 C++ 클래스 객체(Object)로 역직렬화(Deserialize)한다.</li>
+<li><strong>Layer 4. 백엔드 상태 관리 계층 (The GCS Backend - QGC <code>Vehicle.cc</code>)</strong><br />
+복원된 C++ 객체들을 수령하는 GCS의 코어 엔 엔진이다. 다중 스레드(Multi-thread) 환경에서 텔레메트리 데이터가 덮어써 지는 데이터 레이스(Data Race)를 막기 위해 뮤텍스(Mutex) 락을 걸고 상태 벡터를 안전하게 캐싱(Caching)한다. 스플릿 브레인을 억제하는 핸드셰이크가 바로 이 계층에서 집중적으로 연산된다.</li>
+<li><strong>Layer 5. 프론트엔드 표출 계층 (The Frontend - QGC QML / React UI)</strong><br />
+무거운 연산과 네트워크 I/O에서 완전히 분리된 시각화 전용 쓰레드다. 낡은 UI가 버벅이는 것을 막기 위해 옵저버(Observer) 패턴이나 Qt의 시그널/슬롯(Signals/Slots) 큐를 이용해 백엔드의 상태 업데이트만 쏙 빼와 화면의 버튼 색상을 초록색으로 칠한다.</li>
+</ol>
+<h2>2. 마이크로서비스 지향적 설계 (Microservice-oriented Design)</h2>
+<p>전통적인 Ardupilot 아키텍처가 메인 루프 설계에 강하게 결합된 모놀리식(Monolithic) 하드웨어 폴링 구조의 흔적을 가지고 있다면, PX4의 파이프라인은 철저한 <strong>모듈화(Modularity)와 POSIX 규격 기반의 마이크로서비스 지향적 설계</strong>를 자랑한다.</p>
+<p>이러한 고도의 분절화된 설계 덕분에, 만약 MAVLink 전송 모듈(Layer 2)이 버그를 일으켜 크래시가 나더라도 핵심 비행 상태 머신(Layer 1)은 아무 일 없었다는 듯 추락하지 않고 꿋꿋이 살아서 비행을 계속할 수 있는 엄청난 내결함성(Fault Tolerance)을 확보하게 되었다.<br />
+이어지는 하위 절들에서는 이 5개의 파이프라인 각각이 어떠한 OS 커널 시스템 콜(System Call)과 C++ 디자인 패턴을 통해 톱니바퀴처럼 맞물려 돌아가는지, 그 소스 코드의 심연을 분석할 것이다.</p>
 
             </article>
             <footer>

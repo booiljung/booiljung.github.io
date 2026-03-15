@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.5.1.1 C++ Qt 프레임워크 기반의 스레드 풀(Thread Pool) 및 QEventLoop 논블로킹(Non-blocking) I/O 처리</title>
+    <title>BIJUNG:39.5.1.1. C++ Qt 프레임워크 기반의 스레드 풀(Thread Pool) 및 QEventLoop 논블로킹(Non-blocking) I/O 처리</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,47 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.5.1.1 C++ Qt 프레임워크 기반의 스레드 풀(Thread Pool) 및 QEventLoop 논블로킹(Non-blocking) I/O 처리</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.5.1.1 C++ Qt 프레임워크 기반의 스레드 풀(Thread Pool) 및 QEventLoop 논블로킹(Non-blocking) I/O 처리</span></nav>
+                    <h1>39.5.1.1. C++ Qt 프레임워크 기반의 스레드 풀(Thread Pool) 및 QEventLoop 논블로킹(Non-blocking) I/O 처리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.5.1.1. C++ Qt 프레임워크 기반의 스레드 풀(Thread Pool) 및 QEventLoop 논블로킹(Non-blocking) I/O 처리</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.5.1.1 C++ Qt 프레임워크 기반의 스레드 풀(Thread Pool) 및 QEventLoop 논블로킹(Non-blocking) I/O 처리</h1>
+                <h1>39.5.1.1. C++ Qt 프레임워크 기반의 스레드 풀(Thread Pool) 및 QEventLoop 논블로킹(Non-blocking) I/O 처리</h1>
+<p>PX4-Autopilot 기반의 무인기 시스템을 지상에서 완벽하게 제어하기 위한 QGroundControl(QGC) 백엔드는 단일 프로세스 내에서 수많은 커넥션과 비동기 연산을 지연 없이 처리해야 한다. 이를 달성하기 위해 코어 아키텍처는 C++의 원시(Native) 스레드 인터페이스를 직접 제어하기보다는, Qt 프레임워크가 제공하는 추상화된 고성능 동시성(Concurrency) 제어 기법인 스레드 풀(Thread Pool)과 <code>QEventLoop</code> 기반의 논블로킹(Non-blocking) I/O 모델을 적극적으로 도입하고 있다.</p>
+<h2>1.  Qt의 스레드 풀(QThreadPool) 기반 자원 풀링(Pooling)</h2>
+<p>지상 관제 시스템이 처리해야 하는 연산 중에는 수 밀리초 내에 즉각 완료되어야 하는 작업(예: 하드웨어 인터럽트 수신)도 있지만, 대용량 임무(Mission) 파일 파싱, 다중 기체에 연결된 플러그인 초기화, 파일 I/O 작업 등 상대적으로 연산 시간이 긴 블로킹 작업도 혼재되어 있다.</p>
+<p>이때 모든 단일 작업마다 새로운 OS 수준의 스레드를 생성하고 소멸시키는 것은 컨텍스트 스위칭(Context Switching) 및 커널 오버헤드가 극심하기 때문에, QGC는 <code>QThreadPool</code> 아키텍처를 활용한다.</p>
+<h3>1.1  QRunnable을 통한 일회성 연산 위임</h3>
+<p>복잡한 연산 로직은 상태를 유지할 필요가 없는 경우 <code>QRunnable</code> 인터페이스를 상속하여 객체화된다. <code>Vehicle</code> 매니저 스레드는 이 <code>QRunnable</code> 객체를 <code>QThreadPool::globalInstance()-&gt;start()</code>를 통하여 스레드 풀에 던져버리고(Fire-and-forget), 즉각 본연의 상태 관리 이벤트 루프로 복귀한다.</p>
+<ul>
+<li><strong>장점</strong>: 시스템의 가용 코어 수(Ideal Thread Count)에 맞춘 최대 병렬 처리 효율을 보장하며, 비동기 파라미터 업로드/다운로드에서 GCS 인터페이스의 병목 부하를 극도로 완화할 수 있다.</li>
+<li><strong>적용 사례</strong>: PX4 기체의 대용량 ULog 파일 로그 데이터를 GCS 측 스토리지로 다운로드하여 병렬 직렬화(Serialization)를 수행하는 워커 스레드 등에서 활용된다.</li>
+</ul>
+<h2>2.  QEventLoop와 논블로킹(Non-blocking) I/O 처리의 이론과 실제</h2>
+<p>컴퓨터 과학의 네트워크 프로그래밍 하에서 일반적인 블로킹 I/O 함수(<code>recv()</code>, <code>read()</code> 등)는 버퍼에 데이터가 도착할 때까지 스레드 자체를 정지점(Suspend)에 둔다. 그러나 QGC의 통신 스레드 블록(<code>LinkManager</code> 하위)은 결코 정지되어서는 안 된다. 따라서 Qt가 제공하는 백그라운드 <code>QEventLoop</code> 객체를 결합하여 완벽한 비동기 I/O를 실현한다.</p>
+<h3>2.1  QEventLoop의 동작 원리</h3>
+<p><code>QEventLoop</code>는 내부적으로 OS 커널의 비동기 I/O 채널 조사 기능(리눅스의 <code>epoll</code>, 윈도우의 <code>IOCP</code> 등)을 래핑(Wrapping)한다. 통신 스레드 내의 무한 루프는 이벤트를 대기하다가 <code>QUdpSocket</code> 또는 <code>QSerialPort</code>에 데이터 도착(readyRead) 인터럽트가 감지되는 즉시 매핑된 콜백(Callback, 슬롯 함수)을 호출한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[Hardware Network Card] --&gt;|MAVLink Packets| B(OS Kernel Buffer)
+    B --&gt;|Interrupt / epoll| C{QEventLoop in LinkThread}
+    C --&gt;|Trigger: readyRead() Signal| D[QUdpSocket]
+    D --&gt;|Read Datagram (Non-blocking)| E[MAVLink Parser Engine]
+    E --&gt;|Route Payload| F[Signal Queue to Vehicle]
+</code></pre>
+<h3>2.2  QUdpSocket과 MAVLink 인터페이스 연동</h3>
+<p>PX4-Autopilot은 이더넷(Ethernet)이나 Wi-Fi 텔레메트리 연결 시 전송 제어 오버헤드가 없는 UDP 프로토콜을 선호한다. 통신 스레드는 <code>QUdpSocket</code>을 논블로킹 모드로 객체화하며, 다음의 절차로 네트워크 지연을 극복한다.</p>
+<ol>
+<li><strong>소켓 바인딩(Binding)</strong>: GCS 실행 시 백그라운드 통신 스레드가 특정 포트(예: 14550)를 비동기 방식 수신 모드로 열어둔다.</li>
+<li><strong>시그널 모니터링</strong>: 데이터 입력을 기다리며 스레드를 정지(Sleep)시키는 대신, 이벤트 루프를 활성화(<em><code>exec()</code> 호출</em>)하여 <code>readyRead()</code> 시그널만 대기한다.</li>
+<li><strong>논블로킹 읽기(Drain)</strong>: MAVLink 데이터 버스트(Burst)가 도달하면, <code>hasPendingDatagrams()</code>가 거짓이 될 때까지 <code>readDatagram()</code>으로 모든 페이로드 메모리를 퍼낸다(Drain). 읽기 행위 자체는 메모리 복사만을 수행하므로 지연 시간이 거의 발생하지 않는다.</li>
+</ol>
+<h2>3.  동시성 보장을 위한 설계적 경고(Caveat)</h2>
+<p><code>QEventLoop</code> 기반의 논블로킹 I/O가 완벽하게 작동하기 위해서는 절대 스레드 이벤트 루프 자체를 차단하는 연산을 스레드 내 콜백(Slot)에서 수행해서는 안 된다.</p>
+<ul>
+<li>만약 MAVLink 패킷 해독(Decoding) 함수가 지나치게 무겁거나, 디스크 I/O를 동기식으로 진행하여 이벤트 루프 제어권을 수십 밀리초 이상 운영체제로 양보하지 못할 경우, <code>readyRead()</code> 이벤트를 처리하지 못해 운영체제의 커널 소켓 수신 버퍼(Receive Buffer)가 가득 차 패킷 드롭(Packet Drop)이 발생하게 된다.</li>
+<li>이를 예방하기 위해 QGC 백엔드는 수신된 바이트 스트림을 최소 규격 단위(<code>mavlink_message_t</code>)로 1차 조립만 완료한 후, 해석 연산 자체는 <code>QThreadPool</code>의 백그라운드 워커에 이관하거나 <code>Vehicle</code> 스레드 로직 큐로 던지도록 설계되어 있다.</li>
+</ul>
+<p>이처럼 C++ Qt의 이벤트 루프(Event Loop) 철학과 스레드 풀링 모델을 조화롭게 결합한 QGroundControl의 아키텍처는, 다수의 PX4 기체가 발산하는 막대한 양의 MAVLink 트래픽 앞에서도 매우 견고하고 선형 확장 가능한(Scalable) 네트워크 처리 유연성을 제공한다.</p>
 
             </article>
             <footer>

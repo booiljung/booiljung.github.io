@@ -115,6 +115,35 @@
             </header>
             <article>
                 <h1>38.3.1 분산 제어 환경에서의 텔레메트리 동기화 오차(Synchronization Error) 모델</h1>
+<p>기체(PX4)가 획득한 스스로의 상태(Ground Truth)와 지상 관제 시스템(GCS) 화면에 렌더링 된 추정 상태 사이에는 필연적으로 시간적 간극이 발생한다. 이 현상을 제어 공학의 언어로 번역하면 **텔레메트리 동기화 오차(Telemetry Synchronization Error)**라고 부른다.</p>
+<p>비동기 분산 제어 환경에서 이 오차는 근본적으로 기체의 다이내믹스(Dynamics)와 네트워크의 전송 지연(Latency)이 결합하여 만들어내는 수학적 부산물이다.</p>
+<h2>1. 동기화 오차의 수학적 정의</h2>
+<p>시간 <span class="math math-inline">t</span>에서의 기체 실제 한계 상태(역학적/논리적 상태 총망라)를 <span class="math math-inline">X_{uav}(t)</span>라고 하자.<br />
+이 데이터가 무선 링크를 통해 GCS에 도달하여 QGroundControl의 내부 변수(예: <code>Vehicle.cc</code>의 멤버 변수)에 안착하기까지 걸리는 총 지연 시간을 <span class="math math-inline">\tau</span>라고 정의할 때, GCS가 현재 인식하고 있는 추정 상태 <span class="math math-inline">X_{gcs}(t)</span>는 사실 과거의 낡은 데이터이다.</p>
+<p><span class="math math-display"> X_{gcs}(t) = X_{uav}(t - \tau) </span></p>
+<p>결과적으로, 현재 기체와 GCS 사이의 물리적인 ‘동기화 오차’ <span class="math math-inline">E_{sync}(t)</span>는 다음과 같이 귀결된다.</p>
+<p><span class="math math-display"> E_{sync}(t) = X_{uav}(t) - X_{gcs}(t) = X_{uav}(t) - X_{uav}(t - \tau) </span></p>
+<h2>2. 지연 시간 파이프라인(<span class="math math-inline">\tau</span>)의 구성 요소</h2>
+<p>이 야속한 지연 시간 <span class="math math-inline">\tau</span>는 단순한 무선 전파의 도달 시간이 아니다. 센서에서 GCS 모니터 픽셀에 이르기까지 5개의 험난한 파이프라인 병목(Bottleneck)을 거치며 누적된 총합이다.</p>
+<ol>
+<li><strong><span class="math math-inline">t_{sense}</span></strong>: 자이로스코프, GPS 등 물리적 센서의 ADC 변환 및 버스 통신 지연.</li>
+<li><strong><span class="math math-inline">t_{process}</span></strong>: PX4 내부의 EKF2 필터 구동 알고리즘 계산 및 uORB 퍼블리싱(Publishing), MAVLink 패킷 조립(Encoding)에 소요되는 CPU 처리 시간.</li>
+<li><strong><span class="math math-inline">t_{tx}</span></strong>: 900MHz / 433MHz 텔레메트리 모뎀의 송신 버퍼 큐 대기 시간 및 실제 무선 대기권 체공 시간 (가장 변동성이 크고 긴 지연 요소).</li>
+<li><strong><span class="math math-inline">t_{rx}</span></strong>: GCS 측 무선 모뎀 수신 및 USB/Serial 버스 전송, 운영체제(OS)의 인터럽트 스케줄링 및 MAVLink 패킷 디코딩(Decoding) 시간.</li>
+<li><strong><span class="math math-inline">t_{render}</span></strong>: QGroundControl의 Qt Quick 프레임워크가 C++ 백엔드의 이벤트를 수신하여 QML UI 스레드로 텍스처를 다시 그리는(Repaint) 렌더링 시간.</li>
+</ol>
+<p>즉, <span class="math math-inline">\tau = t_{sense} + t_{process} + t_{tx} + t_{rx} + t_{render}</span> 로 구성되며, 통상적인 장거리 무선 환경에서 <span class="math math-inline">\tau</span>는 최소 50ms에서 수백 ms까지 출렁이게 된다.</p>
+<h2>3. 고기동(High Dynamic) 상황에서의 오차 증폭(Amplification)</h2>
+<p>오차 방정식 <span class="math math-inline">E_{sync}(t) = X_{uav}(t) - X_{uav}(t - \tau)</span> 를 1차 테일러 급수(Taylor Series Expansion)로 근사해보면 문제의 본질이 명확해진다.</p>
+<p><span class="math math-display"> E_{sync}(t) \approx \tau \cdot \frac{d X_{uav}(t)}{dt} </span></p>
+<p>즉, “동기화 오차는 기체 상태의 변화율(미분값)과 지연시간의 곱에 비례“한다.</p>
+<ul>
+<li><strong>정지 비행(Hovering) 시</strong>: 기체의 상태 변화율 <span class="math math-inline">\frac{d X}{dt}</span>이 0에 가깝다. 따라서 아무리 지연 시간 <span class="math math-inline">\tau</span>가 500ms로 폭증하더라도, 오차 <span class="math math-inline">E_{sync}</span>는 0으로 수렴한다. 사용자는 완벽한 실시간 동기화(Zero Latency)를 이룬 것처럼 착각(Illusion)하게 된다.</li>
+<li><strong>비상 사태 또는 고기동 시</strong>: 드론이 아크로(Acro) 모드로 급격히 롤(Roll)을 치거나, GPS 상실로 페일세이프(Failsafe) 트랜지션이 발동하는 순간 <span class="math math-inline">\frac{d X}{dt}</span>는 극한으로 치솟는다. 이 찰나의 순간 GCS 화면과 하늘에 떠 있는 드론의 현실 사이의 동기화 오차 <span class="math math-inline">E_{sync}</span>는 폭발적으로 증폭된다.</li>
+</ul>
+<h2>Ardupilot과의 철학적 차이: 관제(Monitor) vs 제어(Control)의 분리</h2>
+<p>이러한 <span class="math math-inline">\tau</span>의 피할 수 없는 물리적 한계 때문에, GCS 노트북에서 파이썬 스크립트를 돌려 드론의 자세를 직접 실시간 폐루프 제어(Closed-loop Control)하려는 시도(예: GCS 측 PID 제어)는 극심한 위상 지연(Phase Lag)을 유발하여 기체를 추락시키는 파일럿 유도 진동(PIO, Pilot-Induced Oscillation)의 원인이 된다.</p>
+<p>Ardupilot은 전통적으로 GCS의 역할을 미션 플래닝과 상태 감시(Monitor)에 두었듯, PX4 역시 무선 텔레메트리를 통과하는 데이터를 “실시간 제어용“으로 취급하는 것을 엄격히 금기시한다. PX4 생태계는 본질적으로 <span class="math math-inline">E_{sync}</span>를 극복하려 하기보다는, 지연 시간이 무시할 만한 기체 내부의 ROS 2 컴패니언 컴퓨터(Companion Computer, UART/Ethernet 직결)로 핵심 제어 로직(Offboard Control)을 이관시키는 아키텍처 철학을 통해 이 분산 제어 환경의 동기화 딜레마를 우회한다.</p>
 
             </article>
             <footer>

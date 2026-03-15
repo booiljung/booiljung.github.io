@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.5.1.1 GCS 내부 추정 상태(Estimated State)와 무인기 실제 상태(Actual State)의 잔차(Residual) 평가</title>
+    <title>BIJUNG:37.5.1.1. GCS 내부 추정 상태(Estimated State)와 무인기 실제 상태(Actual State)의 잔차(Residual) 평가</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,67 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.5.1.1 GCS 내부 추정 상태(Estimated State)와 무인기 실제 상태(Actual State)의 잔차(Residual) 평가</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.1.1 GCS 내부 추정 상태(Estimated State)와 무인기 실제 상태(Actual State)의 잔차(Residual) 평가</span></nav>
+                    <h1>37.5.1.1. GCS 내부 추정 상태(Estimated State)와 무인기 실제 상태(Actual State)의 잔차(Residual) 평가</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.1.1. GCS 내부 추정 상태(Estimated State)와 무인기 실제 상태(Actual State)의 잔차(Residual) 평가</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.5.1.1 GCS 내부 추정 상태(Estimated State)와 무인기 실제 상태(Actual State)의 잔차(Residual) 평가</h1>
+                <h1>37.5.1.1. GCS 내부 추정 상태(Estimated State)와 무인기 실제 상태(Actual State)의 잔차(Residual) 평가</h1>
+<p>본 절에서는 무인기(UAV)와 지상 관제 시스템(GCS) 통신 파이프라인 단에서 발생하는 상태 불일치(State Mismatch) 역효과를 수학적으로 정량화하고 능동적으로 판별하기 위한 핵심 논리인 <strong>잔차(Residual) 평가</strong> 기법을 다룬다. 최신 PX4-Autopilot 및 QGroundControl의 관제 아키텍처에서는 단순한 상태 표식(Flag) 값의 문자열 비교를 넘어, 추정 상태(Estimated State)와 실제 수신된 텔레메트리 상태(Actual State) 간의 오차 공간 기하(Error Space Geometry)를 계산하여 통신 무결성을 검증한다.</p>
+<p>설계적 관점에서 본문은 PX4 Firmware v1.14 이상의 MAVLink 프로세싱 모델 및 QGroundControl v4.3 이상의 프론트/백엔드 아키텍처를 기준으로 서술된다.</p>
+<hr />
+<h2>1.  추정 상태(Estimated State)의 정의와 그림자 모델링</h2>
+<p>고도화된 관제 인프라에서 GCS는 단순히 UAV가 보내주는 수퍼비전 모니터(Passive Monitor)에 머물지 않는다. 사용자의 특정 기동 명령이나 모드 전환(예: 10m/s 수평 이동, Offboard 제어 인가)이 발령되면, GCS 내부의 <code>Vehicle</code> 매니저 모듈은 해당 명령 벡터를 기반으로 기체의 미래 기대 상태를 수학적으로 투영하는 가상의 그림자 모델(Shadow Model 혹은 Digital Twin)을 가동한다.</p>
+<p>제어 명령이 하달된 시점 <span class="math math-inline">t_0</span> 부터 물리 현상의 관성 및 무선 지연 시간 <span class="math math-inline">\Delta t</span> 가 경과한 임의의 관측 시점 <span class="math math-inline">t</span>에서의 GCS 측 <strong>예측 및 추정 상태 벡터(Estimated State Vector)</strong> 를 <span class="math math-inline">\hat{x}(t)</span>라 할 때, 이는 기체의 기준 동역학(Reference Dynamics) 비선형 함수 <span class="math math-inline">f</span> 와 입력 인가 명령 <span class="math math-inline">u(t)</span> 로 표현된다.</p>
+<p><span class="math math-display">
+\hat{x}(t) = \int_{t_0}^{t} f(\hat{x}(\tau), u(\tau)) \,d\tau + \hat{x}(t_0)
+</span></p>
+<p>여기서 <span class="math math-inline">\hat{x}(t)</span> 는 지연과 노이즈가 누적되어 도착하는 주기적 비행 센서 데이터가 완전히 이격된 채, GCS가 <strong>“정상 통신과 기동력이 유지되었다면 마땅히 기체가 이러이러한 물리량과 논리 상태를 점유하고 있을 것이다”</strong> 라고 기대하는 논리적 이상치(Logical Reference Value)를 나타낸다.</p>
+<hr />
+<h2>2.  잔차(Residual/Innovation)의 수학적 도출 및 평가 함수</h2>
+<p>기체로 부터 MAVLink 비동기 링크를 통해 수신된, 즉 현실 통신 채널의 잡음(Noise)과 실제 기체의 센서 불확실성이 모두 결합된 <strong>실제 텔레메트리 관찰 벡터(Actual State Vector)</strong> 를 <span class="math math-inline">z(t)</span> 로 정의한다.</p>
+<p>이때 상태 불일치(Mismatch) 판별을 위한 핵심은 불리언 로직(Boolean Logic)에 기반한 등호 검사(<span class="math math-inline">==</span>)가 아니다. GCS는 두 다차원 공간 벡터 간의 오차를 연속적인 거리(Distance) 개념으로 확장 추상화한 <strong>잔차(Residual) 혹은 이노베이션(Innovation) 벡터</strong> <span class="math math-inline">r(t)</span> 를 도출하여 평가 지표로 활용한다.</p>
+<p><span class="math math-display">
+r(t) = z(t) - H \hat{x}(t)
+</span></p>
+<p>수식에서 <span class="math math-inline">H</span>는 GCS의 복합 추정 상태 리스트를 관측 가능한 다운링크 텔레메트리 공간으로 직교 투영(Orthogonal Projection) 맵핑하는 관측 행렬이다.</p>
+<h3>2.1 잔차 공분산(Covariance) 편차와 마할라노비스 거리(Mahalanobis Distance) 기준점</h3>
+<p>자연 계에서 단일 축의 단순 차분(Absolute Error) 오차율만으로는 해당 데이터 흐름이 정말로 치명적인 제어 불일치를 수반하는 것인지, 아니면 동역학적 관성 지연 및 센서 화이트 노이즈(White Noise)에 불과한 것인지 명확히 분별해 내기가 극도로 어렵다.</p>
+<p>오인 판단(False Alarm)을 방지하기 위해 관제 시스템에서는 오차 공분산 행렬 <span class="math math-inline">S</span> 를 고려하여 정규화된 마할라노비스 거리를 불일치 판독 임계값 산출에 사용한다.</p>
+<p><span class="math math-display">
+D_M^2 = r(t)^T S^{-1} r(t)
+</span></p>
+<p>위 산출된 오차 거리 <span class="math math-inline">D_M^2</span> 스칼라 값이 사전 정의된 임계치(Threshold) <span class="math math-inline">\gamma</span> 를 1차적으로 초과하고, 이것이 지속되는 시간(Duration) 윈도우 틱(Tick)이 타임아웃 경계를 넘어가게 될 때, GCS 로직 체인은 비로소 해당 채널에 대하여 <strong>“명령 동기화 파괴 및 치명적 제어 불일치(Critical Mismatch)가 발생하였다”</strong> 고 최종 판별(Validation)하게 된다.</p>
+<hr />
+<h2>3.  GCS-UAV 잔차 기반 상태 판별 프로세스 (Mermaid Diagram)</h2>
+<p>비행 명령 도달 이후, 상위 GCS가 어떠한 경로 레이어로 자체 추정 상태와 기체 상태 패킷을 결합 및 융합하여 잔차 분별 평가를 실행해 나아가는지 아래의 시퀀스 흐름도를 통해 명확히 도식화할 수 있다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[GCS에서 궤적 변경 혹은 모드 천이 등 제어 명령 인가 발송] 
+    --&gt; B[GCS 내부 상태 예측기 가동: 예상 모델 벡터 $\hat{x}(t)$ 전개]
+    
+    C[PX4-Autopilot의 MAVLink Telemetry 주기적 스케줄링 전송] 
+    --&gt; D[데이터 링크 지연 시간 통과 후 GCS 수신 큐 도달]
+    D --&gt; E[수신 및 시스템 타임스탬프 기반 연령 검증을 거친 측정치 $z(t)$]
+
+    B --&gt; F((잔차 및 차분 필터 연산 부작동))
+    E --&gt; F
+    
+    F --&gt; G[잔차 오차 벡터 $r(t)$ 도출 및 정규화 거리 $D_M^2$ 가중치 산출]
+    
+    G --&gt; H{상태 오차 통계 임계치 검사 $D_M^2 &gt; \gamma$}
+    H -- 허용 공차 이내 정상 범위 (NO) --&gt; I[명령 수행 정상, GCS 프론트엔드/UI 동기화 지속]
+    H -- 오차 확정 초과 (YES) --&gt; J[에러 누적기(Error Accumulator/Validation Counter) 틱 증가]
+    
+    J --&gt; K{지속 시간 한계/타임아웃 임계치 경과 여부}
+    K -- 미초과 (일시적 튀는 값) --&gt; I
+    K -- 초과 (Timeout / Deterministic Mismatch) --&gt; L[상태 불일치 확정 판정: 자동 재전송 스케줄러 투입 및 안전 롤백(Safe Rollback) 트리거 방아쇠 활성화]
+</code></pre>
+<p>이와 같이 2단계 다중 방어막(오차 임계치 검사 필터 + 시간 임계치 지연 평가 필터) 기반의 복잡계 잔차 평가 아키텍처는 QGroundControl(v4.3 이상) 백엔드 파서 클래스와 PX4 코어의 MAV_RESULT 수용 로직에 광범위하게 적용되었다. 이로서 잡음이 심각한 무선 링크 환경(Noisy RF Environment) 및 스펙트럼 셰도우 구역 하에서의 섣부른 오경보(False Alarm)를 기하급수적으로 감소시킨 쾌거를 이루어냈다.</p>
+<hr />
+<h2>4.  결론 및 요약</h2>
+<p>GCS 내부 추정 모델 상태(Estimated State)와 현장의 무인기 실제 상태(Actual State) 상호 간의 <strong>잔차(Residual) 평가 기법</strong>은, GCS라는 소프트웨어 개체를 수동적인 화면 상태 표시기(Display Panel) 수준에서 기체 본연의 동역학 성질을 함께 고스란히 공유하는 고도의 분산 감시자(Distributed Observer Layer) 계층으로 격상시키는 데 기여한 혁신적 도구다.</p>
+<p>정밀한 수학 및 통계적 평가 기준점을 통해 무선 통신 지연이나 일회성 패킷 일탈(Packet Drop)과 같은 통신망 인프라적 제약을 회피하고, 실제 무인항공기가 <strong>사용자의 인가 명세에 적법하게 추종 순응하고 있는지</strong>를 이산적으로 매우 신뢰성 높게 검출할 수 있는 기초 체력을 다지는 역할을 담당하게 된다.</p>
+<p>이는 Ardupilot의 상대적 보수 단방향 제어에 비해, PX4-Autopilot 및 QGC 생태계 플랫폼이 훨씬 더 능동적이고 지능적인 양방향 상태 기반 제어망(Two-way State-based Control Network)을 확립하고 안정화시키는 독창적 기술 기반 원리가 되었다.</p>
 
             </article>
             <footer>

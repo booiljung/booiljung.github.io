@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:29.2.2 `ManualControl` 클래스의 제어 신호 정규화(Normalization) 알고리즘 (`ManualControl.cpp`)</title>
+    <title>BIJUNG:29.2.2. `ManualControl` 클래스의 제어 신호 정규화(Normalization) 알고리즘 (`ManualControl.cpp`)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,51 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>29.2.2 `ManualControl` 클래스의 제어 신호 정규화(Normalization) 알고리즘 (`ManualControl.cpp`)</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.2 `ManualControl` 클래스의 제어 신호 정규화(Normalization) 알고리즘 (`ManualControl.cpp`)</span></nav>
+                    <h1>29.2.2. `ManualControl` 클래스의 제어 신호 정규화(Normalization) 알고리즘 (`ManualControl.cpp`)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 29. 수동 비행 모드(Manual, Stabilized, Acro) 소스 코드 분석</a> / <span>29.2.2. `ManualControl` 클래스의 제어 신호 정규화(Normalization) 알고리즘 (`ManualControl.cpp`)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>29.2.2 <code>ManualControl</code> 클래스의 제어 신호 정규화(Normalization) 알고리즘 (<code>ManualControl.cpp</code>)</h1>
+                <h1>29.2.2. <code>ManualControl</code> 클래스의 제어 신호 정규화(Normalization) 알고리즘 (<code>ManualControl.cpp</code>)</h1>
+<p>본 소절에서는 <code>src/modules/manual_control</code> 데몬 모듈 내 핵심 엔진인 <code>ManualControl</code> 클래스를 집중 해부한다. 이 클래스는 하위 드라이버로부터 퍼블리싱된 물리적 비가공 통신 신호 배열(<code>input_rc_s</code>)을 수학적 부동 소수점(Floating-point) 영역으로 변환하는 막중한 책임을 지닌다. 특히, 다원화된 하드웨어 제조사의 편차를 은닉하고 오직 <span class="math math-inline">\pm1.0</span> 혹은 <span class="math math-inline">0.0 \sim 1.0</span> 의 정규화(Normalization)된 기구학적 공력 벡터(<code>manual_control_setpoint_s</code>)만을 상위 제어루프에 조달하는 이 객체 지향적(Object-Oriented) 데이터 파이프라인의 알고리즘 아키텍처를 C++ 소스 기반으로 조명한다.</p>
+<h2>1.  <code>ManualControl</code> 클래스 아키텍처와 uORB 콜백 스케줄링</h2>
+<p>PX4 메인 파이프라인에서 수동 제어(Manual Control) 흐름의 백본(Backbone)을 구성하는 <code>ManualControl</code> 모듈은 자체적인 운영체제 워커 스레드(Work Queue Thread) 내에서 라이프사이클을 영위한다. 이 클래스는 무한 루프 식의 폴링(Polling) 대기가 아닌, 철저한 이벤트 기반(Event-driven) 구독형 아키텍처를 취하고 있다.</p>
+<p><code>ManualControl</code> 객체의 초기화(Initialization) 단계에서 가장 핵심적인 동작은 하위 <code>input_rc</code> 토픽에 대한 uORB 구독(Subscription) 및 콜백(Callback) 연동이다.</p>
+<pre><code class="language-cpp">// src/modules/manual_control/ManualControl.hpp (객체 클래스 설계 예시)
+class ManualControl : public ModuleBase&lt;ManualControl&gt;, public ModuleParams, public px4::WorkItem
+{
+    // ...
+private:
+    uORB::SubscriptionCallbackWorkItem _input_rc_sub; // input_rc 토픽 변경 감지 콜백
+    uORB::Publication&lt;manual_control_setpoint_s&gt; _manual_control_setpoint_pub; // 정규화 결과물 퍼블리셔
+
+    void Run() override;
+    void process_rc_input();
+    // ...
+};
+</code></pre>
+<p>이 클래스 설계에서 볼 수 있듯, <code>_input_rc_sub</code> 인스턴스는 단순한 메모리 포인터가 아니라 <code>WorkItem</code> 객체와 강하게 바인딩된 능동형 콜백 리스너(Active Callback Listener)이다. 하위 <code>rc_input</code> 디바이스 드라이버가 직렬 수신기에서 새 프레임을 디코딩 완료하고 <code>input_rc</code> 토픽을 물리적으로 퍼블리싱하는 찰나(보통 10ms ~ 20ms 주기), 이 콜백이 트리거되어 <code>ManualControl</code> 클래스의 <code>Run()</code> 메인 파이프라인 메소드를 즉각적으로 깨운다(Wake-up). 이는 지연 연산(Lazy Evaluation)이나 불필요한 스레드 선점을 극도로 배제하는 NuttX 운영체제 하에서의 전형적이고 우아한 CPU 최저 점유율(Low-CPU Footprint) 지향 설계 철학을 보여준다.</p>
+<h2>2.  RC 채널 매핑(Channel Mapping)의 동적 할당과 메모리 바인딩</h2>
+<p>깨어난 <code>ManualControl</code> 프로세스의 최우선 과제는 익명화된 채우기 변수인 단순 정수 배열(<code>input_rc.values[18]</code>)들에 어떠한 기구학적 ’의미’를 부여할지 결정하는 채널 맵핑(Mapping) 연산이다. 이 연산은 런타임 하드 코딩(Hard-coding)이 철저히 배제되어 있으며, 대신 시스템 플래시 메모리에 등록된 사용자 파라미터(RC_MAP_*) 메타데이터에 역동적으로 의존한다.</p>
+<p>클래스 내부의 갱신 로직(<code>update_params()</code>)은 사용자나 GCS(QGroundControl)가 기체 캘리브레이션 탭에서 할당한 룰셋, 예를 들어 <code>RC_MAP_ROLL = 1</code>, <code>RC_MAP_PITCH = 2</code> 따위의 파라미터 값을 메모리 변수로 실시간 페치(Fetch)해 둔다.</p>
+<pre><code class="language-cpp">// 채널 맵핑 추출 로직의 논리적 흐름
+void ManualControl::process_rc_input() {
+    // 1. Roll (횡전) 채널 맵핑 추출
+    // 파라미터에 설정된 1번 채널(인덱스 0)의 원시 값 1500us 획득
+    uint16_t roll_raw = get_rc_value(_param_rc_map_roll.get() - 1); 
+    
+    // 2. 이 원시 값을 기반으로 스케일링/정규화 함수 호출
+    float roll_normalized = apply_calibration(roll_raw, _param_rc1_min, _param_rc1_trim, _param_rc1_max);
+    
+    // ...
+}
+</code></pre>
+<p>이 동적 맵핑 구조는 서드파티 송신기의 종류(예: Mode 1 vs Mode 2 스틱 배열 차이)나 수신기의 채널 배선(Wiring) 순서 믹스 매치에 아랑곳하지 않고, 오프보드 보정 절차만 거치면 곧바로 커널 내부 연산이 정상 회동하도록 하는 강력한 추상화(Abstraction) 층면을 완성시킨다. 이 계층을 기점으로 ‘채널 1번’ 따위의 전기적 포트 명칭은 소스 코드 내에서 완전히 말소되며, 오로지 ‘Roll, Pitch, Yaw, Throttle’ 이라는 항공 공학적 명세로 치환된다.</p>
+<h2>3.  데드존(Deadzone) 적용 및 스위치 채널의 이산 트리거 변환 구조</h2>
+<p>메인 4축 조종 스틱 외에도 <code>ManualControl</code> 모듈은 송신기 어깨에 위치한 2단/3단 물리 토글 스위치(Toggle Switch)나 가변 다이얼(Dial) 등 보조 채널(Auxiliary Channels)의 배열 값들을 처리하는 데 있어 별도의 특화된 분기 필터링 정책을 채용한다.</p>
+<p>메인 스틱의 정규화 결과물은 비행 궤적을 제어하므로 극도의 부드러운 양연속성 스칼라가 도출되어야 하지만, <code>AUX1</code> ~ <code>AUX6</code> 등 보조 스위치 배열은 비행 모드 전환(예: Stabilized -&gt; Return)이나 랜딩 기어 배치, 페이로드 낙하 등 렌치(Wrench) 형태의 일회성 이벤트를 격발하기 위해 통상 이산적(Discrete)인 논리 트리거로 변모해야 하기 때문이다.</p>
+<p>스위치 채널의 유입 변위(<code>raw_value</code>)가 파악되면, 모듈은 이를 일련의 3단 분기 논리망 필터에 통과시켜 명확하게 <code>-1</code> (하단), <code>0</code> (중앙), <code>1</code> (상단) 이라는 확실한 <code>int8_t</code> 자료형으로 양자화(Quantization) 압축시킨다. 이 3진(Tri-state) 플래그 덮어쓰기 로직 덕분에, 상위 모듈인 커맨더(Commander)나 비행 모드 매니저 인스턴스가 아주 직관적이고 결함 없는 Switch-Case 구문으로 현재 하드웨어 토글 스위치의 포지션을 판별할 수 있다.</p>
+<p>또한, 하드웨어 짐벌 링의 탄성 부족으로 인해 스틱을 정중앙(Trim)에 놓았음에도 불구하고 ±5us 가량 전기적 노이즈가 진동하는 현상을 원천 방어하기 위해 <code>RC_DZ</code>(Deadzone, 극간) 파라미터 수치가 도입된다. 이 방어 영역 안에 포함되는 모든 미세한 요동 오차는 <code>apply_calibration</code> 함수 초입에서 하드코딩된 대수학 비교 구문에 의해 강압적인 <span class="math math-inline">1500\mu s</span> 중앙 트림 값으로 일체 평탄화(Flat-lining)되며, 기체 로터 시스템에 의도치 않은 떨림이 증폭 전달되는 재앙의 씨앗을 커널 진입 단계에서 가장 먼저 제압해 낸다.</p>
 
             </article>
             <footer>

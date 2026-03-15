@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:37.5.2.1 NACK(명령 거부) 수신 시 오류 코드(Error Code) 분석을 통한 원인 역추적(Backtracking) 로직</title>
+    <title>BIJUNG:37.5.2.1. NACK(명령 거부) 수신 시 오류 코드(Error Code) 분석을 통한 원인 역추적(Backtracking) 로직</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,66 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>37.5.2.1 NACK(명령 거부) 수신 시 오류 코드(Error Code) 분석을 통한 원인 역추적(Backtracking) 로직</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.2.1 NACK(명령 거부) 수신 시 오류 코드(Error Code) 분석을 통한 원인 역추적(Backtracking) 로직</span></nav>
+                    <h1>37.5.2.1. NACK(명령 거부) 수신 시 오류 코드(Error Code) 분석을 통한 원인 역추적(Backtracking) 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 37. GCS 제어 로직: 상태 기반 제어(State-based Control)의 필요성</a> / <span>37.5.2.1. NACK(명령 거부) 수신 시 오류 코드(Error Code) 분석을 통한 원인 역추적(Backtracking) 로직</span></nav>
                 </div>
             </header>
             <article>
-                <h1>37.5.2.1 NACK(명령 거부) 수신 시 오류 코드(Error Code) 분석을 통한 원인 역추적(Backtracking) 로직</h1>
+                <h1>37.5.2.1. NACK(명령 거부) 수신 시 오류 코드(Error Code) 분석을 통한 원인 역추적(Backtracking) 로직</h1>
+<p>본 절에서는 지상 관제 시스템(GCS) 혹은 자율 비행 에이전트(Autonomous Agent)가 무인항공기(UAV) 측 시스템으로부터 중대 제어 명령에 대한 <strong>NACK(Negative Acknowledgment, 명령 거부)</strong> 트랜잭션을 수신했을 때, 일차원적 실패 통보 수용을 넘어 실패를 유발한 기저 핵심 원인(Root Cause)을 시스템적으로 역추적(Backtracking)해 내는 오류 코드(Error Code) 파싱 아키텍처 비전을 심층적으로 다룬다.</p>
+<p>본 공학적 기술 명세는 설계의 확장성 구비가 선행된 PX4 Firmware v1.14 이상의 사양에서 본격적으로 지원되는 <code>COMMAND_ACK</code> 메시지 내 MAVLink 확장 필드(Extended Field) 규격화 활용 구조와, 이에 대응하는 QGroundControl v4.3 이상의 백엔드 통신 오류 분석기(Error Analyzer) 구조체를 기반으로 서술된다.</p>
+<hr />
+<h2>1.  단순 <code>MAV_RESULT</code> 분기의 정보적 한계와 원인 규명의 필연성</h2>
+<p>이전 장과 절에서 폭넓게 논의한 <code>MAV_RESULT</code> 열거형은 제어 명령의 트랜잭션 수용 상태가 <code>ACCEPTED</code> 인지, 일시적 보류형 <code>TEMPORARILY_REJECTED</code> 인지, 혹은 영구 거부형 <code>DENIED</code> 인지라는 거시적인 상태 논리망 분기(Root Branching)를 훌륭히 제어 수행한다. 그러나 오직 <code>MAV_RESULT_DENIED(2)</code> 상태 플래그를 관제소가 수신했다는 얄팍한 단일 사실 그 자체만으로는, 지상에서 화면을 주시하는 관제사(Human Operator)나 최상위 제어권을 쥔 자율 관제 에이전트 스크립트 측에서 물리적으로 <strong>“대체 왜 거부당했는가?(Why was it rejected?)”</strong> 에 대한 인과적 해답을 절대 투명하게 얻을 방법이 요원하다.</p>
+<p>기동 제어 명령이 안전 FSM 로직망에 의해 거치고 거부될 수 있는 하위 시나리오는 극도로 파편화되고 다양하다.</p>
+<ul>
+<li>글로벌 GPS 3D Fix 위성 개수 임계치 미달로 인한 유도 불가 (Estimator Failure)</li>
+<li>동력 배터리 전압의 강하 폭 심화로 인한 보호 거부 (Power Failsafe Limit)</li>
+<li>안전 스위치(Hardware Safety Switch)의 물리적 언락 미비 결착 상태</li>
+<li>고도 상한선 제한(Ceiling Limit) 혹은 침범 불가한 지오펜스(Geofence) 궤적 위반 판별</li>
+</ul>
+<p>과거의 낙후된 MAVLink 아키텍처에서는 이를 외곽에서 규명하기 위해 GCS 데몬이 무려 수십 개의 이질적인 <code>SYS_STATUS</code> 와 텔레메트리 배열을 맹목적으로 폴링(Polling)하며 원인을 거꾸로 역추리해내는 비효율성을 감내해야만 했다. 허나 최신 MAVLink 2.0 프로토콜 확장은 <code>COMMAND_ACK</code> 구조체 패킷의 스펙 심층부에 <code>result_param2</code> (일반적으로 플랫폼 종속적인 32비트 Integer 정수형 속성) 열 필드를 공식 신설하여, 거절을 최초 발생 및 촉발시킨 소스 FSM 모듈의 <strong>상세 오류 코드(Detailed Error Code)</strong> 를 직접 담아 포워딩 반환하는 획기적인 메커니즘을 창안 도입하였다.</p>
+<hr />
+<h2>2.  오류 코드(Error Code) 바이너리 추출 및 원인 역추적(Backtracking) 트리 아키텍처</h2>
+<p>PX4 비행 제어 루프 내부의 대장격인 커맨더(Commander) 모듈은 다수의 조건 검사기 중 어떠한 특정 사전 검증(Pre-flight Check) 로직 노드 방어막이 최초로 무너지면서 명령 자체를 파기 및 롤백(Rollback)시켰는지에 대한 가장 정확한 플래그(Truth Flag) 척도를 포인터로 보유하고 있다. GCS는 반환 패킷에서 파싱해 낸 이 서브 에러 코드를 마중물 삼아 트리 탐색기반의 <strong>역추적(Backtracking)</strong> 엔진을 가동한다.</p>
+<h3>2.1 ) 매크로 상태 에러 비트 필드 (Macro State Error Masking)</h3>
+<p>오류 발생 진원지의 대분류를 하이 레벨에서 판독한다. 가령, 수신된 에러 코드가 <code>0x0001XXXX</code> 대역 체계라면 이는 치명도가 높은 ‘센서 교정(Sensor Calibration)의 미비함’ 결함을 핑거프린팅한다. 이를 시작점으로 센서 서브시스템 데이터 버스 고부하 시 발생할 수 있는 I2C 교착(Deadlock)인지, 단순히 이함전 자력계(Magnetometer)에 심각한 자기장 간섭(Magnetic Interference) 꼬임이 수반된 것인지를 1선에서 일차적으로 대분류 필터링한다.</p>
+<h3>2.2 ) 마이크로 서브 코드 해독 및 연쇄 백트래킹 (Chain Backtracking)</h3>
+<p>이후 에러 코드의 하위 16비트를 마스킹(Masking) 연산하여 구체적 병목 트리 노드를 족집게처럼 특정해 낸다.</p>
+<ul>
+<li>만약 해독된 코드가 EKF2(비행 상태 추정기 엔진)의 위치 이탈 산출 모듈 파트에서 파생되었음을 명백히 가리키면, GCS 백엔드 통신 클래스는 다른 쓸데없는 로그 검사를 중지하고 즉시 <code>ESTIMATOR_STATUS</code> MAVLink 메시지 스트림으로 전용 리스너(Listener)의 감시 컨텍스트 중심을 효율적으로 스위칭한다.</li>
+<li>국소화 역추적 진행 결과, 위치 혁신 편차 변수인 <code>vel_ratio</code> 혹은 <code>pos_horiz_ratio</code> 필드의 값이 허용 관용 임계치를 우주적으로 초과한 것을 발견한다.</li>
+<li>최종적으로 GCS 프론트엔드 UI 화면에는 “Command Denied“라는 조종사 속을 터지게 하는 무의미한 텍스트 에러 대신, <strong>“추정기 지자기 융합 오차율 초과로 인한 자동 이륙 궤적 보증 불가 - 체공 불허 (기체를 대형 금속물이 없는 개활지로 이동 후 캘리브레이션 재시도 요망)”</strong> 이라는 완벽히 사용자 국소화(Localized User Actionable)된 원인 규명 메시지 경고를 조언적 스탠스로 출력한다.</li>
+</ul>
+<hr />
+<h2>3.  GCS 오류 코드 기반 역추적 알고리즘 흐름도 (Mermaid Tree Diagram)</h2>
+<p>QGroundControl(QGC) 내 백엔드 로직이 비가역적 NACK 응답 수신 이후 어떻게 오류의 기원을 역추적(Backtracking)하여 의미 있고 구조화된 통제 피드백으로 정제 및 규명해 내는지를 아래의 이진 탐색 흐름도를 통해 명료하게 도식화한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[GCS 수신단: 하달한 주요 제어 명령에 대한 NACK COMMAND_ACK 입수] 
+    --&gt; B{MAVLink 확장 스펙 필드 result_param2 (에러 코드) 바이너리 추출}
+    
+    B -- 코드 = 0/NULL (Legacy) --&gt; C[상세 원인 불명: 무작위 일반 상태 휴리스틱 폴링 모니터링 모드 전환]
+    B -- 구체적 코드 보유 (e.g., 0xA004) --&gt; D[GCS 내부 설계 에러 코드 디코더 파이프라인 정식 진입]
+
+    D --&gt; E{마스킹 연산을 통한 대분류 진원지 (Subsystem Origin) 격리 추출}
+    E -- 0x4000 (동력/전원 계통) --&gt; F[배터리 토픽 역추적 리스너 활성화]
+    E -- 0x8000 (하드웨어 센서 결함) --&gt; G[센서 헬스 스탯 토픽 역추적 리스너 활성화]
+    E -- 0xA000 (네비게이터 제어기/EKF 알고리즘단) --&gt; H[추정기 산출 상태 토픽 역추적]
+
+    H --&gt; I[마이크로 분류 해독 분기 (0x0004: 논리적 스펙 - GPS 혁신 오차 잔차 초과 에러)]
+    
+    F --&gt; J((에러 컨텍스트 국소화 및 구체적 사유 구조체 완성))
+    G --&gt; J
+    I --&gt; J
+    
+    J --&gt; K[Actionable 프론트엔드 UI 알림 발생 및 내부 자율 에이전트 예외 처리기(Catch Exception block)로 핸들 이관]
+</code></pre>
+<p>이와 같이 역으로 파고드는 체인 추적 로직은 QGroundControl 화면 제어를 넘어, 무인 조종이 수반되는 자율 비행 에이전트 환경(ROS2 MAVROS/uXRCE-DDS 기반의 Autonomous Application) 탑재 모델 시스템에서 그 진정한 파괴력의 진가를 유감없이 발휘한다. 왜냐하면 육감을 지닌 인간과 달리 논리로 묶인 에이전트 스크립트는 거절 사유가 <code>배터리 전류 부족 파탄</code>인지 <code>가속도 센서 영점 이탈 오류</code>인지 판가름함에 따라, 무인기가 시도해야 할 후속 생존 행동 전략(복귀 고도를 10m로 할 것인지, 아니면 현재 자리 현수에서 즉시 비상 강제 터미네이션 착륙을 발령할 것인지)을 프로그램 코드 트리로 완벽히 갈라 분기시켜 제어해야 필수 생존 역량을 보장받기 때문이다.</p>
+<hr />
+<h2>4.  결론 및 요약 도출</h2>
+<p>과거 시스템의 단순한 일차원적이고 이분법적인 명령 수용 여부 판별(<code>MAV_RESULT</code> 단일 스위치) 단계를 극복하고 초월하여, NACK 거절 수신 파동 헤더 파라미터에 동반되어 날아오는 <strong>구체화된 오류 코드(Error Code)의 비트 단위(Bitwise) 속성 분석 및 이를 기조로 삼는 역추적(Backtracking) 탐색 체계망 확보</strong>는 군집 무인기 인프라(System of Systems)의 관제 신뢰도를 정점의 최고조 수준으로 끌어올린다.</p>
+<p>최신 PX4-Autopilot은 치명적 논리 거부(Denial)를 행사할 때 무턱대고 퇴짜를 놓지 아니하고 그 기원이 되는 FSM 특정 노드의 고유 논리적 주소 메타를 에러 코드로 압축 패킹(Packing)하여 방출하는 일급 유연성을 구비하였다. QGroundControl 혹은 무인 자율 관제 에이전트망은 이 송달 지침 코드를 트리 탐색 기반 연산으로 역추돌 및 해체하여, 문제의 근본 진원지를 특정 서브시스템(EKF 엔진, 스마트 배터리 로직 매니저, 컴패니언 데이터링크 등)단위의 블록으로 완벽하게 국소화(Localization)해 내는 기염을 토한다.</p>
+<p>이는 숙련된 조종사의 직관과 노하우에만 막연히 의존하며 스크린 수치를 노려봐야 했던 구시대적 수동 트러블슈팅(Troubleshooting) 시대를 철저히 종식시켰다. 결론컨대 소프트웨어 구조체 스스로가 고장의 논리적 진단 검사(Diagnostic Assessment)와 사후 해결책까지 시스템적으로 자동 도출 유도할 수 있는 사이버 물리 환경 기반의 진정한 <strong>오류 자가 진단형(Self-Diagnostic/Self-Aware) 이산 자율 제어 통신망 아키텍처</strong>를 완전히 실현하는 공학계의 든든한 척추이자 중추로 등극하였다.</p>
 
             </article>
             <footer>
