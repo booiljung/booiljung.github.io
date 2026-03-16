@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:11.6.1.2 멀티 카메라 스트리밍 퍼블리셔(Publisher)의 블로킹 락(Blocking Lock) 회피 전략</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>11.6.1.2 멀티 카메라 스트리밍 퍼블리셔(Publisher)의 블로킹 락(Blocking Lock) 회피 전략</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>11.6.1.2 멀티 카메라 스트리밍 퍼블리셔(Publisher)의 블로킹 락(Blocking Lock) 회피 전략</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>11.6.1.2 멀티 카메라 스트리밍 퍼블리셔(Publisher)의 블로킹 락(Blocking Lock) 회피 전략</h1>
+<p>현대의 자율주행 모빌리티 장비에는 전후면 카메라, 열화상, 그리고 어안 렌즈까지 무려 4~6개의 멀티 비전 트래픽 스펙트럼이 집약된다. 이 막강한 데이터 압력을 백엔드 클라우드로 사출하기 위해 ROS2의 센서 어레이 노드 안에 단일 퍼블리셔(Publisher) 구조를 잘못 설계할 경우, 초당 수 기가비트(Gbps) 급의 프레임 연사가 내부 운영체제의 소켓 전송 버퍼(Socket Send Buffer)를 고갈시켜버린다.</p>
+<p>결국 운영체제 커널의 “버퍼 공간 없음(EAGAIN)” 반격에 부딪힌 ROS2 송신 스레드는 꼼짝하지 못한 채 잠재워지는 <strong>블로킹 락(Blocking Lock)</strong> 이라는 심근 경색을 마주한다. 하나의 카메라 채널 송신이 멎어버린 순간 백그라운드의 전방향 카메라 노드들이 모두 줄줄이 동결되는 최악의 소프트웨어 셧다운 현상. 본 절에서는 하드 코어 락업을 타파하는 진보적 I/O 분산 구조 설계와 비동기 콜백 사상 런북을 설파한다.</p>
+<h2>1.  퍼블리시(Publish) 동기 호출의 숨겨진 재앙과 I/O 바인딩</h2>
+<p>센서 수집기 개발자들이 흔히 짜올리는 단일 루프형 멀티 비전 파이프라인의 끔찍한 구조를 살펴보자.<br />
+카메라 4대의 프레임을 각기 다른 하드웨어로부터 긁어온 뒤, 순차적으로 <code>publisher_cam1.publish(frame1)</code>, <code>publisher_cam2.publish(frame2)</code> … 와 같이 동기적(Synchronous)으로 코드를 나열해 짠다.</p>
+<p>이 동기형 배출 아키텍처는 네트워크 스위치가 넓을 땐 문제가 없으나, 클라우드 서버망 인터넷 업로드 대역폭이 일시적으로 혼잡(Congested)해질 때 치명적인 이빨을 드러낸다.<br />
+<code>cam1.publish()</code> 를 호출하는 순간 RMW 통신 엔진과 커널 계층의 송신 큐(Tx Queue)가 포화되어 있다면, 리눅스 커널 시스템 콜 계층에서는 공간이 빌 때까지 이 쓰기(<code>write</code>) 함수 요청의 스레드를 대기 상태(Blocking Wait)로 붙잡아버린다.<br />
+결과적으로 카메라 1번의 3MB 사진 한 장을 밀어 넣기 위해 0.5초가 걸리면, 뒤에 줄 서 있던 카메라 2, 3, 4번 프레임 추출 함수들은 실행조차 되지 못하고 VRAM 안에 누전된 채 멈춰 버린다 (프레임 스킵 강제 발생).</p>
+<h2>2.  블로킹 락을 분쇄하는 멀티-스레드 이벤트 액터(Actor) 모델</h2>
+<p>이 미들웨어 I/O 블로킹 사슬에 전위대가 모두 학살당하는 것을 막으려면, 메인 비전 캡처(Capture) 스레드와 ROS2 멀티 퍼블리시(Publish) 송출 구간을 날카로운 철책(Decouple)으로 찢어놓아야(Decoupling) 한다.</p>
+<pre><code class="language-go">// [비전 송출 아키텍처 개선] 비동기 액터(Actor)와 Non-blocking 버퍼 대기열 구조체 
+// *이해를 위해 Go 채널 개념 차용 (C++의 Concurrent Queue 동일 사상)
+
+const CAM_BUFFER_CAPACITY = 3 // 최신 프레임 버퍼 쿠션
+
+var cam1_queue = make(chan Frame, CAM_BUFFER_CAPACITY)
+var cam2_queue = make(chan Frame, CAM_BUFFER_CAPACITY)
+
+func MainSensorCaptureThread() {
+    for {
+        f1, f2 := grab_cameras()
+        // 메인 스레드는 송신큐에 던져놓고 버퍼가 꽉 찼으면 
+        // 그냥 데이터를 휴지통에 버리고 쿨하게 다음 프레임을 찍으러 나간다 (Non-Blocking 발포)
+        select { case cam1_queue &lt;- f1: default: discard(f1) }
+        select { case cam2_queue &lt;- f2: default: discard(f2) }
+    }
+}
+
+// OS 네트워크 레이어가 블로킹되건 말건 독고다이로 죽을 쑤는 별동대 스레드들
+func DedicatedPublisherThread1() {
+    for frame := range cam1_queue {
+       ros2_publisher_cam1.publish(frame) // 여기서 락(Lock)이 걸리더라도 메인 스레드와 타 카메라는 100% 생존!!
+    }
+}
+</code></pre>
+<p>이와 같은 스레드 단절(Thread Isolation) 및 비동기 큐 핑퐁 전술이 가해지면, <code>camera1</code> 의 ROS2 퍼블리셔가 커널 버퍼 부족으로 백프레셔(Backpressure)를 받으며 수 초간 잠들더라도 <code>camera2, 3</code> 의 별동대 송신 스레드는 멈추지 않는다. 나아가 메인 캡처 루프는 하드웨어 렌즈의 기계적 틱(Tick) 속도를 전혀 방해받지 않고 100% FPS를 지속해서 가산(Summing)하게 된다.</p>
+<h2>3.  RMW 계층의 비동기(Async) 플래그 및 논블로킹(Non-Blocking) 지원 우회</h2>
+<p>개발 코드 아키텍처를 뒤엎는 데 한계가 있다면, 통신 미들웨어(RMW) 벤더의 저레벨 QoS 옵션과 운영체제 소켓 통제권을 해킹하여 우회하는 수단도 강구해야 한다.</p>
+<p>DDS나 <code>rmw_zenoh_cpp</code> 의 QOS 정책에서 퍼블리시 행위의 대기 속성(<code>Publish Mode</code>)을 강제로 <strong>동기(Synchronous)</strong> 에서 <strong>비동기(Asynchronous)</strong> 타입으로 튜닝하라.<br />
+<code>Asynchronous Publish</code> 플래그가 전개되면, <code>publish()</code> 호출은 데이터를 백그라운드의 숨겨진 I/O 스레드 버퍼 포인터에 욱여넣기만 한 즉시 반환(Return)해 버린다. 마치 우편함에 편지를 던져넣고 바로 돌아서는 행위와 같다.<br />
+물론 이 역시 내부 비동기 큐 메모리 한계점(Queue Overflow)을 초과할 경우 예외나 패킷 파기를 수반하지만, 카메라 캡처링 코어 알고리즘 스레드가 네트워크 소켓의 가변성에 목숨(Lock)을 덜미 잡혀 화면이 뚝뚝 끊기는 최악의 블로킹 코마(Coma) 사태만큼은 완벽에 가깝게 방어하는 절대 진리의 런타임 쉴드다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

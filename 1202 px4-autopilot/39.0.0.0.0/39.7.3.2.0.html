@@ -116,31 +116,48 @@
             <article>
                 <h1>39.7.3.2. 패킷 분석기(Wireshark MAVLink Dissector)를 활용한 시퀀스 번호 점프(Sequence Jump) 검증 및 대역폭 포화(Bandwidth Saturation) 비율 계산</h1>
 <h2>1.  개요</h2>
-<p>QGC 내장 통신 검사기가 애플리케이션 계층 직전의 문지기라면, 전 세계 거의 모든 네트워크 엔지니어들이 애용하는 <strong>Wireshark</strong>는 운영체제의 네트워크 인터페이스 카드(NIC)를 직접 긁어내는 가장 밑바닥의 해부 도구다.<br />
-Wireshark에 MAVLink 전용 해석기(MAVLink Dissector 플러그인)를 탑재하면, UDP 포트(예: 14550)를 타고 날아다니는 파편화된 이진(Binary) 데이터들이 메시지 ID, 컴포넌트 ID, 페이로드 값 지정과 함께 인간이 읽을 수 있는 형태로 디코딩된다. 본 절에서는 통신 단절과 명령어 유실의 원인을 물리망의 한계율(Limits)에서 증명하는 시퀀스 번호 점프 진단과 대역폭 포화 계산법을 다룬다.</p>
-<h2>2.  시퀀스 번호 점프(Sequence Jump)를 통한 유실 증명</h2>
-<p>MAVLink 1.0과 2.0 프로토콜 헤더에는 모두 1바이트(8비트) 크기의 <code>seq</code> (시퀀스) 필드가 존재한다. 이 값은 0부터 255까지 1씩 순차적으로 증가하다가 오버플로우되면 다시 0으로 순환(Roll-over)한다.<br />
-이는 마치 소포에 찍힌 일련번호와 같아서, <strong>허공에서 패킷이 증발(Drop)했는지를 완벽하게 증명하는 지표</strong>가 된다.</p>
-<p>Wireshark 필터를 걸어 특정 시스템 ID(<code>sysid==1</code>)에서 날아오는 트래픽의 <code>seq</code> 번호 열(Column)을 관찰해보자.</p>
+<p>드론의 원격 텔레메트리(Telemetry) 망에서 패킷 유실을 검출하는 기본적 수단이 QGroundControl 내부의 MAVLink Inspector라면, 보다 정밀한 통신망 트래픽 프로파일링(Profiling)과 시계열(Time-series) 분석을 수행하기 위한 가장 강력한 공학적 수단은 <strong>Wireshark 패킷 분석기</strong>이다.</p>
+<p>Wireshark의 MAVLink Dissector(해석기) 플러그인을 활용하면, UDP 포트(일반적으로 14550)를 통해 송수신되는 방대한 양의 MAVLink 프레임 스트림 내부를 1바이트 수준까지 분해하여 관찰할 수 있다. 본 절에서는 Wireshark 필터링 규칙을 활용하여 연속적인 데이터 흐름 속에서 유실된 패킷의 지문(Signature)인 시퀀스 번호 점프(Sequence Jump)를 검출하는 기법과, 현재 통신망이 수용할 수 있는 한계 능력을 초과했는지를 확인하기 위한 대역폭 포화(Bandwidth Saturation) 비율 계산 방법론을 기술하라.</p>
+<h2>2.  Wireshark MAVLink Dissector 환경 구성 및 트래픽 캡처</h2>
+<p>PX4 기반 드론 시스템의 네트워크 트래픽을 캡처하기 위해서는 GCS가 실행 중인 PC의 루프백(Loopback) 인터페이스나 원격 네트워크 어댑터 상향의 UDP(User Datagram Protocol) 스트림을 감청(Sniffing)해야 한다.<br />
+최신 버전의 Wireshark는 MAVLink v1 및 v2 프로토콜을 네이티브(Native)로 지원하므로, UDP 트래픽 필터에 <code>udp.port == 14550</code>을 적용하는 것만으로 캡처된 패킷들이 <code>MAVLINK_PROTO</code> 프로토콜로 자동 분류(Decode)된다.</p>
+<p>디섹터(Dissector)는 캡처된 원시 이진 데이터를 바탕으로 다음의 필드 계층 구조를 생성한다.</p>
 <ul>
-<li>정상 상태: <code>... 45, 46, 47, 48, 49, 50 ...</code></li>
-<li>패킷 유실 발생: <code>... 45, 46, 47, (끊김), 52, 53, 54 ...</code></li>
+<li><strong>Packet Info</strong>: 패킷 캡처 시각, 길이(Wire Length) (예: UDP 헤더 포함 284 bytes)</li>
+<li><strong>MAVLink Protocol</strong>: Magic Byte, Payload Length, Sys ID, Comp ID, Msg ID</li>
+<li><strong>MAVLink Payload</strong>: 실제 페이로드 내 변수 이름 및 복호화된 스칼라(Scalar) 값</li>
 </ul>
-<p>47번 패킷 수신 이후 갑자기 52번 패킷이 포착되었다는 것(Sequence Jump)은, 이 사이에 전송된 <code>seq</code> 48, 49, 50, 51 총 4개의 패킷이 무선 주파수 환경의 노이즈, 장애물 가림(LOS 상실), 대역폭 한계 등으로 인해 드론의 안테나에 도달하지 못하고 완전히 증발했음을 의미한다.<br />
-만약 조종사가 발송한 이륙(<code>COMMAND_LONG</code> 400번) 명령 패킷이 불운하게도 저 증발한 4개의 번호(48~51) 중 하나에 속해 있었다면, 기체는 영원히 명령을 받지 못하고 멍청하게 서 있을 수밖에 없다. 이것이 바로 조종사가 겪는 ’명령어 씹힘’의 물리적 실체다.</p>
-<h2>3.  통계적 대역폭 포화(Bandwidth Saturation) 비율 계산</h2>
-<p>그렇다면 패킷은 왜 증발하는가? 안테나가 부러지지 않은 이상, 대부분의 원인은 <strong>대역폭 포화(Bandwidth Saturation)</strong> 다.<br />
-전통적인 SiK Telemetry 라디오의 물리적 대역폭 한계는 보통 57600 bps (초당 약 5.7 KBytes) 수준이다. 이 얇은 파이프에 고해상도 로그, 수백 Hz의 IMU 데이터 수치, 배터리 상태, 커맨드 등 모든 데이터를 쑤셔 넣으면 파이프가 터져버린다(Overflow).</p>
-<p>Wireshark의 IO Graph 기능이나 통계(Statistics) 탭을 활용하면 지정된 UDP 포트를 통과하는 초당 누적 바이트수(Bytes/tick)를 계산할 수 있다.<br />
-가령, Wireshark 상에서 관측된 MAVLink 트래픽이 초당 지속적으로 5.5 KBytes를 때리고 있다면, 이는 텔레메트리 라디오의 물리 계층(PHY) 전송 한계(Maximum Throughput) 언저리에서 시스템이 아슬아슬하게 줄타기를 하고 있다는 뜻이다.<br />
-대역폭이 포화율 90%를 넘어가면(버퍼가 항상 차 있으면), GCS에서 송출한 새로운 <code>COMMAND_LONG</code> 패킷은 즉시 무선 칩셋으로 나가지 못하고 라디오 내부 큐에서 스톨(Stall) 상태에 빠지거나, 더 나아가 큐가 오버플로우되어 조용히 버려진다(Dropped).</p>
-<h2>4.  데이터 링크 최적화(Link Optimization) 해결책</h2>
-<p>이와 같은 Wireshark의 정량적 부검 결과를 바탕으로, 시스템 엔지니어는 텔레메트리 전송 빈도를 다이어트시키는 튜닝을 수행해야 한다.</p>
+<h2>3.  시퀀스 번호 점프(Sequence Jump) 검증 기법</h2>
+<p>네트워크의 물리 계층(Physical Layer)에서 일시적인 전파 방해(Interference)나 하드웨어 병목이 발생하면 MAVLink 프레임의 헤더에 기록된 8비트 <code>seq</code> (시퀀스 번호)가 연속되지 않고 건너뛰는 현상이 발생한다.</p>
+<p>Wireshark 상에서 이를 검증하기 위해서는 MAVLink 디섹터의 시퀀스 번호 필드를 기준으로 필터링 구문이나 I/O 상태 그래프를 작성해야 한다. 다음 절차를 따라 통신 품질을 검증하라.</p>
+<ol>
+<li><strong>디스플레이 필터(Display Filter) 활용</strong>: 특정 컴포넌트(예: Autopilot의 <code>Comp ID == 1</code>)에서 전송되는 패킷만 수집하기 위해 <code>mavlink_proto.compid == 1</code> 필터를 적용한다.</li>
+<li><strong>시퀀스 불연속성 에포크(Epoch) 스캔</strong>: Wireshark의 <code>Analyze -&gt; Expert Information</code> 기능이나 전용 Lua 스크립트를 사용하여 현재 패킷의 시퀀스 값(<span class="math math-inline">Seq_n</span>)과 이전 패킷의 시퀀스 값(<span class="math math-inline">Seq_{n-1}</span>) 간의 차이를 평가한다.<br />
+정상적인 패킷 수신 시 <span class="math math-inline">Seq_n = Seq_{n-1} + 1 \pmod{256}</span> 공식을 따른다.</li>
+<li><strong>결과 해석</strong>: 시퀀스 번호가 예를 들어 <code>45</code>에서 다음 패킷이 <code>48</code>로 수신되었다면, 중간에 최소 2개의 패킷(<code>46</code>, <code>47</code>)이 공간 상에서 소멸(Dropped)되었음을 뜻한다. 이는 패킷 드롭률(Loss Rate)을 산정하는 핵심적인 수학적 근거가 된다.</li>
+</ol>
+<h2>4.  대역폭 포화(Bandwidth Saturation) 비율 계산</h2>
+<p>텔레메트리 대역폭(Air Data Rate)이 57,600 bps(Bits Per Second)인 SiK Radio 모뎀을 사용하는 상황을 가정하자. PX4의 <code>MAV_0_MODE</code> 파라미터가 무리하게 높은 데이터 레이트(Data Rate) 전송을 허용하도록 설정되어 있다면, 물리 계층 버퍼가 한계에 봉착하는 대역폭 포화 현상이 나타난다.</p>
+<p>이 포화 비율(<span class="math math-inline">S_{ratio}</span>)을 정량적으로 산출하기 위한 공식은 다음과 같다.</p>
+<p><span class="math math-display"> S_{ratio} = \left( \frac{R_{rx}}{C_{link}} \right) \times 100 \ (\textsf{\%}) </span></p>
+<p>식에서 각 변수의 의미는 아래와 같다.</p>
 <ul>
-<li><strong>비필수 데이터스트림의 주파수 강하</strong>: 진동(Vibration)이나 고속 액추에이터 제어가 아닌 이상, 일반 관제 화면에서 IMU 텔레메트리(<code>HIGHRES_IMU</code>)를 50Hz씩 뿜어낼 필요가 없다. QGC의 매개변수 설정이나 <code>MAV_CMD_SET_MESSAGE_INTERVAL</code> 커맨드를 통해 불필요한 고용량 텔레메트리 토픽의 주파수를 1Hz 이하 혹은 비활성화 수준으로 억제한다.</li>
-<li><strong>QoS(Quality of Service) 및 트래픽 쉐이핑 적용</strong>: 대역폭 파이가 제한된 상태에서는, <code>COMMAND_LONG</code> 패킷과 기체의 생존을 보장하는 <code>HEARTBEAT</code> 패킷의 물리 계층 전송 우선순위(Priority)를 최상위로 끌어올리는 백엔드 아키텍처 수정을 고려해야 한다.</li>
+<li><strong><span class="math math-inline">C_{link}</span> (용량 한계, Link Capacity)</strong>: 무선 모뎀의 물리적 최대 전송률. 57,600 bps 속도의 8-N-1 UART 설정 통신의 경우, 오버헤드를 제외한 유효 전송률은 약 <span class="math math-inline">5,760</span> Bytes/sec(Bps)로 한정된다.</li>
+<li><strong><span class="math math-inline">R_{rx}</span> (수신 비트율, Received Bit Rate)</strong>: Wireshark의 <strong>Statistics -&gt; I/O Graphs</strong> 도구에서 Y축(Y-Axis)을 <code>Bytes/Tick</code> 모드로 설정하여 측정한 초당 실제 캡처 바이트 양이다. 이때 UDP/IP 프로토콜 계층의 헤더 사이즈(약 28 ~ 42 bytes) 오버헤드를 고려하여 순수 MAVLink 크기를 대입해야 한다.</li>
 </ul>
-<p>결국 네트워크 결함 진단 공학이란, 추상적인 “연결 불량“이라는 변명을 Wireshark 프로토콜 애널라이저를 이용해 정확한 “시퀀스 점프 횟수“와 “초당 바이트 오버플로우 수치“라는 수리적 과학으로 탈바꿈시키는 과정이다.</p>
+<p><span class="math math-display"> R_{rx} = \sum_{i=1}^{N} L_{mav_i} </span> (여기서 <span class="math math-inline">L_{mav_i}</span>는 단위 시간 초(sec) 내에 캡처된 <span class="math math-inline">i</span>번째 MAVLink 패킷의 바이트 길이)</p>
+<p>만일 <span class="math math-inline">S_{ratio}</span> 값이 지속적으로 <span class="math math-inline">90\textsf{\%}</span>를 초과(경계 영역, Marginal Zone)하거나 <span class="math math-inline">100\textsf{\%}</span>에 근접한다면 큐 오버플로우(Queue Overflow)로 인한 무손실 송신은 보장할 수 없다.</p>
+<h2>5.  트래픽 분석 시각화 및 PX4-Autopilot 최적화 가이드</h2>
+<p>네트워크 용량과 현재 트래픽 간의 관계를 다음과 같이 그래프로 도식화할 수 있다.</p>
+<pre><code class="language-mermaid">xychart-beta
+    title "시간에 따른 통신 대역폭 포화도 (Bandwidth Saturation)"
+    x-axis "Time (seconds)" [0, 5, 10, 15, 20, 25, 30]
+    y-axis "Througput (Bytes/sec)" 0 --&gt; 7000
+    line [3000, 3200, 5800, 6500, 6800, 4500, 3100]
+    bar [0, 0, 5760, 5760, 5760, 0, 0]
+</code></pre>
+<p>위 그래프에서 10초 ~ 20초 구간은 Wireshark 측정값(<span class="math math-inline">R_{rx}</span>)이 링크 하드웨어의 최대 대역폭 한계(5760 Bytes/sec, 막대 한계점) 선을 돌파한 포화 상태를 보여주며, 이 구간에서 대규모의 <code>시퀀스 점프(Sequence Jump)</code>가 발생하게 된다. 보통 기체가 웨이포인트(Waypoint) 임무 목록이나 방대한 파라미터 셋(Parameter Set)을 GCS로 덤프(Dump)할 때 이러한 현상이 두드러진다.</p>
+<p>네트워크 엔지니어는 Wireshark 분석 결과를 바탕으로, PX4의 <code>MAV_0_RATE</code> 변수를 물리적 대역폭(<span class="math math-inline">C_{link}</span>)의 70% 수준인 보수적인 수치(예: 1200 Bytes/s)로 하향 조정(Throttle)하거나 시스템 내부의 스트림 요구 사항(Stream Request)을 경량화(Optimization)하여 무선 신뢰성을 확보하라.</p>
 
             </article>
             <footer>

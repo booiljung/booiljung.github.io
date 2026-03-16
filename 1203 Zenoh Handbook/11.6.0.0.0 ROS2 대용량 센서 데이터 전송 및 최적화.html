@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:11.6 ROS2 대용량 센서 데이터 전송 및 최적화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>11.6 ROS2 대용량 센서 데이터 전송 및 최적화</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>11.6 ROS2 대용량 센서 데이터 전송 및 최적화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>11.6 ROS2 대용량 센서 데이터 전송 및 최적화</h1>
+<p>초당 10번만 쏘는 배터리 잔량이나 /tf(좌표 변환) 데이터는 애교에 불과하다.<br />
+로봇이 라이다(LiDAR) 포인트 클라우드나 4K 스테레오 카메라 영상을 뿜어내기 시작하면 네트워크는 순식간에 시궁창이 된다.</p>
+<p>이 챕터에서는 프레임당 수 메가바이트(MB)가 넘어가는 더러운 괴물 패킷들을 어떻게 구속복(Zenoh 압축/단편화 설정)으로 감싸어 클라우드로 우겨넣을 것인지, 대용량 트래픽 엔지니어링의 정수를 보여주는 튜닝 런북을 공개한다.</p>
+<h2>1.  LiDAR / PointCloud2 등 고대역폭 데이터 전송 최적화 기법</h2>
+<p>벨로다인이나 아우스터 라이다(LiDAR)에서 쏟아지는 <code>sensor_msgs/msg/PointCloud2</code> 토픽은 초당 50MB~100MB 의 네트워크 대역폭을 집어삼킨다. 이 데이터를 그대로 외부망 레이더로 쏘아 올리면 통신망 전체가 마비(Choking)된다.</p>
+<h4>1.0.1 [Runbook] 포인트 클라우드 호흡 타파 전술</h4>
+<p><strong>1. ROS2 QoS 구조 파괴 (Best Effort 강제)</strong><br />
+DDS 브릿지나 rmw_zenoh 설정에서 <code>/scan</code> 이나 <code>/ouster/points</code> 같은 고대역폭 토픽은 무조건 <code>BEST_EFFORT</code> 와 버퍼 사이즈 1(<code>Keep_last=1</code>) 로 강제 압살해야 한다.<br />
+로봇이 버벅거릴 때 옛날 PointCloud 를 보내봤자 자율주행 알고리즘에 혼돈만 줄 뿐이다. 오직 “가장 최신의 1장” 만 보내라.</p>
+<p><strong>2. 브릿징 필터(Decimation) 도입</strong><br />
+모든 프레임을 보내지 마라. 브릿지를 켜기 전에 ROS2 노드 내부에서 <code>topic_tools drop</code> 같은 도구를 활용하여 10Hz 짜리 라이다 프레임을 2Hz 로 강제 다운샘플링 한 토픽(<code>/points_throttled</code>)을 새로 판다.<br />
+그리고 <code>zenoh-bridge-dds</code> 에서는 원본이 아닌 이 다이어트 토픽만 Allow 로 허용한다.</p>
+<pre><code class="language-json5">// bridge-config.json5
+allow: {
+  topics: [
+    "/points_throttled" // 오직 2Hz로 반갈죽 당한 데이터만 통과!
+  ]
+}
+</code></pre>
+<h2>2.  고해상도 카메라 영상(Image / CompressedImage)의 실시간 스트리밍</h2>
+<p>ROS2 의 기본 <code>sensor_msgs/msg/Image</code> 는 무압축 RAW 데이터다. 1080p 해상도 RGB 이미지는 한 장에 무려 6MB 에 달한다. 이걸 초당 30 프레임으로 쏘면 1.4Gbps 라는, 공장 와이파이로는 어림도 없는 괴물 트래픽이 발생한다.</p>
+<h4>2.0.1 [Runbook] 비디오 스트리밍 H.264/JPEG 우회 전술</h4>
+<p><strong>1. RAW 토픽의 외부 누출 완전 금지</strong><br />
+<code>zenoh-bridge-dds</code> 환경 설정 파일에서 무압축 이미지 토픽은 철저하게 차단(Deny)한다.</p>
+<p><strong>2. <code>image_transport</code> 연동</strong><br />
+ROS2 카메라 노드를 띄울 때 <code>image_transport</code> 플러그인을 활성화하여 <code>CompressedImage</code> (JPEG 변환 데이터) 로 토픽을 추가 발행하게 만든다.</p>
+<p><strong>3. 압축본 토픽만 브릿지 통과</strong></p>
+<pre><code class="language-json5">// bridge-config.json5
+allow: {
+  topics: [
+    "/camera_front/image_raw/compressed", // 오직 JPEG 압축 토픽만 나가라!
+    "/camera_front/camera_info"
+  ]
+}
+</code></pre>
+<p><strong>[더욱 극단적인 최적화: H.264 WebRTC]</strong><br />
+만약 원격 조종 지연시간(Latency)을 100ms 이하로 맞춰야 한다면 ROS2 이미지 토픽 브릿징 자체를 포기해라. 라즈베리 파이 단에서 H.264 스트림(GStreamer)을 만들어 WebRTC 로 쏘고, Zenoh 는 오직 조이스틱(<code>/cmd_vel</code>) 전송용으로만 쓰는 분리 아키텍처가 시각적 지연 단축의 승리 공식이다.</p>
+<h2>3.  Zenoh의 데이터 압축(Compression) 및 조각화(Fragmentation) 기능 적용</h2>
+<p>ROS2 노드 측에서 데이터를 미처 깎아내지 못하고 던졌다면, 그 뒤를 받치는 Zenoh 터널 인프라 자체가 똑똑해져야 한다.</p>
+<h4>3.0.1 [Runbook] 터널링 쥐어짜기 (Tunnel Compaction) 전술</h4>
+<p>Zenoh 코어는 네트워크로 던지기 직전에 알아서 패킷을 조각내고(Fragmentation), 남는 CPU 파워를 활용해 공중에서 데이터를 압축(Compression)해버리는 미친 기능이 내장되어 있다.</p>
+<p><strong>1. 런타임 조각화 제어 (Fragmentation)</strong><br />
+인터넷(WAN)의 MTU(최대 전송 단위)는 보통 1500 바이트다. 6MB 짜리 이미지 패킷이 날아오면 Zenoh 는 알아서 이 데이터를 수천 개의 버퍼로 분할 전송한다. 여기서 네트워크 환경이 나쁘다면 최대 프레임 사이즈를 줄여서 유실율을 낮춘다. (Zenoh 설정 <code>fragmentation_size</code> 조정).</p>
+<p><strong>2. 실시간 데이터 스트리밍 압축 금제!</strong><br />
+Zenoh 라우터를 기동할 때 압축을 켤 수는 있다. 그러나 <strong>센서 데이터 압축은 철저히 금지한다.</strong></p>
+<ul>
+<li>라이다 데이터(Float의 나열)나 JPEG 압축 이미지를 Zenoh 엔진 단에서 한 번 더 (Snappy나 zstd 등) 압축해 봤자 용량은 1% 도 안 줄어든다.</li>
+<li>오히려 압축 알고리즘을 계산하느라 로봇 컴퓨터의 CPU 코어만 미친 듯이 솟구치고, 통신 지연시간(Latency)만 50ms 증가한다.</li>
+</ul>
+<p>압축은 문자열(String)이나 JSON 로그 데이터가 주를 이루는 IT 통신망에서나 유효하다. 멀티미디어 급 센서가 오가는 ROS2 망에서는 <strong>“송신 전 어플리케이션 단의 압축 (JPEG, H.264 변환)”</strong> 만 믿고, Zenoh 터널 단의 투명 압축은 꺼두는(Off) 것이 속도 최적화의 제1원칙이다.</p>
+<h2>4.  ROS2 QoS(Quality of Service) 설정과 Zenoh 통신 파라미터 매핑</h2>
+<p>ROS2 의 QoS 는 아주 복잡한 6가지 설정을 가지고 있지만, Zenoh 가 주목하는 것은 오직 두 가지다: <strong>“이게 도착해야만 하는가(Reliability)”</strong>, 그리고 <strong>“과거 상태가 중요한가(History/Durability)”</strong>.</p>
+<h4>4.0.1 [Runbook] 대용량 버퍼 스매시 대피소 구축 전략</h4>
+<p><strong>1. Reliability 매핑</strong></p>
+<ul>
+<li>ROS2 <code>RELIABLE</code> -&gt; Zenoh <code>Reliable</code>. “절대 잃어버리지 마!” 대용량의 지도 데이터(<code>/map</code> 토픽) 전송에 쓰인다. 단, 유실 시 TCP 처럼 재전송이 일어나므로 트래픽 파열(Burst) 이 일어날 수 있다.</li>
+<li>ROS2 <code>BEST_EFFORT</code> -&gt; Zenoh <code>Best-effort</code>. 대용량 라이다, 카메라 영상 토픽에 무조건 강제된다.</li>
+</ul>
+<p><strong>2. Durability (내구성) 캐시 튜닝</strong><br />
+로봇이 켜지기 전에 만들어진 데이터를 나중에 켜진(Late-joiner) 관제 앱이 볼 수 있느냐의 문제다.</p>
+<ul>
+<li>ROS2 <code>TRANSIENT_LOCAL</code> -&gt; Zenoh 메모리에 임시 보관됨.</li>
+<li>대용량 센서(<code>Image</code>, <code>PointCloud2</code>) 에 <code>TRANSIENT_LOCAL</code> 을 거는 순간, Zenoh 엔진 내부에 수백 MB 의 거대한 임시 메모리가 생겨나며 로봇의 램(RAM)을 갉아먹는다. 대용량 실시간 센서는 무조건 과거를 버리는 <code>VOLATILE</code> 로 세팅하라!</li>
+</ul>
+<p><strong>3. History (History length)</strong></p>
+<ul>
+<li><code>KEEP_LAST</code>, <code>depth=10</code> 등. Zenoh 에서는 내부 라우팅 큐(Queue) 사이즈로 매핑된다.</li>
+<li>카메라 영상 버퍼 사이즈를 10 으로 잡지 마라. 통신이 1초 끊겼다 연결되는 순간 패킷 사이즈 6MB * 10 = 60MB 의 트래픽이 한 번에 와장창 터지며 네트워크 톨게이트를 질식사시킨다. 실시간 제어 엣지 시스템에서 랙(Lag)이 발생했을 때 과거의 쓰레기 같은 프레임을 보관하는 것은 자해행위다. 사이즈는 무조건 <strong>결단코 1</strong> 이다.</li>
+</ul>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

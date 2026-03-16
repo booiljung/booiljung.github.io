@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:8.11 에러 핸들링, 로깅 및 트러블슈팅</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>8.11 에러 핸들링, 로깅 및 트러블슈팅</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>8.11 에러 핸들링, 로깅 및 트러블슈팅</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>8.11 에러 핸들링, 로깅 및 트러블슈팅</h1>
+<p>분산 네트워크 통신에서 “성공적으로 데이터를 보냈다“라는 말은 “내가 버퍼에 밀어 넣기까지는 에러가 없었다“의 동의어일 뿐, 상대방이 받았음을 절대 단위로 보증하지 않는다.<br />
+라우터가 다운되었거나, 클라이언트 브라우저가 오프라인이 되었거나, C++ 로봇이 악의적인 쓰레기(Garbage) 배열을 쏘아대서 <code>JSON.parse</code>가 폭발하는 상황은 언제나 일어난다.</p>
+<p>이 장에서는 TypeScript 언어 고유의 컴파일 타임 방어막(Type Safety)과 전역 에러 파이프라인(Global Error Pipeline)을 이용해, 에러가 발생하더라도 프론트엔드가 하얗게 죽어버리거나 백엔드 PM2 스레드가 재부팅되는 재앙을 막아내는 우아한 폴백(Fallback) 전술을 서술한다.</p>
+<h2>1.  TypeScript의 타입 안전성(Type Safety)을 극대화한 런타임 오류 방어</h2>
+<p>JavaScript의 최대 약점은 <code>JSON.parse()</code> 가 뱉어내는 데이터가 기본적으로 <code>any</code> 타입이라는 점이다.<br />
+TypeScript를 쓴다면 절대로 Zenoh <code>sample.payload</code> 를 그냥 믿고 써서는 안 된다. 컴파일러가 못 잡아내는 런타임 에러를 어떻게 부숴버릴 것인가?</p>
+<h4>1.0.1 [Runbook] 런타임 타입 가드(Type Guard) 및 스키마 검증기 전술</h4>
+<p>단순 TS <code>interface</code> 캐스팅(<code>as T</code>)을 버리고, 런타임에도 방어막이 살아있는 <code>Zod</code> 나 <code>Runtypes</code> 를 필수적으로 결합하라.</p>
+<pre><code class="language-typescript">import * as zenoh from "@eclipse-zenoh/zenoh";
+import { z } from "zod";
+
+// 1. Zod를 활용한 엄격한 방호 스키마 설계
+const DronePacketSchema = z.object({
+    id: z.string(),
+    altitude: z.number().positive(),     // 0 이하의 고도는 무조건 에러!
+    gps: z.tuple([z.number(), z.number()]),
+    status: z.enum(["OK", "WARN", "ERR"]) // 이상한 글자 들어오면 파기!
+});
+
+// TS 타입 추출 
+type DronePacket = z.infer&lt;typeof DronePacketSchema&gt;;
+
+async function secureSubscriber(session: zenoh.Session) {
+    await session.declareSubscriber("drone/*/telemetry", (sample) =&gt; {
+        try {
+            // 1차 방어: 바이트 디코딩 중 에러 감지 (UTF-8 손상)
+            const rawText = new TextDecoder("utf-8", { fatal: true }).decode(sample.payload);
+            const unsafeData = JSON.parse(rawText);
+
+            // 2차 방어: 스키마 강제 파싱 (Zod가 불순물을 모조리 걸러냄)
+            const safeData: DronePacket = DronePacketSchema.parse(unsafeData);
+            
+            // 안전 구역: 확실히 검증된 데이터만 비즈니스 로직에 인입
+            processFlightData(safeData.id, safeData.altitude);
+
+        } catch (err) {
+            if (err instanceof z.ZodError) {
+                console.error(`[방어막 작동] 규격 위반 패킷 버림: ${sample.keyExpr}`, err.issues);
+            } else if (err instanceof SyntaxError) {
+                console.error(`[방어막 작동] JSON 파싱 실패 (쓰레기 데이터): ${sample.keyExpr}`);
+            } else {
+                console.error(`[크리티컬] 알 수 없는 Payload 파괴 감지:`, err);
+            }
+        }
+    });
+}
+</code></pre>
+<p>프론트엔드 React 개발자라면 이 런타임 타입 검증은 선택이 아닌 필수다. C++나 Rust에서 날아온 데이터가 형식을 위반했을 때, 리액트 컴포넌트 내부에서 <code>undefined.map()</code> 이 떨어지면 브라우저 앱은 영영 ‘하얀 도화지(White Screen of Death)’ 가 되어 수동 새로고침 전까지 죽어버리기 때문이다.</p>
+<h2>2.  Zenoh API의 예외(Exception) 계층 구조 및 에러 코드 분석</h2>
+<p>Zenoh TS 바인딩은 하부에 C/Rust FFI (Foreign Function Interface)를 깔고 있다. 이 엔진이 비명을 지르며 죽을 때, TypeScript 단으로 어떤 모양의 메시지가 올라오는지 분석하고 솎아내야 한다.</p>
+<h4>2.0.1 [인스펙션] Zenoh 엔진 특수 에러 유형별 대처법</h4>
+<ol>
+<li><strong>연결 (Session) 거부 에러</strong></li>
+</ol>
+<ul>
+<li><strong>에러 양상:</strong> <code>await zenoh.open()</code> 호출 시 튕겨냄 (Promise Rejection)</li>
+<li><strong>사유:</strong> 타겟 라우터의 IP가 틀렸거나, 포트가 막혔거나, 서버 백엔드 환경에서 네트워크 권한(<code>allow-net</code>)이 없거나, 타임아웃 튜닝 실패.</li>
+<li><strong>대처:</strong> 8.3단원에서 다룬 <strong>“지수 백오프(Exponential Backoff)” 무한 재시도 루프</strong>로 이 에러를 완전히 집어삼켜야 한다.</li>
+</ul>
+<ol start="2">
+<li><strong>권한 인가(Auth/Authorization) 위반 에러</strong></li>
+</ol>
+<ul>
+<li><strong>에러 양상:</strong> 특정 경로 퍼블리셔/구독자 선언 시 <code>Permission Denied</code></li>
+<li><strong>사유:</strong> Zenoh Router에서 ACL(액세스 제어 리스트) 플러그인이 켜져 있고, 이 토큰이 해당 Key Expression에 대한 권한이 없을 때.</li>
+<li><strong>대처:</strong> 사용자 화면을 로그인 창으로 강제 리다이렉션(<code>UI Logout</code>) 시킨다.</li>
+</ul>
+<ol start="3">
+<li><strong>네트워크 응답 결손 (Timeout Error in Queries)</strong></li>
+</ol>
+<ul>
+<li><strong>에러 양상:</strong> <code>for await (const reply of session.get(...))</code> 도중 누락.</li>
+<li><strong>사유/주의:</strong> Zenoh의 철학상, 타임아웃은 ‘에러(Exception)’ 를 발생시키지 않는다. 조용히 파이프를 닫아버린다.</li>
+<li><strong>대처:</strong> 8.5.6장에서 배운 대로, <code>Date.now()</code> 의 타임스탬프 차이를 계산하여 <strong>어플리케이션(TypeScript) 레이어에서 독자적인 타임아웃 경고를 발동</strong>시켜야 한다!</li>
+</ul>
+<pre><code class="language-typescript">// 💡 커스텀 에러 식별자 생성 전술
+export class ZenohNetworkDropError extends Error {
+    constructor(msg: string) {
+        super(msg);
+        this.name = "ZenohNetworkDropError";
+    }
+}
+</code></pre>
+<p>Zenoh 코어가 뱉는 에러와, 내가 설계한 비즈니스 로직(타임아웃, 포맷 에러) 에러를 명확히 분리하여 에디터 추론 단계를 높여라.</p>
+<h2>3.  전역 에러 핸들러 및 원격 로깅(Logging) 파이프라인 구축</h2>
+<p>에러가 일어났을 때 <code>console.error</code> 만 치고 넘어가면 클라이언트 단에서는 개발자가 알 방법이 없다.<br />
+“에러가 났다는 그 사실 자체“를 다시 Zenoh 망에 던져 백엔드 DB 서버(<code>ElasticSearch</code> 등)에 로깅하는 <strong>Ouroboros(우로보로스) 파이프라인</strong>이다.</p>
+<h4>3.0.1 [Runbook] 글로벌 텔레메트리 보고 시스템</h4>
+<p>브라우저 환경(React)에서 글로벌 에러 캡처와 Zenoh 전송을 융합한다.</p>
+<pre><code class="language-tsx">import React, { useEffect } from "react";
+import * as zenoh from "@eclipse-zenoh/zenoh";
+import { useZenohSession } from "./ZenohProvider";
+
+function GlobalErrorBoundaries({ children }) {
+    const session = useZenohSession();
+
+    useEffect(() =&gt; {
+        if (!session) return;
+
+        // 브라우저 최상단에서 처리되지 않은 모든 에러 인터셉트!
+        const errorHandler = async (event: ErrorEvent) =&gt; {
+            const errName = event.error?.name || "Unknown";
+            const errMessage = event.error?.message || event.message;
+            
+            console.error("[치명적 에러 캐치]", errMessage);
+
+            // "나의 에러 상태"를 중앙 로깅 서버(백엔드)로 즉시 전송
+            // (이중 크래시를 막기 위해 fire-and-forget 으로 try-catch 한번 감쌈)
+            try {
+                const logData = {
+                    level: "FATAL",
+                    source_id: "Client-Dashboard-XYZ",
+                    error: errName,
+                    msg: errMessage,
+                    timestamp: Date.now()
+                };
+                
+                // 본인의 로그를 분산 망으로 쏴버린다!
+                await session.put(
+                    `sys/logs/dashboard/error`, 
+                    Buffer.from(JSON.stringify(logData))
+                );
+            } catch (ignore) { /* 이미망이 터졌으면 무시 */ }
+        };
+
+        const promiseRejectionHandler = (event: PromiseRejectionEvent) =&gt; {
+            // Promise 에서 await 안하고 터진 에러들 수거
+            event.preventDefault(); 
+            // errorHandler 로 포워딩 (로직 동일)
+        };
+
+        window.addEventListener("error", errorHandler);
+        window.addEventListener("unhandledrejection", promiseRejectionHandler);
+
+        return () =&gt; {
+            window.removeEventListener("error", errorHandler);
+            window.removeEventListener("unhandledrejection", promiseRejectionHandler);
+        }
+    }, [session]);
+
+    return &lt;&gt;{children}&lt;/&gt;;
+}
+</code></pre>
+<p>이렇게 세팅하고, 클라우드 어딘가에 이 <code>sys/logs/**</code> 를 구독하고 ElasticSearch 에 박아넣는 Node.js 워커를 단 1대만 띄워 두자. 고객이 모바일을 쓰다가 앱이 죽는 순간, 그 크래시 로그는 5G 망을 타고 0.1초 만에 당신의 모니터 앞 Kibana 대시보드에 전시될 것이다.</p>
+<h2>4.  브라우저 오프라인 상태(<code>navigator.onLine</code>) 감지 및 재동기화 전략</h2>
+<p>노트북 뚜껑을 덮었다 열었을 때, 혹은 스마트폰이 지하철을 지날 때 발생하는 “운영체제 레벨의 네트워크 단절“이다.<br />
+Zenoh가 아무리 똑똑해도 OS 랜카드 자체가 차단되면 커넥션을 강제로 잃는다.</p>
+<h4>4.0.1 [Runbook] 브라우저 네트워크 각성(Awaken) 연동술</h4>
+<p>JS의 <code>navigator.onLine</code> 상태 감지와 Zenoh의 재부팅 로직을 하드웨어 레벨에서 동기화시키는 마스터 패턴이다.</p>
+<pre><code class="language-tsx">import React, { useEffect, useState } from "react";
+import * as zenoh from "@eclipse-zenoh/zenoh";
+
+export function HardwareAwareZenohController() {
+    const [isOnline, setIsOnline] = useState(navigator.onLine);
+    const [session, setSession] = useState&lt;zenoh.Session | null&gt;(null);
+
+    // 1. 운영체제 랜선 감지
+    useEffect(() =&gt; {
+        const handleOnline = () =&gt; setIsOnline(true);
+        const handleOffline = () =&gt; setIsOnline(false);
+
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        
+        return () =&gt; {
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
+        };
+    }, []);
+
+    // 2. 네트워크 상태에 따른 Zenoh 완벽 제어
+    useEffect(() =&gt; {
+        let mounted = true;
+
+        if (isOnline) {
+            // [망 복구됨]
+            console.log("🌐 OS 네트워크 온라인 진입 -&gt; Zenoh 세션 재타격 개시");
+            const conf = zenoh.Config.default();
+            conf.insertJson5("mode", '"client"'); // WSS 타겟 지정
+            
+            zenoh.open(conf).then((s) =&gt; {
+                if (mounted) {
+                    setSession(s);
+                    // 여기에 구독(Subscriber) 재생성 로직 등 트리거
+                } else {
+                    s.close(); // 이미 언마운트됐으면 즉시 파기
+                }
+            }).catch(e =&gt; console.error("Zenoh 복구 실패, 지수 백오프 모드로 전환 요망", e));
+
+        } else {
+            // [망 끊김]
+            // 랜선이 끊기면 라우터는 대답이 없겠지만, 브라우저 단에서 남아있는 
+            // TCP/WebSocket 찌꺼기 자원을 명시적으로 해제시켜주어 메모리를 비워준다.
+            console.warn("🚫 OS 네트워크 단절됨 -&gt; 기존 세션 강제 청소");
+            if (session) {
+                session.close().catch(()=&gt;{});
+                setSession(null);
+            }
+        }
+
+        return () =&gt; {
+            mounted = false;
+        }
+    }, [isOnline]); // 👈 `isOnline` 이 트리거가 됨!
+
+    return (
+        &lt;div&gt;
+            네트워크 상태: {isOnline ? "🟢 연결됨" : "🔴 끊김 (백그라운드 통신 정지)"}
+            {/* 이 아래에 session 변수를 하위 컴포넌트에 Provider로 내려준다 */}
+        &lt;/div&gt;
+    );
+}
+</code></pre>
+<p>단순히 “에러 나면 재접속한다“는 수준을 넘어, 스마트폰 사용자가 엘리베이터(오프라인)를 타는 순간 Zenoh 엔진을 아예 잠재우고 메모리를 비웠다가(Battery Save), 내리자마자 1초 만에 깔끔한 새 세션 포인터를 건네주는 ‘시스템 핏(System-fit)’ 엔지니어링의 정석이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:42.2.2 유한 상태 머신(Finite State Machine)의 상태 전이 조건과 검증 루프의 동기화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>42.2.2 유한 상태 머신(Finite State Machine)의 상태 전이 조건과 검증 루프의 동기화</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</a> / <span>42.2.2 유한 상태 머신(Finite State Machine)의 상태 전이 조건과 검증 루프의 동기화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>42.2.2 유한 상태 머신(Finite State Machine)의 상태 전이 조건과 검증 루프의 동기화</h1>
+<h2>1. 개요</h2>
+<p>무인항공기(UAV)의 중앙 통제 역할을 수행하는 PX4-Autopilot의 커맨더(Commander) 모듈은 본질적으로 거대한 **유한 상태 머신(Finite State Machine, FSM)**이다. 기체는 이륙 전(Pre-flight), 시동(Armed), 비행(In-air), 비상(Failsafe) 등 명확하게 정의된 상태 공간(State Space)을 가지며, 안전한 비행을 보장하기 위해 각 상태 전이(State Transition)는 철저하게 통제된다. 본 절에서는 PX4의 상태 전이 조건과 이를 검증하는 루프(Verification Loop)가 비동기 시스템 내에서 어떻게 동기화(Synchronization)되어 안정적으로 동작하는지 심층 분석한다.</p>
+<h2>2. PX4 커맨더의 유한 상태 머신 아키텍처</h2>
+<p>PX4 상태 머신은 크게 세 가지 주요 변수 그룹에 의해 기체의 현재 상태를 정의한다.</p>
+<ol>
+<li><strong>Nav State (내비게이션 모드)</strong>: 사용자가 요구하는 비행 모드 (예: <code>NAVIGATION_STATE_MANUAL</code>, <code>NAVIGATION_STATE_AUTO_MISSION</code>)</li>
+<li><strong>Arming State (시동 상태)</strong>: 기체의 모터 구동 가능 여부 (예: <code>ARMING_STATE_STANDBY</code>, <code>ARMING_STATE_ARMED</code>)</li>
+<li><strong>Hil State (시뮬레이션 상태)</strong>: 하드웨어 인 더 루프(HITL) 여부</li>
+</ol>
+<p>FSM의 상태 전이는 외부 명령(MAVLink, RC)이나 내부 이벤트(센서 오류, 배터리 부족)에 의해 트리거된다. 그러나 이벤트가 발생한다고 즉시 상태가 바뀌는 것은 아니며, 반드시 **전이 조건 검증 루프(Transition Verification Loop)**를 통과해야 한다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; Init
+    Init --&gt; Standby : 부팅 및 센서 초기화 완료
+    
+    Standby --&gt; Armed : 사용자 Arm 명령 + Pre-flight Check 통과
+    Armed --&gt; Standby : 사용자 Disarm 명령 또는 착륙 후 자동 Disarm
+    
+    Standby --&gt; Failsafe : 센서 치명적 오류 또는 배터리 고갈
+    Armed --&gt; Failsafe : 비행 중 통신 단절(Data Link Loss) 또는 위치 정보 유실
+    Failsafe --&gt; Standby : 에러 해소 후 복구 명령
+    
+    note right of Standby
+        Arming 대기 상태
+        동기화된 점검 루틴 실행 중
+    end note
+</code></pre>
+<h2>3. 검증 루프의 동기화 메커니즘</h2>
+<p>PX4는 여러 센서 드라이버와 제어 모듈이 비동기적으로 동작하는 아키텍처(uORB 기반 퍼블리시-서브스크라이브 패턴)를 갖는다. FSM 로직이 이러한 비동기 데이터의 영향을 받아 불완전한 상태에서 전이(Transition)되는 것을 막기 위해, 커맨더(Commander) 모듈은 다음과 같은 동기화 전략을 사용한다.</p>
+<ol>
+<li><strong>상태 머신 헬퍼(State Machine Helper)</strong>: PX4 소스 코드 내의 <code>state_machine_helper.cpp</code>에 정의된 래퍼(Wrapper) 함수들(<code>set_nav_state()</code>, <code>arming_state_transition()</code>)은 모든 전이 요청을 단일 락(Single Lock) 또는 원자적 연산(Atomic Operation) 스레드 컨텍스트에서 순차적으로 처리하게끔 설계되어 있다.</li>
+<li><strong>이벤트 폴링과 평가 분리</strong>: 데이터를 수신(uORB Polling)하는 타이밍과 상태 전이 조건(Condition)을 평가하는 타이밍을 <code>Commander::run()</code>의 메인 루프 사이클 내에서 엄격하게 분리하여 레이스 컨디션(Race Condition)을 방지한다.</li>
+<li><strong>Pre-flight Check와의 동기화 방어</strong>: Arming 명령이 들어온 순간, 수많은 백그라운드 스레드에서 생성되는 비동기 센서 데이터를 커맨더의 로컬 복사본(Local Copy)으로 동결(Freeze/Fetch)시킨 후 <code>PreFlightCheck</code> 루틴을 평가한다. 이를 통해 검증 루프가 실행되는 도중 센서 데이터가 변경되어 발생하는 모순 결함(Inconsistent Fault)을 차단하라.</li>
+</ol>
+<h2>4. 소스 코드 분석 예시 (<code>arming_state_transition</code>)</h2>
+<p>Arming 상태를 전이시키는 핵심 함수인 <code>arming_state_transition()</code>의 내부 논리는 철저하게 상태 전이 매트릭스(Transition Matrix) 검증과 동기화되어 있다.</p>
+<pre><code class="language-cpp">// PX4 Commander 모듈 내 FSM 검증 로직 추상화
+transition_result_t arming_state_transition(vehicle_status_s *status, 
+                                            const battery_status_s *battery, 
+                                            const uint8_t new_arming_state, 
+                                            arming_state_transition_stats_t *stats,
+                                            bool is_strict)
+{
+    // 1. 이미 동일한 상태이면 전이 무시 (Idempotent 처리)
+    if (status-&gt;arming_state == new_arming_state) {
+        return TRANSITION_NOT_CHANGED;
+    }
+
+    // 2. Standby -&gt; Armed 전환 시 Pre-flight Check 루프 강제 동기화 실행
+    if (new_arming_state == vehicle_status_s::ARMING_STATE_ARMED) {
+        if (is_strict &amp;&amp; !PreFlightCheck::preflightCheck(status, battery, ...)) {
+            // 유효성 점검 통과 실패: 상태 전이 거부(Reject)
+            return TRANSITION_DENIED;
+        }
+    }
+
+    // 3. 상태 전이 승인 및 업데이트
+    status-&gt;arming_state = new_arming_state;
+    status-&gt;timestamp = hrt_absolute_time(); // 전이 완료 타임스탬프 기록
+    return TRANSITION_CHANGED;
+}
+</code></pre>
+<p>위와 같이, 상태를 업데이트하기 직전에 동기적인 검사(Synchronous Check)가 이루어지며, C++의 구조체 패싱(Pass by Reference/Identifier)을 통해 단일 함수 내에서 결과 도출을 완료한다.</p>
+<h2>5. Ardupilot과 상태 전이 아키텍처 비교</h2>
+<p>Ardupilot은 <code>AP_Vehicle</code>의 메인 스케줄러 내에 Fast Loop(예: 400Hz)와 Slow Loop를 나누어 배치하며, 상태 전이 검사(예: Arming 체크)를 스케줄러의 타임 슬라이스(Time Slice) 안에서 주기적으로 실행하는 폴링(Polling) 구조가 주를 이룬다.<br />
+반면 PX4-Autopilot의 FSM은 커맨더 객체 내부에서 uORB 이벤트 기반(Event-driven) 루프를 통해 작동한다. 이는 외부에서 트리거된 상태 전이 명령(MAVLink ARM)에 대해, 수 ms(Milli-seconds) 이내에 그 즉시 검증 루프를 동기화하여 결과를 도출해 내는 응답성(Responsiveness) 면에서 설계적 차별성을 지닌다.</p>
+<h2>6. 결론</h2>
+<p>PX4의 커맨더 FSM은 비동기적으로 쏟아지는 방대한 센서 데이터와 외부 관제 시스템(GCS) 명령들 사이에서 질서를 부여하는 병목 제어기(Bottleneck Controller) 역할을 한다. 무인기에 새로운 센서를 달거나 독자적인 페일세이프(Failsafe) 시나리오를 작성하려는 개발자는 기체의 상태 전이가 일어나는 루프 타이밍을 정확히 이해하라. <code>state_machine_helper.cpp</code>에 전이 로직을 추가할 때는 반드시 다른 이벤트 처리 주기와 충돌하지 않도록 원자적인 상태 읽기 및 쓰기 원칙을 준수해야 시스템 붕괴를 예방할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

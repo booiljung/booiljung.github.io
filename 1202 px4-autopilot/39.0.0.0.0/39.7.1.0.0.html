@@ -115,28 +115,43 @@
             </header>
             <article>
                 <h1>39.7.1. 비동기 상태 불일치(State Mismatch) 추정을 위한 GCS 로그 마이닝</h1>
-<h2>1.  개요</h2>
-<p>드론이 사용자(조종사)의 제어 명령을 씹어버리는 현상이 보고되었을 때, 시스템 엔지니어가 가장 먼저 열어봐야 할 파일은 기체(PX4) 내부의 로그가 아니라 지상 스테이션(GCS)에 남아있는 텔레메트리 로그(Telemetry Log)다.<br />
-대부분의 ‘명령어 씹힘’ 현상은 기체의 물리적 결함보다는, GCS가 생각하는 기체의 상태와 기체가 생각하는 자신의 상태가 서로 엇갈리는 **비동기 상태 불일치(Asynchronous State Mismatch)**에서 기인하기 때문이다. 본 절에서는 QGroundControl(QGC) 등에서 출력되는 텔레메트리 로그를 마이닝(Mining)하여, MAVLink 트랜잭션의 꼬인 실타래를 푸는 소프트웨어 공학적 진단 기법을 살펴본다.</p>
-<h2>2.  GCS 텔레메트리 로그(.tlog)의 사후(Post-mortem) 분석 지위</h2>
-<p>QGC와 같은 현대적인 지상 관제 시스템은 기체와 주고받는 모든 MAVLink 16진수 바이트 스트림을 타임스탬프와 함께 <code>.tlog</code> 파일에 영구 기록(Recording)한다.<br />
-기체 내부의 ULog가 센서 데이터와 모터 출력 등 “기체가 실제로 무엇을 했는가(Physical Reality)“를 대변한다면, GCS의 tlog는 “조종사가 무엇을 요구했고 네트워크가 이를 어떻게 실어나르려 했는가(Intent &amp; Network Truth)“를 증명하는 블랙박스와 같다.</p>
-<p>텔레메트리 로그 마이닝의 첫 단추는 로그 분석 툴(예: QGC 내장 Flight Review, MAVExplorer 등)을 이용해 수백만 개의 패킷 속에서 오직 <code>COMMAND_LONG</code> (명령 송신)과 <code>COMMAND_ACK</code> (결과 수신), 그리고 기체의 모드 상태를 담은 <code>HEARTBEAT</code> 메시지만을 <strong>필터링(Filtering)하여 추출</strong>해 내는 것이다.</p>
-<h2>3.  MAV_RESULT와 트랜잭션 수명 주기 추적</h2>
-<p>추출된 패킷들을 타임라인에 올려놓고 나면, 엔지니어는 각 명령어가 겪은 유한 상태 기계(FSM) 전이 과정을 시각적으로 추적할 수 있다.<br />
-특히 <code>COMMAND_ACK</code> 패킷 안에 담긴 <code>result</code> 필드(열거형 변수)는 명령어 실패 로그 마이닝의 핵심 단서가 된다.</p>
-<ul>
-<li><strong><code>MAV_RESULT_UNSUPPORTED</code></strong>: 기체가 “나는 그런 명령어를 모른다“고 답한 경우다. 펌웨어 버전 불일치나, PX4가 해당 모듈을 빌드에서 제외했을 때 흔히 발생한다. (컴파일/버전 호환성 문제)</li>
-<li><strong><code>MAV_RESULT_DENIED</code></strong>: “알아는 들었는데, 지금 그 명령을 수행할 수 없다“는 논리적 거절이다. 이륙(Takeoff) 명령을 내렸는데 GPS Lock이 없거나 에러 깃발(Error Flag)이 꽂혀 있는 경우 시스템 안전을 위해 PX4 Commander가 거부한 것이다. (Pre-flight 검증 실패)</li>
-<li><strong><code>MAV_RESULT_TEMPORARILY_REJECTED</code></strong>: “명령은 타당하나, 내가 지금 다른 명령을 하드코어하게 처리 중이라 바쁘다“는 큐 포화 상태(Queue Saturation)를 의미한다.</li>
-</ul>
-<p>이러한 로그들을 시계열로 정렬해보면, 조종사는 “버튼을 눌렀는데 반응이 없다“고 불평하지만 실제 GCS 백엔드와 PX4 간에는 수심 밀리초 단위로 수많은 패킷 타협과 논리적 거부(Rejection)가 일어났음을 밝혀낼 수 있다.</p>
-<h2>4.  상태 불일치(Mismatch) 윈도우 시간 특정</h2>
-<p>가장 추적하기 까다로운 버그는 ACK 로그조차 깨끗한데 기체가 오작동하는 경우다.<br />
-GCS 로그상에서는 10시 05분 00초에 <code>MAV_CMD_DO_SET_MODE</code> (모드 변경: 리턴 모드)가 발송되었고, 정확히 30ms 뒤에 <code>COMMAND_ACK (ACCEPTED)</code>가 수신되었다고 기록되어 있다. GCS의 UI 트랜잭션은 완벽하게 성공(Success)으로 마킹된다.</p>
-<p>그러나 이후 수신되는 기체의 <code>HEARTBEAT</code> 패킷의 <code>custom_mode</code> 필드를 분석해보면, 1초, 2초가 지나도 기체는 여전히 ‘임무(Mission)’ 모드 코드를 뱉어낸다.<br />
-GCS는 “내가 리턴 모드 해제 명령의 성공 응답까지 받았으니 얘는 지금 돌아오는 중이야“라고 철석같이 믿고(State Illusion), UI 상에 돌아온다고 표시하지만, 기체는 자기 갈 길을 가고 있는 전형적인 <strong>상태 불일치(State Mismatch)</strong> 상황이다.</p>
-<p>이러한 현상이 포착되는 시간 구간(Mismatch Window)을 분석하면, 문제의 원인이 단순 통신 단절이 아니라는 객관적인 증거를 도출할 수 있다. 즉, 네트워크 파이프라인이나 GCS의 큐 로직은 완벽하게 제 역할을 다 했으며, PX4 펌웨어 내부의 내비게이터(Navigator) 상태 전이 함수 어딘가에서 메모리가 꼬였거나 하위 모듈이 데드락(Deadlock)에 빠져 ACK만 뱉고 실제 제어기를 구동하지 못했음을 논리적으로 확정(Pinpoint) 짓게 된다.</p>
+<p>PX4-Autopilot과 지상 관제 시스템(GCS, Ground Control Station) 간의 통신 아키텍처는 MAVLink 프로토콜 기반의 비동기(Asynchronous) 메시징 시스템으로 구성된다. 이러한 비동기 통신의 근본적인 특성으로 인하여 무선 원격 데이터 링크(Telemetry Link) 상에서 패킷 지연(Latency), 손실(Packet Loss) 및 재전송(Retransmission)이 발생할 경우, GCS 내부 UI에서 표출하는 논리적 기체 상태와 PX4 비행 제어기(Flight Controller, FC)의 실제 물리적 운용 상태 사이에 심각한 차이가 발생하는 <strong>상태 불일치(State Mismatch)</strong> 현상이 일어난다. 이를 통계적이고 정략적으로 검출하며 발생 원인을 추론하기 위해 진행되는 공학적 역공학 기법이 바로 <strong>GCS 로그 마이닝(GCS Log Mining)</strong> 이다.</p>
+<h2>1.  비동기 통신 모델에서의 상태 불일치 발생 메커니즘</h2>
+<p>분산 제어망(Distributed Control Network) 관점에서 살펴보면, GCS(주로 QGroundControl 계열)와 PX4-Autopilot은 각각 독립적인 유한 상태 기계(Finite State Machine, FSM)를 메모리 내에 운용한다. GCS에서 이벤트 제어를 위해 명령어(<code>COMMAND_LONG</code> 혹은 <code>COMMAND_INT</code> 등)를 발행(Publish)하면, PX4 시스템 내 인터페이스를 관장하는 MAVLink Receiver 모듈이 이를 수신하여 내부 uORB 메시지로 변환하고, 커맨더(Commander) 모듈이 최종적으로 실행한 뒤 <code>COMMAND_ACK</code> 패킷을 비동기적으로 응답(Response)한다.</p>
+<p>네트워크 채널의 신뢰성(Reliability)이 하락하여 이 응답 루프가 끊어질 경우, GCS와 PX4 시스템 간의 동기화 결함이 유발된다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant GCS as QGroundControl (GCS)
+    participant Link as Telemetry Link (RF)
+    participant PX4 as PX4-Autopilot (FC)
+    
+    GCS-&gt;&gt;Link: MAV_CMD_NAV_TAKEOFF 발송
+    Link-&gt;&gt;PX4: 명령어 정상 수신 및 uORB 브릿징
+    PX4--&gt;&gt;PX4: 이륙 시퀀스 진입 (상태 전이: 이륙 중)
+    PX4-&gt;&gt;Link: COMMAND_ACK (MAV_RESULT_ACCEPTED) 송신
+    Note over Link: RF 간섭/대역폭 포화로 인한 ACK 패킷 유실
+    Link--xGCS: ACK 수신 실패 (GCS 도달 실패)
+    GCS--&gt;&gt;GCS: 지정된 Timeout 경과 (재전송 후 최종 실패)
+    Note over GCS, PX4: [상태 불일치 도래]&lt;br/&gt;실제 기체는 이륙중이나 GCS UI는 지상 대기(On Ground) 표출 지속
+</code></pre>
+<h2>2.  GCS 텔레메트리 로그 구조 및 마이닝 준비 과정</h2>
+<p>QGroundControl(v4.3 이상) 측에서는 차량과 교환된 모든 양방향 MAVLink 메시지를 실시간으로 기록하여 텔레메트리 로그(<code>.tlog</code>) 파일 형식으로 저장한다. 기체(PX4 펌웨어 단)의 마이크로 SD 카드에 고해상도로 기록되는 비행 데이터 로거 파일인 ULog (<code>.ulg</code>)와 명확히 구분해야 할 점은, <code>.tlog</code>는 철저히 <strong>“GCS 수신단 관점에서 타임스탬프(Timestamp)가 직렬화된 MAVLink 원시 패킷”</strong> 을 포함한다는 것이다. 이는 물리 계층 및 네트워크 계층의 전파 왜곡이나 패킷 드롭이 GCS 처리 로직에 미친 영향을 분석하는 데 필수적인 원시 데이터(Raw Data)를 제공한다.</p>
+<p>로그 마이닝(Log Mining) 데이터 추출 및 전처리 파이프라인(Preprocessing Pipeline)은 일반적으로 다음과 같이 3단계로 구성된다.</p>
+<ol>
+<li><strong>바이트스트림 디코딩(Bytestream Decoding):</strong> QGroundControl 내장 위젯인 MAVLink Inspector, 혹은 오픈소스 도구인 MAVExplorer를 활용하여 바이너리 덤프 형태의 <code>.tlog</code>에서 GCS 타임스탬프와 메시지 페이로드를 파싱(Parsing)한다.</li>
+<li><strong>트랜잭션 세션 분할(Transaction Session Partitioning):</strong> 개별 제어 명령어(예: 비행 모드 변경 <code>MAV_CMD_DO_SET_MODE</code>)의 송신 시점부터 대응되는 <code>COMMAND_ACK</code> 수신 시점, 혹은 타임아웃 판정 시점까지의 패킷 흐름을 단일 트랜잭션 버킷(Bucket) 단위로 묶어낸다.</li>
+<li><strong>이상 탐지 분기 모델링(Anomaly Detection Branching):</strong> 각각의 트랜잭션 세션 종료 상태를 ‘정상 수신 및 성공’, ‘타임아웃(종단 간 패킷 유실)’, ’NACK 수신(기체의 명시적 명령 거절)’의 하위 경로로 분리하여 분류 트리를 작성하라.</li>
+</ol>
+<h2>3.  역추적 알고리즘(Back-tracing) 기반 불일치 원인 분석 실무</h2>
+<p>성공적인 시스템 단위 트러블슈팅(System Troubleshooting)을 위해서는 수집된 GCS 로그 데이터 내에서 비정상적인 타임아웃이나 응답 지연이 실제로 텔레메트리 장애에 기인했는지 여부를 교차 검증해야 한다. MAVLink 프로토콜의 심장 격인 <code>HEARTBEAT</code> 정기 메시지를 앵커(Anchor) 지점으로 활용하라.</p>
+<p>QGroundControl 프론트엔드 비즈니스 로직은 기본적으로 PX4 기체가 1Hz 주기로 발송 빈도를 유지하는 <code>HEARTBEAT</code> 메시지의 <code>custom_mode</code> 필드 및 <code>base_mode</code> 데이터를 파싱하여 화면 좌측 상단의 비행 모드 인디케이터(Indicator)를 갱신한다. 상태 불일치가 강하게 의심될 경우, GCS 로그 마이닝 기법은 다음의 알고리즘 절차를 따른다.</p>
+<ol>
+<li><strong>명령 앵커 시스템 타임스탬프 추출:</strong> 제어 명령어가 발행된 순간의 호스트 PC/태블릿 시간(<span class="math math-inline">T_{cmd}</span>)을 마이크로초 단위 델타 셋으로 분리 및 기록한다.</li>
+<li><strong>MAVLink C++ 백엔드 큐 재전송(Retry) 패턴 분석:</strong> QGroundControl의 차량 관리 매니저(Vehicle Manager)는명령 전송 후 지정된 인터벌 (일반적으로 500ms ~ 1000ms 수준) 내에 ACK(수신 응답)가 돌아오지 않으면 재전송 로직을 트리거한다. <code>.tlog</code> 파일 내에서 동일한 명령 시퀀스(Sequence Number)를 지닌 일련의 <code>COMMAND_LONG</code> 메시지가 클러스터링 기반으로 반복 표출된다면 재전송 슬롯이 가동된 것이다.</li>
+<li><strong>Heartbeat 변이 시계열 매핑(Time-Series Mapping):</strong> <span class="math math-inline">T_{cmd}</span> 이후에 간헐적으로 수신된 <code>HEARTBEAT</code> 패킷의 필드 상태 변이를 추적하라. 만약 QGroundControl이 <code>COMMAND_ACK</code> 패킷 자체를 끝내 수신하지 못한 채 해당 제어 트랜잭션을 “Timeout” 실패로 종결지었음에도 불구하고, 이후 도착한 <code>HEARTBEAT</code> 패킷의 플래그가 원래 요구했던 새로운 비행 모드로 변경되어 있다면, 데이터링크 통신단에서의 하프-듀플렉스(Half-duplex) 병목 혹은 비대칭 패킷 손실(Asymmetric Packet Loss)로 인한 논리적 불일치 상태가 100% 발생한 것이다.</li>
+</ol>
+<p>이를 통해 개발자는 PX4 기체에서는 uORB 루프의 파이프라인 처리가 완전히 정상 작동했으나 다운링크대역폭의 문제로 인해 ACK 패킷 회신만이 실패했다는 최종 결론을 도출할 수 있다.</p>
+<p><em>참고 문헌 (Academic References)</em>: 원격 제어망의 패킷 손실 모델링과 상태 머신 최적화와 관련된 제어 공학의 최신 연구 성과들은 논문 <em>“Robust Path Planning and State Estimation for Unmanned Aerial Vehicles under Intermittent Communication”</em> 등에서 시계열 마이닝 로그 분석을 이용한 큐잉 지연 보정 기술을 활발히 소개하고 있다.</p>
+<p>결론적으로, GCS 로그 마이닝 기술은 단순한 에러 코드 검색을 뛰어넘어, 비동기 통신 시스템의 트랜잭션 교차 검증을 통해 유실된 응답 패킷과 실제 수신 데이터 사이의 인과 관계(Causality)를 추론해내는 심도 깊은 디버깅 훈련법이다. 본 장을 통해 데이터의 시계열 간극을 추적하고 패킷 드롭의 지점을 명확히 짚어내는 역량을 강화하라.</p>
 
             </article>
             <footer>

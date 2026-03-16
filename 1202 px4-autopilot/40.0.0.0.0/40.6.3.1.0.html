@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:40.6.3.1. 스마트 포인터 참조 카운트(Reference Count) 사이클 검출을 위한 가비지 컬렉션(Garbage Collection) 회피 설계</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>40.6.3.1. 스마트 포인터 참조 카운트(Reference Count) 사이클 검출을 위한 가비지 컬렉션(Garbage Collection) 회피 설계</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.6.3.1. 스마트 포인터 참조 카운트(Reference Count) 사이클 검출을 위한 가비지 컬렉션(Garbage Collection) 회피 설계</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>40.6.3.1. 스마트 포인터 참조 카운트(Reference Count) 사이클 검출을 위한 가비지 컬렉션(Garbage Collection) 회피 설계</h1>
+<p>QGroundControl(QGC)과 같은 방대한 콜백(Callback) 연쇄와 비동기 이벤트 핸들러를 지닌 C++ 시스템에서 <code>std::shared_ptr</code>는 생명주기 관리에 필수적인 스마트 포인터이다. 그러나 스마트 포인터의 파멸적인 안티 패턴인 **순환 참조(Circular Reference)**에 빠질 경우, 메모리가 영원히 해제되지 않는 치명적인 좀비(Zombie) 객체 누수가 발생한다.</p>
+<p>본 절에서는 자바(Java)나 C#과 같이 무거운 가비지 컬렉터(Garbage Collector, GC)를 사용할 수 없는 하드 리얼타임 C++ 환경에서, 참조 카운트 사이클을 구조적으로 회피하고 무결성 있는 메모리 트리 구조를 설계하는 기법을 해부한다.</p>
+<h2>1.  <code>std::shared_ptr</code>의 강한 참조(Strong Reference)와 한계</h2>
+<p><code>std::shared_ptr</code>은 내부에 원시 포인터와 함께 <strong>참조 카운트(Reference Count)</strong> 블록을 쌍으로 유지한다. 특정 객체를 셰어드 포인터로 복사하여 소유(Ownership)할 때마다 카운트가 1씩 증가하며, 소유권을 포기(블록 변수 소멸 등)할 때마다 카운트가 1씩 감소한다. 카운트가 0이 되는 순간 메모리는 즉시 소각(<code>delete</code>)된다.</p>
+<p>그러나 서로를 강하게 참조하는 두 객체가 존재한다면, 이 완벽해 보이는 메커니즘은 붕괴된다.</p>
+<h3>1.1  순환 참조 사이클(Cycle)의 발생</h3>
+<p>QGC 데이터 구조 중 기체(<code>Vehicle</code>) 객체와 임무 관리자(<code>MissionManager</code>) 객체가 논리적으로 긴밀하게 연결되어 있다고 가정하자.</p>
+<ul>
+<li><code>Vehicle</code>은 하위 객체로 <code>MissionManager</code>를 소유해야 하므로 <code>std::shared_ptr&lt;MissionManager&gt;</code>를 멤버 변수로 가진다.</li>
+<li>반대로 <code>MissionManager</code> 역시 부모인 <code>Vehicle</code>의 텔레메트리 파라미터를 읽기 위해 부모 객체에 접근해야 하므로 역방향으로 <code>std::shared_ptr&lt;Vehicle&gt;</code>를 쥐고 있다.</li>
+</ul>
+<pre><code class="language-cpp">// 순환 참조 안티 패턴 (Memory Leak 유발)
+class MissionManager;
+
+class Vehicle {
+public:
+    std::shared_ptr&lt;MissionManager&gt; _missionMgr;
+    ~Vehicle() { qDebug() &lt;&lt; "Vehicle Destroyed!"; }
+};
+
+class MissionManager {
+public:
+    std::shared_ptr&lt;Vehicle&gt; _parentVehicle;
+    ~MissionManager() { qDebug() &lt;&lt; "MissionMgr Destroyed!"; }
+};
+
+void createVehicleSession() {
+    auto v = std::make_shared&lt;Vehicle&gt;();           // v ref_count: 1
+    auto m = std::make_shared&lt;MissionManager&gt;();    // m ref_count: 1
+
+    v-&gt;_missionMgr = m;         // m ref_count: 2
+    m-&gt;_parentVehicle = v;      // v ref_count: 2
+} // 함수 종료. v, m 로컬 변수가 소멸되면서 각각 ref_count가 1로 감소.
+  // [치명적 오류] ref_count가 0이 아니므로 소멸자가 불리지 않고 힙에 영구 고립됨!
+</code></pre>
+<p>이 코드가 실행되면 함수 스코프를 벗어났음에도 어느 쪽도 카운트가 0이 되지 않아 영원히 메모리에 고아(Orphan) 상태로 부유하게 된다. 타 언어의 백그라운드 가비지 컬렉터(GC)는 “루크(Root) 객체에서 도달할 수 없는 섬(Island) 덩어리“를 런타임에 추적하여 파괴해 주지만, C++에는 이러한 무거운 런타임 추척 에이전트가 존재하지 않는다.</p>
+<h2>2.  가비지 컬렉션 회피 및 논리적 트리 설계 원칙</h2>
+<p>C++ 아키텍처에서 GC의 부재를 완벽히 극복하는 수학적 원리는 시스템 구조를 순환 그래프(Cycle Graph)가 아닌 단방향 화살표만을 허용하는 <strong>비순환 방향 그래프(Directed Acyclic Graph, DAG)</strong> 혹은 부모-자식 <strong>트리(Tree)</strong> 계층으로 강제 분리하는 것이다.</p>
+<h3>2.1  약한 참조 <code>std::weak_ptr</code>의 도입</h3>
+<p>순환 참조를 끊어내는 핵심 문법인 <code>std::weak_ptr</code>는 해당 객체의 주소를 쳐다볼 수는 있되, <strong>참조 카운트를 증가시키지 않는(Non-owning)</strong> 관찰자 포인터이다. 언제든 자신이 가리키는 대상이 <code>null</code>인지 검사하고, 유효할 때만 일시적으로 락(<code>lock()</code>)을 걸어 잠시 사용할 수 있다.</p>
+<ul>
+<li><strong>소유의 법칙:</strong> 논리적으로 부모(상위 객체)가 자식(하위 객체)을 강하게 소유(Strong Ownership)한다. <span class="math math-inline">\rightarrow</span> <code>std::shared_ptr</code></li>
+<li><strong>관찰의 법칙:</strong> 자식이 부모를 참조하거나, 동등한 형제 객체끼리 참조할 때는 절대 소유권(Ownership)을 주장해서는 안 된다. <span class="math math-inline">\rightarrow</span> <code>std::weak_ptr</code></li>
+</ul>
+<p>QGC의 <code>Vehicle</code> 컴포넌트 아키텍처는 철저히 이 법칙에 따른다.</p>
+<pre><code class="language-cpp">// 순환 참조를 끊은 안전한 아키텍처
+class Vehicle {
+public:
+    std::shared_ptr&lt;MissionManager&gt; _missionMgr; // 강한 소유 보장
+};
+
+class MissionManager {
+public:
+    std::weak_ptr&lt;Vehicle&gt; _parentVehicle;       // [수정점] 약한 참조 (카운트 증가 안함)
+    
+    void doUpload() {
+        // 부모 객체가 여전히 메모리에 살아있는지 원자적으로 검증 후 획득
+        if (auto vehicleLocked = _parentVehicle.lock()) {
+            vehicleLocked-&gt;sendMavlinkMessage(...); // 정상 통신 수행
+        } else {
+            qWarning() &lt;&lt; "Parent vehicle already destroyed. Aborting.";
+        }
+    }
+};
+</code></pre>
+<h2>3.  메모리 사이클 다이어그램 (Mermaid)</h2>
+<p><code>std::weak_ptr</code>를 통해 순환 그래프가 논리적 트리로 해소되는 결합 관계도를 Mermaid 다이어그램으로 명시한다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Cyclic Graph (Memory Leak)
+        V1[Vehicle RefCount: 1] --&gt;|Strong: shared_ptr| M1[MissionManager RefCount: 1]
+        M1 --&gt;|Strong: shared_ptr| V1
+    end
+
+    subgraph Acyclic Tree (GC-Free Deterministic)
+        V2[Vehicle RefCount: 1] ==&gt;|Strong: shared_ptr| M2[MissionManager RefCount: 1]
+        M2 -.-&gt;|Weak: weak_ptr - No Count Add| V2
+    end
+    
+    style V1 fill:#f8cecc,stroke:#b85450,stroke-width:2px;
+    style M1 fill:#f8cecc,stroke:#b85450,stroke-width:2px;
+    style V2 fill:#d5e8d4,stroke:#82b366,stroke-width:2px;
+</code></pre>
+<h2>4.  PX4 및 ROS2 오프보드(Offboard) 노드 개발자 가이드</h2>
+<p>PX4-Autopilot 생태계 내에서 MAVSDK나 ROS2 C++(rclcpp) 에이전트를 프로그래밍할 때, 센서 콜백 리스너(Listener)는 흔히 콜백 객체가 자신을 등록한 매니저 객체를 상호 캡처(<code>[this]</code> lambda)하면서 깊은 순환 구렁텅이에 빠지곤 한다.</p>
+<p>GCS 프레임워크나 자율 주행 경로 계획(Path Planning) 미들웨어 코어 팀 리더라면 정적 분석 도구(Static Analyzer)를 활용하여 참조 카운트 사이클을 컴파일 타임에 검출해야 한다. 절대로 가비지 컬렉터와 유사한 커스텀 쓰레기 수집 추적 객체를 직접 만들 생각을 버려라. 단지 부모-자식 간의 소유권 트리를 거시적으로 직관화하고, 상향식(Bottom-Up)으로 역주행하는 포인터는 무조건 <code>std::weak_ptr</code>로 격하(Demote)하는 것이 결정론적 메모리 해제를 이룩하는 유일무이한 정도(正道)이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

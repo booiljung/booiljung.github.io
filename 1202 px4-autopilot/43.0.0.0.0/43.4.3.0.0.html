@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:43.4.3 `ArmingStateMachine` 클래스의 유한 상태 전이 매트릭스 및 상호 배제(Mutex) 락(Lock) 획득에 따른 경쟁 상태(Race Condition) 억제 메커니즘</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>43.4.3 `ArmingStateMachine` 클래스의 유한 상태 전이 매트릭스 및 상호 배제(Mutex) 락(Lock) 획득에 따른 경쟁 상태(Race Condition) 억제 메커니즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 43. 시동(Arming) 및 시동 해제(Disarming) 명령의 전제 조건과 검증 로직</a> / <span>43.4.3 `ArmingStateMachine` 클래스의 유한 상태 전이 매트릭스 및 상호 배제(Mutex) 락(Lock) 획득에 따른 경쟁 상태(Race Condition) 억제 메커니즘</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>43.4.3 <code>ArmingStateMachine</code> 클래스의 유한 상태 전이 매트릭스 및 상호 배제(Mutex) 락(Lock) 획득에 따른 경쟁 상태(Race Condition) 억제 메커니즘</h1>
+<h2>1. 개요</h2>
+<p>이 절에서는 PX4-Autopilot의 핵심 제어 모듈인 <code>commander</code> 내부에서 시동(Arming) 로직을 전담하는 <code>ArmingStateMachine</code> 클래스의 아키텍처를 분석한다. 특히, 비동기적으로 쇄도하는 사용자 명령과 시스템 센서 이벤트 속에서 유한 상태 기계(FSM, Finite State Machine) 패턴을 통해 전이의 결정론적(Deterministic) 흐름을 보장하는 방법과, 멀티스레드 환경에서 임계 구역(Critical Section) 보호를 위한 POSIX 상호 배제(Mutex) 락 메커니즘이 어떻게 경쟁 상태(Race Condition)를 억제하는지에 초점을 맞춘다.</p>
+<h2>2. <code>ArmingStateMachine</code> 클래스의 유한 상태 전이(FSM) 아키텍처</h2>
+<p>기체의 시동 제어는 그 어떤 부분보다도 엄격하고 예측가능하게 관리되어야 한다. PX4는 복잡하게 얽힌 다수의 조건문(If-Else 구문)의 스파게티 코드를 피하고, 수학적으로 검증 가능한 유한 상태 기계 패턴을 도입하여 시동 과정을 추상화하였다.</p>
+<h3>2.1  상태 전이 매트릭스(State Transition Matrix)의 구조</h3>
+<p><code>ArmingStateMachine</code>은 현재 시스템 상태(<code>SystemState</code>)와 새로운 명령 이벤트 리퀘스트(<code>vehicle_command</code>)를 양축으로 하는 2차원 매트릭스 방식을 취한다. 예를 들어, 현재 기체가 <code>ARM_STATE_STANDBY</code> 상태일 때 사용자의 시동 명령이 인계되면, 사전에 정의된 상태 전이 매트릭스의 교차 지점 룰에 따라 <code>ARM_STATE_ARMED</code>로의 전이가 시도된다.</p>
+<ul>
+<li><strong>안전한 거부(Graceful Rejection):</strong><br />
+만약 현재 상태가 자가 진단 중인 <code>ARM_STATE_INIT</code> 상태이거나 이미 비행 중인 상태에서 부적절한 시동 명령이 수신될 경우, 매트릭스는 해당 전이를 ’불가(Invalid Transition)’로 판정하고 상태 변경을 거부한다. 이를 통해 논리적으로 일어날 수 없는 전이와 예기치 못한 명령 충돌을 원천 차단한다.</li>
+</ul>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; INIT
+    INIT --&gt; STANDBY : System Check Pass
+    STANDBY --&gt; ARMED : Arm Command (if Pre-flight OK)
+    STANDBY --&gt; ERROR : Sensor Failure
+    ARMED --&gt; STANDBY : Disarm Command
+    ARMED --&gt; IN_AIR : Takeoff Command
+    IN_AIR --&gt; ARMED : Landed
+    ERROR --&gt; STANDBY : Reboot/Recovery
+</code></pre>
+<h3>2.2  단방향, 명시적 상태 변화</h3>
+<p>클래스 내부에 구현된 전이 함수인 <code>arming_state_transition()</code>은 인자값으로 목표 상태만을 평가하지 않는다. 오직 사전에 승인된 ’현재 시스템 상태-&gt;목표 상태’의 한정된 경로 벡터만을 허용함으로써, 디버깅을 용이하게 하고 MAVLink 데이터 패킷 오염으로 일어날 수 있는 오동작을 배제한다.</p>
+<h2>3. 상호 배제(Mutex) 락을 통한 임계 구역(Critical Section) 보호</h2>
+<p>시동(Arming) 상태로 진입한다는 것은 각 출력 포트의 PWM 혹은 DShot 신호가 유휴(Idle) 대역을 벗어나 프로펠러가 회전 가능한 임계 회전수(Spin-up) 상태로 변환됨을 의미한다. 그러므로, <code>commander</code> 스레드가 상태를 변경하는 바로 그 찰나의 시간(Microsecond 단위) 동안 다른 스레드가 불일치된 중간 상태를 읽어가는 **경쟁 상태(Race Condition)**의 타파가 필수적이다.</p>
+<h3>3.1  POSIX Mutex 기반의 락(Lock) 획득</h3>
+<p><code>commander</code> 태스크는 <code>px4_sem_wait(&amp;arming_lock)</code>와 같은 POSIX 네이티브 세마포어(혹은 래퍼 클래스인 <code>Mutex</code> 클래스)를 활용한다.</p>
+<ul>
+<li><strong>경쟁 상태(Race Condition) 시나리오 방어:</strong><br />
+예를 들어, GCS에서 시동 명령이 들어온 시점과 동시에, 배터리 관리 태스크(Battery Status)에서 전압 강하를 감지해 페일세이프(Failsafe) 발동을 통한 시동 해제명령을 <code>uORB</code>를 통해 던지는 순간이 겹칠 수 있다.<br />
+만일 뮤텍스(Mutex) 락이 없다면, <code>commander</code>는 <code>Armed == true</code>로 변수를 덮어쓰고 있는 도중에 인터럽트를 받아 페일세이프 루틴이 개입함으로써 로직이 꼬이게 된다. 이러한 경쟁 상태를 막기 위해, 시동 상태 매니저는 진입(Enter) 시 락을 획득하고, 전제조건 검증 및 상태 레지스터의 업데이트가 완전히 원자적(Atomic)으로 끝난 뒤(Exit)에만 락을 해제한다.</li>
+</ul>
+<h3>3.2  우선순위 역전(Priority Inversion) 문제 회피 메커니즘</h3>
+<p>동기화 락을 과도하게 사용할 경우, 낮은 우선순위의 스레드가 락을 쥐고 있는 상태에서 가장 높은 우선순위 태스크(예: Attitude Controller)가 실행되어야 하는 타이밍에 블로킹되는 우선순위 역전 현상(Priority Inversion)이 발생할 수 있다.<br />
+NuttX와 PX4는 이를 방지하기 위해 POSIX의 <strong>우선순위 상속(Priority Inheritance) 프로토콜</strong>을 적용한다. 만일 센서 데이터를 기다리는 초고속 스레드가 시동 락에 막힐 위기에 처하면, 락을 보유하고 있는 <code>commander</code> 스레드의 우선순위가 일시적으로 초고속 레벨로 격상되어 신속히 임계 구역을 빠져나오도록 스케줄러가 개입한다.</p>
+<h2>4. Ardupilot과 비교한 동기화 방식의 차이</h2>
+<p>모노리틱(Monolithic) 성향의 단일 혹은 소수 메인 스레드 구조를 선호하는 Ardupilot은 특정 시간 조각 안에서 순차적으로 루틴을 처리하기 때문에 사실상 전역 락(Global Lock)에 가까운 코퍼레이티브(Cooperative) 환경이다. 따라서 데이터 경쟁 자체는 적으나 특정 작업이 걸리면 전체 루프가 함께 지연될 우려를 안고 있다.<br />
+반면 PX4는 철저히 파편화된 POSIX 다중 스레드 환경이므로, 각각의 컴포넌트 간 임계 구역 데이터 교환(예: <code>commander</code>와 <code>actuator_outputs</code>) 시 엄격한 락 관리(Mutex/Semaphore)가 강제된다. 이는 설계의 복잡성을 높게 하나 고립된 다중 스레드의 정시성을 유지하는 데 강력한 이점으로 작용한다.</p>
+<h2>5. 요약</h2>
+<p>PX4 <code>ArmingStateMachine</code> 클래스는 예측 불가능한 복합 다중 입력 시나리오를 유한 상태 전이 매트릭스라는 제약된 수학적 모델 안에서 안전하게 필터링한다. 또한, OS 레코드를 직접 조작하는 시동 변경의 임계 구역에 진입할 때마다 POSIX 뮤텍스(Mutex) 락을 신속히 획득하고 해제함으로써, 멀티 스레드 기반의 NuttX 환경에서 치명적인 오작동의 근원이 될 수 있는 경쟁 상태(Race Condition)를 원천 차단하는 정교한 공학적 기법을 보여준다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

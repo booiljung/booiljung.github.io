@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:13.2 Zenoh-Flow 코어 아키텍처 및 구성 요소</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>13.2 Zenoh-Flow 코어 아키텍처 및 구성 요소</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>13.2 Zenoh-Flow 코어 아키텍처 및 구성 요소</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>13.2 Zenoh-Flow 코어 아키텍처 및 구성 요소</h1>
+<p>데이터플로우 기반의 프로그래밍 환경을 구축하기 위해서는 데이터를 생산, 변환, 소비하는 논리적 단위 노드들의 구조적 특성과 상호 연결 메커니즘을 명확히 정의해야 한다.</p>
+<p>Zenoh-Flow의 아키텍처는 스트림의 발원지 역할을 하는 소스(Source), 데이터를 가공하는 오퍼레이터(Operator), 가공된 데이터를 최종 처리하는 싱크(Sink), 그리고 이들을 연결하는 링크(Link)라는 핵심 단위체들로 구성된다. 본 절에서는 이러한 컴퓨팅 유닛들이 어떻게 결합하여 자율주행부터 전 지구적 스케일의 스마트 관제망까지 포괄하는 고성능 연산 그래프(Computation Graph)를 형성하는지 심층적으로 탐구한다.</p>
+<h2>1.  Zenoh-Flow 전역 및 로컬 아키텍처 모델</h2>
+<p>Zenoh-Flow 프레임워크는 물리적 배치 환경에 따라 단일 런타임 내의 로컬 통신 모델과 이기종 네트워크를 가로지르는 전역 분산 모델을 동적으로 전환하는 하이브리드 토폴로지(Hybrid Topology) 특성을 지닌다.</p>
+<pre><code class="language-mermaid">graph TD
+    classDef nodeClass fill:#e1f5fe,stroke:#333,stroke-width:1px;
+    classDef edgeClass fill:#fff3e0,stroke:#333,stroke-width:1px;
+    classDef cloudClass fill:#e8f5e9,stroke:#333,stroke-width:1px;
+
+    subgraph "Zenoh-Flow Conceptual Graph"
+        Src[Source Node&lt;br&gt;(Data Emitter)]
+        Op1[Operator Node&lt;br&gt;(Filter / Map)]
+        Op2[Operator Node&lt;br&gt;(Aggregation)]
+        Snk[Sink Node&lt;br&gt;(Database/Actuator)]
+    end
+
+    subgraph "Physical Deployment A (Local Host)"
+        D_Src[Source]
+        D_Op1[Operator]
+    end
+
+    subgraph "Physical Deployment B (Remote Cloud)"
+        D_Op2[Operator]
+        D_Snk[Sink]
+    end
+
+    Src --&gt;|Link| Op1
+    Op1 --&gt;|Link| Op2
+    Op2 --&gt;|Link| Snk
+
+    D_Src -.-o|Zero-copy Shmem| D_Op1
+    D_Op1 ==&gt;|Zenoh Network Routing| D_Op2
+    D_Op2 -.-o|Zero-copy Shmem| D_Snk
+
+    class Src,Op1,Op2,Snk nodeClass;
+    class D_Src,D_Op1 edgeClass;
+    class D_Op2,D_Snk cloudClass;
+</code></pre>
+<p><strong>1. 로컬 배관망 (Local Execution Model)</strong><br />
+Source, Operator, Sink 노드들이 단일 물리적 머신(예: 단일 라즈베리 파이 구동 환경) 내에 배포될 경우, Zenoh-Flow 런타임은 네트워크 스택(TCP/UDP)을 완전히 바이패스(Bypass)한다. 프로세스 간 통신은 공유 메모리(Shared Memory) 상의 락-프리 큐(Lock-free Queue)와 메모리 포인터 교환만으로 이루어지며, 이를 통해 직렬화/역직렬화 오버헤드가 제로(0)에 수렴하는 극단적인 마이크로초(μs) 단위의 레이턴시(Latency)를 달성한다.</p>
+<p><strong>2. 전역 분산망 (Global Scale-Out Model)</strong><br />
+개발자가 YAML 디스크립터(Descriptor)를 수정하여 특정 Operator를 클라우드 서버 클러스터 등 원격 호스트에 매핑(Mapping)하는 순간, 런타임은 해당 링크 사이에 투명한 Zenoh 게이트웨이를 자동 배포한다. 로컬 공유 메모리를 타던 스트림 지점은 즉각적으로 Zenoh 코어 라우터 엔진을 경유하는 이더넷/블루투스/5G 터널로 변환된다. 애플리케이션 코드를 전혀 수정하지 않고도 ’최적화된 통신 모드’로 컴포넌트를 스케일 아웃(Scale-out) 시킬 수 있는 투명성(Location Transparency)이 확보된다.</p>
+<h2>2.  소스(Source) - 외부 환경 데이터 유입 노드의 역할</h2>
+<p>모든 데이터플로우의 파이프라인은 소스(Source) 노드에서 발원한다. 소스 노드는 외부 세계(Sensors, APIs, Message Queues)의 발생 데이터를 획득하여 Zenoh-Flow 내부 규격의 스트림으로 주입하는 외교관 역할을 수행한다.</p>
+<p><strong>1. 구동 방식에 따른 분류</strong></p>
+<ul>
+<li><strong>주기적 소스 (Periodic Source):</strong> 내부 타이머에 의존하여 정해진 주파수(예: 60Hz 카메라 프레임 그래빙)마다 하드웨어 버퍼를 읽어와 파이프라인으로 전송한다.</li>
+<li><strong>반응형 소스 (Reactive Source):</strong> 외부의 인터럽트(Interrupt)나 MQTT 메시지 도달 등 비동기적 하드웨어/소프트웨어 이벤트가 발생할 때만 콜백(Callback)되어 활성화된다.</li>
+</ul>
+<p><strong>2. 배압 제어(Backpressure) 메커니즘</strong><br />
+소스 노드가 파이프라인에 데이터를 밀어 넣는 속도가 하위 머신 트리의 처리량(Throughput)을 초과할 경우, 버퍼 데드락(Deadlock)과 시스템 붕괴가 발생할 수 있다. 분산 데이터플로우 설계 시 소스 계층은 후단에서 전달되는 수신 큐 포화(Queue Full) 피드백 현상인 배압(Backpressure)을 감지하고, 유입되는 최신 데이터 프레임을 전략적으로 폐기(Drop Policy)하거나 취득 주기를 동적으로 조절할 수 있는 방어 로직을 필수적으로 실장해야 한다.</p>
+<h2>3.  오퍼레이터(Operator) - 데이터 변환 및 병합 연산 노드</h2>
+<p>오퍼레이터 노드는 소스스트림을 수신하여 정해진 기능(필터링, 매핑, 인공지능 추론 등)을 수행한 뒤 새로운 형태의 스트림을 하위 노드로 방출하는 중앙 연산 장치다.</p>
+<p><strong>1. 다중 입출력 (MIMO, Multi-Input Multi-Output) 아키텍처</strong><br />
+고급 파이프라인 설계에서 오퍼레이터는 1:1 파이프가 아니라, N개의 입력 포트(Input Ports)와 M개의 출력 포트(Output Ports)를 지닌 복합 교차로(Junction)로 기능한다. 예를 들어 두 이종 센서(LiDAR와 Camera)의 타임스탬프를 동기화하여 객체 인식 확률을 결합하는 ‘센서 퓨전(Sensor Fusion)’ 노드가 이 다중 포트 환경에 해당한다.</p>
+<p><strong>2. 상태 보존성 (Statefulness) 여부</strong></p>
+<ul>
+<li><strong>무상태(Stateless) 오퍼레이터:</strong> 단일 프레임 이미지를 흑백으로 변환하거나 특징점을 일차적으로 파생하는 작업처럼 현재의 입력값에만 결과가 종속된다. 장애 복구 및 프로세스 척결 시 즉각적인 인스턴스 재생산이 용이하다.</li>
+<li><strong>유상태(Stateful) 오퍼레이터:</strong> 연속된 시간 윈도우(Time Window) 동안의 평균 필터 구동이나 SLAM의 내부 맵핑 캐시 유지 등 연산 단계에서 메모리를 누적 유지해야 하는 컴퓨팅 노드이다. Zenoh-Flow는 이러한 노드의 라이프사이클 컨텍스트(Context) 보존을 전폭적으로 지원한다.</li>
+</ul>
+<h2>4.  싱크(Sink) - 외부 저장소 출력 및 터미널 노드</h2>
+<p>싱크 노드는 처리된 데이터가 파이프라인을 빠져나와 외부 시스템으로 격납되는 종착역(Terminal)이다. 출력 포트(Output Port) 없이 오직 입력만을 허용한다.</p>
+<p><strong>1. 액추에이터 및 스토리지 연동</strong></p>
+<ul>
+<li>로보틱스 제어 관점에서는 추출된 회피 매트릭스를 모터 CAN 제어 메시지로 전환하여 송출 후 스레드 임무를 종료한다.</li>
+<li>데이터센터 관점에서는 가공된 텔레메트리 데이터를 <code>MySQL</code>, <code>InfluxDB</code> 또는 <code>AWS S3 버킷</code>과 같은 장기 영구 저장 스토리지 체계에 응고(Persist)시키는 역할을 수행한다.</li>
+</ul>
+<p><strong>2. 비동기 블로킹(Asynchronous Blocking) 방어</strong><br />
+데이터베이스 트랜잭션 등 느린 원격 I/O를 수행할 때 싱크 노드가 블로킹(Blocking)되면 그 지연은 상위 연산 파이프라인 전체를 병목 현상에 빠뜨린다. 따라서 구조적으로 안전한 싱크 노드는 유입되는 연산 결과를 비동기 스레드 풀(Async Worker Pool)로 이양하여 실시간 수신 포트를 항시 개방 상태로 유지해야 한다.</p>
+<h2>5.  링크(Link) - 데이터 통신 채널과 Zenoh 라우팅 엔진 결합</h2>
+<p>링크는 각 노드의 출력 포트와 다음 노드의 입력 포트를 물리적/논리적으로 결속하는 선언적 연결로, 소스코드(Script) 내부가 아닌 환경 구성 파일(YAML)에 의해서만 정의된다.</p>
+<p><strong>1. 네트워크 계층의 투명한 추상화 (Network Abstraction)</strong><br />
+개발자는 오퍼레이터 비즈니스 로직(예: Python, Rust, C++) 구현 시 데이터가 동일 머신의 RAM 포인터 교환으로 유입될지, 미국 서부 데이터센터로부터 TCP 암호화 통신을 뚫고 들어올지 신경 쓰지 않아도 된다. 링크 모듈이 네트워크의 런타임 위상을 탐지하여 투명하게 데이터 수송을 총괄한다.</p>
+<p><strong>2. 백그라운드 키 익스프레션(Key Expression) 동기화</strong><br />
+<code>Node A -&gt; Node B</code>로 연결된 링크는, 실제로 Zenoh 프로토콜 위에서 보이지 않는 무작위의 <code>고유 UUID 경로(Topic Key)</code>로 자동 환원 생성된다. 런타임은 노드 A에 은닉된 임시 퍼블리셔(Publisher)를, 노드 B에 임시 서브스크라이버(Subscriber)를 매칭시킴으로써 별도의 관제 서버 개입 없이 Zenoh 코어 라우팅망의 효율을 100% 견인하는 분산 통신을 이룬다.</p>
+<h2>6.  페이로드의 형질: 직렬화(Serialization)와 통합 규약</h2>
+<p>서로 다른 언어 환경(예: Python의 영상 처리 모듈 -&gt; Rust 기반 고성능 맵핑 엔진)으로 구성된 분할 노드들이 분산 런타임을 관통하기 위해서는 파이프라인 혈관 내의 투명한 이진화(Binary Serialization) 호환성이 요구된다.</p>
+<p><strong>1. 커스텀 스키마 보호 기반 통신 규약</strong><br />
+단일 프로세스 환경에서는 데이터 구조체가 C 포인터 형식으로 메모리를 순회하지만, 네트워크를 도강하거나 이방성 환경 간 통신이 이루어질 때는 바이트 스트림 직렬화가 반드시 개입한다. Zenoh-Flow는 데이터 타입 설정의 자율성을 부여하되, 이질적 언어 프레임워크 간 통합 구속을 위해 Protobuf, FlatBuffers, Bincode 등 플랫폼 독립적 직렬화 스키마 모델을 사용할 것을 강제한다.</p>
+<p><strong>2. 불투명성(Opaque) 타입 오버헤드 주의</strong><br />
+언어 종속적 체계(예: Python의 <code>pickle</code>, Go의 <code>gob</code>)를 사용하여 방출된 이진 데이터 블록은 타 언어로 빌드된 노드에서 역직렬화(Deserialization)가 불가능하다. 모든 노드가 일관된 구조로 데이터를 해석할 수 있도록, 시스템 아키텍트는 표준화된 데이터 구조(Standard Data Structures)를 사전 문서화하는 것을 불변의 철칙으로 준수해야 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

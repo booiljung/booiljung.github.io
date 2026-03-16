@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:12.2 Zenoh 브릿지 플러그인 아키텍처 이해</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>12.2 Zenoh 브릿지 플러그인 아키텍처 이해</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>12.2 Zenoh 브릿지 플러그인 아키텍처 이해</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>12.2 Zenoh 브릿지 플러그인 아키텍처 이해</h1>
+<p>서로 다른 프로토콜 체계를 연동하는 아키텍처를 구상할 때 통상적으로 두 개의 운영체제 소켓(Socket)을 개방하여 애플리케이션 계층에서 데이터를 복사(Copy) 및 포워딩(Forwarding)하는 단순 릴레이 서버(Relay Server) 구조를 상정하는 것은 근시안적 접근이다.</p>
+<p>Zenoh 플랫폼은 코어 라우터 엔진 자체의 재컴파일(Re-compile) 과정을 일체 배제하고도, 런타임(Runtime) 환경 하에서 동적으로 라이브러리를 적재하여 이종 프로토콜 번역 모듈을 이식하는 핫 플러그인(Hot-Plugin) 아키텍처를 채택하고 있다. 본 절에서는 <code>zenoh-bridge-dds</code> 및 <code>zenoh-bridge-mqtt</code> 등의 브릿지 확장이 어떠한 기계적 구조로 Zenoh 코어 라우터 데몬의 메모리에 결합하여 통신 트래픽을 중계(Relay) 및 스니핑(Sniffing)하는지, 그 아키텍처적 해부도를 구체적으로 분석한다.</p>
+<h2>1.  Zenoh 라우터의 확장 가능한 플러그인 시스템 구조</h2>
+<p>기본 상태의 Zenoh 라우터(<code>zenohd</code>) 애플리케이션은 순수하게 Zenoh-to-Zenoh 프로토콜만을 취급하는 단일 경량 라우팅 허브 데몬이다. 이 라우팅 코어가 외부의 이질적 규격과 통신 세션을 수립하기 위해서는 구조적인 확장 인터페이스 모듈이 요구된다.</p>
+<h4>1.0.1  동적 적재(Dynamic Loading) 기반 브릿징 메커니즘</h4>
+<p>Zenoh 인프라스트럭처의 설계는 철저하게 코어 모듈(Core)과 플러그인 확장(Plugins) 트리로 이원화되어 조립된다.</p>
+<p><strong>1) 라이브러리 동적 링킹 스텝 (DLL / SO Injection)</strong></p>
+<ul>
+<li><code>zenoh-bridge-dds</code> 와 같은 브릿지 모듈은 아키텍처상 독립적인 스탠드얼론 실행 프로세스(Standalone Process) 로 분리 구동될 수도 있으나, 본질적으로는 메인 라우터 데몬 프로세스 내부에 직접 주입(Injection)되는 공유 라이브러리(<code>.so</code>, <code>.dll</code>, <code>.dylib</code>) 규격의 플러그인 위상으로 설계되어 있다.</li>
+<li>라우터 초기 부트스트랩(Bootstrap) 단계에서 환경 설정 문서(<code>zenoh.json5</code>) 내 <code>plugins</code> 디렉티브를 활성화할 경우, 시스템은 기동 즉시 운영체제의 동적 링커(Dynamic Linker) 시스템 콜을 발동시켜 프로세스 힙 메모리 공간 위로 브릿지 번역 엔진을 직결 마운트(Mount)시킨다.</li>
+</ul>
+<p><strong>2) 제로-카피(Zero-Copy) 메모리 기반 브릿지 통신 오버헤드 소거</strong></p>
+<ul>
+<li>전통적인 독립 프로세스 릴레이 서버를 병렬로 기동할 경우 필연적으로 발생하는 가장 큰 병목은 릴레이 프로세스와 라우터 프로세스 간의 IPC(Inter-Process Communication)나 로컬 루프백 소켓(Localhost Socket) 계층을 왕복해야 하는 문맥 교환(Context Switching) 비용이다.</li>
+<li>반면 Zenoh의 플러그인 아키텍처 패러다임 하에서는 브릿지 모듈 영역과 라우터 코어 영역이 <strong>완벽하게 동일한 프로세스 메모리 주소(Shared Memory Space)</strong> 를 할당받는다. 따라서 외부 DDS망에서 수신된 1MB 단위의 고용량 비전 패킷이 내부 Zenoh 라우팅 버스로 인계될 때, 단 1바이트의 페이로드 바이트 배열 복사(Copy) 연산 조차 발생하지 않는다. 단지 포인터(Pointer) 메모리 참조 주소의 소유권만 이관함으로써 통역 릴레이 오버헤드가 수렴 치 0 영역에서 종료된다.</li>
+</ul>
+<h2>2.  브릿지 플러그인의 생명주기 및 메모리 관리</h2>
+<p>수백 대 단위의 MQTT 엣지 디바이스가 비동기적으로 연결을 갱신하고, 수천 개의 ROS2 멀티캐스트 토픽이 폭주하는 극한의 트래픽 환경 속에서 브릿지 프로세서가 예기치 않게 종료(Crash)될 경우 전체 시스템 인프라는 즉각적으로 단절된다.</p>
+<h4>2.0.1  Rust 메모리 모델 기반의 무결점 런타임 안정성(Runtime Stability)</h4>
+<p>Zenoh 통역 브릿지 데몬들이 장기 가동 환경에서도 메모리 소모성 결함 없이 무결성을 유지하는 핵심 기조는, 메모리 세이프티 모델을 갖춘 <strong>Rust</strong> 언어로 프로토콜 전체가 강제 프로그래밍되어 있기 때문이다.</p>
+<p><strong>1) 세션 객체의 생성 및 소멸 (Lifecycle Management)</strong></p>
+<ul>
+<li>브릿지 모듈은 인접한 외부망(MQTT/DDS) 노드 관여를 시도할 시 논리적인 백그라운드 태스크 스레드(Tokio Async Runtime 기반) 를 분기(Spawn)시킨다.</li>
+<li>물리적 네트워크 링크가 간헐적으로 유실될 시, 해당 비동기 태스크 스레드는 치명적 예외(Panic) 스택을 반환하지 않고, 이면 대기열(Sleep/Idle Queue) 상태로 백오프(Back-off) 대기 전환된다. 이후 상태 복구 트리거 신호가 감지되면 즉각적으로 재활성화(Revive) 절차를 밟는다. 이 과정에서 유휴 상태로 방치되었던 시스템 런타임 자원은 Rust 내부의 소유권(Ownership) 해제 규율에 의해 추적 수거되어 가비지 제로(Memory Leak 0%) 상태를 보전한다.</li>
+</ul>
+<p><strong>2) 스나이퍼식 메모리 풀 튜닝 아키텍처 (Pre-allocated Memory Pool)</strong></p>
+<ul>
+<li>브릿지 백엔드 코어는 외부 타사 프로토콜(예: eProsima FastRTPS 라이브러리) 계층이 간헐적으로 촉발시키는 시스템 <code>malloc()</code> 수준의 동적 빈 힙(Heap) 메모리 할당 빈도조차도 예측 제어 하에 둔다.</li>
+<li>브릿지 모델 내부적으로 사분할된 고정 버퍼 사이즈 배열 맵(정적 메모리 풀)을 초기 램에 선할당(Pre-allocation)시켜 구비하고 있다. 외부에서 대용량 데이터 패킷 인터럽트가 발생할 때마다 매번 값비싼 커널 동적 할당 알고리즘을 소환하는 대신, 이미 확립된 해당 풀에서 빈 배열 공간(버퍼 슬롯)만을 이관(Borrow)받아 바이트 배열을 채우게 된다. 패킷이 성공적으로 포워드 라우팅(Forward Routing)된 이후 즉시 슬롯을 반환(Return)받는 폐쇄 순환계로 작동한다.</li>
+</ul>
+<p>쓰레기 수집기(Garbage Collector, GC)가 백그라운드에서 불규칙하게 개입하는 Java나 Python 계열 릴레이 스트럭처의 경우 심각한 Stop-The-World 응답 속도 지연(Latency Spikes)이 일일 단위로 필연 관측되나, 해당 네이티브 아키텍처 환경에서는 트랜잭션 지연 시간 지표가 항구적으로 0.01ms 구간대의 플랫(Flat) 라인을 견지하게 된다.</p>
+<h2>3.  이기종 간의 프로토콜 변환 및 페이로드(Payload) 매핑 메커니즘</h2>
+<p>이기종 네트워크 규약의 본질은 봉투 격인 “문법적 통신 스펙(Protocol Header)“과 내용물인 “실질 데이터(Payload)“의 분리 체계에 귀결된다. 브릿지는 수신 패킷에서 이 두 계층을 외과 수술 수준으로 절제(Decoupling)하여 상호 호환 형상으로 치환(Substitution)하는 파이프라인 엔진이다.</p>
+<h4>3.0.1  아키텍처 번역 엔진(Translation Engine)의 동작 기전</h4>
+<p><strong>1) 토픽(Topic) 네임스페이스 경로 스왑 (Namespace Transplantation)</strong></p>
+<ul>
+<li><strong>MQTT 주소계:</strong> <code>/sensor/temp</code></li>
+<li><strong>DDS(ROS2) 주소계:</strong> <code>rt/sensor/temp</code></li>
+<li>브릿지 스레드는 각 타사용 규격 주소 스트링 모델을 식별한 뒤, 이를 Zenoh의 범용 통일 계층 구조 트리인 ‘키 형식(Key Expression)’ 문법 모델로 강제 포워드 스왑(Forward Swap)한다. 해당 주소계 변환 테이블 매트릭스는 유저가 구비한 브릿지 정책 설정 매니페스트(<code>allow</code>, <code>deny</code> 필터 등) 지시어에 의거하여 필터링 매핑된다.</li>
+</ul>
+<p><strong>2) 투명한 페이로드 직달 포워딩(Opaque Payload Passthrough)</strong><br />
+통신 렌더링 성능을 극대화하는 가장 탁월한 아키텍처적 특성이다. <strong>Zenoh 브릿지는 캡슐 본문 내에 동봉된 내용물의 데이터 포맷이나 스키마적 시맨틱을 연산 해석하지 않는다.</strong></p>
+<ul>
+<li>기기 단에서 MQTT가 발사한 <code>{ "temp" : 25.4 }</code> 형상의 UTF-8 텍스트 바이트 덩어리</li>
+<li>ROS2 노드 발신지가 직렬화하여 송출한 <code>Float32</code> 스키마 형상의 리틀엔디안 이진(Binary) 덩어리<br />
+Zenoh 브릿지는 입수된 상기 덩어리들 일체를 무파괴 래핑(Wrapping) 상태로 보존한 뒤, 시스템 헤더 전면부에 “이 트래픽은 DDS 규격 바이트 컨테이너다”, 혹은 “해당 트래픽은 MQTT JSON 텍스트 패킷이다“를 식별하게 해주는 단순화된 태깅 식별자(MIME Type/Encoding Tag) 하나만을 점착 스탬핑하여 중앙 백본 경로로 송신한다.</li>
+</ul>
+<p>서버 사이드에 자리 잡은 최종 목적지(수신부) 브릿지 데몬은 단지 해당 첨부 태그 표식 메타데이터만을 기계적으로 판별한 후, 즉시 요구되는 원본 타겟의 정규 프로토콜 규격 껍데기(Header)만 재생성 피복시켜 로컬망으로 패스해버린다.<br />
+이와 같은 <strong>단순 페이로드 스루트(Opaque Payload Passthrough)</strong> 로직에 의해, 브릿지 노드에서의 불필요한 직렬화 파싱(Parsing) 연산과 CPU 스레드 파워 낭비 지연이 근원적으로 박멸되며 초고속 백본 톨게이트 전송이 실현된다.</p>
+<h2>4.  데이터 직렬화 및 역직렬화 오버헤드 분석</h2>
+<p>페이로드 영역이 비파괴 포워딩 체제를 준수한다 가정하였을 때, 그렇다면 논리적인 통신 레이턴시 지연을 야기하는 실질적 앵커(Anchor) 오버헤드는 어느 국면에서 도출되는가?<br />
+그것은 바로 프로토콜 아우터 “포장지를 해체하고 재규격화 포장(Enveloping)하는 헤더 전환 과정” 그 자체에 있다. 이것이 연동 브릿지 계층 아키텍처가 당면한 유일하고도 필연적인 오버헤드 함정이다.</p>
+<h4>4.0.1  직렬화(Serialization/Deserialization) 캡슐화 오버헤드 마이크로 해부</h4>
+<p><strong>1) MQTT 연동 브릿지의 지연(Overhead) 양상 (JSON, UTF-8 String)</strong></p>
+<ul>
+<li>기초적인 MQTT 패턴 규격은 구조 스펙 자체가 극도로 경량화(Lightweight)되어 있으므로, L4 패킷 단에서 헤더 메타데이터를 파싱 절개하는 데 소모되는 마이크로초 지연은 계측 오차에 수렴할 만큼 미미하다 (Sub-microsecond).</li>
+<li>다만 허들 영역은 주소계 매핑이다. MQTT 토픽 네임스페이스 명세(Slash(<code>/</code>) 지시자로 분절된 문자열 체계) 패러다임과 Zenoh 의 Key Expression 와일드카드 매칭 트리 규칙 간의 미세한 문법 차이가 빚어내는 스트링 패턴 재구축 과정 탓에, 미량의 정규식 문자열 치환 연산 비용 지연(수십 us 수준)이 합산 도출된다.</li>
+</ul>
+<p><strong>2) DDS 연동 브릿지의 지연 양상 (RTPS 및 CDR 헤더 변환 로딩)</strong></p>
+<ul>
+<li>DDS 패킷 레이어를 단별 추출할 때, 브릿지 백엔드는 내부 ROS2 진영의 기저 규격인 <code>RTPS</code> 헤더 메타 프레임 구조까지 하향 침투·판독해야 한다. (지터 타이밍, Liveliness 상태 시그널링, 시퀀스 넘버 체계 등)</li>
+<li>DDS 표준의 난해하고 방대한 QoS 세그먼트 메타데이터를, Zenoh 자체의 네트워크 통제 규격인 <code>Reliability</code> 와 <code>Priority</code> 등가 테이블로 강제 번역 매핑(Mapping)시키는 복잡한 연산 로직 루틴 통과로 인하여 대략적으로 <code>0.1 ~ 0.3ms</code> 내외의 고정 연산 딜레이 패널티(Penalty)가 불가피하게 관측된다.</li>
+</ul>
+<p><strong>아키텍처 엔지니어링 결론:</strong><br />
+토폴로지 설계 아키텍트는 분산 데이터 파이프라인 산출 과정 중 이와 같은 “브릿지 개체당 필연적으로 소장되는 평균 0.3ms 내외의 헤더 포장 변환 렌더링 비용“을 총 종단 간 통신 레이턴시(E2E Latency Budget) 상한 예산에 필히 누적 설계해 두어야 한다.<br />
+가령, 이기종 에지 말단 로봇망 1개 브릿지단(<span class="math math-inline">1\times0.3ms</span>)과 최종 수집 클라우드 수신단 측 DDS 재변환 브릿지망(<span class="math math-inline">1\times0.3ms</span>) 간에 스팬(Span)이 총 2개 노드로 직렬 배치되어 있다면, 순수 토폴로지 핑(Ping) 전파 비용과는 별개로 베이스라인 레이턴시에 기계적인 최소 1ms 단위의 브릿지 래핑 및 역-래핑(Pack/Unpack) 연산 딜레이가 필히 융자된다는 팩리적 제약 조건을 수치공학적으로 포용 및 시스템 궤적에 예비해야만 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

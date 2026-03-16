@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.7.2.1. `vehicle_command`와 `vehicle_command_ack` 토픽 간의 마이크로초 단위 타임스탬프 델타 연산</title>
+    <title>BIJUNG:39.7.2.1. vehicle_command 와 vehicle_command_ack 토픽 간의 마이크로초(Microsecond) 단위 타임스탬프 델타 연산</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,34 +109,52 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.7.2.1. `vehicle_command`와 `vehicle_command_ack` 토픽 간의 마이크로초 단위 타임스탬프 델타 연산</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.7.2.1. `vehicle_command`와 `vehicle_command_ack` 토픽 간의 마이크로초 단위 타임스탬프 델타 연산</span></nav>
+                    <h1>39.7.2.1. vehicle_command 와 vehicle_command_ack 토픽 간의 마이크로초(Microsecond) 단위 타임스탬프 델타 연산</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.7.2.1. vehicle_command 와 vehicle_command_ack 토픽 간의 마이크로초(Microsecond) 단위 타임스탬프 델타 연산</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.7.2.1. <code>vehicle_command</code>와 <code>vehicle_command_ack</code> 토픽 간의 마이크로초 단위 타임스탬프 델타 연산</h1>
+                <h1>39.7.2.1. vehicle_command 와 vehicle_command_ack 토픽 간의 마이크로초(Microsecond) 단위 타임스탬프 델타 연산</h1>
 <h2>1.  개요</h2>
-<p>PX4 펌웨어 내부에서 명령어 처리의 심장부는 uORB(Micro Object Request Broker) 통신망이다. MAVLink 수신 모듈이 파싱한 명령어는 <code>vehicle_command</code> 토픽으로 변환되어 뿌려지고, 이를 낚아챈 <code>Commander</code> 모듈은 처리가 끝난 뒤 <code>vehicle_command_ack</code> 토픽을 발행하여 내뱉는다.<br />
-이 두 토픽의 생성 시간 차이는 PX4 운영체제(NuttX RTOS)가 얼마나 빠르고 쾌적하게 명령어를 소화하고 있는지를 나타내는 가장 순수하고 직관적인 생체 지표(Biomarker)다. 본 절에서는 ULog에 기록된 마이크로초(Microsecond, <span class="math math-inline">\mu s</span>) 단위의 타임스탬프를 델타(<span class="math math-inline">\Delta t</span>) 연산하여 스케줄링 지연(Latency)을 정량화하는 기법을 다룬다.</p>
-<h2>2.  uORB 타임스탬프(Timestamp) 구조체의 정밀도</h2>
-<p>PX4의 모든 uORB 메시지 구조체(<code>.msg</code> 파일)는 항상 첫 번째 필드로 <code>uint64 timestamp</code>를 가진다.<br />
-이 값은 기체가 부팅된 시점(또는 시스템 클럭 동기화 시점)으로부터 흘러간 절대 시간을 마이크로초 단위로 기록한 위상 상수다.</p>
+<p>PX4-Autopilot 기반의 무인항공기 시스템(UAS) 운영 환경에서 지상 관제 시스템(GCS, Ground Control Station)과 기체 간의 통신 신뢰성은 필수적인 요소이다. 특히, QGroundControl(기능 적용 권장 버전 v4.3.0 이상)에서 전송된 명령어(Command)가 기체에 도달하여 처리되기까지의 응답성은 실시간 제어(Real-time Control)의 핵심이다. 안정적인 비행을 위해서는 명령어 타임아웃(Timeout) 현상이 무선 통신망 레이어의 문제인지 혹은 비행 제어기 내부의 운영체제(NuttX RTOS) 레벨 성능 저하 문제인지를 명확히 규명해야 한다.</p>
+<p>이를 정량적으로 파악하기 위한 가장 강력한 스케줄링 성능 지표로, uORB(Micro Object Request Broker) 통신 버스 상에 존재하는 <code>vehicle_command</code> 토픽과 <code>vehicle_command_ack</code> 토픽 간의 타임스탬프(Timestamp) 델타(<span class="math math-inline">\Delta t</span>) 연산 기법을 들 수 있다. 이 분석을 통해 프로세스 간 통신(IPC, Inter-Process Communication) 및 스케줄링 지연(Scheduling Latency) 수준을 마이크로초(Microsecond, <span class="math math-inline">\mu s</span>) 단위로 분석하여 시스템의 건전성을 진단하라.</p>
+<h2>2.  uORB 타임스탬프 및 메시지 발생 동인</h2>
+<p>PX4-Autopilot(펌웨어 v1.14.0 기준)의 모든 uORB 메시지 구조체(Structure)는 동기화된 시스템 부팅 시간(System Clock)으로부터 경과된 시간을 나타내는 <code>uint64 timestamp</code> 필드를 앞단에 포함한다. 이는 마이크로초 단위의 해상도(Resolution)를 보장하며, 시스템 내부 처리 지연을 분석하는 핵심 단서이다.</p>
 <ul>
-<li><strong><span class="math math-inline">t_{cmd}</span> (<code>vehicle_command.timestamp</code>)</strong>: 직렬 포트(UART) 인터럽트 핸들러를 거친 <code>mavlink_receiver</code> 스레드가 패킷의 CRC 오류 검증을 마치고, uORB 버스에 명령어를 Publish한 정확한 찰나의 시간.</li>
-<li><strong><span class="math math-inline">t_{ack}</span> (<code>vehicle_command_ack.timestamp</code>)</strong>: <code>Commander</code> 스레드가 자신의 워크 큐(Work Queue)에서 깨어나 해당 명령어를 평가(Validation)하고 펌웨어 내부 상태를 변경한 뒤, 그 결과(Result)를 uORB 버스에 Publish한 시간.</li>
+<li><strong><span class="math math-inline">t_{cmd}</span> (<code>vehicle_command.timestamp</code>)</strong>: 직렬 인터페이스(UART, USB 등)를 통해 MAVLink 패킷을 수신한 <code>mavlink_receiver</code> 스레드가 메시지의 무결성을 검증하고 uORB로 전환하여 시스템 망에 최초로 게시(Publish)하는 시간이다.</li>
+<li><strong><span class="math math-inline">t_{ack}</span> (<code>vehicle_command_ack.timestamp</code>)</strong>: 백그라운드에서 동작 중이던 <code>Commander</code> 스레드가 해당 명령을 수신(Subscribe)하여 내부 유한 상태 기계(FSM, Finite State Machine)를 평가한 후 승인(ACK) 또는 거절(NACK) 등의 결과를 다시 uORB 버스에 게시한 시간이다.</li>
 </ul>
-<h2>3.  델타(<span class="math math-inline">\Delta t</span>) 연산과 스케줄링 지연(Latency)의 정량화</h2>
-<p>시스템 엔지니어는 Flight Review나 PlotJuggler와 같은 ULog 분석 도구를 열어 동일한 <code>command</code> ID를 가진 두 토픽의 타임스탬프 차이를 계산한다.</p>
+<p>이러한 두 상태의 타임스탬프는 Ardupilot에서 사용하는 모놀리식(Monolithic) 명령어 처리 큐 방식과 달리, PX4의 분산 메시징(Publish-Subscribe) 아키텍처 특유의 비동기적(Asynchronous) 스케줄링 관점을 내포한다.</p>
+<h2>3.  델타(<span class="math math-inline">\Delta t</span>) 연산을 통한 응답성 정량화</h2>
+<p>다음의 수식을 통해 명령어의 내부 트랜잭션 처리 지연 델타(<span class="math math-inline">\Delta t</span>)를 도출하라.</p>
 <p><span class="math math-display"> \Delta t = t_{ack} - t_{cmd} </span></p>
-<p>정상적이고 건강한 PX4 시스템에서 이 <span class="math math-inline">\Delta t</span> 값은 <code>Commander</code> 스레드의 구동 주파수(보통 50Hz, 즉 20ms 주기)의 절반인 <strong>10ms ~ 20ms 이내</strong>로 일정하게 수렴해야 한다.<br />
-만약 GCS가 타임아웃을 겪었던 문제의 시간대에서 이 <span class="math math-inline">\Delta t</span> 값이 <strong>100ms 심지어 500ms 이상</strong>으로 폭증(Spike)하는 현상이 발견된다면, 이는 무선 통신망의 문제가 아니라 100% 드론 내부의 CPU 코어나 메모리 버스가 극심한 변비(Bottleneck)에 걸려 명령어 처리 스레드가 마비되었음을 의미한다.</p>
-<h2>39.7.2.1.3. 델타 스파이크(Delta Spike)의 원인 추론</h2>
-<p>이렇게 <span class="math math-inline">\Delta t</span> 연산을 통해 내부 스케줄링 지연이 범인으로 지목되었다면, 엔지니어는 지연이 발생한 타임스탬프 구간에서 시스템(OS) 부하를 가중시킨 다른 요인들을 ULog를 통해 찾아 나선다.</p>
+<p>식에서 오차의 절대값 <span class="math math-inline">\vert \Delta t \vert</span> 가 시스템 스케줄링 주기보다 크다면 비정상적인 지연이 발생한 것으로 간주한다.</p>
+<p>통상적으로 건강한 상태의 PX4-Autopilot 체계 내에서 <code>Commander</code> 및 주요 스레드는 50Hz에서 100Hz 수준의 루프율(Loop Rate)을 유지하므로, <span class="math math-inline">\Delta t</span>는 대략 <strong>10ms에서 20ms 내외</strong>로 수렴해야 한다. 만일 시스템 로깅(ULog) 파일을 Flight Review나 PlotJuggler와 같은 분석 도구(Analysis Tool)에서 확인했을 때, 특정 시점에서 <span class="math math-inline">\Delta t</span> 값이 <strong>100ms 이상 심지어 500ms(0.5초)</strong> 가까이 폭증(Spike)하는 현상이 발견될 경우, 이는 시스템의 물리적 대역폭 문제가 아님을 뜻한다. 즉, CPU 사이클 점유율 폭주 또는 메모리 버스의 입출력 지연(I/O Blocking)에 의해 <code>Commander</code> 스레드가 제때 스케줄링(Scheduling)되지 못한 것이다.</p>
+<h2>39.7.2.1.4. 내부 명령어 처리 파이프라인</h2>
+<p>이러한 비동기적 메시지 처리 흐름의 구조를 파악하기 위하여 명령어 처리 파이프라인의 절차를 도식화하라.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant M as mavlink_receiver
+    participant u as uORB (vehicle_command)
+    participant C as Commander
+    participant a as uORB (vehicle_command_ack)
+    
+    Note over M: GCS에서 MAVLink 명령 패킷 수신
+    M-&gt;&gt;u: Publish (t_cmd 표기)
+    u-&gt;&gt;C: Subscribe 및 대기열(Queue) 등록
+    Note over C: FSM 검증 및 비행 상태 변경
+    C-&gt;&gt;a: 처리 결과 Publish (t_ack 표기)
+    Note over a: Delta t = t_ack - t_cmd
+</code></pre>
+<p>위 다이어그램에서 보듯 uORB를 거치는 구조적 특성상, 각 모듈 간에는 의존성이 약화(Decoupling)되는 장점이 있는 반면에, CPU 부하 가중 시 스레드 선점(Preemption) 기회를 얻지 못해 지연이 누적될 위험이 공존한다.</p>
+<h2>39.7.2.1.5. 스케줄링 지연(Latency)의 주요 원인 및 분석 기법</h2>
+<p>델타 스파이크(Delta Spike)를 조기에 감지하고 규명하는 것은 무인기 사고 예방을 위한 핵심적인 신뢰성 검증 작업이다. 다음 요소들을 분석하여 지연의 근본 원인(Root Cause)을 도출하라.</p>
 <ol>
-<li><strong>SD 카드 I/O 블로킹(Blocking)</strong>: 로거(Logger) 스레드가 비트레이트가 높은 센서 데이터를 SD 카드에 무리하게 쓰려다가 파일 시스템 병목에 걸리면서, 메인 데이터 버스를 독점해 버린 경우.</li>
-<li><strong>CPU 점유율(Load) 폭주</strong>: EKF2(칼만 필터)나 비전 처리 동기화 루틴 등 연산 집약적인(Compute-intensive) 스레드가 찰나의 순간 CPU 점유율을 100%로 끌어올리며 <code>Commander</code> 스레드의 실행할 기회(Time Slice)를 빼앗아 버린 경우.</li>
+<li><strong>파일 입출력(File I/O) 블로킹(Blocking)</strong>: 로거(Logger) 스레드가 고대역폭의 데이터(예: 고속 IMU 데이터 등)를 SD 카드 매체에 상시 기록 시도할 때, 파일 시스템 차원의 병목 현상이 발생하여 버스를 점유할 수 있다. 이 경우 다른 프로세스의 메모리 접근조차 지연되어 시스템 스케줄링을 저해한다.</li>
+<li><strong>단기적 CPU 점유율(Load) 폭증</strong>: 칼만 필터(EKF2)와 같은 연산 집약적인(Compute-intensive) 모듈이나 컴퓨터 비전 동기화 루틴이 찰나의 순간에 CPU를 한계치까지 점유하여, 우선순위가 상대적으로 낮은 스레드들의 실행 기회(Time Slice)를 박탈(Starvation)하는 경우이다.</li>
+<li><strong>스레드 우선순위 역전(Priority Inversion)</strong>: 시스템 자원에 대한 동시 접근 중 뮤텍스(Mutex)나 세마포어(Semaphore) 확보 경합이 일어나는 경우이다.</li>
 </ol>
-<p>이처럼 마이크로초 단위의 uORB 타임스탬프 델타 연산은 허공에 떠드는 GCS의 불평이 아니라, PX4 펌웨어 스스로가 기록한 하드웨어 및 OS 레벨의 명백한 병목 증거를 제시하는 강력한 수사 기법이다.</p>
+<p>이러한 현상들은 GCS 상호 운용성 시험 시 “Command temporarily rejected“나 타임아웃 에러를 발생시키는 주된 원인이다. 관련하여 시스템 내 지연 요인 분석에 대해서는 학술 문헌 “Performance Analysis of Real-Time Operating Systems for Unmanned Aerial Vehicles” 와 같은 실시간 운영체제 성능 평가 연구에서 집중적으로 다뤄지고 있다.</p>
+<p>엔지니어는 ULog 데이터에서 단순 비행 궤적 확인을 넘어서, 시스템 태스크 성능 로그(<code>task</code> 속성 데이터) 및 uORB 메시지 간 지연 시간을 정밀하게 델타 연산하여 내부 병목 현상을 진단하고 최적화(Optimization)하라.</p>
 
             </article>
             <footer>

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:40.5.2 멀티 코어 환경의 경쟁 상태(Race Condition) 억제 위상 정렬(Topological Sort)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>40.5.2 멀티 코어 환경의 경쟁 상태(Race Condition) 억제 위상 정렬(Topological Sort)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.5.2 멀티 코어 환경의 경쟁 상태(Race Condition) 억제 위상 정렬(Topological Sort)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>40.5.2 멀티 코어 환경의 경쟁 상태(Race Condition) 억제 위상 정렬(Topological Sort)</h1>
+<p>현대의 고성능 무인항공기 비행 제어기(Flight Controller, FC)는 단순한 단일 코어 마이크로컨트롤러(MCU)를 넘어, 듀얼 코어 이상의 복합 아키텍처(예: STM32H7 시리즈의 Cortex-M7/M4 듀얼 코어)나 보조 프로세서를 포함하는 멀티 코어 환경으로 진화하고 있다. 더욱이 QGroundControl이 구동되는 지상 관제 시스템(GCS) 컴퓨터나 기체에 탑재된 미션 컴퓨터(Companion Computer)는 고도로 병렬화된 멀티 코어 프로세스를 통해 방대한 연산을 동시에 수행한다.</p>
+<p>이러한 멀티 스레드 및 멀티 코어 환경에서 복잡한 제어 로직과 통신 모듈(MAVLink), 센서 융합(Sensor Fusion) 알고리즘이 동시에 공유 데이터(Shared Data)에 접근하려 할 때 필연적으로 **경쟁 상태(Race Condition)**가 발생한다. 본 절에서는 PX4-Autopilot 및 GCS 소프트웨어 아키텍처 내에서 발생할 수 있는 경쟁 상태의 특성과, 이를 억제하기 위해 작업 실행 순서를 수학적으로 엄격하게 제어하는 <strong>위상 정렬(Topological Sort)</strong> 기법의 적용 원리를 학습하라.</p>
+<h2>1.  멀티 코어 드론 시스템에서의 경쟁 상태(Race Condition) 위험성</h2>
+<p>경쟁 상태란 두 개 이상의 스레드나 프로세스가 공유 메모리 공간이나 자원에 동시에 접근하여 값을 읽고 쓰는 순서(타이밍)에 따라 시스템의 결과값이 예측 불가능하게 달라지는 현상이다. 무인기 시스템에서는 치명적인 비행 사고로 직결될 수 있다.</p>
+<ol>
+<li><strong>상태 머신 모순:</strong> <code>Commander</code> 스레드에서 기체를 ‘Arming’ 처리하는 도중, <code>MAVLink Receiver</code> 스레드에서 수신된 ‘Disarm’ 명령이 동일한 상태 변수에 개입할 경우, 기체는 이륙 직후 모터가 꺼지는 치명상에 빠질 수 있다.</li>
+<li><strong>센서 데이터 오염:</strong> 멀티 코어 환경에서 Core 1이 자이로스코프 데이터를 쓰는 도중에 Core 2가 EKF(Extended Kalman Filter) 연산을 위해 반쯤 갱신된 데이터를 읽어갈 경우, 잘못된 자세 추정을 야기한다.</li>
+</ol>
+<p>Ardupilot은 전통적으로 중앙 집중식 스케줄러(Scheduler)에 의존성이 높아 단일 루프 안에서 이러한 충돌을 순차적으로 제어하는 성향이 강했다. 이와 다르게 PX4-Autopilot은 독립적인 다수의 모듈(프로세스/스레드)이 uORB라는 메시지 버스를 통해 비동기적으로 통신하는 고도의 분산 아키텍처를 가지므로 적절한 동기화와 순서 제어 로직 없이는 경쟁 상태에 노출되기 대단히 쉽다.</p>
+<h2>2.  작업 의존성 그래프와 위상 정렬(Topological Sort)의 원리</h2>
+<p>멀티 코어 병렬 처리 환경에서 뮤텍스(Mutex), 세마포어(Semaphore) 등의 레거시 락(Lock) 메커니즘을 남발하면 데드락(Deadlock)에 빠지거나 성능 저하(Context Switching Overhead)가 유발된다. 이를 근본적으로 억제하기 위한 최적의 설계 기법 중 하나가 모듈 간의 논리적 실행 순서를 미리 보장하는 <strong>위상 정렬(Topological Sort)</strong> 기반의 태스크 스케줄링이다.</p>
+<h3>2.1  방향성 비순환 그래프(DAG, Directed Acyclic Graph) 매핑</h3>
+<p>FC 코어나 GCS 백엔드의 주요 태스크들을 노드(Node)로, 데이터의 흐름 및 선행 관계를 간선(Edge)으로 정의하여 DAG를 구성하라.<br />
+순환(Cycle)이 발생하지 않는 이 의존성 그래프에 위상 정렬 알고리즘(예: Kahn’s Algorithm 또는 DFS 기반 탐색)을 적용하면, 어떤 태스크가 먼저 실행되어야 하고 어떤 태스크가 병렬로 실행 가능한지 명확히 도달할 수 있다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[태스크 A: 센서 데이터 수집] --&gt; B[태스크 B: 센서 캘리브레이션 보정]
+    A --&gt; C[태스크 C: 외부 비전 데이터 스트리밍 수신]
+    B --&gt; D[태스크 D: EKF2 필터 추정]
+    C --&gt; D
+    D --&gt; E[태스크 E: 위치 및 자세 제어 루프]
+    E --&gt; F[태스크 F: 액추에이터 믹싱 및 PWM 출력]
+    E --&gt; G[태스크 G: MAVLink 텔레메트리 송신]
+
+    style A fill:#f9d0c4,stroke:#333,stroke-width:2px
+    style D fill:#c4e1f9,stroke:#333,stroke-width:2px
+    style F fill:#c4f9d0,stroke:#333,stroke-width:2px
+</code></pre>
+<p><em>위상 정렬 결과 예시:</em> <code>T_sort = [A, C, B, D, E, F, G]</code><br />
+위상 정렬을 거친 파이프라인에서는 B와 C가 서로 데이터 의존성이 없으므로 멀티 코어 환경에서 완벽히 병렬(Parallel) 실행이 가능하다. 그러나 D는 반드시 B와 C가 완료된 이후에만 실행되도록 순서가 제어된다.</p>
+<h2>3.  PX4 및 GCS에 적용된 위상 정렬 기반 스케줄링 응용</h2>
+<h3>3.1  PX4 Work Queue (wq) 시스템을 활용한 의존성 관리</h3>
+<p>PX4 펌웨어는 자체적인 Work Queue(작업 큐) 스케줄링 시스템을 통해 여러 모듈 간의 실행 순서 의존성을 효과적으로 통제한다. <code>work_queue</code>에 할당된 작업들은 내부적으로 uORB 토픽의 발행(Publish) 인지 시스템과 결합되어 있다.</p>
+<p>예를 들어 제어 루프를 담당하는 <code>mc_pos_control</code>(멀티로터 위치 제어기) 모듈은 <code>vehicle_local_position</code> 토픽이 EKF 시스템으로부터 새롭게 발행될 때만 깨어나 연산을 시작하도록 콜백(Callback)이나 폴링(Polling) 대기가 결려 있다.<br />
+이와 같이 uORB 메시지의 송수신 자체가 태스크 간의 물리적 데이터 흐름 방향(간선)을 정의하며, 런타임에 묵시적인 위상 정렬을 강제하게 되어 공유 메모리 접근에 대한 Race Condition을 원천적으로 차단한다.</p>
+<h3>3.2  GCS(QGroundControl) 백엔드의 시그널-슬롯 지향적 의존성 제어</h3>
+<p>QGroundControl(QGC)은 Qt 프레임워크를 기반으로 하며, C++ 백엔드에서 무수히 많은 QThread가 동작한다. 통신 스레드, 차량(Vehicle) 관리 스레드, UI 렌더링 스레드가 경쟁 상태에 빠지지 않도록 <strong>Signal &amp; Slot</strong> 메커니즘을 적극 활용하라.</p>
+<p>특정 상태 갱신이 여러 모듈을 거쳐야 한다면, 이 순서를 하드코딩된 락(Lock)으로 방어하지 말고 명확한 시그널 호출 체인(Signal Call Chain)을 구성하라.</p>
+<ol>
+<li><strong>MAVLink 수신 스레드(Node 1):</strong> 패킷 파싱 완료 즉시 <code>mavlinkMessageReceived</code> 시그널 방출</li>
+<li><strong>Vehicle 매니저 스레드(Node 2):</strong> 시그널을 받아 상태 업데이트 후 <code>vehicleStateChanged</code> 시그널 방출</li>
+<li><strong>UI 렌더링 스레드(Node 3):</strong> 마지막 시그널을 수신하여 화면 갱신</li>
+</ol>
+<p>각 단계는 철저히 단방향 의존성(DAG)을 띠며 위상 정렬된 순서대로 큐(Queue) 엔진을 통해 이벤트가 파생되므로 멀티 코어 환경에서 데이터 경합 현상이 억제된다.</p>
+<h2>4.  커스텀 프레임워크 설계자를 위한 설계 제언</h2>
+<p>고성능 커스텀 GCS나 고성능 미션 컴퓨터 프로세스 제어 데몬을 작성할 때 다음을 반드시 준수하라.</p>
+<ol>
+<li><strong>상태 전역 변수 금지 및 암묵적 락 사용 지양:</strong> 전역 변수를 여러 스레드에서 남발하고 단순 Mutex로 감싸는 레거시 디자인 패턴은 멀티 코어 환경 성능의 병목이자 잠재적 Race Condition 폭탄이다.</li>
+<li><strong>데이터 파이프라인의 DAG화(Graph Computation):</strong> 모든 데이터 처리, 퓨전 알고리즘, 로깅 작업을 단방향 파이프라인으로 설계하라. 모듈의 입력과 출력을 엄격히 분리하고, 출력만이 다음 모듈의 입력으로 흘러가도록 위상 정렬 스케줄러를 내재화한 실행기(Task Executor)를 구현하라.</li>
+<li><strong>병렬성(Concurrency)과 안전성의 타협점 최적화:</strong> 위상 정렬 분석을 통해 식별된 상호 무관한 태스크(예: 서로 다른 카메라 영상 스트림의 동시 인코딩)는 다중 코어에 분산 배치(Thread Pool / Async)하여 가용 성능을 100% 끌어올려라.</li>
+</ol>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

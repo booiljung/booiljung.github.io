@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:7.10 예외 처리 및 디버깅</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>7.10 예외 처리 및 디버깅</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>7.10 예외 처리 및 디버깅</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>7.10 예외 처리 및 디버깅</h1>
+<p>파이썬 스크립트가 어느 날 밤 이유 없이 죽어있고, 로그에는 “Segmentation Fault“나 “ZenohException“만 달랑 찍혀 있다면 당신은 어디부터 손대야 할지 막막해질 것이다. 파이썬은 C/C++ 바인딩 코어에서 터지는 치명적인 메모리 오류 앞에서는 한없이 무력하다.</p>
+<p>Zenoh가 “가장 안정적인 미들웨어“로 불리는 이유는 에러가 안 나서가 아니라, <strong>네트워크 지연, 포트 충돌, 망 단절 같은 치명적 사태를 가장 정교한 형태의 C/Rust 예외(Exception)로 포장하여 파이썬 런타임 위로 정확히 쏘아 올려주기 때문</strong>이다.<br />
+이 챕터에서는 Zenoh의 예외 클래스 계보를 해부하고, 망 단절 시 좀비처럼 되살아나는 파이썬 오토 페일오버(Auto Failover) 아키텍처를 작성하는 최전방 런북을 서술한다.</p>
+<h2>1.  Zenoh Python API의 주요 예외 클래스(Exception) 분석</h2>
+<p>Zenoh가 파이썬 인터프리터 쪽으로 던지는(Throw) 에러들은 단순히 콜스택(Call trace)만 길게 뱉는 게 아니다. 그 발생 진원지(Rust, Network, Parsing)에 따라 철저하게 분류된 예외 트리를 가진다.</p>
+<h4>1.0.1 [인스펙션] 파이썬-Rust 예외 관통 구조</h4>
+<p>파이썬 Zenoh의 에러는 모두 가장 상위의 <code>zenoh.ZenohException</code> 을 상속받는다. 따라서 광역 방어막을 칠 때는 이를 기준으로 잡아야 한다.</p>
+<ol>
+<li><strong><code>ZException</code> (근원적 실패)</strong></li>
+</ol>
+<ul>
+<li>가장 알 수 없고 치명적인 코어 에러. 주로 Rust 단에서 스레드 패닉(Panic)이 터졌거나 하부 메모리 컴포넌트가 붕괴되었을 때, PyO3 바인딩이 이를 캐치해서 파이썬에 던지는 마지막 유언장이다.</li>
+</ul>
+<ol start="2">
+<li><strong><code>ConfigError</code> / <code>ZConfigError</code></strong></li>
+</ol>
+<ul>
+<li>개발자의 타이핑 실수를 고발하는 예외다.</li>
+<li>발동 조건: <code>conf.insert_json5("mode", 'peir')</code> 처럼 ’peer’를 오타 내어 잘못된 JSON 트리를 넣었거나, 시스템에 없는 랜카드 포트(<code>eno1</code>)를 멀티캐스트 인터페이스로 잡으려 할 때 <code>zenoh.open()</code> 시점에서 터진다.</li>
+</ul>
+<ol start="3">
+<li><strong><code>ResolutionError</code> (이름 충돌 및 라우팅 에러)</strong></li>
+</ol>
+<ul>
+<li>발동 조건: 와일드카드가 너무 복잡하거나 망 전체에 존재하지 않는 도메인 네임을 억지로 조회(<code>session.get</code>)할 때 발생하는 논리 탐색 에러다.</li>
+</ul>
+<ol start="4">
+<li><strong>네트워크 타임아웃 오류 (TimeoutError)</strong></li>
+</ol>
+<ul>
+<li>Python <code>asyncio.TimeoutError</code> 와 혼동하지 마라. <code>aget()</code> 이나 동기식 <code>get()</code>을 때렸는데 라우터가 제한 시간 내에 패킷을 물어오지 못했을 때 코어가 반환하는 시간 초과 판정이다.</li>
+</ul>
+<h2>2.  안정성을 위한 예외 처리(Exception Handling) 모범 사례</h2>
+<p>파이썬 개발자의 최악의 악습인 <code>except Exception:</code> 문법 하나로 모든 것을 틀어막으려 하지 마라. Zenoh 파이프라인에서 발생하는 예외는 “즉각 프로세스를 죽이고 도커를 재시작해야 할 에러“와 “5초 뒤에 다시 시도해야 할 에러“로 완벽하게 나뉜다.</p>
+<h4>2.0.1 [Runbook] 프로덕션 레벨 트라이-캐치(Try-Catch) 전술 방벽</h4>
+<pre><code class="language-python">import zenoh
+import time
+import sys
+
+def run_zenoh_pipeline():
+    conf = zenoh.Config()
+    
+    # 1. 시동 단계의 에러: 100% 설정 파일 오타거나 권한 부족이다. 즉시 강제 종료(Exit)해야 한다.
+    try:
+        session = zenoh.open(conf)
+    except zenoh.ZenohException as e:
+        print(f"[FATAL] 코어 부팅 실패. 설정 파일을 점검하십시오: {e}")
+        sys.exit(1)
+
+    # 2. 런타임/로직 단계의 에러 방패막
+    try:
+        # 무지성 폭격 중
+        pub = session.declare_publisher("uav/1/telemetry")
+        for i in range(100):
+            pub.put(f"payload_{i}")
+            time.sleep(0.1)
+            
+    # [특수전] 메모리 부족, 라우터 내부의 기이한 붕괴가 발생했을 때
+    except zenoh.ZenohException as z_err:
+        print(f"[CRITICAL] Zenoh 백그라운드 엔진 크래시: {z_err}")
+        # 이 상황이면 세션을 복구하기 힘들다. 
+        # 시스템에 얼럿(Slack/이메일)을 때리고 프로세스를 재부팅시키는 게 맞다.
+        
+    # [일반전] 파이썬 네이티브 에러 (데이터 직렬화 실패 등)
+    except ValueError as v_err:
+        print(f"[WARN] 잘못된 파라미터가 들어왔습니다. 다음 루프 진행: {v_err}")
+        
+    finally:
+        # [최후의 보루] 에러가 나서 스크립트가 폭발하더라도, 세션 객체만큼은 
+        # 파이썬이 목숨을 걸고 파괴해 줘야 한다. 안 그러면 포트(7447)가 물려버린다.
+        print("세션 클리어")
+        session.close()
+
+if __name__ == "__main__":
+    run_zenoh_pipeline()
+</code></pre>
+<p>이처럼 예외를 <strong>운영체제 레벨(Fatal)</strong>, <strong>네트워크 레벨(Critical)</strong>, <strong>비즈니스 레벨(Warn)</strong> 의 3단계로 분리해서 Catch하는 코드를 작성해야만, 클라우드 운영팀이 당신 파이썬 스크립트의 로그만 보고도 어느 티어(Tier)에서 장애가 났는지 1초 만에 식별할 수 있다.</p>
+<h2>3.  Python의 <code>logging</code> 모듈과 Zenoh 내부 로그의 통합</h2>
+<p>Zenoh의 Rust 코어는 C++에서 살펴본 것처럼 미친 듯이 시스템 로그(<code>Z_DEBUG</code>, <code>Z_INFO</code>)를 터미널 표준 출력으로 뱉어낸다.<br />
+하지만 당신의 메인 파이썬 스크립트는 <code>logging</code> 모듈을 써서 <code>INFO</code> 로그를 ElasticSearch로 쏘고 있다 치자. 이 두 로그 시스템이 하나로 합쳐지지 않으면, 장애 발생 순간의 타임라인(Timeline)을 그려낼 수가 없다.</p>
+<h4>3.0.1 [Runbook] 로그 파이프라인 단일화 전술 (Log Hijacking)</h4>
+<p>Rust 단에서 나오는 로그를 가로채서 순수 파이썬의 표준 <code>logging</code> 객체 안으로 밀어 넣는다.</p>
+<pre><code class="language-python">import zenoh
+import logging
+
+## 1. 파이썬 표준 로깅 모듈 세팅 (시간 + 모듈 파일명 + 내용)
+logging.basicConfig(
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    level=logging.DEBUG
+)
+logger = logging.getLogger("MyPythonApp")
+
+## 2. Zenoh 코어 로거와 파이썬 로거를 잇는 통역사 콜백
+def zenoh_to_python_log_bridge(level, msg):
+    """
+    Rust 엔진이 로그를 뱉을 때마다 이 람다형 함수가 트리거된다!
+    level 파라미터는 zenoh.ext.Log.Z_INFO 같은 Enum 이 잡힌다.
+    """
+    # 파이썬 형식으로 변환 브릿징
+    if level == zenoh.ext.Log.Z_ERROR:
+        logger.error(f"[ZenohCore] {msg}")
+    elif level == zenoh.ext.Log.Z_WARN:
+        logger.warning(f"[ZenohCore] {msg}")
+    elif level == zenoh.ext.Log.Z_INFO:
+        logger.info(f"[ZenohCore] {msg}")
+    elif level == zenoh.ext.Log.Z_DEBUG:
+        logger.debug(f"[ZenohCore] {msg}")
+    elif level == zenoh.ext.Log.Z_TRACE:
+        logger.debug(f"[ZenohCore_Trace] {msg}")
+
+def init_system():
+    logger.info("시스템 초기화 개시")
+    
+    # 3. 플러그 꽂기
+    # 우선 Zenoh 내부 로그 수위를 '통신 엔진 디버그 수준' 까지 꽉 열어주어라
+    zenoh.ext.Log.init()
+    zenoh.ext.Log.set_level(zenoh.ext.Log.Z_DEBUG)
+    
+    # 파이썬 로거로 후킹(Hook) 시작!
+    zenoh.ext.Log.set_callback(zenoh_to_python_log_bridge)
+    
+    logger.info("Zenoh C-API 로깅 브릿지 연결 성공")
+    
+    # 이제부터 터치는 세션 로그는 모두 파이썬 logging.info 로 찍힌다!
+    session = zenoh.open()
+    session.close()
+
+if __name__ == "__main__":
+    init_system()
+</code></pre>
+<p>단 30줄코드로, 데브옵스 엔지니어를 기절시켰던 파이썬 엔진과 Rust 네트워크 엔진의 거대한 로그 파편화 사태가 완벽한 한 줄짜리 통합 타임라인 리포트로 완성되어 당신의 로컬 디스크나 Splunk 대시보드에 기록된다.</p>
+<h2>4.  네트워크 단절 감지 및 자동 재연결(Auto-Reconnect) 처리 기법</h2>
+<p>로봇이 WiFi 음영 구역(터널 등)을 5초간 지나가면서 서버(라우터)와의 접속이 끊어졌다 치자.<br />
+가장 멍청한 설계는 연결이 끊기면 파이썬 프로세스 자체가 에러를 뿜고 뒤져버린 뒤 Systemd가 다시 켜주길 기다리는 것이다.<br />
+최고의 설계는 <strong>파이썬 코어는 멀쩡히 살아있는 상태에서, Zenoh가 백그라운드에서 끊임없이 재접속 핑을 날리다가 인터넷이 터지는 순간 다시 세션을 갖다 붙이는 것</strong>이다.</p>
+<h4>4.0.1 [Runbook] 불사의 백엔드 세션 페일오버 전술</h4>
+<p>놀랍게도 선언형 언어의 정점인 Zenoh API는 <strong>이 무서운 재연결 로직을 Config 파라미터 단 한 줄로 지원</strong>한다. 내가 루프(Loop)를 짤 필요도 없다.</p>
+<pre><code class="language-python">import zenoh
+import time
+
+def start_immortal_session():
+    conf = zenoh.Config()
+    
+    # [핵심 라우터 지정]
+    # 멀티캐스트 스카우팅이 아닌, 클라우드 구석에 있는 고정 IP 라우터를 목표로 삼는다.
+    conf.insert_json5("connect/endpoints", '["tcp/192.168.10.50:7447"]')
+    
+    # [전술 1] 죽여도 다시 찾아가는 Auto-Reconnect 발동
+    # Zenoh 코어 엔진아, 라우터가 죽어도 절대 파이썬에게 Exception을 던지지 말고
+    # 네가 5초/10초 백오프(Back-off) 알고리즘으로 무한정 다시 문을 두드려라!!
+    
+    # 팁: 최신 Zenoh 버전에선 클라이언트 모드로 명시적 IP를 지정하면 
+    # 내부적으로 자동 커넥션 재시도 로직이 동작한다.
+    # 만약 연결 상태 변경(Up/Down)을 파이썬에서 감지하고 싶다면 Liveliness 를 쓴다.
+
+    print("불사조 세션 부팅 (라우터가 안 켜져 있어도 일단 돌파함)")
+    
+    # 라우터 연결 여부와 상관없이 파이썬은 일단 세션 객체를 받아낸다.
+    session = zenoh.open(conf)
+    pub = session.declare_publisher("robot/immortal/heartbeat")
+    
+    print("메인 루프 가동. 이제부터 유선 랜선을 뽑았다 껴보십시오.")
+    count = 0
+    try:
+        while True:
+            # 랜선을 뽑으면 이 함수는 에러를 내지 않고 버퍼(로컬 메모리)에 패킷을 임시로 담거나,
+            # Qos Drop 설정에 따라 버린다.
+            # 그리고 랜선을 꽂는 순간, 그간 쌓여있던 버퍼가 거짓말처럼 라우터로 쏟아져 들어간다.
+            pub.put(f"생존 펄스 {count}")
+            count += 1
+            time.sleep(1)
+            print(f"[{count}] 맥박 송출 중...")
+            
+    except KeyboardInterrupt:
+        session.close()
+
+if __name__ == "__main__":
+    start_immortal_session()
+</code></pre>
+<p>“개발자가 망 단절을 신경 쓰지 않게 설계한다.”<br />
+Zenoh가 DDS(Data Distribution Service)를 무너뜨린 파괴적인 강점이다. 이로서 파이썬 백엔드 엔지니어는 데이터 직렬화와 분석 같은 알맹이 로직에만 100% 집중할 수 있게 되었다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

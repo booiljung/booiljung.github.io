@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:42.2.1.1.1 가상 함수 테이블(Virtual Method Table) 동적 바인딩 과정의 메모리 누수(Memory Leak) 사전 차단 구조</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>42.2.1.1.1 가상 함수 테이블(Virtual Method Table) 동적 바인딩 과정의 메모리 누수(Memory Leak) 사전 차단 구조</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</a> / <span>42.2.1.1.1 가상 함수 테이블(Virtual Method Table) 동적 바인딩 과정의 메모리 누수(Memory Leak) 사전 차단 구조</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>42.2.1.1.1 가상 함수 테이블(Virtual Method Table) 동적 바인딩 과정의 메모리 누수(Memory Leak) 사전 차단 구조</h1>
+<h2>1. 개요</h2>
+<p>PX4-Autopilot의 커맨더(Commander) 모듈은 앞서 설명한 바와 같이, 비행 전 점검(Pre-flight Check) 로직의 확장성을 위해 C++의 다형성(Polymorphism)을 도입하고 있다. 그러나 임베디드 실시간 운영체제(RTOS) 환경에서 런타임에 동적 바인딩(Dynamic Binding)을 수행하는 객체 지향 구조는 자칫 가상 함수 테이블(Virtual Method Table, vtable) 참조 해제 실패 및 이로 인한 치명적인 메모리 누수(Memory Leak)를 유발할 수 있다. 본 절에서는 PX4가 이러한 메모리 누수 위험을 소프트웨어 아키텍처 레벨에서 어떻게 원천적으로 차단하고 있는지 분석한다.</p>
+<h2>2. 가상 함수 테이블(vtable)과 동적 바인딩의 메모리 누수 메커니즘</h2>
+<p>다형성을 구현하기 위해 C++ 컴파일러는 가상 함수를 가진 클래스마다 vtable을 생성하고, 객체가 인스턴스화될 때 이 테이블을 가리키는 포인터(vptr)를 할당한다. <code>PreFlightCheck</code> 모듈이 <code>SensorCheck</code> 부모 클래스 포인터 배열을 통해 자식 클래스(예: <code>IMUCheck</code>, <code>BaroCheck</code>) 객체들을 다루는 구조에서 메모리 누수가 발생하는 전형적인 시나리오는 다음과 같다.</p>
+<ol>
+<li>동적 할당(<code>new</code>)을 통해 자식 클래스 객체 배열이 힙(Heap) 메모리에 적재된다.</li>
+<li>커맨더 모듈 종료나 리셋 과정에서 부모 클래스 타입의 포인터 배열에 대해 <code>delete</code>가 호출된다.</li>
+<li>이때, 부모 클래스에 **가상 소멸자(Virtual Destructor)**가 정의되어 있지 않다면, 컴파일러는 정적 바인딩(Static Binding)을 수행하여 부모 클래스의 소멸자만 호출한다.</li>
+<li>결과적으로 자식 클래스가 힙에 할당했던 추가 자원이나 시스템 콜 핸들(uORB Subscription 등)이 해제되지 못하고 고스란히 메모리에 남게 된다(Memory Leak).</li>
+</ol>
+<h2>3. PX4의 메모리 누수 사전 차단 아키텍처 패턴</h2>
+<h3>3.1  가상 소멸자(Virtual Destructor)의 강제화</h3>
+<p>PX4-Autopilot의 코딩 가이드라인은 순수 가상 함수를 하나라도 포함하는 기초(Base) 클래스는 반드시 <code>virtual ~ClassName() = default;</code> 와 같이 가상 소멸자를 명시하도록 강제한다. 이를 통해 부모 포인터를 통한 동적 할당 해제 시, vtable을 참조하여 가장 최하단 자식 클래스의 소멸자부터 역순으로 안전하게 해제되도록 보장한다.</p>
+<pre><code class="language-cpp">// PX4 소스 코드 추상화 구조 (Memory Leak 방지 원리)
+class SensorCheck {
+public:
+    // 가상 소멸자를 명시하여 자식 객체의 완벽한 파괴(Destruction) 보장
+    virtual ~SensorCheck() = default; 
+    
+    virtual bool preflightCheck(bool report) = 0;
+};
+</code></pre>
+<h3>3.2  정적 배열(Static Array) 및 스택 메모리 혼용 할당</h3>
+<p>NuttX와 같이 가용 RAM이 수백 KB에서 수 MB 정도로 제한적인 환경에서는 힙 크기(Heap Fragmentation) 부작용을 최소화하는 것이 필수다. <code>PreFlightCheck</code> 시스템은 가능하면 런타임에 <code>new</code>/<code>delete</code>를 반복적으로 호출하지 않고, 정적 바인딩 시점에서 객체 풀(Object Pool)이나 커맨더 클래스의 멤버 변수로서 스택 메모리(또는 모듈별 전역 메모리) 영역에 하위 컴포넌트 객체들을 미리 선언(Pre-allocation)해두는 방식을 혼용한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[PreFlightCheck 초기화] --&gt; B{객체 할당 방식 판별}
+    
+    B -- 정적인 컴포넌트 (IMU, Baro) --&gt; C[클래스 스택 멤버 변수로 선언&lt;br/&gt;(포인터 없이 객체 직접 보유)]
+    B -- 동적인 플러그인 센서 --&gt; D[스마트 포인터를 통한 힙 영역 자동 할당]
+    
+    C --&gt; E[메모리 누수 원천 차단&lt;br/&gt;(Scope 종료 시 자동 파괴)]
+    D --&gt; F[Unique/Shared Pointer의&lt;br/&gt;참조 카운트로 라이프사이클 관리]
+    
+    F --&gt; G[동적 바인딩(vtable) 중에도&lt;br/&gt;가상 소멸자에 의해 안전하게 힙 해제]
+</code></pre>
+<h3>3.3  RAII(Resource Acquisition Is Initialization) 관용구 적용</h3>
+<p>동적 바인딩 환경에서 힙 메모리 할당이 불가피할 때, PX4 코드베이스에서는 원시 포인터(Raw Pointer, <code>SensorCheck*</code>)의 사용을 지양하고 C++11의 <code>std::unique_ptr</code>이나 PX4 전용 스마트 포인터와 유사한 관리 객체를 활용하라. 이를 통해, 함수 스코프 내에서 예외가 발생하거나 <code>return false;</code>로 루프가 중간에 탈출하더라도 소멸 주기가 자동으로 관리되어 vtable 참조 해제 오류를 선제적으로 막는다.</p>
+<h2>4. Ardupilot과 메모리 안전성 구조 비교</h2>
+<p>Ardupilot은 과거 8비트 AVR 시절부터 이어져 온 레거시 코드로 인해, 힙 메모리에 대한 동적 할당 자체를 지양하는 하드 코딩 철학(Static Allocation Philosophy)이 매우 강력하다. 즉, 동적 바인딩 자체가 일으키는 파편화나 메모리 누수 위험을 아예 사용하지 않음으로써 회피했다.</p>
+<p>반면 최신 C++ 디자인 철학을 따르는 PX4-Autopilot은, 확장성과 유연성을 얻기 위해 동적 바인딩을 부분 허용하되 C++의 모던 안전 메커니즘(가상 소멸자, RAII, 스마트 포인터)을 적극 도입하여 결함을 능동적으로 방어하는 방식을 취하고 있다. 이는 개발자에게 객체 지향적 이점을 제공하면서도 코어의 신뢰성을 유지할 수 있게 한다.</p>
+<h2>5. 결론</h2>
+<p>PX4의 커맨더 모듈 내에서 하위 검증 모듈을 작성하고 통합(Integration)하려는 개발자는 C++의 가상 함수 오버헤드나 vtable 라이프사이클을 명확히 이해해야 한다. 새로 작성한 커스텀 센서 점검 클래스의 파괴 과정에서 uORB 파일 디스크립터(fd) 등이 명상 해제되지 않으면, 시간이 지날수록 PX4 워치독(Watchdog)에 의해 펌웨어가 크래시(Crash)되는 치명적 사태를 초래할 수 있다. 따라서 부모 클래스로부터의 올바른 소멸 상속과 RAII 패턴을 준수하라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

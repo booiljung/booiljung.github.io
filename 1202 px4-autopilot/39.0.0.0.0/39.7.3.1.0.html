@@ -116,24 +116,48 @@
             <article>
                 <h1>39.7.3.1. QGC 내장 통신 검사기(MAVLink Inspector)를 이용한 프로토콜 페이로드의 16진수(Hex) 바이트 스트림 파싱</h1>
 <h2>1.  개요</h2>
-<p>드론이 GCS의 특정 명령(예: 사용자 정의 모드 전환, 카메라 트리거 등)에만 유독 반응하지 않거나 이상한 동작을 보일 때, 엔지니어는 GCS가 실제로 “올바른 단어“를 스피커(무선기)를 통해 내뱉었는지 의심해야 한다. GCS 프론트엔드 UI의 버그나 비표준 MAVLink 방언(Dialect) 컴파일 이슈로 인해, 애초에 오염되거나 잘못 직렬화(Serialized)된 패킷이 전송 계층으로 흘러들어갔을 가능성을 배제할 수 없기 때문이다. 본 절에서는 QGroundControl(QGC)에 내장된 디버깅 도구인 <strong>MAVLink Inspector</strong>를 활용하여, 하드코어한 16진수(Hex) 바이트 스트림을 역어셈블(Disassemble)하는 실무 기법을 살펴본다.</p>
-<h2>2.  MAVLink Inspector의 로우-레벨(Low-level) 관측 지위</h2>
-<p>QGC의 MAVLink Inspector는 애플리케이션 계층(QGC 백엔드 로직)과 전송 계층(운영체제의 UDP/Serial 소켓) 사이에 위치한 투명한 유리창과 같다.<br />
-일반적인 텔레메트리 뷰티파이어(Telemtry Beautifier) UI가 패킷을 사람이 읽기 편한 텍스트로 가공해 보여주는 데 반해, Inspector는 프로토콜이 직렬화(Serialization)를 마친 직후의 원시(Raw) 바이트 스트림 크기, 메시지 빈도(Hz), 통신 링크 번호, 그리고 가장 중요한 페이로드(Payload)의 원시 값을 실시간으로 스니핑(Sniffing)하여 보여준다.</p>
-<p>장애 진단을 시작할 때, 엔지니어는 필터링 옵션을 이용해 오직 <code>#76</code>(<code>COMMAND_LONG</code>)과 <code>#77</code>(<code>COMMAND_ACK</code>), 특정 텔레메트리 토픽들만 화면에 고정(Pin)시키고 조종사가 액션을 취하는 순간 송출되는 바이트 덩어리를 포획(Capture)한다.</p>
-<h2>3.  COMMAND_LONG 페이로드의 16진수(Hex) 트루스(Truth) 파싱</h2>
-<p><code>COMMAND_LONG</code> 패킷이 포획되었다면, 엔지니어는 MAVLink 2.0 프로토콜 명세서(Specification) 메모리 맵에 따라 직렬화된 바이트를 머릿속에서 파싱해내야 한다.<br />
-MAVLink는 네트워크 표준인 빅 엔디안(Big-Endian) 대신 프로세서 친화적인 <strong>리틀 엔디안(Little-Endian)</strong> 포맷을 사용하므로 헥스 파싱 시 바이트의 역순 조립에 유의해야 한다.</p>
-<p>가령 33바이트 길이의 <code>COMMAND_LONG</code> 페이로드 Hex 스트림이 잡혔다고 하자.</p>
+<p>드론 지상 관제 시스템(GCS, Ground Control Station)의 사실상(De facto) 표준인 QGroundControl(QGC)은 단순한 비행 모니터링 UI를 넘어 강력한 통신 디버깅 기능들을 기본 탑재하고 있다. 그중에서도 가장 핵심적인 분석 도구가 바로 <strong>MAVLink Inspector</strong>이다.</p>
+<p>PX4-Autopilot과 QGC 간에 MAVLink v2.0 프로토콜을 통해 교환되는 모든 데이터는 궁극적으로 0과 1의 연속인 바이트 스트림(Byte Stream) 형태로 송수신된다. 고차원적인 비행 제어 문제나 새로운 커스텀 센서 포팅 및 uORB 토픽 맵핑 시 발생하는 통신 송수신 결함을 진단하기 위해서는, 단순히 QGC 화면에 로깅되는 텍스트 값을 확인하는 것을 넘어 프로토콜 원시 데이터인 16진수(Hexadecimal) 페이로드를 직접 파싱(Parsing)하고 검증할 수 있어야 한다. 본 절에서는 MAVLink Inspector를 활용하여 하위 수준(Low-level)의 패킷 스트림 무결성을 확인하는 공학적 분석 기법을 다루어라.</p>
+<h2>2.  MAVLink 프레임 아키텍처 및 16진수 맵핑</h2>
+<p>QGC로 유입되는 MAVLink v2.0 패킷 베이스 데이터는 최소 12바이트에서 최대 280바이트 구성의 프레임(Frame) 규격을 따른다. MAVLink Inspector는 이 프레임을 복호화(Decode)하여 보여주는데, 각 바이트(Byte)의 16진수 배열은 다음의 구조적 규칙을 지닌다.</p>
 <ol>
-<li><strong>Param 1 ~ Param 7 (28 Bytes)</strong>: 첫 28바이트는 각각 4바이트 크기의 IEEE 754 단정밀도 부동소수점(<code>float</code>) 파라미터 7개다. 고도(Altitude)나 속도 값에 소수점이 포함된 명령어를 보냈을 때 부동소수점 정밀도 손실(Precision Loss)이나 엔디안 꼬임으로 인해 PX4 측에서 엉뚱한 값으로 해석(<code>NaN</code> 처리 등)되어 거절되었는지 이 Hex 바이트를 IEEE 754 디코더에 통과시켜 증명할 수 있다.</li>
-<li><strong>Command ID (2 Bytes)</strong>: 오프셋(Offset) 28에 위치한 16비트 정수(e.g., <code>uint16_t command = 400</code> -&gt; MAV_CMD_ARM_AUTHORIZATION_REQUEST) 필드다. QGC가 버그로 인해 엉뚱한 ID를 쏘지 않았는지 확인한다.</li>
-<li><strong>Target System / Target Component (2 Bytes)</strong>: 그다음 각각 1바이트씩이다. GCS가 조종하려는 드론의 <code>sysid</code> (보통 1)와 <code>compid</code> (보통 1, Autopilot)가 명확히 일치하는지 확인한다. 가끔 다중 기체(Swarm) 환경에서 브로드캐스트 ID(0) 나 엉뚱한 기체의 ID가 섞여 들어가 PX4가 “나한테 온 명령이 아니네” 하고 조용히 폐기(Drop)하는 참사를 막을 수 있다.</li>
+<li><strong>Magic Byte (<code>STX</code>)</strong>: 패킷의 시작을 알리는 동기화 바이트로, v2.0 기준 항상 <code>0xFD</code> 값으로 고정된다.</li>
+<li><strong>Payload Length (<code>LEN</code>)</strong>: 명령어 또는 센서 데이터 등 실제 유의미한 페이로드의 길이를 1바이트로 나타낸다.</li>
+<li><strong>Incompatibility / Compatibility Flags (<code>INC FLAGS</code>, <code>CMP FLAGS</code>)</strong>: 서명(Signing) 여부 등 특수 기능을 명시하는 각 1바이트 크기의 플래그이다.</li>
+<li><strong>Sequence Number (<code>SEQ</code>)</strong>: 패킷 유실을 감지하기 위해 0번(<code>0x00</code>)부터 255번(<code>0xFF</code>)까지 순환 증가하는 식별자이다.</li>
+<li><strong>System ID / Component ID (<code>SYS ID</code>, <code>COMP ID</code>)</strong>: 기체의 번호(보통 <code>0x01</code>)와 하위 컴포넌트(예: Autopilot <code>0x01</code>, Camera <code>0x64</code>)를 나타낸다.</li>
+<li><strong>Message ID (<code>MSG ID</code>)</strong>: 3바이트(24비트)로 구성되어 해당 패킷이 <code>HEARTBEAT</code>(ID: 0)인지 <code>ATTITUDE</code>(ID: 30)인지를 명시한다.</li>
+<li><strong>Payload</strong>: 사용자가 정의하는 실제 데이터 공간이다 (0 ~ 255 바이트).</li>
+<li><strong>Checksum (<code>CKA</code>, <code>CKB</code>)</strong>: 2바이트로 구성된 X.25 CRC 값이다.</li>
 </ol>
-<h2>4.  CRC와 직렬화 스택(Stack) 무결성 교차 검증</h2>
-<p>Inspector에 찍힌 Hex 스트림의 값과 대상 ID, 커맨드가 모두 정상이라면 소프트웨어 개발자(GCS 엔지니어)는 무죄다. 즉, QGC 애플리케이션의 메모리 로직은 완벽하게 <code>COMMAND_LONG</code> 패킷을 창조해 냈다.</p>
-<p>그러나 기체는 여전히 반응이 없다면? 이야기는 완전히 달라진다. QGC에서 완벽하게 직렬화된 스트림이 OS 소켓 버퍼로 넘겨진 이후, 물리적인 텔레메트리 라디오의 모뎀 칩셋(Modem Chipset)이나 안테나, 혹은 USB 직렬 컨버터(FTDI 칩) 수준에서 패킷 스트림이 잘려 나가거나 노이즈가 섞여(Bit Flip) CRC 에러가 발생한 것이다.<br />
-이 단계로 넘어가면 디버깅의 바톤은 소프트웨어를 떠나 하드웨어 RF(무선 주파수) 엔지니어와 외부 네트워크 분석기(Wireshark) 영역으로 넘어가게 된다. MAVLink Inspector는 이처럼 책임 소재의 경계선(Boundary)을 명확하게 갈라주는 프로토콜의 헌병(Military Police) 역할을 수행한다.</p>
+<p>MAVLink Inspector에서 특정 메시지를 선택한 후 ‘Show raw payload’ 옵션을 활성화하면 7번 항목인 페이로드(Payload)가 어떻게 직렬화(Serialization)되어 있는지를 관찰할 수 있다.</p>
+<h2>3.  QGC MAVLink Inspector 활용 및 디버깅 워크플로우</h2>
+<p>QGroundControl (v4.2 이상 권장)에서 원시 데이터를 분석하기 위한 절차를 숙지하라.</p>
+<ol>
+<li><strong>Inspector 호출</strong>: QGC 상단 메뉴의 “Analyze Tools” 아이콘을 클릭한 뒤, 하위 메뉴에서 “MAVLink Inspector” 도구를 실행한다.</li>
+<li><strong>메시지 트리 확장</strong>: 현재 활성화된 System 1 (기체) 내부의 Component 1 (PX4) 계층을 확장하면, 해당 시점에 수신율(Hz)이 카운트되며 쏟아지는 모든 MAVLink 토픽의 이름(예: <code>ATTITUDE</code>, <code>GPS_RAW_INT</code>)이 노출된다.</li>
+<li><strong>데이터 확인 및 파싱</strong>: 특정 메시지를 클릭하면, 메시지 내부에 포함된 변수 리스트(예: <code>pitch</code>, <code>roll</code>, <code>yaw</code>)와 할당된 값이 실시간(Real-time)으로 갱신되어 표출된다.</li>
+</ol>
+<p>이 도구 기반의 16진수 페이로드 디버깅 절차를 아래 시퀀스로 도식화하라.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant PX4 as PX4-Autopilot (Target)
+    participant QGC as QGroundControl (GCS)
+    participant MI as MAVLink Inspector (UI)
+    
+    PX4-&gt;&gt;QGC: UART/UDP 인터페이스를 통한 바이너리 전송 (0xFD...)
+    Note over QGC: MAVLink C/C++ 라이브러리의 Unpack 수행
+    QGC-&gt;&gt;MI: System ID, Comp ID, Msg ID 기반 분류
+    Note over MI: 사용자가 특정 메시지(예: DEBUG_VECT) 클릭
+    MI-&gt;&gt;MI: 구조체(Struct) 형태에서 Hex 바이트로 역변환 표출
+    MI--&gt;&gt;User: 변수 타입별 Little-Endian 인코딩 상태의 페이로드 가시화
+</code></pre>
+<h2>4.  페이로드 바이트 배열(Byte Ordering)과 자료형(Data Type) 검증 실무</h2>
+<p>스트림 파싱의 가장 핵심적인 과제는 시스템의 엔디안(Endianness) 특성을 이해하는 것이다. MAVLink 프로토콜은 통신 및 메모리 정렬의 최적화를 위해 의도적으로 모든 다중 바이트 자료형(예: <code>uint32_t</code>, <code>float</code>, <code>int16_t</code>)에 대해 <strong>리틀 엔디안(Little Endian)</strong> 배열 규칙을 차용한다.</p>
+<p>또한 최적화를 위해 페이로드 내부의 변수 배열 순서는 개발자가 작성한 <code>.xml</code> 로직 파일의 선언 순서가 아닌 자료형의 크기(Byte Size)를 기준으로 큰 것에서 작은 것 순서(<code>uint64_t</code> <span class="math math-inline">\rightarrow</span> <code>uint32_t</code> <span class="math math-inline">\rightarrow</span> <code>uint16_t</code> <span class="math math-inline">\rightarrow</span> <code>uint8_t</code>)로 자동 재정렬(Auto-reordering)된다.</p>
+<p>디버깅 중 송신된 커스텀 센서 데이터가 QGC에서 깨져 보인다면, MAVLink Inspector 상의 원시 16진수 바이트를 수기(Manual)로 파싱하여 배열 상태를 검증하라.<br />
+예를 들어 <code>float</code> 타입 송신 값 <span class="math math-inline">10.5</span> (IEEE 754 16진수 표기 시 <code>0x41280000</code>)의 경우 스트림 상에서 1바이트씩 분절되어 다음의 역순 스트림으로 나타나게 된다.</p>
+<p><span class="math math-display"> Payload_{Hex} = [ 00 \vert 00 \vert 28 \vert 41 ] </span></p>
+<p>만약 파싱 결과가 정상이라면 QGC 내의 커스텀 MAVLink 플러그인 컴파일(XML 생성) 문제이거나 기체 내 <code>mavlink_receiver</code>의 uORB 발행 시 구조체 크기 불일치 결함일 확률이 높으므로 시스템 전반의 컴포넌트 간 버전을 일치시켜 통신 무결성을 보장하라.</p>
 
             </article>
             <footer>

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:40.7.2.1.1. ABA 문제(ABA Problem) 해결을 위한 해저드 포인터(Hazard Pointer) 및 메모리 배리어(Memory Barrier) 삽입</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>40.7.2.1.1. ABA 문제(ABA Problem) 해결을 위한 해저드 포인터(Hazard Pointer) 및 메모리 배리어(Memory Barrier) 삽입</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.7.2.1.1. ABA 문제(ABA Problem) 해결을 위한 해저드 포인터(Hazard Pointer) 및 메모리 배리어(Memory Barrier) 삽입</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>40.7.2.1.1. ABA 문제(ABA Problem) 해결을 위한 해저드 포인터(Hazard Pointer) 및 메모리 배리어(Memory Barrier) 삽입</h1>
+<p>다수의 드론을 제어하는 고성능 지상 관제 시스템(GCS, Ground Control Station)이나 무인기 내부 uORB 네트워크 환경에서 마이클-스콧 큐(Michael-Scott Queue)와 같은 락-프리(Lock-Free) 버퍼를 구현할 때, 반드시 극복해야 하는 시스템적 결함이 바로 **ABA 문제(ABA Problem)**이다. 본 절에서는 C++ 동시성 프로그래밍 환경에서 발생하는 ABA 현상의 수학적/논리적 결함을 분석하고, 이를 설계 수준에서 치유할 수 있는 해저드 포인터(Hazard Pointer) 모델과 하드웨어 캐시 동기화를 위한 메모리 배리어(Memory Barrier)의 삽입 기법을 제시한다.</p>
+<h2>1.  ABA 문제의 수학적 기전과 GCS에서의 위협</h2>
+<p>CAS(Compare-And-Swap) 연산은 대상 메모리의 **현재 값(Value)**이 예상했던 예전 값과 동일한지 여부만을 비교할 뿐, 그 값이 유지된 **경과 내역(History)**을 전혀 알지 못한다.</p>
+<p><strong>ABA 시나리오 발생 기전</strong>:</p>
+<ol>
+<li>스레드 T1(예: MAVLink 수신 스레드)이 큐의 헤드(Head) 메모리 주소 <span class="math math-inline">A</span>를 읽고 CAS를 준비한다.</li>
+<li>이때 스케줄러에 의해 T1이 잠시 중단(Preempted)된다.</li>
+<li>스레드 T2(예: 로그 저장 스레드)가 개입하여 주소 <span class="math math-inline">A</span>의 노드를 팝(Pop, 삭제)하고 이어서 주소 <span class="math math-inline">B</span>의 노드도 팝한다.</li>
+<li>T2는 메모리 풀(Memory Pool) 효율을 위해 삭제한 메모리 주소 <span class="math math-inline">A</span>를 재사용(Recycle)하여 새로운 데이터로 다시 큐에 푸시(Push)한다.</li>
+<li>이제 큐의 헤드는 다시 주소 <span class="math math-inline">A</span>를 가리킨다.</li>
+<li>깨어난 T1은 헤드를 검사하며 주소가 여전히 자기가 알고 있던 <span class="math math-inline">A</span>와 일치하므로 CAS 연산을 성공시킨다.</li>
+<li>하지만 현재의 <span class="math math-inline">A</span> 노드가 가리키는 <code>next</code> 포인터는 과거의 상태 공간과 불일치하게 꼬여 있으므로, 큐 연결 구문이 파괴(Memory Corruption)되고 QGroundControl 데몬이 크래시(Crash)된다.</li>
+</ol>
+<p>이 현상은 초당 수천 번의 노드 생성/삭제가 일어나는 마이크로초 단위의 관성 센서(IMU) 및 비전 오도메트리(VIO) 데이터 스트리밍 처리 중에 기하급수적으로 발생 확률이 높아진다.</p>
+<h2>2.  해저드 포인터(Hazard Pointer) 생명주기 관리 기법</h2>
+<p>ABA 문제와 메모리 조기 회수(Premature Memory Reclamation)를 동시에 해결하는 현대적이고 아름다운 기법이 바로 IBM의 먀오 미카엘(Maged M. Michael)이 제안한 해저드 포인터 메커니즘이다.</p>
+<p>원리는 “현재 특정 스레드가 사용(참조) 중인 메모리 노드는 절대로 다른 스레드가 물리적으로 삭제(Free)하지 못하게 방어선(Hazard)을 구축“하는 것이다.</p>
+<h3>2.1  동작 알고리즘 및 수학적 모델</h3>
+<p>전역적으로 <span class="math math-inline">P</span>개의 스레드가 동작할 때, 각 스레드는 <span class="math math-inline">K</span>개(보통 1~2개)의 공유 해저드 포인터 배열 공간을 소유한다. (전체 해저드 포인터 수는 <span class="math math-inline">P \times K</span> 로 제한됨)</p>
+<ol>
+<li><strong>마킹(Marking)</strong>: 스레드가 특정 노드 <span class="math math-inline">N</span>을 읽어 CAS를 수행하려 할 때, 자신의 해저드 포인터 슬롯에 대상 메모리 주소 <span class="math math-inline">N</span>을 선언(Publish)한다.</li>
+<li><strong>논리적 삭제(Logical Deletion)</strong>: 다른 스레드가 노드 <span class="math math-inline">N</span>을 팝(Pop) 연산하여 큐에서 완전히 분리해냈더라도, 즉시 <code>delete</code> 메모리 해제를 수행하지 않는다. 대신 자신의 쓰레기통 리스트(Thread-Local Retire List)에 보관한다.</li>
+<li><strong>물리적 재활용(Physical Reclamation)</strong>: Retire List에 쌓인 노드가 일정 임계치(예: <span class="math math-inline">R = P \times K + 1</span>)를 초과하면, 전역 해저드 포인터 배열 전체 상시 참조자를 스캔한다. <strong>만약 가비지 노드의 주소가 어느 누구의 해저드 포인터에도 선언되어 있지 않다면(즉 참조 카운트가 0인 수학적 상태), 그때 안전하게 물리적 메모리를 해제(<code>free</code> 혹은 Object Pool 반환)한다.</strong></li>
+</ol>
+<pre><code class="language-mermaid">graph TD
+    subgraph Thread 1 (Reader)
+        A[Read Node A from Queue] --&gt; B[Write Node A addr to Hazard Pointer 1]
+        B --&gt; C{Check valid?}
+        C -- Valid --&gt; D[Proceed with CAS Logic]
+        C -- Invalid --&gt; A
+    end
+    
+    subgraph Thread 2 (Popper)
+        Pop[Pop Node A from Queue] --&gt; Logic[Process MAVLink Msg]
+        Logic --&gt; Ret[Add Node A to Thread-Local Retire List]
+        Ret --&gt; Thresh{List size &gt; Limit?}
+        Thresh -- Yes --&gt; Scan[Scan All Hazard Pointers]
+        Scan --&gt; Safes{Is Node A in Hazard?}
+        Safes -- Yes --&gt; Defer[Defer Deletion]
+        Safes -- No --&gt; Free[Physically FREE Memory]
+    end
+</code></pre>
+<h2>3.  메모리 배리어(Memory Barrier) 최적화 삽입</h2>
+<p>PX4-Autopilot의 기본 플랫폼인 ARM Cortex 아키텍처는 성능 극대화를 위해 메모리 읽기/쓰기 순서를 마이크로코드 단에서 재배치시키는 약한 메모리 순서(Weak Memory Ordering) 모델을 채택하고 있다. 이는 <code>hazard_pointer = A</code> 대입이 일어난 직후 <code>head != A</code> 인지 재검증하는 코드 사이에서 명령어 순서가 뒤집히면(Instruction Reordering), 해저드 포인터를 선언하기도 전에 메모리가 해제되는 파국을 초래한다.</p>
+<p>따라서 컴파일러 및 CPU 파이프라인의 재배치를 억제하는 **메모리 배리어(Memory Fence)**를 반드시 삽입해야 한다.</p>
+<p>C++11 이후의 <code>std::atomic</code> 스펙 하에서는 다음과 같이 적용된다.</p>
+<pre><code class="language-cpp">// 1. 읽기 작업
+Node* current = head.load(std::memory_order_relaxed);
+do {
+    // 해저드 포인터 선언과 동시에 Seq_Cst 배리어를 쳐서 이후 코드가 앞서지 못하게 막음 (강한 순서 보장)
+    my_hazard_pointer.store(current, std::memory_order_seq_cst);
+    
+    // 다시 head를 로드해 선언 도중에 포인터가 바뀌지 않았는지 재검증 (Double Check)
+    if (head.load(std::memory_order_seq_cst) != current) {
+        current = head.load(std::memory_order_relaxed);
+        continue;
+    }
+    // 안전 구간: ABA 걱정 없이 CAS 루프 준비 진행
+    break; 
+} while(true);
+</code></pre>
+<p><strong>결론적으로</strong>, <code>std::memory_order_seq_cst</code> (Sequential Consistency) 속성을 해저드 포인터의 진입 및 재확인 구문에 집중적으로 삽입함으로써 하드웨어 캐시 코히어런시(Cache Coherency) 라인을 동기화한다. 이러한 설계는 QGroundControl과 PX4 상호 연결 통신의 비동기 프론트엔드 엔진에 ABA 무결성을 제공하며, 스웜 제어 시 수십 시간 동안 장애 없이 가동되는 산업 표준 관제소(GCS) 시스템의 심장부가 된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

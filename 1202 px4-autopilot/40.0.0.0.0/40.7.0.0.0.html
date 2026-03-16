@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:40.7 커스텀 GCS 고성능 I/O 아키텍처 및 락-프리(Lock-Free) 엔지니어링</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>40.7 커스텀 GCS 고성능 I/O 아키텍처 및 락-프리(Lock-Free) 엔지니어링</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.7 커스텀 GCS 고성능 I/O 아키텍처 및 락-프리(Lock-Free) 엔지니어링</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>40.7 커스텀 GCS 고성능 I/O 아키텍처 및 락-프리(Lock-Free) 엔지니어링</h1>
+<p><strong>버전 정보</strong>: 독자적 고성능 GCS 설계 가이드 / PX4-Autopilot v1.14 호환</p>
+<p>PX4-Autopilot 생태계 기반으로 군집 비행(Swarm) 관제나 실시간 고해상도 텔레메트리(Telemetry) 로깅을 수행하기 위해서는 지상 관제 시스템(GCS)이 초당 수천 개에서 수만 개의 MAVLink 패킷을 병목 없이 처리해야 한다. 전통적인 스레드 동기화 기법인 뮤텍스(Mutex)나 세마포어(Semaphore)는 문맥 교환(Context Switching) 비용을 유발하여 GCS의 수신 처리량을 심각하게 저하시킨다. 본 절에서는 독자적인 커스텀 GCS를 구축할 때 필수적으로 고려해야 하는 고성능 I/O 아키텍처와 락-프리(Lock-Free) 자료구조 엔지니어링을 상세히 분석하라.</p>
+<h2>1. 락-프리(Lock-Free) 및 대기-프리(Wait-Free) 큐의 도입</h2>
+<p>스레드 간 데이터 전달 시 운영체제 수준의 락(Lock)을 사용하지 않고, 하드웨어에서 지원하는 원자적 연산(Atomic Operation, 예: Compare-And-Swap)에만 의존하는 자료구조를 락-프리 자료구조라고 한다. 특히 수신 네트워크 스레드(생산자)와 MAVLink 파싱 스레드(소비자) 간의 통신은 모델 상 1:1 파이프라인 형태이므로, <strong>단일 생산자-단일 소비자(Single-Producer Single-Consumer, SPSC) 락-프리 링 버퍼(Ring Buffer)</strong> 구조가 가장 적합하다.</p>
+<ol>
+<li><strong>UDP 수신부(Producer)</strong>: 운영체제의 소켓 버퍼 커널 레벨에서 복사 오버헤드를 줄이기 위해(Zero-Copy) 버퍼 풀(Buffer Pool)을 미리 할당해두고, SPSC 큐의 Write 인덱스를 원자적으로 갱신하며 수신된 MAVLink 바이트 스트림을 밀어 넣어라.</li>
+<li><strong>파싱부(Consumer)</strong>: 다른 백그라운드 스레드에서 무한 루프 상태로 SPSC 큐의 Read 인덱스를 폴링(Polling)하거나 이벤트 드리븐으로 대기하며, 블로킹 없이 메시지를 빼내서 MAVLink 채널 파서(Parser)에 즉시 투입하라.</li>
+</ol>
+<pre><code class="language-mermaid">graph LR
+    A[UDP 소켓 수신 스레드&lt;br&gt;(Producer)] --&gt;|원자적 Write Index 갱신| B(SPSC Lock-Free 링 버퍼)
+    B --&gt;|원자적 Read Index 갱신| C[MAVLink 파싱 스레드&lt;br&gt;(Consumer)]
+    C --&gt; D[uORB/Qt Signal 발행]
+    
+    style B fill:#ffe0e0,stroke:#f66,stroke-width:2px,stroke-dasharray: 5 5
+</code></pre>
+<h2>2. Ardupilot 대비 아키텍처 최적화 방향 비교</h2>
+<ul>
+<li><strong>Mission Planner (C# 기반)</strong>: C#의 내장 <code>ConcurrentQueue</code>나 비동기 소켓 프로그래밍을 주로 활용한다. 비록 구현 난이도가 낮고 생산성이 뛰어나지만, 수천 개의 노드 객체가 생성될 때 가비지 컬렉터(GC) 부하와 락 경합(Lock Contention) 오버헤드가 발생하기 쉬워 하드 리얼타임(Hard Real-time) 메시지 로깅에 한계를 보일 수 있다.</li>
+<li><strong>고성능 커스텀 PX4 GCS (C++ / Rust 기반)</strong>: SPSC 커스텀 링 버퍼, <code>io_uring</code>(Linux 환경) 또는 ASIO 프레임워크 기반의 고성능 비동기 I/O를 적용하라. 메모리를 사전 할당(Pre-allocation)하고 해제(Deallocation)를 지연시키는 메모리 풀링(Memory Pooling)을 결합하여 가비지 컬렉션의 스파이크 현상과 스레드 락 블로킹을 원천적으로 차단한다.</li>
+</ul>
+<p>따라서 PX4를 위한 고성능의 전문 관제 소프트웨어를 아키텍팅 할 경우, 데이터 링크 채널의 I/O 리시버 스레드는 절대적으로 락에 의해 블로킹되지 않아야 하며, 이를 위해 SPSC 락-프리 큐를 비즈니스 통신 파이프라인의 중심에 배치하라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

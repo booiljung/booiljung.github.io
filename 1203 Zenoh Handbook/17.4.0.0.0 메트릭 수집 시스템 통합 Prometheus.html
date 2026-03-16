@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:17.4 메트릭 수집 시스템 통합 (Prometheus)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>17.4 메트릭 수집 시스템 통합 (Prometheus)</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>17.4 메트릭 수집 시스템 통합 (Prometheus)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>17.4 메트릭 수집 시스템 통합 (Prometheus)</h1>
+<p>CLI(Command Line Interface) 환경에서의 단발성 질의(Query)를 통해 확인하는 텔레메트리(Telemetry) 지표는 휘발성 데이터에 불과하다. 발생 시점이 불규칙한 심야 시간대의 장애 원인을 사후 분석(Post-mortem)하기 위해서는, 실시간으로 변동하는 시스템 지표들이 1초 단위의 고해상도 시계열 데이터베이스(TSDB, Time-Series Database)에 영속적으로 적재되는 파이프라인이 필수적이다.</p>
+<p>본 절에서는 클라우드 네이티브(Cloud Native) 생태계의 실질적 표준(De facto standard) 지표 수집기인 Prometheus를 Zenoh 라우팅 패브릭에 연동하여, 광역 에지-클라우드 네트워크의 상태 변화를 영구적인 시계열 데이터로 보존하는 데이터 수집 아키텍처를 구현한다.</p>
+<h2>1.  Zenoh-Prometheus 익스포터(Exporter) 아키텍처</h2>
+<p>Prometheus는 에이전트가 중앙 서버로 데이터를 밀어넣는 푸시(Push) 방식이 아닌, 중앙 수집기가 각 대상 노드의 특정 HTTP 엔드포인트(예: <code>/metrics</code>)를 주기적으로 방문하여 지표를 긁어오는 풀(Pull-based Scraping) 기반 아키텍처를 채택하고 있다.</p>
+<p><strong>1. 라우터 설정(<code>zenohd.json5</code>) 내 REST API 플러그인 활성화</strong><br />
+Zenoh 코어 라우터 데몬은 추가적인 서드파티 에이전트 설치 없이, Prometheus 호환 익스포터(Exporter) 엔드포인트를 내장 플러그인 형태로 제공한다. 설정 파일을 통해 해당 노출구를 개방한다.</p>
+<pre><code class="language-json5">// zenohd.json5
+plugins: {
+  rest: { // 관리 공간 노출용 REST API 서버 플러그인 기동
+    listen: ["http/0.0.0.0:8000"]
+  }
+}
+</code></pre>
+<p><strong>2. Prometheus 지표 노출 엔드포인트 검증 (Scrape Target)</strong><br />
+라우터 데몬 기동 후 <code>curl</code> 또는 웹 브라우저를 통해 <code>http://localhost:8000/@/router/local/metrics</code> 경로에 HTTP GET 요청을 전송한다.<br />
+응답 페이로드에 <code>zenoh_session_count 12</code>, <code>zenoh_messages_dropped_total 0</code> 등과 같은 Prometheus 텍스트 규격(Text-based Exposition Format)의 메트릭 데이터가 정상 출력된다면, 외부 수집기가 해당 텔레메트리를 풀링(Pulling)할 준비가 완료된 것이다.</p>
+<h2>2.  퍼블리셔-서브스크라이버 통신 메트릭 수집 설정</h2>
+<p>중앙 라우터 프로세스뿐만 아니라, 시스템의 끝단에 배치된 클라이언트 애플리케이션(예: C/C++, Rust 기반 로봇 제어 프로세스) 내부에서도 자체적인 송수신(RX/TX) 성능 지표를 외부로 방출(Expose)해야 한다.</p>
+<p><strong>1. Zenoh 세션 객체의 메트릭 수집 옵션(Metrics Enabled) 활성화</strong><br />
+애플리케이션 개발자는 Zenoh 클라이언트 세션을 초기화할 시, 설정(Config) 객체에 인프라스트럭처 수준의 메트릭 기록 및 노출 의도를 명시적으로 선언해야 한다.</p>
+<pre><code class="language-rust">let mut config = zenoh::Config::default();
+// 클라이언트 객체 구동 시 자체적인 Rx/Tx 및 큐 지표 수집 기능을 활성화한다.
+config.insert_json5("metrics/enabled", "true"); 
+let session = zenoh::open(config).res().await.unwrap();
+</code></pre>
+<p><strong>2. 애플리케이션 커스텀 지표(Custom Metrics)의 병렬 노출 방안</strong><br />
+Zenoh 클라이언트가 기본 제공하는 대역폭 메트릭(<code>rx_bytes</code> 등) 외에도 애플리케이션 고유의 비즈니스 지표(예: <code>ai_inference_delay</code>)를 통합 관제해야 할 경우가 존재한다. 이러한 시나리오에서는 애플리케이션 내부에 독립적인 HTTP 경량 서버(예: Rust의 <code>hyper</code>와 <code>prometheus</code> 크레이트)를 스레드로 구동하여, 표준 <code>/metrics</code> 포트를 통해 Zenoh 지표와 커스텀 지표를 병렬 노출하는 패턴이 풀(Pull) 기반 아키텍처의 일관성을 유지하는 가장 이상적인 접근법이다.</p>
+<h2>3.  브릿지(ROS2, MQTT, DDS) 및 백엔드 플러그인 전용 지표 수집</h2>
+<p>이기종 프로토콜 통합 환경에서 트래픽의 병목 및 소실 현상은 주로 변환기(Protocol Bridge) 혹은 영구 저장소 백엔드(Storage Backend DB)와의 인터페이스 구간에서 촉발된다. 따라서 이들 컴포넌트에 대한 텔레메트리 누락은 모니터링 가시성의 치명적 공백을 의미한다.</p>
+<p><strong>1. ROS 2 Bridge (<code>zenoh-bridge-dds</code>) 텔레메트리 노출</strong><br />
+브리지(Bridge) 프로세스 또한 독립적인 데몬 파이프라인이므로, 기동 시 매개변수를 인가하여 관리용 REST 포트를 명시적으로 개방해야 한다.</p>
+<pre><code class="language-bash"># 브리지 인스턴스의 관리용 HTTP 포트를 8080으로 할당하여 실행한다.
+zenoh-bridge-dds --rest-http-port 8080
+</code></pre>
+<p>이후 <code>http://localhost:8080/@/router/local/metrics</code> 엔드포인트에 접근하면, DDS 도메인에서 수집한 페이로드와 Zenoh 도메인으로 변환 방출한 페이로드 간의 정합성 오차(Loss) 및 변환 지연율(Translation Latency) 등을 검증할 수 있는 핵심 지표가 산출된다.</p>
+<p><strong>2. 스토리지 백엔드(RocksDB/InfluxDB 등)의 블로킹 인터벌 추적</strong><br />
+라우터 본체에서 제공(<code>8000</code> 포트)하는 메트릭 페이로드 내에는 <code>zenoh_storage_insert_time_seconds</code> 와 같은 백엔드 플러그인 전용 지표가 내포되어 있다. 이는 스토리지 I/O 대역폭 부족에 기인한 병목 현상(Blocking)이 데몬 전체의 이벤트 루프(Event Loop) 지연을 유발하고 있는지 실시간으로 특정(Pinpoint)할 수 있는 극단적으로 중요한 지표다.</p>
+<h2>4.  Prometheus 설정 및 시계열 데이터 저장 주기 최적화</h2>
+<p>각 Zenoh 노드 및 모듈이 노출구를 개방하였다면, 중앙의 Prometheus 수집 서버 중앙 설정(<code>prometheus.yml</code>)을 변경하여 해당 엔드포인트들을 타겟 맵(Target Map)으로 등록해야 한다.</p>
+<p><strong>1. 스크레이프 타겟(Scrape Target) 주입 <code>prometheus.yml</code></strong><br />
+클라우드 척추(Spine) 망과 에지 말단 망의 위상적 차이를 반영하여 타겟 풀을 선언한다.</p>
+<pre><code class="language-yaml">scrape_configs:
+  - job_name: 'zenoh-cloud-router'
+    scrape_interval: 5s # 클라우드 라우터는 고해상도(5초) 주기로 지표를 수집한다.
+    metrics_path: '/@/router/local/metrics' # Zenoh 관리 공간 노출 API 스펙
+    static_configs:
+      - targets: ['10.0.0.5:8000'] # 클라우드 코어 라우터 IP 및 포트
+
+  - job_name: 'zenoh-edge-bridge'
+    scrape_interval: 15s # 에지 브리지는 네트워크 대역폭 보존을 위해 15초 단위로 수집한다.
+    metrics_path: '/@/router/local/metrics'
+    static_configs:
+      - targets: ['192.168.1.100:8080'] # 에지 단말의 DDS 브리지 IP 및 포트
+</code></pre>
+<p><strong>2. 스크레이핑 간격(Interval) 및 오버헤드 최적화</strong><br />
+모든 타겟에 일괄적으로 극단적 단기 스크레이핑 주기(예: 1초)를 부여할 경우, Prometheus 서버 자체가 라우터 데몬 계층에 과도한 HTTP 트래픽 부하(Overhead)를 유발하는 안티패턴(Anti-pattern)이 발생한다.<br />
+네트워크 대역폭이 풍부하고 실시간 반응성이 필요한 코어망(Cloud) 라우터는 5초 수준의 해상도를, 대역폭 비용이 높거나 단속적 연결을 겪는 에지(Edge) 로봇 단말은 15~30초 수준의 해상도로 **하이브리드 간격 튜닝(Hybrid Scrape Interval Tuning)**을 적용하는 것이 프로메테우스 풀 방식 설계의 핵심 아키텍처 원칙이다.</p>
+<pre><code class="language-mermaid">graph TD
+    classDef prometheus fill:#ffebee,stroke:#c62828,stroke-width:2px;
+    classDef node fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef bridge fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
+    classDef client fill:#e1f5fe,stroke:#0277bd,stroke-width:2px;
+
+    Prometheus_Server[Prometheus Server&lt;br&gt;`prometheus.yml`]:::prometheus
+    
+    subgraph Cloud_Core [Cloud Core Network]
+        CloudRouter[Zenoh Cloud Router&lt;br&gt;`:8000/@/router/local/metrics`]:::node
+    end
+    
+    subgraph Edge_Zone [Edge Network Zone]
+        EdgeBridge[Zenoh ROS2 Bridge&lt;br&gt;`:8080/@/router/local/metrics`]:::bridge
+        EdgeApp[Rust App w/ Exporter&lt;br&gt;`:9090/metrics`]:::client
+    end
+    
+    Prometheus_Server --&gt;|Scrape Interval: 5s / HTTP GET| CloudRouter
+    Prometheus_Server --&gt;|Scrape Interval: 15s / HTTP GET| EdgeBridge
+    Prometheus_Server --&gt;|Scrape Interval: 15s / HTTP GET| EdgeApp
+
+    CloudRouter -.-&gt; |Storage Metrics| CloudRouter
+    EdgeBridge -.-&gt; |DDS/Zenoh Loss Metrics| EdgeBridge
+    EdgeApp -.-&gt; |Rx/Tx &amp; Custom Metrics| EdgeApp
+</code></pre>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

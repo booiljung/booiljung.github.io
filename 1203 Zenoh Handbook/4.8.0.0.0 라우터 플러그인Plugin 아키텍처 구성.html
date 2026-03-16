@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:4.8 라우터 플러그인(Plugin) 아키텍처 구성</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>4.8 라우터 플러그인(Plugin) 아키텍처 구성</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>4.8 라우터 플러그인(Plugin) 아키텍처 구성</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>4.8 라우터 플러그인(Plugin) 아키텍처 구성</h1>
+<p><strong>Zenoh(제노)</strong> 코어는 네트워크 라우팅이라는 본연의 통신 임무에만 집중하도록 극도로 가볍게(Minimal) 설계되었다. 하지만 실제 프로덕션 환경에서는 HTTP 클라이언트 연동, 시계열 데이터베이스 저장, 웹 브라우저 통신 등 외부 생태계와의 접점이 무수히 요구된다.</p>
+<p>이러한 부가 기능들을 전부 코어 바이너리에 때려 넣는 대신, Zenoh는 필요할 때만 블록처럼 끼워 쓰는 <strong>동적 플러그인(Dynamic Plugin) 아키텍처</strong>를 채택했다. 이 장에서는 라우터에 날개를 달아주는 공식 플러그인들의 생태계를 파헤치고, 어떻게 라우터를 다기능 게이트웨이(Gateway)로 진화시킬 수 있는지 다룬다.</p>
+<ul>
+<li><strong>동적 로딩 매커니즘 (4.8.1):</strong> 재컴파일 없이 런타임에 동적 공유 라이브러리(Shared Library) 형태로 플러그인을 핫 로딩(Hot-loading)하는 원리와 설정 파일 제어법을 알아본다.</li>
+<li><strong>REST API 연동 (4.8.2):</strong> 가장 널리 쓰이는 <code>zenoh-plugin-rest</code>를 띄워, 기존의 레거시 웹 클라이언트나 cURL 명령어만으로도 Zenoh 네트워크의 데이터를 읽고(GET) 쓰는(PUT) 통합 게이트웨이를 구축해 본다.</li>
+<li><strong>스토리지 백엔드 기초 (4.8.3):</strong> 흘러가는 데이터 스트림을 붙잡아 하드디스크나 메모리에 영구 저장하는 스토리지 백엔드 마운팅의 기초 개념을 다지며, 추후 14장에서 다룰 DB 연동의 초석을 놓는다.</li>
+<li><strong>커스텀 플러그인 개발 (4.8.4):</strong> 세상에 없는 나만의 고유한 엣지 컴퓨팅 로직을 플러그인으로 직접 만들어서 라우터 코어에 밀어 넣기 위한 Rust 개발 환경의 인터페이스 구조를 살펴본다.</li>
+</ul>
+<p>플러그인 아키텍처를 자유자재로 다루게 되면, Zenoh 라우터는 단순한 네트워크 허브를 넘어 데이터의 저장, 변환, 이기종 프로토콜 브릿징까지 도맡아 하는 인프라의 강력한 스위스 아미 나이프(Swiss Army Knife)로 거듭나게 된다.</p>
+<h2>1.  플러그인 생태계 개요 및 동적 로딩 매커니즘</h2>
+<p>**Zenoh(제노)**의 핵심 철학은 확장성(Extensibility)과 가벼움의 공존이다. 이를 위해 라우터 데몬(<code>zenohd</code>) 자체는 순수한 Pub/Sub 라우팅 로직만 담은 수 메가바이트짜리 단일 바이너리로 컴파일되며, 나머지 확장 기능들은 모두 동적 로딩 플러그인(Dynamic Plugin)의 형태로 생태계에 배포된다.</p>
+<h3>1.1  주요 플러그인 생태계</h3>
+<p>Zenoh 시스템은 크게 다음과 같은 세 가지 범주의 플러그인을 제공한다.</p>
+<ul>
+<li><strong>진입점(Entry-point) 플러그인:</strong> 외부 세계의 트래픽을 Zenoh 내부 그물망으로 끌고 들어오는 문지기 역할을 한다. HTTP 트래픽을 받는 REST API 플러그인, 영상 스트리밍을 위한 WebRTC 플러그인, 클라우드 대시보드를 위한 WebSocket 플러그인 등이 있다.</li>
+<li><strong>스토리지(Storage) 플러그인:</strong> Zenoh 네트워크를 떠도는 데이터를 붙잡아 로컬 디스크, 메모리 볼륨, 혹은 원격 데이터베이스(InfluxDB, RocksDB)에 기록하고 쿼리에 응답하는 백엔드 엔진 역할을 한다.</li>
+<li><strong>운영 및 관리(Admin) 플러그인:</strong> 현재 라우터의 트래픽 라우팅 상태와 연결망을 모니터링하기 위한 메트릭스(Metrics) 플러그인이 대표적이다.</li>
+</ul>
+<h3>1.2  동적 로딩(Dynamic Loading)의 원리</h3>
+<p>Zenoh 라우터는 런타임에 <strong>OS 종속적인 동적 라이브러리 파일</strong>(.so, .dll, .dylib)을 메모리에 핫 로딩(Hot-loading)하는 기법을 쓴다.</p>
+<p>플러그인 바이너리(예: <code>libzenoh_plugin_rest.so</code>)가 라우터의 실행 파일 위치나 OS 표준 라이브러리 경로에 존재하기만 하면, 라우터는 기동 시점에 이들을 스캔하고 즉각 실행 환경에 결합시킨다. 이러한 분리 아키텍처 덕분에 메인 라우터 데몬을 죽이지 않고도 필요한 플러그인만 선택적으로 다운로드하여 업데이트하거나 떼어내는 것이 자유롭다.</p>
+<h3>1.3  라우터 설정 파일(<code>zenoh.json5</code>)을 통한 로딩 제어</h3>
+<p>플러그인을 활성화하거나 세부 매개변수를 튜닝하려면 라우터 설정 파일 내의 <code>plugins</code> 섹션을 건드려야 한다.</p>
+<pre><code class="language-json5">{
+  "mode": "router",
+  "plugins": {
+    // REST API 플러그인 동적 로딩 지시자
+    "rest": {
+      "http_port": 8000 // 플러그인 고유의 파라미터 주입
+    },
+    // 스토리지 매니저 플러그인 동적 로딩 지시자
+    "storage_manager": {
+      "volumes": ["memory"]
+    }
+  }
+}
+</code></pre>
+<p>이처럼 플러그인들은 라우터와 메모리 공간은 공유하지만 독립적인 스레드와 설정 컨텍스트를 유지하므로, 플러그인 내부에서 오류가 나더라도 Zenoh 코어 라우팅 기능 자체는 결코 패닉(Panic)에 빠지지 않는 견고한 격리성(Isolation)을 확보하고 있다.</p>
+<h2>2.  REST API 플러그인 설정 및 HTTP 클라이언트 연동</h2>
+<p><strong>Zenoh(제노)</strong> 생태계 속에서 뛰노는 로봇이나 센서들은 효율적인 바이너리 와이어 프로토콜(Wire Protocol)을 쓰지만, 기존의 웹 개발 생태계나 레거시 시스템은 여전히 JSON 텍스트와 HTTP 프로토콜을 통용어(Lingua Franca)로 사용한다.</p>
+<p>이 둘 사이의 언어 장벽을 허물고, 평범한 웹 브라우저나 cURL 명령어만으로도 수천 대의 로봇이 쏟아내는 실시간 데이터망에 손쉽게 편승하게 해주는 마법사가 바로 **REST API 플러그인(<code>zenoh-plugin-rest</code>)**이다.</p>
+<h3>2.1  REST API 플러그인 구동 및 설정</h3>
+<p>라우터가 기동될 때 REST 프론트엔드를 함께 띄우려면, <code>zenoh.json5</code> 파일의 <code>plugins</code> 섹션에서 포트를 지정해야 한다. 기본적으로는 <code>8000</code> 포트를 물고 올라온다.</p>
+<pre><code class="language-json5">{
+  "mode": "router",
+  "plugins": {
+    "rest": {
+      "http_port": 8000, 
+      "cors": true // 브라우저 기반 최신 웹 클라이언트를 위한 Cross-Origin 설정
+    }
+  }
+}
+</code></pre>
+<h3>2.2  HTTP 기반의 Pub/Sub 통신</h3>
+<p>REST 플러그인이 올라오면, 라우터는 지정된 HTTP 포트로 떨어지는 RESTful 스펙의 리퀘스트를 실시간으로 낚아채어 Zenoh 네이티브 프로토콜로 변환(Bridging)하여 메쉬망에 뿌려준다.</p>
+<ul>
+<li><strong>데이터 쓰기 (Publish = HTTP PUT):</strong><br />
+웹 서버에서 공상의 로봇 제어 명령을 내리고 싶다면, 해당 경로의 URI 맵핑에 대고 단순히 PUT 요청을 쏘면 된다.<br />
+<code>curl -X PUT -d "FORWARD" http://&lt;라우터IP&gt;:8000/robot/drive/command</code></li>
+<li><strong>데이터 읽기 (Query = HTTP GET):</strong><br />
+로컬 망에 흩어진 100대의 센서로부터 현재 온도 값을 추려오고 싶다면, 브라우저 주소창이나 curl에 셀렉터(Selector) 문법을 결합하여 GET 요청을 날린다. 플러그인은 이 GET 요청을 분산 쿼리로 치환하여, 센서들의 응답 데이터를 JSON 리스트로 병합(Consolidation)하여 깔끔하게 웹 브라우저에 렌더링해 준다.<br />
+<code>curl -X GET http://&lt;라우터IP&gt;:8000/sensor/temp/*</code></li>
+</ul>
+<h3>2.3  SSE(Server-Sent Events)를 활용한 스트리밍 구독</h3>
+<p>기존의 HTTP Request-Response 모델은 센서가 초당 10번씩 쏘는 실시간 데이터를 감시(Subscribe)하기엔 부적합하다.<br />
+이를 극복하기 위해 REST 플러그인은 <strong>SSE(Server-Sent Events)</strong> 기반의 스트리밍 접속을 기본 지원한다.</p>
+<p>웹 개발자는 단순히 브라우저의 <code>EventSource</code> API를 사용하여 라우터의 <code>/my/telemetry/topic</code> URL에 구멍을 뚫어두면 된다. 라우터는 백그라운드 어딘가에서 데이터가 퍼블리시될 때마다(Push), 연결을 끊지 않고 브라우저에 실시간 데이터 조각을 끊임없이 주입해 주므로, 별도의 무거운 WebSocket 라이브러리 없이도 즉각적인 실시간 관제 대시보드(Dashboard)를 구현해 낼 수 있다.</p>
+<h2>3.  스토리지(Storage) 백엔드 플러그인 기초 연동</h2>
+<p><strong>Zenoh(제노)</strong> 코어는 기본적으로 데이터의 흐름(Flow)에 집중하는 미들웨어다. 라우터는 순간적으로 지나가는 데이터 패킷을 가장 빠른 길로 목적지까지 배달하고 나면 곧바로 기억상실증에 빠진다.</p>
+<p>하지만 산업용 IoT 시나리오에서는 과거의 수치(Historical Data)가 반드시 필요하다. 로봇이 터널을 지나며 통신이 끊겼던 10분 동안의 센서 데이터, 어제 하루 동안 축적된 배터리 소모량 등을 조회(Query)하려면, 찰나의 데이터를 영구적인 기억 장치에 아로새기는 작업이 필요하다. 이를 가능케 하는 핵심 엔진이 바로 <strong>스토리지 매니저(Storage Manager)</strong> 플러그인이다.</p>
+<h3>3.1  스토리지 플러그인의 마운트(Mount) 개념</h3>
+<p>14장 ’데이터베이스 및 스토리지 통합’에서 이 개념을 본격적으로 다루기에 앞서, 라우터 아키텍처 관점에서 플러그인이 어떻게 결합하는지 이해하는 것이 중요하다.</p>
+<p>Zenoh 라우터에 스토리지 플러그인을 활성화한다는 것은, 마치 리눅스 파일 시스템에 새로운 하드디스크 볼륨을 마운트(Mount)하는 것과 정확히 같다. 특정 키(Key) 경로, 예를 들어 <code>/factory/zone-a/sensors/**</code> 로 흘러가는 모든 데이터를 낚아채어 지정된 스토리지 볼륨에 차곡차곡 쌓아두도록 라우터 코어에 지시하는 것이다.</p>
+<h3>3.2  기본 볼륨 백엔드의 종류</h3>
+<p>상용 DB인 마리아DB(MariaDB)나 인플럭스DB(InfluxDB)를 묵직하게 얹기 전에, 라우터는 기본적으로 내장된 경량 스토리지를 자체 지원한다. 설정 파일(<code>zenoh.json5</code>)을 통해 매우 간단히 켤 수 있다.</p>
+<ul>
+<li><strong>메모리(Memory) 볼륨:</strong> 라우터 데몬의 가상 메모리(RAM) 공간을 저장소로 사용한다. 속도는 빛처럼 빠르지만, 라우터 프로세스가 재시작되면 모든 데이터가 증발한다. 짧은 캐시(Cache)나 윈도우 버퍼(Window Buffer) 용도로 적합하다.</li>
+<li><strong>파일 공유(FS) 볼륨 / RocksDB:</strong> 데이터를 하드디스크나 SSD 디렉터리에 파일 단위, 또는 로컬 RocksDB 형태로 영구 기록(Persistence)한다. 기기가 재부팅되어도 가장 최근의 설정값이나 텔레메트리 히스토리 보존이 가능하다.</li>
+</ul>
+<pre><code class="language-json5">{
+  "mode": "router",
+  "plugins": {
+    "storage_manager": {
+      "volumes": [
+        // 라우터 RAM 메모리를 1GB 할당하여 최우선 스토리지로 사용
+        {
+          "id": "mem_vol",
+          "storage_type": "memory",
+          "size": 1073741824 
+        }
+      ],
+      "storages": {
+        // 특정 토픽의 데이터를 mem_vol이라는 백엔드 메모리에 꽂아 넣는다
+        "sensor_cache": {
+          "key_expr": "/factory/sensors/**",
+          "volume": "mem_vol"
+        }
+      }
+    }
+  }
+}
+</code></pre>
+<h3>3.3  투명한 쿼리 응답(Transparent Query Response) 아키텍처</h3>
+<p>스토리지 플러그인이 극강의 편의성을 자랑하는 이유는 그 **투명성(Transparency)**에 있다.</p>
+<p>어떤 클라이언트 노드가 과거의 온도 데이터를 얻기 위해 라우터에게 HTTP GET이나 분산 쿼리를 날릴 때, 클라이언트 입장에서는 라우터가 지금 디스크에서 데이터를 꺼내 주는 것인지, 아니면 저 멀리 살아있는 센서가 지금 방금 실시간으로 측정해서 던져준 것인지 구분할 필요가 없다.</p>
+<p>스토리지 매니저 플러그인은 쿼리 질의(Query Request)를 엿듣고 있다가 메모리나 디스크에 적중하는 키(Key)가 있으면, 마치 자기가 해당 센서인 양 완벽히 위장하여 라우터 코어를 통해 응답을 뱉어낸다. 이를 통해 어플리케이션 개발자는 인프라의 ‘저장(At Rest)’ 로직과 ‘스트리밍(In Motion)’ 로직의 골치 아픈 결합을 완전히 분리해 낼 수 있다.</p>
+<h2>4.  커스텀 플러그인 개발 및 적용을 위한 라우터 인터페이스</h2>
+<p>Zenoh 코어가 제공하는 공식 REST나 스토리지 플러그인만으로는 만족할 수 없는 날이 오게 마련이다.</p>
+<p>특수한 산업용 시리얼(Serial) 프로토콜을 파싱(Parsing)해서 변환해야 하거나, 혹은 데이터가 라우터를 통과하는 찰나의 순간에 실시간 AI 추론 모델을 돌려 그 결과값만 잘라내어 던져주어야 하는 하드코어 에지 컴퓨팅(Edge Computing) 요구사항이 빗발칠 때, 아키텍트는 결국 **커스텀 플러그인(Custom Plugin)**을 직접 짜 넣어야 한다.</p>
+<h3>4.1  Rust 기반의 플러그인 개발 환경</h3>
+<p>Zenoh 라우터 코어가 Rust 언어로 짜여 있으므로, 성능의 손실 없이 완벽하게 메모리를 밀착 마크하며 동작하는 네이티브 플러그인을 개발하려면 <strong>반드시 Rust 프로그래밍 파이프라인</strong>을 타야 한다(3.3절 참고).</p>
+<p>커스텀 플러그인 개발의 시작점은 <code>zenoh-plugin-trait</code> 라이브러리를 가져와 라우터가 요구하는 엄격한 구조체 규격(Trait)을 구현하는 것이다.</p>
+<pre><code class="language-rust">use zenoh_plugin_trait::{Plugin, PluginStartArgs};
+use std::sync::Arc;
+
+// 커스텀 플러그인의 뼈대 선언
+pub struct MyAwesomePlugin;
+
+// 라우터가 플러그인을 로딩할 때 호출하는 필수 인터페이스 구현
+impl Plugin for MyAwesomePlugin {
+    fn start(args: PluginStartArgs) -&gt; Result&lt;Arc&lt;dyn std::any::Any&gt;, String&gt; {
+        println!("나만의 어썸한 플러그인이 라우터 메모리에 올라왔습니다!");
+        
+        // args.z 의 세션 객체를 이용해 구독(Subscribe)이나 쿼리(Queryable)를 등록한다.
+        // 여기에 AI 모델 로딩이나 커스텀 소켓 바인딩 로직을 주입.
+
+        Ok(Arc::new(()))
+    }
+}
+</code></pre>
+<h3>4.2  진입점 노출과 매크로(Macro) 선언</h3>
+<p>위와 같이 작성한 Rust 코드를 컴파일하여 <code>.so</code> (동적 라이브러리) 파일 포맷으로 출력하려면, 라우터 데몬이 이 라이브러리를 동적으로 읽어 들일 때(dlopen) 진입점이 될 함수 훅(Hook)을 반드시 열어주어야 한다.</p>
+<p>Zenoh 코어 팀이 제공하는 <code>declare_plugin!</code> 매크로 한 줄이면 귀찮은 C-ABI 호환성 진입점 코드가 자동으로 생성된다.</p>
+<pre><code class="language-rust">// 플러그인 바이너리의 가장 하단에 추가
+zenoh_plugin_trait::declare_plugin!(MyAwesomePlugin);
+</code></pre>
+<h3>4.3  라우터 생명주기(Lifecycle)와의 일체화</h3>
+<p>직접 컴파일한 <code>libmy_awesome_plugin.so</code> 파일을 라우터 실행 디렉터리나 <code>/usr/lib</code> 계열 로드 패스에 던져두고, <code>zenoh.json5</code> 파일에 <code>"my_awesome_plugin": {}</code> 노드를 추가한 뒤 라우터를 켜면 기적적인 일이 일어난다.</p>
+<p>당신이 심은 커스텀 Rust 코드 조각이 Zenoh 라우터 프로세스와 물리적으로 완벽히 한 몸이 되어, 코어 라우터와 동일한 메모리 접근 속도, 동일한 스레드 풀, 수 마이크로초(us) 단위의 텔레메트리 접근 권한을 행사하며 전체 메쉬망의 백엔드를 틀어쥐게 된다. 이것이 바로 Zenoh 플러그인 아키텍처가 선사하는 ’확장판 무한 동력’의 실체다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

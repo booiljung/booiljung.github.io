@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:5.10 성능 최적화 및 벤치마킹 프로파일링</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>5.10 성능 최적화 및 벤치마킹 프로파일링</h1>
+                    <nav class="breadcrumbs"><a href="../index.html">Home</a> / <a href="index.html">Zenoh 핸드북</a> / <span>5.10 성능 최적화 및 벤치마킹 프로파일링</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>5.10 성능 최적화 및 벤치마킹 프로파일링</h1>
+<p>“내 코드는 C++보다 빠르다“고 입으로 떠드는 것은 Rust 생태계에서 통용되지 않는다. 우리는 숫자로 대화한다.</p>
+<p>분산 시스템의 병목은 크게 세 군데서 터진다. CPU 직렬화, 네트워크 헤더 점유율(Overhead), 그리고 커널 레벨의 컨텍스트 스위칭이다. Zenoh 자체는 이미 C 레벨의 속도를 상회하도록 정밀하게 깎여 있지만, 당신이 무심코 짠 <code>String::clone()</code> 한 줄이나 잘못된 버퍼 전술 하나가 그 모든 노력을 10배, 100배로 늦춰버린다.<br />
+이 장에서는 밀리초(ms) 너머 마이크로초(μs)의 세계에서 레이턴시(Latency)를 박살 내고, 쓰루풋(Throughput)의 한계치를 터뜨리며, 힙(Heap) 메모리 할당(Allocation)을 소수점 단위로 억제하는 극한의 성능 튜닝 교범을 제시한다.</p>
+<h2>1.  Criterion을 활용한 엔드투엔드 통신 지연시간(Latency) 측정</h2>
+<p>Rust 진영에서 자작 벤치마크 루프를 돌리는 것은 바보짓이다. OS의 스케줄러 간섭이나 CPU 스로틀링을 고려하지 않고 단순 <code>Instant::now()</code> 로 잰 수치는 쓰레기다. 가장 정밀한 통계를 내주는 <strong>Criterion.rs</strong>를 이용해 Zenoh의 레이턴시를 현미경으로 들여다보자.</p>
+<h4>1.0.1 [Runbook] 마이크로초 단위 통신 벤치마킹 설계</h4>
+<p><strong>1. <code>Cargo.toml</code> 벤치마크 블록 세팅</strong></p>
+<pre><code class="language-toml">[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "zenoh_latency"
+harness = false # 표준 벤치마크 틀을 버리고 Criterion 커스텀 엔진을 쓴다.
+</code></pre>
+<p><strong>2. 벤치마크 소스 (<code>benches/zenoh_latency.rs</code>) 구현</strong><br />
+단순히 보내는 시간이 아니라, 보내고 받는 왕복 시간(Round-Trip Time, RTT)을 통계적으로 1만 번 측정하는 치명적인 코드다.</p>
+<pre><code class="language-rust">use criterion::{criterion_group, criterion_main, Criterion};
+
+async fn bench_rtt() {
+    let session = zenoh::open(zenoh::config::Config::default()).res().await.unwrap();
+    // (A) 자신에게 던지고 자신이 받는 루프백 구성
+    let mut subscriber = session.declare_subscriber("bench/ping").res().await.unwrap();
+    let publisher = session.declare_publisher("bench/ping").res().await.unwrap();
+
+    publisher.put("payload").res().await.unwrap();
+    let _ = subscriber.recv_async().await.unwrap();
+}
+
+fn criterion_benchmark(c: &amp;mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    
+    // Criterion이 알아서 CPU 워밍업을 하고, 수천 번 반복 측정 후 신뢰 구간(Confidence Interval)을 찾아낸다.
+    c.bench_function("Zenoh Local RTT", |b| {
+        b.to_async(&amp;rt).iter(|| bench_rtt());
+    });
+}
+
+criterion_group!(benches, criterion_benchmark);
+criterion_main!(benches);
+</code></pre>
+<p>터미널에서 <code>cargo bench</code>를 때려라.<br />
+단순 <code>println</code>으로 안보이던 아웃라이어(가끔 튀는 20ms짜리 찌꺼기 패킷들)가 통계로 잡힐 것이다. 진정한 최적화는 이 억울한 ‘가끔 튀는’ 아웃라이어 수치를 없애는 데에서 출발한다.</p>
+<h2>2.  처리량(Throughput) 극대화를 위한 메시지 배치(Batching) 처리</h2>
+<p>비행기에 승객을 한 명씩 태우고 이륙-착륙을 반복하는 악덕 항공사는 없다.<br />
+초당 10만 개의 작은 센서 값을 날릴 때 매번 <code>session.put()</code>을 치는 행위는, TCP/IP의 거대한 프로토콜 헤더를 10만 번 붙였다 뗐다 하는 미친 짓이다. 이것은 CPU와 네트워크를 동시에 죽인다.</p>
+<h4>2.0.1 [Runbook] 로보틱스 데이터 배치(Batch) 융합 전술</h4>
+<p>데이터의 전송 레이턴시가 좀 희생되더라도(약 10ms 모았다 쏘기), 대역폭(Throughput)을 수백 배로 폭발시키는 전략이다.</p>
+<p><strong>1. 송신부: Nagle 알고리즘과 수동 버퍼 큐잉</strong><br />
+로직 스레드에서 직접 <code>put()</code>을 치지 말고 로컬 큐(Vector)에 우겨넣은 뒤, 타이머가 차면 한꺼번에 배열로 묶어(<code>Batch</code>) 발사한다.</p>
+<pre><code class="language-rust">use tokio::time::{interval, Duration};
+
+let mut batch_buffer = Vec::new();
+let mut tick = interval(Duration::from_millis(10)); // 10ms마다 강제 발송
+
+loop {
+    tokio::select! {
+        // 로컬 센서가 잰 값을 버퍼에 우겨넣는다.
+        sensor_data = read_sensor_async() =&gt; {
+            batch_buffer.push(sensor_data);
+            
+            // 만약 강제 버퍼 사이즈(1,000개)가 넘치면 타이머를 어기고 쏜다! (Backpressure 방어)
+            if batch_buffer.len() &gt;= 1000 {
+                let serialized = bincode::serialize(&amp;batch_buffer).unwrap();
+                publisher.put(serialized).res().await.unwrap();
+                batch_buffer.clear();
+            }
+        }
+        // 10ms 타이머가 터지면 버퍼가 1개든 999개든 무조건 모아서 쏜다.
+        _ = tick.tick() =&gt; {
+            if !batch_buffer.is_empty() {
+                let serialized = bincode::serialize(&amp;batch_buffer).unwrap();
+                publisher.put(serialized).res().await.unwrap();
+                batch_buffer.clear();
+            }
+        }
+    }
+}
+</code></pre>
+<p>이 배치 전술은 초당 수십만 개의 데이터 포인트를 생산하는 라이다(LiDAR) 포인트 클라우드나 고주파 진동(Vibration) 센서 텔레메트리를 클라우드로 올릴 때 반드시 탑재되어야 하는 필수 모터 엔진이다. 한 번의 TCP Frame 안에 수백 개의 데이터를 조밀하게 구겨 넣어라.</p>
+<h2>3.  메모리 누수 방지 및 Heap 할당 최소화 기법</h2>
+<p>메시지가 1백만 개가 지나갈 때 루프 내부에서 <code>String::new()</code> 나 <code>Vec::new()</code> 가 1백만 번 불린다면, OS의 메모리 할당자(Allocator)는 미친 듯이 힙(Heap) 메모리를 팠다가 메우기를 반복하다 프로세스 속도를 바닥으로 내동댕이친다.<br />
+진정한 Rust 분산 아키텍트는 힙 할당을 죄악으로 여긴다.</p>
+<h4>3.0.1 [Runbook] 제로 앨로케이션(Zero-Allocation) 루프 방어선</h4>
+<p><strong>안티 패턴 (매번 힙(Heap) 메모리 생성)</strong></p>
+<pre><code class="language-rust">while let Ok(sample) = subscriber.recv_async().await {
+    // 최악의 코드: 반복문 안에서 매번 String(힙 메모리)을 파낸다!
+    // payload.contiguous() 자체가 이미 새로운 메모리에 복사를 때리는 작업이다.
+    let text = String::from_utf8(sample.value.payload.contiguous().to_vec()).unwrap();
+    process_str(&amp;text);
+}
+// 가비지 컬렉터가 없으므로 루프 끝에서 drop() 되며 커널에 반환. (미친 오버헤드)
+</code></pre>
+<p><strong>[정석] 참조자(Reference)와 제로 카피 스트링 전술</strong><br />
+메모리에 복사본을 만들지 말고, 수신된 Zenoh 바이트 파편들을 그 자리에서 곧바로 빌려(Borrow) 쓴다.</p>
+<pre><code class="language-rust">use std::str;
+
+while let Ok(sample) = subscriber.recv_async().await {
+    // 패킷이 연속된 1개의 청크로 들어왔기를 기도하며(대부분 작은 패킷은 1개다),
+    // 그 첫 번째 파편(chunk) 메모리 주소를 바로 텍스트로 치환(Casting)해버린다!
+    if let Some(chunk) = sample.value.payload.chunks().next() {
+        // [핵심] 메모리 복사량이 0 byte 이다!
+        if let Ok(text_ref) = str::from_utf8(chunk) {
+            process_str(text_ref); 
+            // 텍스트를 파싱하고 곧장 버린다.
+        }
+    }
+}
+</code></pre>
+<p><strong>[극한의 버퍼 재사용]</strong><br />
+정말로 동적 할당 배열(<code>Vec</code>)이 필요하다면, 절대 와일 루프 안에서 만들지 마라.<br />
+루프 바깥에 거대한 탱크(<code>Vec::with_capacity(10MB)</code>)를 미리 지어놓고, 내용물만 <code>.clear()</code> 로 비웠다가 <code>.extend_from_slice()</code> 로 덮어쓰는 것(Object Pooling)이 힙 단편화(Fragmentation)를 막으며 서버의 수명을 10년 연장하는 진리다.</p>
+<h2>4.  Rust 컴파일러의 LTO(Link Time Optimization) 옵션을 통한 성능 극대화</h2>
+<p>코드를 한 줄도 고치지 않고 시스템 Throughput을 20% 끌어올릴 수 있다면 믿겠는가?<br />
+Rust 생태계에서는 컴파일 옵션을 쥐어짜는 것만으로도 C++ <code>O3</code> 튜닝을 넘어선다. особенно Zenoh 같은 거대한 매크로와 인라인(inline) 함수 범벅의 네트워크 라이브러리는 <strong>LTO(Link Time Optimization)</strong> 의 축복을 가장 극적으로 받는다.</p>
+<h4>4.0.1 [Runbook] 프로덕션 릴리스 프로필 폭격 전술</h4>
+<p>이 세팅은 로컬에서 매일 테스트할 때 쓰면 느려서 속이 터지지만, 최종적으로 클라우드 도커(Docker) 컨테이너를 구울 때 컴파일러가 모든 힘을 내게 하는 궁극의 레시피다.</p>
+<p><strong>오직 극한의 성능을 쥐어짜는 <code>Cargo.toml</code></strong></p>
+<pre><code class="language-toml">[profile.release]
+## 1. 컴파일 속도와 바이너리 크기 따위는 신경 쓰지 않는다. 기계어 최적화 레벨 MAX.
+opt-level = 3
+
+## 2. [핵심] LTO (Link Time Optimization)
+## Zenoh 라이브러리 바이너리와 내 코드의 경계를 허물고, 하나로 묶어 죽은 코드를 소거하며
+## 함수 점프 오버헤드 대신 인라인(Inlining) 코드로 전부 평탄화시킨다.
+lto = "fat"
+
+## 3. 단일 병목 컴파일 강제
+## 보통 Rust는 멀티 코어로 분할(Codegen units) 빌드하지만 통일된 최적화를 방해한다.
+## 이를 1로 맞추면, 컴파일러가 전체 코드를 통째로 내려다보며 캐시 친화적인 기계어를 짠다.
+codegen-units = 1
+
+## 4. 안전망 제거
+## 에러가 나면 스택 추적(StackTrace)을 하지 않고 즉시 강제종료. 
+## 오버헤드 메모리를 소거한다.
+panic = "abort"
+</code></pre>
+<p><strong>[아키텍처 인스펙션]</strong><br />
+<code>zenoh::open()</code> 이나 <code>session.put()</code> 내부의 깊고 깊은 뎁스의 함수 콜 트리들이, LTO 옵션을 켜는 순간 하나의 연속적인 기계어(Assembly) 블록으로 압착된다.<br />
+특히 CPU의 분기 예측(Branch Prediction) 실패 확률이 기적적으로 떨어지기 때문에, Raspberry Pi 4 등 빈약한 에지 디바이스에서 LTO 빌드 유무는 초당 패킷 처리량을 10만 개에서 12만 개로 단박에 점프시키는 마법의 스위치다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

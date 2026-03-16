@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:40.7.1.1.1. 스레드 풀(Thread Pool) 작업 훔치기(Work Stealing) 스케줄링을 통한 부하 분산(Load Balancing)</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>40.7.1.1.1. 스레드 풀(Thread Pool) 작업 훔치기(Work Stealing) 스케줄링을 통한 부하 분산(Load Balancing)</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.7.1.1.1. 스레드 풀(Thread Pool) 작업 훔치기(Work Stealing) 스케줄링을 통한 부하 분산(Load Balancing)</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>40.7.1.1.1. 스레드 풀(Thread Pool) 작업 훔치기(Work Stealing) 스케줄링을 통한 부하 분산(Load Balancing)</h1>
+<p>다수의 PX4-Autopilot 장치(Swarm)가 연결된 지상 관제 시스템(GCS, Ground Control Station)이나 ROS2 기반의 클라우드 백엔드에서는 특정 기체로부터 대량의 데이터(예: 고해상도 VIO 비전 데이터 융합 메시지)가 집중될 때, 이를 처리하는 단일 스레드에 병목 현상이 발생할 수 있다. 본 절에서는 이러한 불균형을 해소하기 위해 최신 고성능 GCS 아키텍처에 도입되는 <strong>작업 훔치기(Work Stealing)</strong> 기반의 스레드 풀(Thread Pool) 부하 분산(Load Balancing) 기법을 설명한다.</p>
+<h2>1.  정적 스레드 할당(Static Thread Allocation)의 병목 한계</h2>
+<p>대부분의 기본 관제 애플리케이션에서는 개별 드론(Vehicle) 객체가 생성될 때마다 할당된 특정 워커 스레드(Worker Thread)가 해당 드론의 MAVLink 메시지 해독 및 파라미터(Parameter) 동기화를 전담한다. 그러나 QGroundControl(v4.3 기준)과 같이 다수의 차량 스레드가 각 통신 포트를 관리하는 구조에서 다음과 같은 한계가 존재한다.</p>
+<ul>
+<li><strong>부하 불균형(Load Imbalance)</strong>: A 드론은 단순히 1Hz의 Heartbeat만을 송신하고, B 드론은 50Hz의 센서 원시 데이터 스트림과 MAVLink FTP를 통한 수 메가바이트의 임무(Mission) 마이크로로그를 업로드 중인 상황을 가정해 보라.</li>
+<li><strong>자원 유휴 현상(Resource Starvation/Idling)</strong>: B 드론을 담당하는 스레드는 처리 지연(Latency)이 기하급수적으로 늘어나 대기 큐(Wait Queue)가 폭주하는 반면, A 드론을 담당하는 스레드는 연산 자원이 남은 채로 유휴(Idle) 상태에 대기하게 된다.</li>
+</ul>
+<h2>2.  작업 훔치기(Work Stealing) 아키텍처의 이론과 원리</h2>
+<p>작업 훔치기 스케줄링 알고리즘은 분산 병렬 컴퓨팅 공간에서 대기 시간 복잡도를 최소화하기 위해 고안된 큐잉 모델(Queuing Model)이다.</p>
+<p><strong>동작 원리</strong>:</p>
+<ol>
+<li>풀(Pool) 내의 모든 워커 스레드는 각자 고유한 로컬 큐(Local Deque: Double-ended Queue)를 하나씩 보유한다.</li>
+<li>각각의 워커 스레드는 자신의 큐에서 가져온 작업(MAVLink 파싱 콜백, 제어기 상태 연산 등)을 LIFO(Last-In-First-Out) 방식으로 우선 처리한다. 이 방식은 메모리 캐시 지역성(Cache Locality)을 극대화한다.</li>
+<li>자신의 로컬 큐가 비어 유휴 상태(Idle)가 된 워커 스레드(Thief)는 무작위로 또는 지정된 알고리즘에 따라 다른 바쁜 워커 스레드(Victim)의 로컬 큐를 검사한다.</li>
+<li>Victim 스레드 큐의 **반대쪽 끝(FIFO 위치)**에서 대기 중인 작업을 훔쳐 와(Steal) 대신 연산을 수행한다.</li>
+</ol>
+<pre><code class="language-mermaid">graph TD
+    subgraph Worker Thread 1 (Busy)
+        Q1[Local Deque 1]
+        T1((Task A)) --&gt; Q1
+        T2((Task B)) --&gt; Q1
+        T3((Task C)) --&gt; Q1
+        W1[Thread 1] -.-&gt;|Pop (LIFO)| T1
+    end
+    
+    subgraph Worker Thread 2 (Idle)
+        Q2[Local Deque 2]
+        Q2 --- Empty[Empty]
+        W2[Thread 2]
+    end
+    
+    W2 ==&gt;|Steal (FIFO)| T3
+    
+    style Busy fill:#f9f,stroke:#333,stroke-width:2px
+    style Idle fill:#bbf,stroke:#333,stroke-width:2px
+</code></pre>
+<h2>3.  부하 분산의 수학적 복잡도 증명</h2>
+<p>작업 훔치기 방식의 연산 스케줄링 대기열 시간 복잡도는 기존의 공유 글로벌 큐(Global Queue) 패러다임이 가진 병목을 우회한다.<br />
+단일 글로벌 큐 구조에서는 <span class="math math-inline">\mathcal{O}(P)</span> 명의 프로세서가 락(Lock)을 획득하기 위해 경쟁(Contention)하므로 컨텍스트 스위칭 지연이 증가한다. 하지만 Work Stealing 기반의 덱(Deque) 모델에서는 최악의 시간 복잡도 기댓값이 <span class="math math-inline">T_P \le \frac{T_1}{P} + \mathcal{O}(T_{\infty})</span> 로 증명된다. (단, <span class="math math-inline">T_1</span>은 단일 프로세서 실행 시간, <span class="math math-inline">T_{\infty}</span>는 무한대 스레드 환경에서의 임계 경로 실행 시간, <span class="math math-inline">P</span>는 코어 수).<br />
+즉, 글로벌 락 경합 없이 스레드 개수에 거의 선형적인(Linear) 성능 스케일링을 자랑한다.</p>
+<h2>4.  커스텀 GCS 및 백엔드 적용 아키텍처 실무</h2>
+<p>순수 C++로 개발되는 최상급 ROS2 관제 단말기 혹은 다중 기체 관제 GCS에 이 알고리즘을 도입하기 위해서 다음과 같은 설계가 요구된다.</p>
+<ol>
+<li><strong>디스패처와 결합된 I/O 스레드 분리</strong>: <code>epoll</code> 이벤트 디스패처는 소켓 이벤트 관리에만 집중하고, 디스패치된 콜백 함수(데이터 역직렬화, 암호화 복호화, 관제 UI 업데이트 등)를 Work Stealing 스레드 풀에 던지는(Submit) 아키텍처로 분리하라.</li>
+<li><strong>C++17/20 및 Intel TBB 활용</strong>: 스레드 풀을 밑바닥부터 구현하는 대신, 이미 락-프리(Lock-Free) 덱 연산이 결합된 <strong>Intel TBB(Thread Building Blocks)</strong> 라이브러리의 <code>tbb::task_group</code> 이나 C++ <code>std::async</code>의 백엔드 스케줄러(OS 종속)를 채택하라.</li>
+<li><strong>가벼운 작업 단위 입도(Granularity)</strong>: 훔치기 오버헤드보다 작업 자체의 연산 시간이 길 때 효율성이 높다. 따라서 1바이트씩 MAVLink 메시지를 조립하는 스트림 계층보다는, 완전한 메시지 패킷 1개가 파싱 완료된 직후인 콜백 단계(Callback Phase)를 워커 스레드가 훔칠 수 있는 독립적인 태스크(Task)로 정의하라.</li>
+</ol>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

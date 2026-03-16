@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:40.2 MAVLink 직렬화(Serialization) 메커니즘과 상태 공간(State Space) 위상학</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>40.2 MAVLink 직렬화(Serialization) 메커니즘과 상태 공간(State Space) 위상학</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.2 MAVLink 직렬화(Serialization) 메커니즘과 상태 공간(State Space) 위상학</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>40.2 MAVLink 직렬화(Serialization) 메커니즘과 상태 공간(State Space) 위상학</h1>
+<h2>1.  개요(Introduction)</h2>
+<p>현대 무인항공기 기체 제어 시스템에서 MAVLink(Micro Air Vehicle Link) 프로토콜은 비행체(Vehicle)와 지상 관제 시스템(Ground Control Station, GCS) 간의 원격 측정(Telemetry) 및 명령 하달을 담당하는 핵심적인 통신 계층(Communication Layer) 역할을 수행한다. 이 장에서는 최신 PX4-Autopilot 환경(펌웨어 v1.14.x 이상 및 QGroundControl v4.3.x 이상 기준)에서 MAVLink 메시지의 데이터 직렬화(Serialization) 메커니즘을 심도 있게 분석하고, 제어 시스템 내에서 전송되는 데이터가 지니는 상태 공간(State Space)의 위상학(Topology)적 특성을 규명하라.</p>
+<h2>2.  MAVLink 직렬화 메커니즘(Serialization Mechanism)</h2>
+<p>MAVLink는 메모리 효율성과 전송 대역폭(Bandwidth)의 최적화를 달성하기 위해 C 구조체(C-struct) 패킹(Packing) 방식에 기반한 고유의 직렬화 기법을 채택하고 있다. 이는 처리 능력이 제한된 소형 임베디드 장치에서도 오버헤드를 유발하지 않고 신속하게 직렬화 및 역직렬화(Deserialization)를 보장하기 위함이다.</p>
+<h3>2.1  직렬화 아키텍처 및 메모리 패킹(Memory Packing)</h3>
+<p>PX4-Autopilot 시스템은 <code>mavlink_message_t</code> 자료 구조를 이용하여 논리적 유효 데이터(Payload)를 물리적 바이트 열(Byte Stream)로 매핑(Mapping)한다. 최신 규격인 MAVLink 2.0 프로토콜을 기준으로, 직렬화 과정은 패킷 프레이밍(Packet Framing), 페이로드 절삭(Payload Truncation) 및 순환 중복 검사(Cyclic Redundancy Check, CRC) 생성 단계를 포함한다.</p>
+<ul>
+<li><strong>구조체 정렬(Struct Alignment):</strong> 데이터 필드의 크기에 기반하여 내림차순(Descending order, 예: 64비트 타입에서 8비트 타입 순)으로 필드를 논리적으로 재배치(Reordering)한다. 이를 통해 C 컴파일러가 암묵적으로 추가하는 패딩(Padding) 바이트를 원천적으로 배제하여 데이터 길이를 최소화하라.</li>
+<li><strong>페이로드 절삭(Payload Truncation):</strong> MAVLink 2.0은 대역폭 절감을 위하여 페이로드의 끝에 위치한 후행 0값(Trailing Zeros)을 자동으로 제거(Truncate)하여 전송한다.</li>
+<li><strong>서명(Signature) 기반 보안 검증:</strong> 인증되지 않은 패킷의 반영을 차단하기 위하여, 강력한 암호학적 해시 알고리즘 기반 서명을 직렬화된 데이터 스트림의 후미에 부착(Append)한다.</li>
+</ul>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant uORB as uORB Topic (PX4)
+    participant MAVLink_Module as MAVLink Streaming Module
+    participant Serial as UART / UDP Interface
+    participant GCS as QGroundControl
+
+    Note over uORB, MAVLink_Module: Publish Sensor/State Data
+    uORB-&gt;&gt;MAVLink_Module: vehicle_attitude, vehicle_local_position
+    Note over MAVLink_Module: Format Conversion &amp; Alignment
+    MAVLink_Module-&gt;&gt;MAVLink_Module: Serialization (Descending Sort)
+    MAVLink_Module-&gt;&gt;MAVLink_Module: Null Truncation &amp; CRC/Signature Append
+    MAVLink_Module-&gt;&gt;Serial: Transmit Packed Byte Stream
+    Serial-&gt;&gt;GCS: Receive MAVLink Packet
+    Note over GCS: Deserialization &amp; Routing
+    GCS-&gt;&gt;GCS: Payload Padding &amp; Integrity Check
+</code></pre>
+<h2>3.  상태 공간(State Space) 위상학(Topology) 분석</h2>
+<p>비행 제어 및 궤적 계획(Path Planning) 관점에서 상태 공간은 무인항공기의 동적 상태(예: 위치, 속도, 가속도, 쿼터니언 기반 자세)를 표현하는 다차원 벡터의 집합체로 정의된다. 수많은 센서에 의해 도출된 아날로그적 물리 상태는 MAVLink 메시징을 통하여 이산적 시간(Discrete Time) 단위로 샘플링(Sampling)되고, 이를 GCS 및 외부 컴패니언 컴퓨터(ROS2 노드 등)의 상태 공간으로 투영(Projection)하는 위상학적 사상(Mapping) 과정으로 해석될 수 있다.</p>
+<h3>3.1  연속 상태의 이산적 사상(Mapping of Continuous States)</h3>
+<p>PX4-Autopilot은 각 텔레메트리 스트림(Telemetry Stream)을 비동기적(Asynchronous)으로 스케줄링하여 네트워크 지연(Latency) 현상 및 대역폭 통제 요구에 대응한다.</p>
+<ul>
+<li><strong>상태 추정기(State Estimator)와의 연동:</strong> PX4의 핵심 추정기 필터인 EKF2(Extended Kalman Filter 2)를 통해 정제된 비행 상태(예: uORB <code>vehicle_attitude</code>, <code>vehicle_local_position_ned</code>)는 MAVLink의 <code>ATTITUDE</code>, <code>LOCAL_POSITION_NED</code> 메시지로 갱신(Update)되어 외부로 전송된다. 이 과정은 ROS2 환경을 사용할 경우 Micro XRCE-DDS 구조를 경유하는 형태로도 위상학적 위임을 행하게 된다.</li>
+<li><strong>Ardupilot과의 아키텍처 비교(Architecture Comparison):</strong> 단일 모놀리식(Monolithic) 제어 루프를 갖추고 특정 타이밍 슬롯에서 상태 변수를 폴링(Polling) 방식으로 전송하는 전통적인 Ardupilot 아키텍처와 달리, PX4 소프트웨어 스택은 uORB 이벤트 기반 버스(Event-driven Bus)를 차용하여 상태 변화가 퍼블리셔(Publisher)에 의해 브로드캐스트될 때 MAVLink 스트리밍 노드가 비동기적으로 이를 포착하여 직렬화하는 차이를 지닌다. 이벤트 주도형 위상 매핑(Event-driven Topology Mapping) 방식은 상태 벡터 간의 응집도 및 시간 지연 상수를 최소화하는 이점을 지닌다.</li>
+</ul>
+<h2>4.  QGroundControl 및 ROS2 연동에서의 의의</h2>
+<p>QGroundControl 관제 모듈은 앞서 설명한 직렬화 절차의 역순, 즉 역직렬화(Deserialization)를 백엔드(Backend, C++) 환경의 통신 루프에서 수행한다.<br />
+통신 채널(UART 텔레메트리 망, Wi-Fi 기반 UDP 소켓 등)의 잡음에 의해 상태 공간 일부가 소실(Drop)될 위험성이 크므로, 잃어버린 차원(Lost Dimensions)을 보간(Interpolate)하고 타임아웃 처리를 관장하는 논리 구성이 중요하다.</p>
+<p>또한 자율 비행 에이전트 개발을 위해 MAVSDK 또는 ROS2를 이용한 Offboard 제어 명령을 하달할 경우에도, 사용자 애플리케이션의 상태 공간 제어 명령 궤적은 직렬화를 통해 MAVLink/DDS를 거쳐 PX4 내부의 uORB 모델로 사상된다는 점을 상기하라.</p>
+<h2>5.  논문 및 참고 문헌 연계 전략</h2>
+<p>임베디드 로보틱스 통신 시스템의 직렬화 패널티 최소화를 주제로 한 학술 연구인 “Optimizing Data Serialization for Distributed Cyber-Physical Systems” 및 “Formal Verification of MAVLink Protocol using State Space Topology” 등의 논문을 활용하여 메모리 패킹의 정합율과 프로토콜 보안 메커니즘의 수학적 증명을 보강하라. 이를 통해 단순한 API 문서 수준이 아닌, 심도 있는 공학 서적의 일관된 기조를 유지하라.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
