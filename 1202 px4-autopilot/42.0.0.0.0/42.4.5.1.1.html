@@ -115,62 +115,73 @@
             </header>
             <article>
                 <h1>42.4.5.1.1. WGS84 타원체 표면 투영 시 발생하는 곡률 반경(Radius of Curvature) 계산의 부동소수점 절단 오차(Truncation Error) 검증</h1>
-<p>현대의 무인항공기(UAV) 글로벌 포지셔닝 시스템은 지구의 기하학적 형상을 수치적으로 모델링한 WGS84(World Geodetic System 1984) 타원체를 기준으로 동작한다. 기체의 확장 칼만 필터(EKF2)는 위성항법장치(GNSS)로부터 수신한 위도, 경도 좌표를 비행 제어기 내부의 동역학 방정식이 동작하는 3차원 직교 좌표계(NED: North-East-Down)로 매 틱(Tick)마다 투영(Projection) 변환해야 한다. 이 절에서는 해당 투영 속에서 핵심적인 척도 인자(Scale Factor)로 작용하는 곡률 반경(Radius of Curvature) 계산 시 임베디드 하드웨어의 부동소수점 한계로 인해 발생하는 절단 오차(Truncation Error) 메커니즘을 분석하고, PX4-Autopilot이 이를 어떻게 시스템적으로 극복하는지 소스 코드 수준에서 검증한다.</p>
-<h2>1.  WGS84 타원체 모델의 곡률 반경 유도 및 32-bit 부동소수점 한계</h2>
-<p>타원체 표면에서 기준원(Home Position) 대비 특정 위치의 국소 직교 좌표 오프셋을 구하기 위해서는 대상 위도 <span class="math math-inline">\phi</span> 에서의 두 가지 주 곡률 반경이 요구된다.</p>
-<ol>
-<li><strong>자오선 곡률 반경(Meridian Radius of Curvature, <span class="math math-inline">R_M</span>):</strong> 자오선을 따라 남북(North-South) 방향의 호의 길이를 선형 거리로 변환하는 데 사용된다.</li>
-<li><strong>묘유선 곡률 반경(Prime Vertical Radius of Curvature, <span class="math math-inline">R_N</span>):</strong> 동서(East-West) 방향의 선형 거리를 변환하는 데 사용된다.</li>
-</ol>
-<p>수학적으로 다음과 같이 정의된다.<br />
-<span class="math math-display">R_M = \frac{a(1 - e^2)}{(1 - e^2 \sin^2 \phi)^{\frac{3}{2}}}, \quad R_N = \frac{a}{\sqrt{1 - e^2 \sin^2 \phi}}</span><br />
-여기서 <span class="math math-inline">a</span>는 장반경(Semi-major axis, 약 <span class="math math-inline">6,378,137\text{ m}</span>), <span class="math math-inline">e</span>는 이심률(Eccentricity, 약 <span class="math math-inline">0.0818</span>)이다.</p>
-<p>Pixhawk와 같은 STM32 계열 마이크로컨트롤러(MCU)에서 벡터 연산의 가속을 담당하는 FPU(Floating Point Unit)는 기본적으로 단정밀도(Single Precision, 32-bit <code>float</code>)에 최적화되어 있다. IEEE 754 표준에 따르면 32-bit <code>float</code>의 유효 자릿수는 십진수 기준 약 7자리에 불과하다. 지구의 장반경 <span class="math math-inline">a</span> 자체가 7자리 숫자(<span class="math math-inline">6,378,137</span>)이므로, 이 스케일의 숫자를 단정밀도 변수에 담은 채 센티미터(<span class="math math-inline">0.01\text{ m}</span>) 급의 소형 드론 위치 변화량을 가산 연산(Addition)할 경우 심각한 부동소수점 절단 오차(Truncation Error)가 누적된다. 즉, 밀리미터 단위의 데이터가 소실되어 항법 오차로 직결되는 현상인 셈이다.</p>
-<h2>2. PX4-Autopilot의 투영 연산 소스 코드 아키텍처 기반 오차 억제</h2>
-<p>PX4-Autopilot 파운데이션은 ECL(Estimation and Control Library) 스택을 설계할 때 이 절단 오차를 방지하기 위해 이중화된 수치 선형 대수학 모델을 도입했다. 원시 WGS84 타원체 기반의 전역 포지셔닝은 반드시 배정밀도(Double Precision, 64-bit <code>double</code>)로만 핸들링하되, EKF가 반복적으로 수천 번 구동해야 하는 이노베이션 루프나 코어 PID 제어 루프 내부에서는 계산량 감소를 위해 로컬 NED 상대 좌표(<code>float</code> 벡터)만을 취급한다.</p>
-<p>PX4의 <code>geo.cpp</code> 라이브러리에 구현된 <code>map_projection</code> 투영 원리 코드를 분석하면, 무인기가 시동을 걸 때(혹은 글로벌 포지션이 유효해질 때) 초기 홈 위치 반경을 배정밀도로 단 1회 계산하고 픽스(Fix)한다.</p>
-<pre><code class="language-cpp">// PX4 geo.cpp 내부의 부동소수점 오차 방지 투영 철학 예시 
-// (실제 EKF2 MapProjection 로직 요약)
-
-// 1. 초기 기준점 배정밀도 확립 (Double Precision)
-double lat_home_rad = math::radians(lat_home);
-double sin_lat = sin(lat_home_rad);
-
-// 2. 홈 위치에서의 기준 곡률 반경 계산 (Double Precision으로 정보 손실 방지)
-double denominator = sqrt(1.0 - (CONSTANTS_RADIUS_OF_EARTH_ECCENTRICITY_SQUARED * sin_lat * sin_lat));
-double r_n = CONSTANTS_RADIUS_OF_EARTH / denominator; 
-double r_m = r_n * (1.0 - CONSTANTS_RADIUS_OF_EARTH_ECCENTRICITY_SQUARED) / (denominator * denominator);
-
-// 3. EKF 런타임 갱신용 상수 스케일러 Float 캐싱
-// 이후 매 틱마다 무거운 비선형 연산을 피하고, Float 기반의 로컬 델타 변환만 수행
-float lat_scale = (float)r_m; 
-float lon_scale = (float)(r_n * cos(lat_home_rad));
-</code></pre>
-<p>이렇듯 홈 위치의 <span class="math math-inline">R_M</span>과 <span class="math math-inline">R_N</span>에 해당하는 환산 계수(Scale Factor)를 캐시(Cache)해 둔 다음, 현재 위치 표면과 홈 위치 간의 라디안 오차값인 <span class="math math-inline">\Delta \phi, \Delta \lambda</span> 같은 작은 수(Small Number)와 <code>float</code> 형으로 곱적산(Multiplication)하여 투영한다. 큰 숫자 간의 덧셈에서 일어나는 정보 절단을 피하고, 단위 오차만을 스케일링함으로써 FPU의 레지스터 페이로드를 폭발시키지 않고도 센티미터 델타를 강건하게 유지하는 아키텍처이다.</p>
-<h2>3. Ardupilot (EKF3) 대비 부동소수점 아키텍처 관점 비교</h2>
+<p>무인항공기의 정밀 항법 시스템에서 지구 표면의 위경도 좌표를 평면 좌표계로 변환할 때 지구를 완벽한 구체가 아닌 타원체(Ellipsoid)로 모델링하는 것은 필수적이다. PX4-Autopilot은 이 과정에서 WGS84(World Geodetic System 1984) 타원체 모델을 채택하고 있다. 글로벌 좌표계에서 NED(North-East-Down) 로컬 평면 좌표계로 데이터를 투영할 때 자오선 곡률 반경(Meridian Radius of Curvature, <span class="math math-inline">R_M</span>)과 횡단 곡률 반경(Prime Vertical Radius of Curvature, <span class="math math-inline">R_N</span>)을 반복적으로 계산하게 된다. 본 장에서는 이 곡률 반경 계산 과정에서 발생하는 부동소수점 연산의 절단 오차(Truncation Error)와 이를 최소화하기 위한 PX4(Firmware v1.14 기준)의 수치 해석적 검증 메커니즘을 심층적으로 다룬다.</p>
+<h2>1.  WGS84 타원체 기반 곡률 반경 계산 모델</h2>
+<p>WGS84 모델에서 지구 적도 반경(Equatorial Radius, <span class="math math-inline">a</span>)은 약 <span class="math math-inline">6,378,137m</span> 이며, 이심률(Eccentricity)의 제곱(<span class="math math-inline">e^2</span>)은 약 <span class="math math-inline">0.00669437999014</span> 로 정의된다. 임의의 위도 <span class="math math-inline">\phi</span>에서 기체가 위치할 때 두 가지 주된 곡률 반경은 다음과 같은 비선형 수식으로 도출된다.</p>
+<h3>1.1  자오선 및 횡단 곡률 반경 수식</h3>
 <ul>
-<li><strong>PX4 (EKF2):</strong> 앞서 살펴본 바와 같이, 로컬 투영 평면(Local Tangent Plane)의 기준 스케일을 Float 포맷으로 고정한 뒤 Flat Earth 모델의 빠른 선형성(Linearity)을 차용하여 델타 값만 처리한다. 만약 비행체가 홈 위치에서 수백 km 이상 벗어나 곡률 계수의 비선형성이 두드러지는 특수 임무(예: 장거리 고정익) 상황에 도달하면 주기적인 EKF Origin Reset 로직을 발동시켜 투영 기준 스케일 계수를 암묵적으로 재계산(Re-anchoring)한다.</li>
-<li><strong>Ardupilot (EKF3):</strong> EKF3는 부동소수점 관장 영역에 있어서 Double-precision 플래그를 조건부로 폭넓게 도입하고, 지형 곡률 연산 등에 Flat Earth 근사법보다 구형 정밀성 유지에 조금 더 CPU 리소스를 태우는 경향성을 띤다. 장거리 드론 비행 시 중간 궤적 리셋(Reset)을 기피하는 사용성을 선호하도록 세팅되어 있다. 상대적으로 Pixhawk1 등 초기 구형 보드에서는 이 연산이 부담으로 작용했지만 최신 H7 기반의 보드에서는 더 유리하게 돌아가는 측면이 있다.</li>
+<li>
+<p><strong>자오선 곡률 반경 (<span class="math math-inline">R_M</span>)</strong>: 남북 방향의 거리 변환에 사용된다.<br />
+<span class="math math-display"> R_M = \frac{a(1 - e^2)}{(1 - e^2 \sin^2 \phi)^{\frac{3}{2}}} </span></p>
+</li>
+<li>
+<p><strong>횡단 곡률 반경 (<span class="math math-inline">R_N</span>)</strong>: 동서 방향의 거리 변환에 사용된다.<br />
+<span class="math math-display"> R_N = \frac{a}{(1 - e^2 \sin^2 \phi)^{\frac{1}{2}}} </span></p>
+</li>
 </ul>
-<h2>4. MAVLink 프로토콜 설계 및 GCS 통신 신뢰성 유지 보장</h2>
-<p>내부 제어기가 이러한 절단 오차를 어떻게든 피해서 융합을 한다 하더라도, 외부의 관제 플랫폼(QGroundControl 등)으로 상태를 전송할 때 데이터가 소실되면 무의미해진다. 부동소수점 이슈를 방지하기 위해 MAVLink 프로토콜은 <code>GLOBAL_POSITION_INT</code> 메세지 등에서 32비트 IEEE 754 플로트 대신, 32비트 부호 있는 정수(<code>int32_t</code>)를 사용하여 위도와 경도를 보낸다.</p>
-<p>1도(Degree)의 위경도 값을 정수 <span class="math math-inline">10^7</span> 로 스케일링(예: <code>lat * 1E7</code>) 함으로써, 소수점 7번째 자리(적도 기준 약 1.1cm 수준)의 전역 해상도를 정수형 레지스터 안에 온전히 봉인한다.</p>
-<pre><code class="language-mermaid">sequenceDiagram
-    participant EKF as PX4 EKF2 (FCU)
-    participant MAV as MAVLink Publisher
-    participant QGC as QGroundControl (GCS)
-    
-    Note over EKF: 배정밀도 원점 + 단정밀도 델타 융합
-    EKF-&gt;&gt;MAV: 전역 위경도 Double 도출 (e.g., 37.1234567)
-    MAV-&gt;&gt;MAV: int32 형변환 (37.1234567 * 10^7)
-    MAV--&gt;&gt;QGC: GLOBAL_POSITION_INT 패킷 전송
-    QGC-&gt;&gt;QGC: 수신 후 (double) / 10^7 환원
-    Note over QGC: Qt 기반 화면에 센티미터 오차 없이 표출
+<p>UAV의 확장 칼만 필터(EKF2)는 매 업데이트 주기마다 위 식을 연산하여 위치의 미세한 변화량(<span class="math math-inline">\Delta P_N</span>, <span class="math math-inline">\Delta P_E</span>)을 도출한다.</p>
+<h2>2.  부동소수점 절단 오차(Truncation Error)의 원인 및 영향</h2>
+<p>PX4를 탑재한 대부분의 비행 제어 컴퓨터(Pixhawk 등)에 장착된 MCU(Microcontroller Unit)는 연산 부하를 줄이기 위해 단정밀도(Single-precision, 32-bit <code>float</code>) 부동소수점 연산을 병행하여 사용한다.</p>
+<h3>2.1  단정밀도 부동소수점 연산의 한계</h3>
+<p>32-bit <code>float</code> 자료형은 약 7자리의 유효 숫자를 표현할 수 있다. 지구 반경 <span class="math math-inline">a</span>(약 <span class="math math-inline">6.37 \times 10^6</span>)와 위치 정밀도인 밀리미터 단위(<span class="math math-inline">10^{-3}</span>)를 동시에 다뤄야 하는 항법 알고리즘에서 약 9~10자리의 차이가 발생한다.<br />
+특히 분모에 위치한 <span class="math math-inline">(1 - e^2 \sin^2 \phi)</span> 항은 <span class="math math-inline">1</span>에 매우 가까운 값(약 <span class="math math-inline">0.993</span> ~ <span class="math math-inline">1.0</span>)을 가지므로, 이를 거듭제곱 및 거듭제곱근 처리하는 과정에서 유효 숫자의 손실, 즉 절단 오차가 발생한다. 유효 숫자 손실은 누적되어 글로벌 내비게이션 좌표 투영 시 미터 단위 이상의 위치 이동(Drift) 현상을 유발할 위험이 있다.</p>
+<h3>2.2  테일러 급수(Taylor Series) 근사와 오차 누적</h3>
+<p>특정 연산에서는 근사 함수를 사용하게 되는데, <span class="math math-inline">\csc</span>, <span class="math math-inline">\sec</span> 계열의 삼각함수와 거듭제곱근이 결합된 식을 테일러 급수로 전개하여 1차 또는 2차 항까지만 취할 경우, 버려지는 고차 항(Higher-order terms)들이 절단 오차로 귀결된다. 장시간 비행하는 고정익 기체의 경우 이 오차는 지속적인 추측항법(Dead Reckoning) 과정에서 비행 경로 오차를 기하급수적으로 증가시킨다.</p>
+<h2>3.  PX4-Autopilot의 절단 오차 억제 및 검증 메커니즘</h2>
+<p>PX4는 계산 효율성과 수치적 정밀도의 절충점을 찾기 위해 EKF2 코드 베이스와 <code>mathlib</code> 라이브러리에 여러 수치 최적화 기법을 적용했다.</p>
+<h3>3.1  배정밀도(Double-precision) 캐스팅 및 내부 연산</h3>
+<p>PX4의 <code>map_projection</code> 모듈 또는 EKF 내 로컬-글로벌 좌표 변환 모듈은 입력과 출력은 단정밀도(<code>float</code>)이나, 핵심적인 곡률 반경과 삼각함수 연산 부하 구간에서는 선택적으로 배정밀도(<code>double</code>, 64-bit) 승격을 수행한다.</p>
+<pre><code class="language-cpp">// PX4-Autopilot 1.14 map_projection 로직의 단순화된 예시
+double lat_rad = (double)lat_deg * M_PI / 180.0;
+double sin_lat = sin(lat_rad);
+double sin_sq = sin_lat * sin_lat;
+
+// 분모 계산 시 배정밀도를 유지하여 절단 오차 억제
+double denominator = sqrt(1.0 - CONSTANTS_RADIUS_OF_EARTH_ECCENTRICITY_SQUARED * sin_sq);
+double R_N = CONSTANTS_RADIUS_OF_EARTH / denominator;
 </code></pre>
-<p>QGC는 백엔드 <code>C++</code> 레이어에서 이를 수신하여 64-bit <code>double</code> 타입으로 원복시키기 때문에 지도 GUI 프론트엔드인 <code>Qml</code>단에서도 위치 데이터의 마이크로 흔들림 현상(Jittering)이 전혀 발생하지 않는다.</p>
-<h2>5. 자율 비행 관점 및 ROS2(uXRCE-DDS) 오도메트리 시사점</h2>
-<p>최신의 자율 미션 에이전트를 구성할 때 ROS2를 통한 군집 비행 관제 어플리케이션은 PX4에서 퍼블리싱하는 <code>VehicleOdometry</code> 혹은 <code>VehicleGlobalPosition</code> 토픽을 서브스크라이브(Subscribe)한다. ROS2 미들웨어인 DDS 내부 계층에서 이 메시지 타입들은 <code>float64</code> 타입을 표준 필드로 채택함으로써 부동소수점 절단 오차의 위협을 근본적으로 상쇄시켰다.</p>
-<p>하지만, ROS2 자율 제어 노드가 PX4에게 지령 벡터(Setpoint Vector)를 다시 보낼 때(예: <code>TrajectorySetpoint</code> 메시지 인젝션), 궤적 제어기 입장에서는 NED 좌표의 단정밀도 필드 <code>float32 position[3]</code> 를 사용해야 함을 잊으면 안 된다. 제어 거점(Setpoint) 계산 로직을 짤 때 무의미하게 GNSS 전역 오프셋을 직접 타는 알고리즘을 피하고, 철저히 <code>tf2</code> 브로드캐스터(Broadcaster)를 기반으로 <strong>‘현재 홈 위치 오리진으로부터의 Local 상대 거리 오프셋’</strong> 만 넘기도록 관제해야 이와 같은 이진수 절단 연산 사고로 발생할 수 있는 드론의 급격한 위치 이탈(Flyaway) 위험을 차단할 수 있다.</p>
+<p>이러한 캐스팅은 MCU 내부의 FPU(Floating-Point Unit) 아키텍처 지원에 맞물려 최적화되며, 절단 오차를 밀리미터 수준 이하로 철저히 통제한다.</p>
+<h3>3.2  사전 계산(Pre-computation) 및 선형 보간(Linear Interpolation)</h3>
+<p>실시간 필터링 연산 주기를 확보하기 위하여 홈 좌표(Home Position)가 결정되는 순간 <span class="math math-inline">R_M</span>과 <span class="math math-inline">R_N</span>을 계산하여 캐싱(Caching)해 둔다. 반경 수십 킬로미터 이내의 비행에서는 위도의 변화폭이 작아 곡률 반경의 변화 빈도가 낮음을 이용하는 것이다.</p>
+<ul>
+<li><strong>업데이트 전략</strong>: 기체가 기준 위도에서 일정 격자(예: 1도 또는 특정 거리) 이상 벗어났을 때만 곡률 반경 상수를 재계산함으로써 연산 누적으로 인한 부동소수점 오차의 주기적 증폭을 방지한다.</li>
+</ul>
+<h2>4.  곡률 반경 오차 평가 프로세스</h2>
+<p>과정을 구조화된 검증 파이프라인으로 나타내면 다음과 같다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant GNSS as GNSS Receiver
+    participant EKF as PX4 EKF2
+    participant Math as Math/Geo Library
+
+    GNSS-&gt;&gt;EKF: 글로벌 원점(Lat, Lon) 제공
+    activate EKF
+    EKF-&gt;&gt;Math: 곡률 반경(R_M, R_N) 계산 요청 (Double-precision)
+    activate Math
+    Math--&gt;&gt;EKF: 정밀 캐싱된 R_M, R_N 반환
+    deactivate Math
+    
+    loop 고주파 위치 추정(Filter Update)
+        EKF-&gt;&gt;EKF: 단기 이동량에 Float 연산 적용
+        EKF-&gt;&gt;EKF: 캐싱된 R_M, R_N 기반 매핑 수행
+        alt 기준 위치(Home) 이탈률 임계치 초과 시
+            EKF-&gt;&gt;Math: 새로운 R_M, R_N 재계산 요청
+            Math--&gt;&gt;EKF: 오차 보정된 새로운 곡률 반경 갱신
+        end
+    end
+    deactivate EKF
+</code></pre>
+<h2>5.  요약</h2>
+<p>PX4-Autopilot은 WGS84 타원체 곡률 반경 연산 과정에서 필연적으로 발생하는 부동소수점 연산 절단 오차를 방지하기 위해 핵심 연산에 혼합 정밀도(Mixed-precision) 아키텍처를 도입했다. 또한, 글로벌 홈 위치를 기반으로 한 곡률 반경의 캐싱 기법을 통해 반복 계산의 누적 오차를 강력하게 배제한다. 이러한 설계는 Ardupilot 등 다른 오픈소스 기반 펌웨어와 구조를 같이하지만, EKF2의 세밀한 융합 지표 모니터링 체계와 결합하여 고속 비행 및 장거리 임무의 공간 안정성 보장에 중추적인 역할을 담당한다.</p>
 
             </article>
             <footer>

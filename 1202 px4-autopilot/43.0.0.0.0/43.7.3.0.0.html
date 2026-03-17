@@ -115,6 +115,74 @@
             </header>
             <article>
                 <h1>43.7.3 비행 기록 파일(ULog)의 이진(Binary) 데이터 구조 정렬 및 고속 푸리에 변환(FFT) 시계열 스펙트럼 분석을 통한 시동 전후 I2C/SPI 버스 인터럽트 지연 및 프로세스 병목 구간 탐지</h1>
+<p>무인항공기(UAV)의 신뢰성 높은 자율 비행을 보장하기 위해서는 센서 데이터의 일관된 수집과 제어 루프(Control Loop)의 지연 시간(Latency) 최소화가 필수적이다. PX4-Autopilot은 고해상도 비행 데이터를 자체적인 <code>ULog</code> 포맷으로 기록하며, 이 데이터는 기체의 역학적 상태뿐만 아니라 실시간 운영체제(RTOS)의 태스크 스케줄링 및 센서 버스(I2C/SPI)의 타이밍 상태까지 포함한다.</p>
+<p>본 절에서는 ULog 이진(Binary) 데이터의 구조적 정렬 원리를 파악하고, 고속 푸리에 변환(Fast Fourier Transform, FFT) 기반의 시계열 스펙트럼 분석 기법을 적용하여 시동 전후의 센서 버스 인터럽트 지연 및 시스템 병목 구간을 탐지하는 해석 공학적 방법론을 제시한다.</p>
+<h2>1.  비행 기록 파일(ULog)의 아키텍처 및 이진 데이터 구조 정렬</h2>
+<p>PX4-Autopilot의 로거(Logger) 모듈은 SD 카드 I/O 병목 현상을 방지하기 위해 uORB(Micro Object Request Broker) 메시지를 자체 포맷인 ULog로 직렬화(Serialization)한다. ULog는 Ardupilot의 Dataflash Log(<code>.bin</code>)와 유사한 목적을 가지나, 메시지 포맷 정의가 파일 헤더에 자기 기술적(Self-describing)으로 포함되어 있어 파싱(Parsing) 유연성이 높다는 차별점이 있다.</p>
+<h3>1.1  ULog 이진 데이터 구조</h3>
+<p>ULog 파일은 크게 3가지 섹션으로 정렬된다.</p>
+<ol>
+<li><strong>Header</strong>: 매직 바이트(Magic Byte) 및 파일 포맷 버전.</li>
+<li><strong>Definitions Section</strong>: 로깅할 uORB 토픽의 구조체 정의, 파라미터(Parameter) 초기값. MAVLink 프로토콜의 메타데이터와 연동되는 시스템 정보.</li>
+<li><strong>Data Section</strong>: 타임스탬프(마이크로초 단위)가 부여된 uORB 데이터 메시지들의 순차적 묶음. 추가적으로 파라미터 변경 이벤트와 런타임 드롭아웃(Dropouts) 정보가 포함된다.</li>
+</ol>
+<p>로거 모듈은 데이터 손실을 막기 위해 링 버퍼(Ring Buffer)를 활용하여 정렬되지 않은 비동기 메시지들을 타임스탬프 기준으로 정렬 및 압축하여 기록한다.</p>
+<h2>2.  시동 전후의 I2C/SPI 버스 인터럽트 지연 탐지 체계</h2>
+<p>비행 제어 컴퓨터(Flight Management Unit, FMU)는 IMU(Inertial Measurement Unit), 지자기 센서, 기압계 등과 통신하기 위해 I2C 및 SPI 버스를 활용한다. 시동(Arming) 이벤트가 발생하면 모터 구동으로 인한 전자기적 간섭(EMI)과 진동 노이즈가 급증하며, 이는 센서 버스의 하드웨어 인터럽트(Hardware Interrupt) 지연으로 이어져 프로세스 병목 현상을 유발할 수 있다.</p>
+<h3>2.1  스케줄링 병목 탐지 지표</h3>
+<p>PX4는 태스크 프로파일링 토픽인 <code>cpuload</code>와 센서 상태 메타데이터인 <code>sensor_correction</code> 토픽을 기록한다.</p>
+<ul>
+<li><strong>태스크 스케줄링 타이밍</strong>: <code>sensor_gyro</code>나 <code>sensor_accel</code>의 수신 델타 타임(Delta Time)의 분산을 측정한다. 이 값이 SPI 폴링 주기(예: 1ms)를 초과하여 변동한다면 I2C/SPI 버스에 간섭이 발생했음을 의미한다.</li>
+<li><strong>NuttX RTOS 관점</strong>: 드라이버 레벨에서 <code>perf_counter</code>를 사용하여 버스 읽기/쓰기 대기 시간(Waiting Time)을 로깅한다.</li>
+</ul>
+<h2>3.  고속 푸리에 변환(FFT) 시계열 스펙트럼 분석 기법</h2>
+<p>시동 이후 모터 회전(RPM)에서 기인하는 고주파 진동 노이즈는 기체 동역학 제어기(Position/Attitude Controller)에 치명적인 영향을 미친다. 이를 분석하기 위해 ULog 파일에 기록된 Raw IMU 데이터를 바탕으로 고속 푸리에 변환(FFT)을 수행한다.</p>
+<ol>
+<li><strong>데이터 추출</strong>: 파이썬 기반의 <code>pyulog</code> 라이브러리나 PlotJuggler 등의 툴킷을 사용하여 <code>sensor_combined</code> 또는 Raw IMU 토픽(예: <code>sensor_gyro</code> 데이터 중 x, y, z 축)을 마이크로초 단위 타임스탬프와 함께 추출한다.</li>
+<li><strong>해밍 창(Hamming Window) 적용</strong>: FFT 분석 시 엣지 결함(Edge Artifacts)을 줄이기 위해 슬라이딩 윈도우 방식으로 데이터를 전처리한다.</li>
+<li><strong>주파수 스펙트럼 도출</strong>: 시간 영역의 진동 신호를 주파수 영역으로 변환하여, 모터 날개 통과 주파수(Blade Pass Frequency) 및 구조적 공진 주파수를 식별한다. 노이즈 스펙트럼의 크기에 따라 <span class="math math-inline">\vert X(f) \vert</span> 에너지 밀도가 특정 대역에 집중됨을 확인할 수 있다.</li>
+</ol>
+<p>학술적 문헌인 “Frequency-Domain System Identification of UAV Dynamics” 등에서 권장하듯, 이러한 스펙트럼 분석은 소프트웨어 저역 통과 필터(Low Pass Filter, LPF) 또는 노치 필터(Notch Filter)의 차단 주파수(Cutoff Frequency)를 설정하는 데 핵심적인 지표가 된다.</p>
+<h2>4.  분석 도구와 시각적 아키텍처 (Mermaid 도표)</h2>
+<p>ULog 파일 생성을 담당하는 로깅 아키텍처와 이를 파싱하여 FFT 분석에 이르는 전 과정은 다음과 같은 워크플로우를 따른다. Flight Review 온라인 툴 또는 ROS2의 <code>rqt_bag</code> 변환 프레임워크를 연동하여 시각화할 수 있다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph PX4-Autopilot (NuttX RTOS)
+        A[Sensor Drivers : SPI/I2C] --&gt;|Hardware Interrupt| B[uORB Publisher]
+        B --&gt;|sensor_accel, sensor_gyro| C(logger module)
+        C --&gt;|Write Queue / Dropouts| D[(SD Card : .ulg Binary File)]
+    end
+
+    subgraph Data Analysis Workbench
+        D --&gt;|pyulog parsing| E[Data Extraction : Timestamp vs Values]
+        E --&gt;|Delta Time Analysis| F[Process Bottleneck &amp; Latency Detection]
+        E --&gt;|Time-Series Array| G[FFT Algorithm Processing]
+        G --&gt;|Spectrum output| H[Notch / LPF Filter Tuning Parameter Generation]
+    end
+
+    F --&gt; I[System Troubleshooting]
+    H --&gt; I
+    I --&gt;|IMU_GYRO_NF_FREQ 등 파라 파라미터 튜닝 반영| A
+</code></pre>
+<h2>5.  소스 코드 레벨 구조 이해 (Logger Module)</h2>
+<p><code>src/modules/logger/logger.cpp</code> 구현을 살펴보면, 로거 태스크(Logger Task)는 우선순위 불역전(Priority Inversion)을 방지하기 위해 버퍼를 이중화(Double Buffering)하고 DMA(Direct Memory Access)를 최대한 활용하여 SD 카드 기록 병목 구간을 최소화한다.</p>
+<pre><code class="language-cpp">// src/modules/logger/logger.cpp의 내부 스트림 쓰기 예시
+int Logger::write_message(const uORB::SubscriptionInterval &amp;sub, void *buffer, size_t max_size)
+{
+    // 1. 타임스탬프 획득 및 델타 지연 검출
+    hrt_abstime now = hrt_absolute_time();
+    
+    // 2. 버스 병목으로 인한 uORB 드롭아웃 여부 확인
+    if (_dropouts &gt; 0) {
+        write_dropout_info(_dropouts); // 지연 이벤트를 ULog에 강제 기록
+    }
+
+    // 3. 링 버퍼에 이진 직렬화
+    return _writer.write(buffer, min(message_size, max_size));
+}
+</code></pre>
+<p>위 로직을 통해, 만약 다른 I2C 버스나 SPI 버스의 폴링 태스크가 과도한 CPU 점유를 유발하면, 로거 버퍼가 오버플로우(Overflow)되어 <code>_dropouts</code> 카운터가 급증하게 된다. 이는 ULog 분석 시 붉은색 마커로 표시되며, 시동 전후 병목 구간을 시각적으로 탐지하는 절대적 기준표가 된다.</p>
+<h2>6.  결론</h2>
+<p>결론적으로, PX4-Autopilot의 ULog 파일은 단순한 비행 궤적 기록을 넘어 RTOS 스케줄링의 건전성과 하드웨어 통신 버스의 인터럽트 지연까지 투영하는 매우 정밀한 진단 도구이다. 시동 시점 급격하게 나타나는 I2C/SPI 인터럽트 병목과 진동 스펙트럼은 FFT 분석으로 주파수 도메인에서 모델링되어야 하며, 이 과학적 해석 과정을 통해서만 최적의 필터 계수 설정(Parameterization)과 강건한 기체 동역학 제어망 구성이 완성된다.</p>
 
             </article>
             <footer>

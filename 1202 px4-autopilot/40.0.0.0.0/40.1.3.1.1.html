@@ -115,55 +115,72 @@
             </header>
             <article>
                 <h1>40.1.3.1.1 전이 확률 행렬(Transition Probability Matrix)을 이용한 연쇄 유실 구간(Outage Duration) 예측</h1>
-<h2>1.  개요 및 이론적 배경</h2>
-<p>지상 관제 시스템(GCS)이 PX4-Autopilot을 탐재한 비행 기체와 텔레메트리(Telemetry) 통신을 일시 상실했을 때, 자율 관제 로직이 가장 시급하게 그리고 지능적으로 판단해야 하는 것은 해당 무선 연결 단절이 수백 밀리초 내에 복구될 스파이크(Spike) 성질의 짧은 장애인지, 아니면 심각한 다중 경로 페이딩이나 차폐물에 의한 영구적 단절(Permanent Outage) 혹은 Failsafe를 위협하는 침묵 구간인지 여부이다.</p>
-<p>이전 절에서 다룬 길버트-엘리엇(Gilbert-Elliott) 이산 체인 모델을 더욱 확장하면, 단절 직전까지 분석된 <strong>전이 확률 행렬(Transition Probability Matrix)</strong> 을 기반으로 현재 통신 두절 지속시간(Outage Duration)의 기댓값을 정량적으로 예측(Prediction)할 수 있다. 본 절에서는 차세대 관제 아키텍처에서 예측 기반 동적 재전송 타임아웃(Timeout) 한계 및 안전 장치(Failsafe) 발동 시점을 사전에 결정하는 확률 통계적 수학 원리와, 이를 QGroundControl(QGC) 백엔드 프레임워크에 구현하는 방식을 상세히 규명한다.</p>
-<h2>2.  전이 확률 행렬(Transition Matrix)과 조건부 유실 지속 체계</h2>
-<p>PX4-Autopilot 통신 데몬(<code>mavlink</code> 모듈)과 GCS 간 통신 환경에서 이산 시각 <span class="math math-inline">t</span>의 채널 관측 상태를 <span class="math math-inline">X_t \in \{G, B\}</span> (Good, Bad)라 가정하자. 무손실 및 손실 전이 거동을 나타내는 1단계 전이 확률 행렬 <span class="math math-inline">P</span>는 다음과 같이 정의된다.</p>
+<p>이전 절에서 다룬 길버트-엘리엇(Gilbert-Elliott) 모델을 발전시켜, 본 절에서는 전이 확률 행렬(Transition Probability Matrix)을 수학적으로 전개하여 무인항공기(UAS)의 지상 관제 시스템(GCS)과 PX4-Autopilot 간 MAVLink 데이터 링크의 연쇄 유실 구간(Outage Duration)을 예측하는 기법을 기술한다. 이를 통해 통신 단절 감지(Data Link Loss Failsafe) 타임아웃 파라미터를 과학적으로 추정하고 튜닝할 수 있다. (참고: 본 절은 PX4 펌웨어 v1.14 및 QGroundControl v4.3.x 이상 버전을 기준으로 서술한다.)</p>
+<h2>1.  전이 확률 행렬과 k-스텝(Step) 전이 모델</h2>
+<p>길버트-엘리엇 모델에서의 ‘좋음(Good, <span class="math math-inline">G</span>)’ 및 ‘나쁨(Bad, <span class="math math-inline">B</span>)’ 상태 간 전이 확률 행렬 <span class="math math-inline">P</span>는 다음과 같이 정의된다.</p>
 <p><span class="math math-display">
 P = \begin{bmatrix}
-P_{GG} &amp; P_{GB} \\
-P_{BG} &amp; P_{BB}
+p_{GG} &amp; p_{GB} \\
+p_{BG} &amp; p_{BB}
+\end{bmatrix}
+= \begin{bmatrix}
+1 - p &amp; p \\
+r &amp; 1 - r
 \end{bmatrix}
 </span></p>
-<p>관제 시스템이 관측한 바로 이미 채널이 <span class="math math-inline">B</span>(Bad) 상태, 즉 MAVLink 타임아웃 구간에 진입해 있다고 할 때, 정확히 <span class="math math-inline">k</span> 번의 연속된 프레임/시간 슬롯 동안 통신 유실 구간(Outage Sequence of length <span class="math math-inline">k</span>)이 나타날 조건부 확률은 1차 마르코프 체인상의 불량 상태 자기 루프 특성에 따라 기하 분포(Geometric Distribution) 꼬리 확률의 모형을 띤다.<br />
-즉, 채널이 상태 <span class="math math-inline">B</span>에서 정확히 <span class="math math-inline">k-1</span> 번 머무른 뒤, <span class="math math-inline">k</span> 번째 타임스텝의 다음 순간에 양호 상태(<span class="math math-inline">G</span>)로 회복될 확률 <span class="math math-inline">P(\text{Outage} = k)</span>는 전이 확률의 단순곱으로 다음과 같이 근사 도출된다.</p>
-<p><span class="math math-display"> P(\text{Outage} = k) = P_{BB}^{(k-1)} \cdot P_{BG} </span></p>
-<p>이 기하 확률 함수의 총체적 합인 기대 연쇄 유실 구간(Expected Outage Duration, <span class="math math-inline">E[L_B]</span>), 즉 평균적으로 몇 프레임 동안 Data Link Loss 파동이 일어날지에 대한 기댓값은 무한 급수에 의해 다음과 같이 닫힌 정리로 수렴한다.</p>
-<p><span class="math math-display"> E[L_B] = \sum_{k=1}^{\infty} k \cdot P_{BB}^{(k-1)} \cdot P_{BG} = \frac{1}{1 - P_{BB}} </span></p>
-<p>이 파라미터를 밀리초 주기 <span class="math math-inline">T_s</span>(Sampling Time)와 승산하면, 예상되는 유실 시간(초)을 예측할 수 있다.</p>
-<h2>3.  연쇄 유실 예측의 고등 관제 스케줄링 응용 메커니즘</h2>
-<p>기존 Ardupilot 기반의 고전적인 관제 시스템 체계(예: Mission Planner 등)는 통상 정적으로 고정된 1~2초 간격의 타임아웃 누적 횟수를 초과하면, 상태 역전 여부와 상관없이 맹목적으로 Data Link Failsafe를 발동시킨다. 반면 전이 확률 행렬 모델 메커니즘을 인지하고 이식한 PX4-Autopilot 고등 비행 시스템에서는, 도출된 <span class="math math-inline">E[L_B]</span> 예측값을 통해 지능적으로 Failsafe 지연 파라미터를 선제 조율하거나 스케줄링 딥 딜레이를 유발시킨다.</p>
-<h3>3.1  예측 모델에 기반한 동적 Failsafe 트리거 아키텍처</h3>
-<pre><code class="language-mermaid">flowchart TD
-    GCS[QGroundControl / MAVSDK] --&gt; |"Heartbeat Timeout (NACK/Drop)"| H[Vehicle Connection Manager]
-    H --&gt;|Continuous State History| M[Transition Matrix P Estimator]
-    M --&gt;|"Calculate Series E(L_B)"| E[Expected Outage Duration Time]
-    
-    E --&gt;|"If E(L_B) * T_s  &lt;  COM_DL_LOSS_T"| W[Exponential Backoff / Hold Tx Queue]
-    E --&gt;|"If E(L_B) * T_s  &gt;= COM_DL_LOSS_T"| F[Trigger Data Link Failsafe Prematurely]
-
-    subgraph "Heuristic Prediction Filter Core"
-    M
-    E
-    end
-    
-    W --&gt; GCS
-    F --&gt; |"Set Mode : RTL / Hold / Return"| PX4[PX4-Autopilot FC]
-</code></pre>
-<ol>
-<li><strong>지수 백오프 및 큐 보류(Hold) 적용:</strong> 산출된 평균 연쇄 단절 기댓값 이내에서는 GCS MAVLink 큐에 새로운 중요 명령(예: <code>MAV_CMD_DO_REPOSITION</code>, 궤적 보정 세트포인트 등)을 적재하더라도 모뎀 측시리얼 전송을 중단하고 큐를 일시적 보류 상태(Hold)로 차단(Locking)한다. 이는 쓰레기 쓰루풋 스파이킹으로 인한 버퍼블로트를 막는다.</li>
-<li><strong>사전 동적 Failsafe 타이머 튜닝 관여:</strong> PX4 펌웨어 파라미터 계통의 통신 손실 Failsafe 제한 시간(<code>COM_DL_LOSS_T</code>)의 디폴트 규격은 일반적으로 보수적인 10초 내외를 지닌다. 하지만 고도 관제 엔진 펌웨어 스택은 최근 추정된 <span class="math math-inline">\hat{P}_{BB}</span> 행렬 원소가 이례적으로 1에 수렴하여 잔여 예측값 <span class="math math-inline">E[L_B]</span> 이 무한대로 극대화됨을 인지했을 때, 10초라는 맹목적 타임 루프가 닳기 이전에 수 초를 앞당겨 Failsafe 트리거 및 자율 Recovery 루틴을 발동시키는 ’예지적 스캐닝’에 진입할 수 있다.</li>
-</ol>
-<h2>4.  QGroundControl 실무 환경의 행렬 추정 알고리즘 이식</h2>
-<p>C++ 기반의 QGC 시스템 백엔드에 위칭 전이 확률 기반 예측 모델을 실시간으로 안착시키려면 유동하는 슬라이딩 윈도우(Sliding Window) 기반 메트릭 필터를 삽입 운용해야 한다.</p>
+<p>여기서 텔레메트리 패킷을 송출하는 이산 시간 간격(예: MAVLink <code>HEARTBEAT</code> 메시지의 송출 주기인 1초, 혹은 자세 제어 데이터의 10~50Hz 단위)에 따라 각 상태가 최단 스텝으로 변이한다고 가정한다.</p>
+<p>어떤 초기 상태 분포 벡터를 <span class="math math-inline">\mathbf{x}_0 = [P(G_0), P(B_0)]</span>라고 할 때, <span class="math math-inline">n</span>초 후(혹은 <span class="math math-inline">n</span>개의 패킷 후)의 시스템 상태 확률 벡터 <span class="math math-inline">\mathbf{x}_n</span>은 1차 마르코프 연쇄의 성질에 따라 행렬 <span class="math math-inline">P</span>를 <span class="math math-inline">n</span>회 거듭제곱하여 다음과 같이 계산된다.</p>
+<p><span class="math math-display">
+\mathbf{x}_n = \mathbf{x}_0 P^n
+</span></p>
+<p>이 <span class="math math-inline">n</span>-스텝 전이 행렬의 극한 특성을 분석함으로써 무선 채널의 거시적인 붕괴 지속 시간을 예측할 수 있다. 무선 링크의 파라미터를 설계함에 있어 채널이 악화 상태 <span class="math math-inline">B</span>에서 얼마나 오래 갇혀 있을지, 즉 연쇄 유실 구간(Outage Duration)의 통계적 분포를 파악하는 것이 핵심 관건이다.</p>
+<h2>2.  연쇄 유실 구간(Outage Duration)의 기하 분포와 예측</h2>
+<p>연쇄 유실 구간(Outage Duration), 즉 <span class="math math-inline">B</span> 상태가 연속으로 <span class="math math-inline">L_B</span> 단계만큼 지속될 확률은 기하 분포(Geometric Distribution)를 이룬다. 특정 패킷에서 처음 <span class="math math-inline">B</span> 상태로 진입하고, ત્યારબાદ <span class="math math-inline">k-1</span>번 연속하여 <span class="math math-inline">B</span> 상태에 머문 뒤, <span class="math math-inline">k</span>번째에서 비로소 <span class="math math-inline">G</span> 상태로 회복(<span class="math math-inline">r</span>)될 확률 <span class="math math-inline">P_{\text{outage}}(k)</span>는 다음과 같이 산출된다.</p>
+<p><span class="math math-display">
+P_{\text{outage}}(k) = p_{BB}^{k-1} p_{BG} = (1 - r)^{k-1} r \quad (k \ge 1)
+</span></p>
+<p>이 기하 분포를 활용하여 연속적인 패킷 유실의 기댓값 <span class="math math-inline">E[L_B]</span>와 분산 <span class="math math-inline">V[L_B]</span>를 아래와 같이 유도할 수 있다.</p>
 <ul>
-<li><strong><span class="math math-inline">\hat{P}_{BB}</span> 의 최대 우도 추정(Maximum Likelihood Estimation, MLE):</strong> GCS가 최근 관측한 슬라이딩 윈도우 크기 <span class="math math-inline">N</span> (예: 지난 30 패킷)의 MAVLink 시퀀스 이력에서, 패킷 로스 상태 연속 전이(<span class="math math-inline">B \rightarrow B</span>)로 체류한 빈도수 <span class="math math-inline">N_{BB}</span>와, <span class="math math-inline">B</span> 상태에서 파생된 전체 샘플 개수 <span class="math math-inline">N_B</span>를 카운팅하여 <span class="math math-inline">\hat{P}_{BB} = \frac{N_{BB}}{N_B}</span> 로써 행렬 원소를 초당/프레임당 실시간 갱신하라.</li>
-<li><strong>예측과 검증 튜닝:</strong> 추정된 <span class="math math-inline">\hat{P}_{BB}</span> 수치를 기반으로 유실 지속구간의 초당 변환 길이 <span class="math math-inline">\hat{T}_{outage} = \frac{1}{1 - \hat{P}_{BB}} \times \Delta t</span> 를 구하고, 이 연산값이 미리 한정한 시스템의 관용 허용 임계치를 넘는지 지속 백그라운드 스레드에서 감시하도록 아키텍처를 설계하라. 해당 코드는 주로 <code>LinkManager.cpp</code> 혹은 커스텀 모뎀 리스터 루프에 기생시켜 안전하게 운영된다.</li>
+<li>
+<p><strong>평균 연쇄 유실 구간 (Average Outage Duration)</strong>:<br />
+<span class="math math-display">
+E[L_B] = \sum_{k=1}^{\infty} k (1 - r)^{k-1} r = \frac{1}{r}
+</span></p>
+</li>
+<li>
+<p><strong>연쇄 유실 구간의 분산 (Variance of Outage Duration)</strong>:<br />
+<span class="math math-display">
+V[L_B] = \frac{1 - r}{r^2}
+</span></p>
+</li>
 </ul>
-<h2>5.  결론 및 요약</h2>
-<p>BVLOS와 험준한 다중 경로 페이딩 환경에서의 통신 두절은 무작위적(Random) 로스율로 매번 주사위를 굴리듯 일어나는 독립 시행이 결코 아니며, 전이 확률 행렬 <span class="math math-inline">P</span>의 코어에 단단히 묶인 일련의 시간적 종속 연쇄 반응을 거친다.</p>
-<p>텔레메트리 연결이 단절되었을 때, 그 어둠의 시간 속에서 연쇄 유실 구간(Outage Duration)을 기하 분포 기댓값 체계로 수학적으로 역도출 해내는 것은 신뢰성 중심의 자율 주행 고등 통합 시스템의 피할 수 없는 필수 요건이다. PX4 관제망 설계자는 QGC 및 MAVSDK 애플리케이션 코어에 윈도우 및 필터 기반 행렬 추정 알고리즘을 이식하여, 언제까지 큐를 지연시킬 것인지(Exponential Backoff), 혹은 언제 기대를 포기하고 안전 모드(Failsafe)를 가동시킬지에 대한 차원 높은 예지적 판단(Predictive Judgement)을 통신 시스템의 DNA에 각인시켜야만 한다.</p>
+<p><strong>예측 시나리오 예시:</strong><br />
+만약 RF 링크가 열악한 도심지 비행 시뮬레이션(SITL 기반 Gazebo 테스트 등)에서 측정된 <span class="math math-inline">B</span> → <span class="math math-inline">G</span> 전이 확률 <span class="math math-inline">r</span>이 0.1이라면, 평균적으로 10단위 시간(또는 10스텝 패킷 전송 주기) 동안 패킷 연쇄 유실이 발생함을 예측할 수 있다 (<span class="math math-inline">E[L_B] = 10</span>). 또한, 분산이 <span class="math math-inline">\frac{0.9}{0.01} = 90</span>으로 매우 크기 때문에 실제 유실 구간의 범위는 1단위에서 30단위 시간 이상으로 넓게 변동할 수 있다는 통계적 결론이 도출된다.</p>
+<h2>3.  PX4-Autopilot의 Failsafe 타임아웃 튜닝 적용</h2>
+<p>전이 확률 행렬 기반의 연쇄 유실 구간 예측은 PX4의 페일세이프(Failsafe) 안정성 평가 및 시스템 설정에 직접적으로 기여한다. 커맨더(Commander) 모듈은 <code>COM_RC_IN_MODE</code> 및 <code>COM_DL_LOSS_T</code> 파라미터를 통해 데이터 링크 단절을 판정하는 타임아웃 임계값을 엄격하게 통제한다.</p>
+<p>예측 모델을 통해 구한 평균 소요시간 <span class="math math-inline">E[L_B]</span>와 시스템이 허용 가능한 누적 패킷 손실률의 한계치를 고려해야 한다. 시스템의 단절 타임아웃 <span class="math math-inline">T_{\text{timeout}}</span>은 대략적으로 다음과 같은 수학적 근거를 가지고 설정되어야 한다.</p>
+<p><span class="math math-display">
+T_{\text{timeout}} \ge E[L_B] + \alpha \sqrt{V[L_B]}
+</span></p>
+<p>(단, <span class="math math-inline">\alpha</span>는 무인기 관제 환경의 보수도(Conservativeness)에 따른 여유 마진 설계 계수이다.)</p>
+<p>만약 타임아웃 값이 위 조건보다 현저히 짧게 설정되면 통신 채널이 나쁨 상태(<span class="math math-inline">B</span>)에서 스스로 정상 회복을 꾀하는 도중임에도 섣부르게 페일세이프 루틴이 트리거된다. 이는 비정상적인 귀환(Return) 명령 발동 빈도를 높여 임무 완수율을 떨어뜨리고 시스템 리소스의 낭비를 야기한다. 반대로 값이 과도하게 크면, 실제 통신 장비 고장이나 영구적 딥 페이딩 발생 시 에러 대처가 극단적으로 늦어져 기체의 제어권 상실 및 추락 위험성이 가중된다.</p>
+<h2>4.  아키텍처 관점 및 Ardupilot 패러다임 차이</h2>
+<p>통계적 채널 모델 기반의 예측 로직 반영에 있어, 서로 다른 오픈소스 GCS 환경과 비행 제어기(Flight Controller) 펌웨어는 각자의 고유한 설계 철학을 보여준다.</p>
+<ul>
+<li>
+<p><strong>PX4-Autopilot의 엄격한 관제</strong>:<br />
+PX4의 비행 관제 상태 머신(State Machine) 전이는 보수적이고 명확하다. 통신망 상태가 <span class="math math-inline">B</span>에 머물러 <code>COM_DL_LOSS_T</code>에 정의된 상한선에 도달하여 연쇄 유실을 공식 확인하면, PX4는 한 치의 지연 없이 Failsafe 상태 머신(예: 자동 고도 유지 기능 혹은 귀환 모드)으로 상태 트랜지션을 집행한다. 페일세이프 발동 이후 완전한 <span class="math math-inline">G</span> 상태 회복을 검증하기 위한 안전장치로서, 지정된 수량 이상 연속으로 양호한 텔레메트리 패킷이 확인될 때까지 관제권을 GCS로 다시 넘기지 않는 강력한 복구 잠금 정책(Lock Policy)을 유지한다.</p>
+</li>
+<li>
+<p><strong>Ardupilot과의 차별성</strong>:<br />
+Ardupilot 아키텍처는 연쇄 유실 구간(<span class="math math-inline">L_B</span>) 도중에도 일시적(Transient) 모드 이행을 부드럽게 지원하거나 수동 조종사의 스틱 입력 보간(Interpolation)을 유연하게 받아들이는 데 강점이 있다. 즉 전이 확률 행렬을 기반으로 한 <span class="math math-inline">B</span> 상태 체류 시간 추론 시, <span class="math math-inline">\pi_B</span> 구간의 급변동에 대해 PX4가 시스템 방어적이고 즉각적인 결단을 내리는 편이라면, Ardupilot은 텔레메트리 장기 유실에 대하여 내부 타임 루프 필터링과 다중 센서 융합 관성(Inertia)을 한 차례 더 신뢰하는 모듈 설계의 차별성이 현저하게 나타난다.</p>
+</li>
+<li>
+<p><strong>QGroundControl 구현 연동</strong>:<br />
+지상 관제측(QGroundControl)에서는 <code>MAVLinkProtocol</code> 클래스가 내부적으로 이러한 연쇄 유실 구간 동안에 드랍된(Drop) MAVLink 시퀀스의 누적량을 통계적으로 계산하여 경보의 레벨을 구분한다. 기댓값 <span class="math math-inline">E[L_B]</span>를 초과하는 비정상적인 유실이 관찰되면, UI 레이어 기반 디자인 패턴에 따라 심각도(Severity) 플래그를 상승시키고 화면에 치명적 링크 로스 시스템 경고(Warning)를 출력하도록 락 프리(Lock-Free) 비동기 처리를 수행한다.</p>
+</li>
+</ul>
+<p>결과적으로, 전이 확률 행렬(Transition Probability Matrix)의 수학적 유실 구간 예측 모델은 PX4-Autopilot 및 GCS 관제사의 능동적 안전 장치(Failsafe) 튜닝에 대한 근원적이고 정량적인 설계 기준을 제공하며, 고도화된 스웜(Swarm) 관제 모델 설계에서도 중요한 토대가 된다.</p>
 
             </article>
             <footer>

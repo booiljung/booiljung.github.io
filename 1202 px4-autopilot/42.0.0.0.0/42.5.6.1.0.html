@@ -115,65 +115,40 @@
             </header>
             <article>
                 <h1>42.5.6.1. 비휘발성 메모리의 순환 중복 검사(Cyclic Redundancy Check) 오류율 진단</h1>
-<p>비휘발성 메모리(Non-Volatile Memory, NVM)는 PX4-Autopilot 시스템에서 비행 매개변수(Parameter), 보정 데이터(Calibration Data), 임무 지점(Waypoint), 그리고 비행 로그를 영구적으로 저장하는 핵심 하드웨어 컴포넌트이다. 항공 기체의 초기화 과정(Boot-up Sequence) 및 비행 전 점검(Pre-flight Check) 단계에서 메모리의 데이터 무결성(Data Integrity)을 보장하는 것은 시스템의 치명적인 오작동을 예방하는 첫 번째 방어선으로 작용한다. 본 절에서는 PX4-Autopilot 내에서 비휘발성 메모리의 상태를 검증하기 위해 도입된 순환 중복 검사(Cyclic Redundancy Check, CRC)의 개념과 오류율 진단 기법, 그리고 관련 아키텍처를 상세히 분석한다. (적용 기준: PX4 Firmware v1.14.0 이상)</p>
-<h2>1.  비휘발성 메모리 무결성 검증 아키텍처</h2>
-<p>순환 중복 검사(CRC)는 데이터 블록에 다항식 나눗셈을 적용하여 짧은 길이의 체크섬(Checksum)을 생성하고, 이를 통해 저장 또는 전송 과정에서 발생한 데이터 변조 및 오류를 검출하는 알고리즘이다. 무인항공기의 운용 환경은 잦은 진동, 급격한 온도 변화, 전자기 간섭(EMI), 그리고 우주 방사선에 의한 단일 이벤트 업셋(Single Event Upset, SEU)과 같은 혹독한 조건에 노출되기 때문에, 비트 플립(Bit-flip) 현상이 발생할 가능성이 상존한다.</p>
-<p>PX4-Autopilot의 하드웨어 추상화 계층(HAL)과 NuttX RTOS 기반 프레임워크는 메모리 기술 장치(Memory Technology Device, MTD) 드라이버를 통해 플래시 메모리(Flash Memory), EEPROM, 혹은 FRAM에 접근한다. 저장된 파라미터 블록은 BSON 인코딩 포맷을 기반으로 직렬화(Serialization)되며, 최종적으로 연산된 CRC32 해시 값을 메타데이터로 포함하게 된다. 시스템 부팅 시 <code>Commander</code> 모듈 주관하에 메모리 영역 전체를 읽어들여 통계적으로 계산된 CRC 값과 저장된 CRC 값을 대조하여 무결성을 진단한다.</p>
-<pre><code class="language-mermaid">graph TD
-    A[시스템 전원 인가 및 부트스트랩] --&gt; B[NuttX RTOS OS 레벨 MTD 초기화]
-    B --&gt; C[PX4 Parameter 저장소 로드]
-    C --&gt; D{CRC32 무결성 검사 수행}
-    D -- 일치 --&gt; E[BSON 데이터 파싱 및 파라미터 할당]
-    E --&gt; F[Pre-flight Check 정상 패스]
-    D -- 불일치 --&gt; G[데이터 오염 감지: Hard Fault 래치]
-    G --&gt; H[MAVLink STATUSTEXT 전송 \n Severity: CRITICAL]
-    H --&gt; I[시동(Arming) 거부 체인 활성화]
+<h2>1. 개요</h2>
+<p>이 절에서는 무인항공기(UAV)의 두뇌 역할을 하는 PX4-Autopilot이 비휘발성 메모리(Non-Volatile Memory, NVM) 영역에 저장된 필수 상태 및 설정 데이터의 무결성을 어떻게 보장하고 진단하는지 분석한다. 파라미터(Parameter), 웨이포인트(Mission Items), 그리고 교정(Calibration) 데이터는 기체의 궤적 및 제어 게인을 결정짓는 핵심 지표이다. 이 데이터들의 단 1비트의 손상(Bit-flip)이나 읽기/쓰기 오류는 곧바로 비정상적인 제어 명령으로 이어져 추락의 원인이 될 수 있다. 따라서 PX4-Autopilot은 파일 시스템과 독립적으로 순환 중복 검사(Cyclic Redundancy Check, CRC)를 수행하여 메모리의 열화 현상이나 오류율(Error Rate)을 상시 진단하는 견고한 아키텍처를 취하고 있다. 본 기술 내용은 PX4-Autopilot 1.14 펌웨어와 QGroundControl(QGC) 4.3 버전을 기준으로 설명한다.</p>
+<h2>2. 비휘발성 메모리와 CRC 진단의 필요성</h2>
+<p>비행 제어기(Flight Controller, FC) 보드에 탑재된 플래시(Flash) 메모리나 FRAM(Ferroelectric RAM)은 데이터를 반영구적으로 보존하지만, 무인기의 기계적 진동, 급격한 온도 변화, 전원 환경의 전기적 노이즈 등으로 인해 하드웨어 섹터 단위의 마모 평준화(Wear Leveling) 실패나 수명 단축 현상이 누적될 수 있다.</p>
+<p>이때 소프트웨어는 단순한 패리티 점검(Parity Check)을 넘어서, 데이터 블록의 일관성을 고도로 검증할 수 있는 알고리즘 설계가 필요하다. PX4-Autopilot은 주로 CRC32(32-bit Cyclic Redundancy Check) 해시(Hash) 알고리즘을 채택하여 비휘발성 메모리 구역의 불량이나 데이터의 은밀한 변조를 수학적으로 검출해 낸다.</p>
+<h2>3. PX4-Autopilot의 CRC 기반 메모리 진단 아키텍처</h2>
+<p>PX4-Autopilot은 환경 파라미터 및 설정 데이터를 직렬화(Serialization)하여 비휘발성 블록에 저장할 때, BSON(Binary JSON) 포맷을 차용한다. 파라미터 페이로드(Payload) 구조체의 최하단에 CRC 체크섬(Checksum)을 동봉하여 헤더(Header) 및 바디(Body)의 무결성을 스스로 증명하게 끔 설계되어 있다.</p>
+<h3>3.1 파라미터 데이터 로드 및 오류율 검출 메커니즘</h3>
+<p>전원이 인가되거나 QGC로부터 재부팅(Reboot) 명령을 수신하면, PX4의 <code>param</code> 코어 모듈은 비휘발성 메모리 영역에서 데이터 스트림을 MTD(Memory Technology Device)를 거쳐 RAM으로 읽어 들이면서 아래와 같은 흐름으로 상태를 진단한다.</p>
+<pre><code class="language-mermaid">flowchart TD
+    A[시스템 파워-온 초기화 프로세스] --&gt; B[MTD / 데이터 저장 매체 접근 시도]
+    B --&gt; C{CRC32 재계산 알고리즘 가동}
+    C --&gt; D[연산된 해시 값과 매체에 저장된 메타데이터 해시 대조]
+    D -- 일치 (Match) --&gt; E[파라미터 정상 할당 및 기동 계속]
+    D -- 불일치 (Mismatch) --&gt; F[CRC 오류 카운터(Error Counter) 증가]
+    F --&gt; G{누적 오류율(Error Rate)이 지정된 임계치 초과 여부 판단}
+    G -- 초과하지 않음 --&gt; H[이전 백업 공간 또는 디폴트 파라미터 코드로 롤백(Fallback)]
+    G -- 초과함 (하드웨어 불량 확정) --&gt; I[비휘발성 메모리 배드 블록(Bad Block) 마운트 경고 및 Preflight Fail 전파]
 </code></pre>
-<h2>2.  순환 중복 검사(CRC) 모듈의 소스 코드 및 검증 로직</h2>
-<p>PX4-Autopilot의 파라미터 관리는 <code>src/lib/parameters</code> 및 <code>src/modules/commander</code> 하위 모듈에 밀집되어 있다. 파라미터를 플래시 메모리 섹터에 기록할 때, 시스템은 <code>crc32()</code> 연산 함수를 사용하여 32비트 검사합을 계산하고 데이터 헤더에 주입한다.</p>
-<h3>2.1  MTD 읽기 및 CRC 계산의 핵심 제어 로직</h3>
-<p>다음은 파일 시스템이나 MTD 장치로부터 데이터를 로드하고 무결성을 1차적으로 진단하는 주요 실행 흐름을 묘사한 분석 형태이다.</p>
-<pre><code class="language-cpp">// 매개변수 데이터 로드를 담당하는 의사 코드(Pseudo-code) 구조
-int param_load_default() {
-    param_header_t header;
-    read_mtd_storage(&amp;header, sizeof(param_header_t));
-
-    uint8_t *data_buffer = (uint8_t *)malloc(header.data_size);
-    read_mtd_storage_offset(data_buffer, header.data_size, sizeof(param_header_t));
-
-    // 무결성 검사를 위한 CRC32 재연산 수행
-    uint32_t calculated_crc = crc32_calculate(data_buffer, header.data_size);
-
-    if (calculated_crc != header.stored_crc) {
-        PX4_ERR("NVM CRC Error: Parameter storage corrupted!");
-        // 치명적인 오류 상태 알림 및 Failsafe 진입
-        tune_system_error(); 
-        return -EINVAL;
-    }
-    return OK;
-}
-</code></pre>
-<p>오류가 검출될 경우, 시스템은 <code>vehicle_status</code> uORB 토픽을 발행하여 내장 로직을 비정상 상태로 플래그(Flag) 처리한다. 이 상태에서는 QGroundControl(GCS)에서 강제로 시동(Arming) 명령을 하달하더라도 기체 내부의 자체 안전 정책(Safety Policy)에 의해 명령이 즉각 거부(NACK) 처리된다.</p>
-<h3>2.2  CRC 오류율 수학적 진단 및 한계 파악</h3>
-<p>CRC는 패리티 비트(Parity Bit) 등의 단일 비트 검사에 비해 연집 오류(Burst Error) 검출 측면에서 탁월한 수학적 분별력을 보인다. 그러나 IEEE 802.3 표준 다항식 등을 적용하더라도 해시 충돌(Hash Collision)에 의한 미검출 확률(Undetected Error Probability)이 절대적인 <span class="math math-inline">0</span>이 되는 것은 아니다. 다항식(Polynomial) 특성에 기반할 때, 데이터의 길이 <span class="math math-inline">n</span>과 연집 오류 길이 <span class="math math-inline">L</span>에 따른 미검출 확률 <span class="math math-inline">P_{ud}</span>는 이론적으로 다음과 같은 구간 한계를 지닌다.</p>
-<table><thead><tr><th style="text-align: left">방사선/간섭에 의한 연집 오류(Burst Length, <span class="math math-inline">L</span>)</th><th style="text-align: left">미검출 가능성 구간 한계치</th></tr></thead><tbody>
-<tr><td style="text-align: left"><span class="math math-inline">L \le 32</span></td><td style="text-align: left"><span class="math math-inline">P_{ud} = 0</span> (완벽하게 무결성 훼손 색출)</td></tr>
-<tr><td style="text-align: left"><span class="math math-inline">L = 33</span></td><td style="text-align: left"><span class="math math-inline">P_{ud} = 1 / 2^{31}</span></td></tr>
-<tr><td style="text-align: left"><span class="math math-inline">L &gt; 33</span></td><td style="text-align: left"><span class="math math-inline">P_{ud} \approx 1 / 2^{32} \approx 2.3 \times 10^{-10}</span></td></tr>
-</tbody></table>
-<p>만약 비행 궤적 중 강한 전자기장 노출로 인해 메모리의 큰 블록이 동시에 오염된다면, 극히 드물게 <span class="math math-inline">10^{-10}</span> 수준의 확률로 손상된 파라미터가 유효한 것으로 오판될 치명적 오류 회피 한계를 가진다. 이 때문에 학술 연구논문 상전인 <em>“Reliability Analysis of CRC Codes for Error Detection in Embedded Systems”</em> 등에서는 복합적 항공 소프트웨어에서 단일 방어 체계뿐만 아니라 다중 복사본(Redundancy Copy) 유지 기법을 병용할 것을 강하게 권고한다.</p>
-<p>이에 따라 PX4-Autopilot은 단순 오류 검출을 넘어, 메모리 기록 시 1차 메인 섹터와 2차 백업 섹터를 교대로 기록하는 핑퐁 버퍼링(Ping-pong Buffering) 전략을 도입하였다. 이를 통해 단일 메모리 섹터에서 CRC 오류가 래치(Latch)되었을 시 이전 시점의 검증된 섹터로 안전하게 복구(Roll-back)하는 고가용성을 확보하고 있다.</p>
-<h2>3.  Ardupilot 대비 아키텍처의 차별성</h2>
-<p>PX4는 범용성이 높은 NuttX 실시간 운영체제(RTOS)의 가상 파일 시스템(VFS) 및 하위 MTD 드라이버 계층 위에서 파라미터 데이터 파일을(<code>fs/mtd_params</code>) 범용 파일 객체처럼 다루는 경향이 강하며, CRC 검증은 VFS 단의 입출력 스트림(Stream) 또는 BSON 덩어리의 직렬화 계층에 대해 집중적으로 수반된다.</p>
-<p>반면, Ardupilot은 전통적으로 <code>AP_Param</code> 및 스토리지 추상화 모듈을 통해 자체적인 블록 레벨의 관리 아키텍처를 영위해왔다. 하드웨어 환경(ChibiOS 등) 단에서 플래시 메모리의 특정 물리적 페이지를 직접 소거 및 기록하며 관리할 수 있도록 설계되었으며, 웨어 레벨링(Wear Leveling) 이슈를 피하기 위해 보다 저수준의 스토리지 세그먼트 단위에서 CRC를 분할 기록하는 특성을 지닌다. 결론적으로 PX4의 구조가 ’운영체제 파일 단위의 모듈화된 검증’을 중시한다면, Ardupilot은 ’단일 펌웨어 레벨의 플래시 메모리 직접 타겟팅 및 복구’에 더 비중을 두는 구조적 이질감을 형성한다.</p>
-<h2>4.  GCS(QGroundControl)와의 관제 연동 및 예외 처리</h2>
-<p>파라미터 로딩 단계에서 메모 무결성 점검이 최종 단계에서 실패하면, PX4 비행 제어기(FC)는 상태 머신을 변경함과 동시에 MAVLink <code>STATUSTEXT</code> 메시지를 생성하여 지상 관제 시스템으로 송출한다. 이때의 알람 심각도(Severity) 구조 변수는 <code>MAV_SEVERITY_CRITICAL</code>로 엄격하게 맵핑된다.</p>
-<p>QGroundControl (v4.3 이상 권장) 화면에서는 이러한 치명적 인디케이터 수신 시 다음과 같이 명확한 알람을 팝업 형태로 표출한다.</p>
+<p>비행 필드의 전자기파 간섭(EMI)에 의한 1회성 소프트 에러(Soft Error)는 재시도(Retry)나 백업 본 복원을 통해 극복할 수 있다. 그러나 CRC 오류가 특정 물리적 주소에서 잦은 빈도로 과도하게 검출될 경우(오류율 진단 플래그가 세팅된 경우), PX4 펌웨어는 이를 물리적인 배드 블록(Bad Block)으로 완전 단정 짓는다. 기동 단계에서 파라미터 변형 탓에 자이로스코프 바이어스(Gyro Bias) 등 중요 수치가 어긋나 기체가 뒤집히는 참사를 막는 치명적인 페일세이프(Fail-safe) 로직이다.</p>
+<h2>4. Ardupilot과 대비되는 PX4의 진단 및 복구 철학</h2>
+<p>비휘발성 블록 데이터 무결성 검증 체계에 있어서, PX4-Autopilot과 Ardupilot 진영은 검증의 해상도 수위 및 오류 복구 철학에서 뚜렷한 차이를 지닌다.</p>
 <ul>
-<li><strong>표출 메시지 모델:</strong> <code>CRITICAL: Parameter storage CRC error. Vehicle arming denied.</code></li>
-<li><strong>조치 및 관제 프로세스:</strong> 운용자는 QGC의 Parameter 관제 UI를 통해 기체의 보정 데이터를 전면 재설정(Reset to Factory Defaults) 버튼을 통하여 강제로 덮어씌어야 하며, 정상 확인 전까지 자동 에이전트 비행 모드(Auto Mode)의 진입은 절대적으로 통제된다. 플래시 메모리 소자의 물리적인 수명 한계(Write Cycle Exhaustion)나 배드 블록(Bad Block)에 기인한 영구적 손상인 경우, 지상 관제 시스템의 개입 한계를 넘어서므로 하드웨어의 전면적 교란 원인을 분석해야 한다.</li>
+<li><strong>PX4-Autopilot</strong>: 엄격한 무결성(Integrity) 증명 및 백업 무관용 원칙.<br />
+PX4는 BSON 포맷의 특징을 십분 활용하여, 파라미터를 메인 플래시 백업 영역과 보조 미디어(SD 카드 등) 양측에 주기적으로 교대 저장한다. 메인 플래시에서 CRC가 파괴되었을 시 서브 버퍼에서 복원(Failover)하는 시퀀스를 갖추고 있으나, 전체 CRC 오류 빈도가 시스템 수학적 한복판을 침범하면 어떠한 타협 없이 이륙을 거부한다. 철저히 방어적이고 비관적인 하드웨어 신뢰성 평가 설계를 추구한다.</li>
+<li><strong>Ardupilot</strong>: 관대한 융통성 및 연산 부하 최소화 트레이드오프.<br />
+Ardupilot의 파라미터 저장 방식은 전통적인 EEPROM 매핑 호환이나 단순 계층화 구조를 주로 채택하며, CRC 연산 대비 가벼운 형태의 체크섬(Checksum) 방식을 혼용하는 기조가 강하다. 상황에 따라 특정 파라미터 메모리 공간 검사에 실패하더라도, EKF 에뮬레이터 내부에 캐싱(Caching)된 이전 비행의 값으로 우회 비행 스케줄을 감행할 수 있도록 운용자에게 넓은 재량권을 이관한다. 이는 상용 산업 장비에서의 보안성보다 조종 편의성에 더 초점이 맞춰진 철학이다.</li>
 </ul>
-<p>요약하자면, PX4-Autopilot의 CRC 연계 검출 체계는 조종상실(Flyaway)이나 잘못된 보정값에 의한 제어 불능 사태를 이륙 전(Pre-flight) 단계에서 차단하여 항공 시스템의 기계적·물리적 손실을 막아주는 가장 근원적인 무결성 관제망으로 역할을 수행하고 있다.</p>
+<h2>5. QGroundControl 환경을 활용한 진단 분석 실무</h2>
+<p>지상국 PC나 모바일 기기에서 관제 역할을 수행하는 QGC는, 기체의 파라미터를 새로고침(Refresh)하거나 펌웨어 업데이트를 수행할 때 백그라운드 환경설정 통계를 MAVLink 프로토콜로 직통 보고받는다.</p>
+<ul>
+<li><strong>파라미터 로딩 경고 통계 분석</strong>: 비행 전 대기 시 QGC 콘솔 메시지 로그(Message Console) 창에 <code>[param] CRC validation failed</code> 혹은 <code>Param load failed</code> 텍스트 경고 메시지가 빈번히 출몰한다면, 이는 매우 심각한 플래시 수명 한계(Wear-out)나 불량 칩 열화의 신호이다. 이러한 알림 수신 시, 정상 파라미터 값을 즉각 QGC의 외부 파일(<code>.params</code> 확장자)로 오프라인 백업한 다음, 비행 제어기(Pixhawk 등) 보드의 하드 리셋(Factory Reset)을 단행하여 베이스라인 점검을 새로 개시하라.</li>
+<li><strong>사용자 정의 프로그래밍 시 수명 연장 지침</strong>: 파라미터 값을 플래시에 영구 보존하는 행위는 제한된 플래시 읽기/쓰기 주기(Write Cycle)를 극단적으로 갉아먹는다. 오프보드(Offboard) 모드 기반의 사용자 지정 패키지나 ROS2 통신 모듈을 활용하여 초당 여러 번 기체의 세부 설정값을 튜닝하고 반영(<code>param_set</code> 시스템 콜 반복 호출)하는 코드를 절대 설계해서는 안 된다. 이러한 논리 결함은 반나절 만에 비휘발성 저장 허브의 수명을 강제 단축시켜 CRC 오류율을 한계 이상으로 치솟게 하므로, 동적 제어 변수는 휘발성 RAM 상의 uORB 토픽(Topic)으로 우회 통신(Bypass communication)하도록 아키텍처를 설계하라.</li>
+</ul>
 
             </article>
             <footer>

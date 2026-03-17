@@ -115,6 +115,48 @@
             </header>
             <article>
                 <h1>44.5.4 GCS 상태 동기화를 위한 비동기 출판-구독(Publish-Subscribe) 모델 기반 uORB 메시지 지연 시간(Latency) 최소화 및 MAVLink 브리지 큐(Bridge Queue) 관리</h1>
+<p>무인항공기(UAV)의 이착륙 및 비행 제어 과정에서 비행 제어기(Flight Controller) 내부 모듈들이 기체의 상태(State)를 확정하는 것만큼 중요한 것은, 해당 진실치(Ground Truth)를 지상 관제 시스템(GCS: Ground Control Station)에 지연 없이(Zero-latency) 파급(Propagation)하는 것이다. PX4-Autopilot은 이를 위해 내부 스레드 간 통신인 uORB(Micro Object Request Broker) 비동기 출판-구독(Publish-Subscribe) 아키텍처와 외부 직렬 통신인 MAVLink 프로토콜 간의 이기종 네트워크 브리징(Bridging) 기술을 활용한다. 본 장에서는 메시지 지연 시간을 최소화하기 위한 아키텍처 설계와 브리지 대기열(Bridge Queue)의 큐잉(Queueing) 관리 최적화 기법을 다룬다.</p>
+<h2>1.  이착륙 상태 동기화의 지연(Latency) 문제</h2>
+<p>드론이 자율 비행(Autonomous Flight) 모드에서 이륙(Takeoff)을 시도할 때, Land Detector 모듈이 <code>Landed</code>에서 <code>In_Air</code>로 상태를 판별하는 데 걸리는 자체적인 필터링 시간(Hysteresis Time) 외에, 이 데이터가 원격의 QGroundControl(QGC)까지 도달하는 전송 지연(Transmission Latency)이 추가로 발생한다.</p>
+<h3>1.1  지연 시간(Latency)의 물리적 병목 현상</h3>
+<p>텔레메트리 보드(RF 송수신기)를 통한 무선 통신 환경에서는 다음과 같은 병목(Bottleneck)이 존재한다.</p>
+<ol>
+<li><strong>uORB 내부 스케줄링 딜레이:</strong> 상태 감지 데몬(Module)과 전송 데몬(mavlink module) 간의 컨텍스트 스위칭(Context Switching).</li>
+<li><strong>MAVLink 스트림 직렬화 지연:</strong> 변동된 상태를 <code>EXTENDED_SYS_STATE</code> 또는 <code>HEARTBEAT</code> 패킷으로 직렬화(Serialization)하여 패킹하는 시간.</li>
+<li><strong>송신 버퍼 큐잉 지연 (Queueing Delay):</strong> UART 대역폭(Baud rate) 한계로 인해 이전의 대용량 센서 메시지(예: IMU 50Hz 데이터)가 송신 큐(Tx Queue)를 선점하고 있을 때, 긴급한 상태 오버라이드(Override)를 하지 못해 발생하는 막힘 현상(Head-of-Line Blocking).</li>
+</ol>
+<h2>2.  PX4의 uORB 비동기 출판-구독(Pub-Sub) 모델 아키텍처</h2>
+<p>PX4는 비행 시스템 내 하위 모듈 간의 결합도(Coupling)를 낮추고 병렬 처리 효율을 높이기 위해 공유 메모리 기반의 uORB 메시징 버스를 채택하였다.</p>
+<h3>2.1  이벤트 기반(Event-driven) 상태 변이 갱신</h3>
+<p>Land Detector 모듈이 상태 전이를 확정하면 <code>vehicle_land_detected</code> 토픽을 발행(Publish)한다. 과거의 단순 루프 반복형 전송 방식(Polling)과 달리, 최신 <code>mavlink</code> 스트리밍 모듈은 이 uORB 토픽의 파일 디스크립터(File Descriptor)에 비동기 <code>poll()</code> 인터럽트(Event Callback)를 걸어둔다.</p>
+<ul>
+<li>상태가 변경되어 퍼블리시(Publish)되는 즉시, 슬립(Sleep) 상태이던 MAVLink 태스크가 깨어나(Wake-up) 해당 토픽을 구독(Subscribe)하고 직렬 변환을 즉시 개시한다. 이로 인해 내부 스케줄링 딜레이가 1ms 미만으로 극도로 최소화된다.</li>
+</ul>
+<h2>3.  MAVLink 브리지 큐(Bridge Queue) 관리 및 우선순위 스케줄링</h2>
+<p>근본적인 문제는 제한된 텔레메트리 대역폭(예: 57600 bps) 내에서 수백 개의 MAVLink 메시지가 경합한다는 점이다. 상태 동기화 정보(Sys State)가 자이로 센서 스트림(Sensor Stream) 등 일반 데이터의 뒤로 밀리는 큐잉 지연(Queueing Delay)을 막기 위해 큐 관리(Queue Management) 로직이 요구된다.</p>
+<h3>3.1  링 버퍼(Ring Buffer)와 우선순위 큐(Priority Queue) 모델링</h3>
+<p>PX4 MAVLink 모듈(<code>src/modules/mavlink/mavlink_main.cpp</code>)은 여러 데이터 스트림을 기능별 슬롯(Slot)으로 나누어 다중화(Multiplexing) 전송한다.</p>
+<ol>
+<li><strong>상태 메시지 오버라이드 (State Overriding):</strong><br />
+비행 제어의 치명성(Criticality)을 고려하여 이착륙 상태 전이(<code>MAV_LANDED_STATE_ON_GROUND</code> -&gt; <code>IN_AIR</code>)를 담은 메시지는 일반 스트림 대기열을 우회(Bypass)하여 송신 버퍼의 최상단(Head)에 위치하도록 스케줄링 우선순위를 부여받는다.</li>
+<li><strong>동적 대역폭 할당 (Dynamic Bandwidth Allocation):</strong><br />
+<code>mavlink_stream</code> 파이프라인은 버퍼에 여유가 없을 경우, 우선순위가 낮은 메시지(예: 장기간 배터리 로깅이나 디버그 텍스트)를 자의적으로 패킷 드롭(Packet Drop) 처리하고 핵심 전이 명령어를 우선 송신한다.</li>
+</ol>
+<p>이러한 QoS(Quality of Service) 보장 처리는 네트워크 홉(Hop)이 많은 ROS2 Micro XRCE-DDS 브리지 환경에서도 상태 갱신 지연을 극소화하는 핵심적인 역할을 담당한다.</p>
+<h2>4.  Ardupilot의 큐잉 모델과의 차이</h2>
+<ul>
+<li><strong>Ardupilot (Firmware v4.4):</strong> Ardupilot 모놀리식 아키텍처에서는 <code>GCS_MAVLink</code> 클래스가 루프 레이트(Loop rate)를 기준으로 모든 데이터를 균일하게 폴링(Polling) 및 분산 전송한다. <code>SRn_</code> 시리즈 파라미터(Stream Request Rate)를 통해 사용자에게 수동적인 주파수 설정을 위임하는 경향이 크다.</li>
+<li><strong>PX4-Autopilot:</strong> 완전 비동기 Pub-Sub 모델을 기반으로 돌아가므로, <code>vehicle_land_detected</code> 상태 갱신이 빈번하지 않더라도 (즉, 평소에는 1Hz로 송신되다가) 이벤트 트리거 시 즉각적으로 고우선순위(Immediate Send)로 인터럽트 전송되는 구조적 동적성(Agility)이 훨씬 강력하다.</li>
+</ul>
+<h2>5.  결론 및 GCS(QGroundControl)와의 융합</h2>
+<p>자율 비행 시스템(Autonomous Flight System)을 설계할 때, 임베디드 펌웨어 내부의 정밀한 상태 판별(State Machine)만큼이나, 그 정보를 얼마나 빠르고 신뢰성 있게 QGC나 상위 통제 서버로 동기화(Synchronize)할 수 있는가가 군집 비행(Swarm) 및 원격 관제 성공의 척도가 된다.</p>
+<p>PX4-Autopilot은 uORB 기반의 비동기 메시지 파이프라인과 MAVLink 브리지 큐(Bridge Queue) 우선순위 모델링을 결합함으로써, 텔레메트리 지연 시간(Latency)으로 인해 조종사가 “이륙된 기체를 땅 위에 있다고 착각하는(Visual Desync)” 치명적 인터페이스 오류를 공학적으로 차단한다. 개발자는 독자 GCS(Custom GCS) 구축 시에도 이 비동기 전이 메시지에 대한 즉각적인 수신 핸들러(Handler)를 마련하여 폐루프(Closed-loop) 상태 관제를 완성해야 한다.</p>
+<p><strong>참고 문헌 및 출처:</strong></p>
+<ul>
+<li>PX4 Autopilot 개발 가이드 - <a href="https://docs.px4.io/main/en/middleware/uorb.html">uORB Messaging &amp; MAVLink</a></li>
+<li>Dronecode MAVLink Documentation (Message Routing and QoS)</li>
+<li>QGroundControl Source Code (<code>Vehicle</code> State Management Architecture)</li>
+</ul>
 
             </article>
             <footer>

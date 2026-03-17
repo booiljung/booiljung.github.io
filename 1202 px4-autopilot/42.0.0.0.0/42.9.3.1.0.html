@@ -115,6 +115,55 @@
             </header>
             <article>
                 <h1>42.9.3.1 GCS와 자동비행장치 간의 상태 기계 동기화 불일치(Race Condition) 해소 메커니즘의 아키텍처적 차이</h1>
+<p>무인항공기(UAV) 운영 중 지상 관제 시스템(GCS)과 자동비행장치(Autopilot)는 본질적으로 이격된 두 개의 독립적인 컴퓨팅 시스템이다. 이 두 시스템이 텔레메트리(무선 데이터 링크)라는 불안정하고 지연(Latency)이 발생하는 채널을 통해 기체의 뷰(View)를 공유할 때, 필연적으로 상태 기계 동기화 불일치(State Machine Synchronization Race Condition) 현상이 발생할 수 있다. 본 절에서는 PX4-Autopilot(기준 펌웨어 버전: PX4 v1.14)과 Ardupilot이 지니는 상태 동기화 아키텍처의 차이와, 이를 QGroundControl(v4.3.0 기준)에서 어떻게 해소하는지 분석한다.</p>
+<h2>1.  동기화 불일치(Race Condition) 발생 시나리오</h2>
+<p>레이스 컨디션은 GCS와 기체가 동시에 상태 변경을 시도하거나, 과거의 정보 위에 새로운 명령을 덮어쓸 때 발생한다.</p>
+<ul>
+<li><strong>예시 시나리오:</strong> 기체가 “이륙 대기(Hold)” 상태일 때, 사용자가 GCS에서 “임무(Mission) 모드“로 전환 명령을 클릭했다. 거의 같은 찰나의 순간에 기체 센서에서 페일세이프(Failsafe) 조건이 트리거되어 기체가 스스로 “RTL(Return To Launch)” 모드로 상태를 변경했다.</li>
+<li><strong>결과:</strong> GCS는 잠시 동안 자신이 명령한 “Mission” 상태로 UI를 표시할 수 있고, 기체는 실제 “RTL“을 수행 중인 비동기화 상태폭주에 빠질 수 있다.</li>
+</ul>
+<h2>2.  PX4-Autopilot의 아키텍처: 중앙 집중식 락킹 및 타임스탬프 동기화</h2>
+<p>PX4는 커맨더 모듈(<code>src/modules/commander/Commander.cpp</code>) 내부의 거대한 1차원의 상태 머신(State Machine)을 통해 모든 상태 전환을 중앙 집중식으로 제어한다.</p>
+<h3>2.1  트랜잭션 기반 상태 전환 검증</h3>
+<p>PX4는 수신된 MAVLink 모드 변경 명령(<code>COMMAND_LONG</code> 류)을 즉시 적용시키지 않는다. 대신 uORB의 <code>vehicle_command</code> 토픽으로 큐잉된 후, 커맨더(Commander) 메인 스레드에서 단일 쓰레드 동기성(Single-threaded Sync)으로 평가(Evaluate)된다.</p>
+<ul>
+<li><strong>상태 승인(State Approval):</strong> 전환이 허용된 경우에만 내부 상태 변수를 업데이트하고 <code>vehicle_status</code> uORB 메시지를 발행한다.</li>
+<li><strong>MAVLink <code>COMMAND_ACK</code> 피드백:</strong> 이 모든 과정이 완료된 이후에 비로소 MAVLink <code>COMMAND_ACK</code>로 <code>MAV_RESULT_ACCEPTED</code> 또는 <code>MAV_RESULT_DENIED</code>를 GCS로 회신한다.</li>
+</ul>
+<h3>2.2  클럭 틱 및 버전 관리 기법</h3>
+<p>PX4는 시스템 타임스탬프 베이스를 철저히 관리한다. GCS (특히 QGroundControl)은 수신한 <code>COMMAND_ACK</code>와 지속적으로 방출되는 <code>HEARTBEAT</code> 메세지의 <code>custom_mode</code> 필드를 비교하여 자신이 가진 UI 상태 버전을 무효화(Invalidate)하고 기체의 실제 상태로 강제 새로고침(Force Refresh)하는 강력한 이벤트 리스너(Event Listener)를 갖추고 있다.</p>
+<h2>3.  Ardupilot의 아키텍처: 분산 및 병렬적 상태 관리 유연성</h2>
+<p>Ardupilot은 전통적으로 객체 지향 및 기능별 분할의 역사적 유산을 가지고 있어 상태 관리가 상대적으로 다중 모듈에 분산되어 있다.</p>
+<h3>3.1  기능별 상태 검증 (Decentralized State Evaluation)</h3>
+<p>Ardupilot의 경우 각 비행 모드(<code>ModeRTL.cpp</code>, <code>ModeGuided.cpp</code> 등)가 독립적인 클래스로 구성되어 있다. 모드 전환 명령이 들어오면 <code>set_mode()</code> 함수 콜 스택(Call Stack)을 거치게 되며, 각 모드의 <code>init()</code> 메서드에서 자체적인 검증을 수행한다.</p>
+<ul>
+<li><strong>잠재적 불일치 유발:</strong> 이 구조의 장점은 새로운 모드의 확장이 유연하다는 것이지만, 단점은 <code>set_mode()</code> 과정에서 동시다발적인 인터럽트(예: 외부 Failsafe 트리거)가 들어올 경우 1틱(Tick) 단위에서의 레이스 컨디션을 완전히 배제하기 위해 내부 세마포어(Semaphore) 관리에 의존해야 한다는 점이다.</li>
+</ul>
+<h2>4.  메커니즘 비교 다이어그램</h2>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant GCS as QGroundControl (GCS)
+    participant MAV as MAVLink Receiver
+    participant Cmd_PX4 as PX4 Commander (Central)
+    participant Mode_Ardu as Ardupilot Mode Logic (Distributed)
+
+    Note over GCS, Cmd_PX4: PX4 Transactional Model
+    GCS-&gt;&gt;MAV: Send Mode Change (Mission)
+    MAV-&gt;&gt;Cmd_PX4: Queue via vehicle_command
+    Note right of Cmd_PX4: Single Thread Lock &amp; Validate
+    Cmd_PX4--&gt;&gt;GCS: COMMAND_ACK (Accepted/Denied)
+    Cmd_PX4--&gt;&gt;GCS: HEARTBEAT (Actual State Broadcast)
+    Note left of GCS: UI Updates ONLY after Actual State verified
+
+    Note over GCS, Mode_Ardu: Ardupilot Method Dispatch Model
+    GCS-&gt;&gt;MAV: Send Mode Change (Mission)
+    MAV-&gt;&gt;Mode_Ardu: call set_mode()
+    Note right of Mode_Ardu: Distributed init() check
+    Mode_Ardu--&gt;&gt;GCS: COMMAND_ACK
+    Mode_Ardu--&gt;&gt;GCS: HEARTBEAT update
+</code></pre>
+<p><em>그림 1. PX4-Autopilot의 트랜잭션 락 기반 모델과 Ardupilot의 기능 분산 콜 기반 상태 동기화 처리의 비교</em></p>
+<h2>5.  요약 및 아키텍처 철학적 결론</h2>
+<p>PX4-Autopilot은 GCS와 기체 간의 상태 동기화 불일치를 방지하기 위해 <strong>단일 중앙 제어 스레드(Commander Module)의 트랜잭션 록(Transaction Lock)</strong> 철학을 차용하고 있다. GCS의 모든 명령은 큐(Queue) 연산으로 치환되어 엄격한 First-In-First-Out (FIFO) 아키텍처와 자체적인 페일세이프 최우선 처리 로직의 보호를 받는다. 이는 GCS 운영자(Operator)의 UI상에서 일어날 수 있는 이중 클릭, 네트워크 딜레이에 의한 순서 뒤바뀜 문제 등을 시스템 단에서 완벽에 가깝게 방어한다. QGroundControl v4.3.0 통신 아키텍처 역시 PX4의 이런 특징에 맞춰, ’낙관적 렌더링(Optimistic Rendering)’을 지양하고 철저히 기체로부터 반환되는 <code>HEARTBEAT</code> 상태에 의존한 철저한 ‘수동적 뷰어(Passive Viewer)’ 원칙을 적용하여 관제 안전성을 극대화한다.</p>
 
             </article>
             <footer>

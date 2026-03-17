@@ -115,52 +115,46 @@
             </header>
             <article>
                 <h1>42.6. 통신 링크 무결성 및 지오펜스(Geofence) 기반 공간 안전성 검증</h1>
-<p>비행 전 점검(Pre-flight Check) 단계에서 무인기의 통신 환경과 공간적 제약 조건을 확정하는 것은 항공 운용 안전을 보장하는 핵심 요구사항이다. PX4-Autopilot은 이륙 전 조종기(RC, Radio Control) 및 지상 관제 시스템(GCS)과의 통신 링크 상태를 엄격하게 진단하며, 사전에 정의된 지오펜스(Geofence) 3차원 영역 내에서만 비행이 진행될 수 있도록 초기 상태의 논리적 공간 유효성을 병행 확인한다. 본 절에서는 통신 링크의 무결성 척도 및 지오펜스 보안 인프라를 검증하는 PX4-Autopilot의 아키텍처 설계와 관련 소스 코드 메커니즘을 심도 있게 다룬다.</p>
-<h2>1.  통신 링크 무결성(Communication Link Integrity) 파악 아키텍처</h2>
-<p>무인기로 전송되는 제어 명령과 피드백 텔레메트리는 무선 주파수(RF)의 물리적 한계 및 간섭 현상으로 인해 패킷 손실(Packet Loss)이나 통신 지연(Latency)을 필연적으로 동반한다. PX4의 커맨더(Commander) 모듈은 이륙(Arming) 승인을 내리기 전, 기체의 생명선에 해당하는 두 가지 주요 통신 링크를 입체적으로 진단한다.</p>
+<h2>1. 개요</h2>
+<p>이 절에서는 무인항공기(UAV)가 지상 관제국(GCS) 또는 조종자와 맺고 있는 통신 링크(Data Link)의 무결성과, 비행 승인 구역을 물리적으로 제한하는 지오펜스(Geofence) 데이터의 유효성을 검증하는 비행 전 점검(Pre-flight Check) 아키텍처를 분석한다. 자율 비행의 고도화에 따라 기동 전 네트워크 건전성과 공간적 제약 조건(Spatial Constraints)의 확립은 추락이나 통제 불능 비행 이탈(Flyaway) 사고를 방지하는 최우선 필수 검증 단계로 자리 잡았다. 본 내용은 PX4-Autopilot 1.14 펌웨어와 QGroundControl(QGC) 4.3 관제 인터페이스를 기준으로 역학을 서술한다.</p>
+<h2>2. 통신 링크 무결성(Data Link Integrity) 검증 메커니즘</h2>
+<p>PX4는 기동 시점과 비행 전 과정을 통해 두 가지 핵심 링크의 생존성을 교차 검증한다. 하나는 다이렉트 무선 조종 신호인 RC(Radio Control) 링크이며, 다른 하나는 GCS 및 동반 컴퓨터(Companion Computer)와의 양방향 원격측정 통신인 MAVLink 데이터 링크(Data Link)이다.</p>
+<h3>2.1 MAVLink Heartbeat 및 패킷 지연 모니터링</h3>
+<p>비행 전 점검에서 PX4의 <code>Commander</code> 상태 머신은 MAVLink 수신 모듈과 연동하여 연결 무결성을 계측한다.</p>
 <ol>
-<li><strong>RC 링크 품질 무결성:</strong> 수동 조종(Manual Control)이 요구되는 모드에서 RC 신호의 RSSI(Received Signal Strength Indicator)가 최소 운용 기준을 만족하는지 파악한다. 하드웨어 타이머 수준에서 수신기(Receiver)로부터 MCU로 직렬 전달되는 SBUS, CRSF 등 프로토콜의 프레임 누락(Frame Drop) 빈도를 카운팅하여 점검한다.</li>
-<li><strong>GCS(MAVLink) 링크 구별 무결성:</strong> 자동 임무(Auto Mission) 또는 오프보드(Offboard) 비행에서 필수로 요구되는 텔레메트리(Telemetry) 데이터 링크 상태를 분석한다. MAVLink 단방향 통신이 아닌 구조적 Heartbeat 주기(일반적으로 1Hz 송출) 확인과, 패킷 수신 성공률(Packet Reception Rate)을 측정하여 데이터 링크 손실(Data Link Loss, DLL)의 발현 확률을 이륙 전에 통제한다.</li>
+<li><strong>Heartbeat 다이내믹스</strong>: GCS와의 <code>HEARTBEAT</code> 메시지 수신 주기가 시스템 파라미터(<code>COM_DL_LOSS_T</code>)가 규정한 타임아웃 지연 한계(기본 10초)를 초과할 경우, 즉각 데이터 링크 손실(Data Link Loss)로 처리되어 이륙 승인(Arming)이 영구적으로 거절된다.</li>
+<li><strong>RC 신호 품질(RSSI) 체커</strong>: 수동 기체 제어나 개입이 필수적인 비행 모드(예: Position 모드 혹은 Stabilized 모드)일 경우, RC 수신기에서 직렬(Serial)로 인입되는 신호의 유효성과 채널 핑(Ping)을 점검한다. RC 연결이 끊기거나 수신 신호 강도 지표(RSSI, Received Signal Strength Indicator)가 치명적으로 위태로울 경우 기체는 시동을 단호히 거부한다.</li>
 </ol>
-<h3>1.1  소스 코드 레벨의 통신 단절 감지 로직 및 파라미터 제어</h3>
-<p>PX4 내비게이션 및 시스템 감시 아키텍처 내에서 <code>telemetry_status</code> uORB 토픽이 지속적으로 발생함에 따라, <code>Commander</code> 클래스의 본체 상태 머신(State Machine)은 GCS 모듈과의 연결 유실 지연 시간을 평가한다.</p>
-<pre><code class="language-cpp">// src/modules/commander/Commander.cpp의 텔레메트리 진단 논리적 구조
-bool Commander::check_telemetry_status() {
-    telemetry_status_s telemetry;
-    if (_telemetry_status_sub.update(&amp;telemetry)) {
-        // Heartbeat의 최종 수신 시각과 현재 시스템 시각(Monotonic Time) 비교
-        if (telemetry.heartbeat_time &lt; hrt_absolute_time() - COM_DL_LOSS_T * 1_s) {
-            PX4_WARN("Pre-flight Fail: GCS data link structurally unstable.");
-            return false;
-        }
-    }
-    return true;
-}
+<h2>3. 지오펜스(Geofence) 기반 공간 안전성 검증</h2>
+<p>지오펜스는 가상의 3차원 울타리(Virtual Fence)를 3차원 공간 좌표상에 구현하여, 무인기가 허가되지 않은 민수/군사 구역으로 진입하거나 지정된 임무 반경 공간을 일탈하는 것을 수학적으로 차단하는 기술이다.</p>
+<h3>3.1 지오펜스 로드 및 유효성 대조 체계</h3>
+<p>PX4-Autopilot은 이륙 전 비휘발성 메모리에 지오펜스 데이터가 오염 없이 안전하게 로드되었는지 구조적으로 철저히 증명한다.</p>
+<pre><code class="language-mermaid">flowchart TD
+    A[QGC에서 지오펜스/Rally Point(복귀 지점) 폴리곤 업로드] --&gt; B[PX4 내부의 Navigator 모듈에서 수신 및 마운팅]
+    B --&gt; C{비행 전 점검 루틴 진입 시점}
+    C --&gt; D[현재 기체의 정밀 좌표(GNSS/EKF2) 획득]
+    D --&gt; E{현재 위치가 지오펜스 허용 반경 / 폴리곤 내부인지 3D 수학적 대조}
+    E -- 경계 외부에 위치함 (Out of Bounds) --&gt; F[Preflight Fail: Vehicle outside geofence 트리거]
+    E -- 경계 내부에 위치함 (Inside Bounds) --&gt; G{지오펜스 파일 포맷 및 다각형 꼭짓점 무결성 연산}
+    G -- 벡터 데이터 정상 --&gt; H[공간 안전성 통과 승인 및 Arming 인가 대기]
+    G -- 파일 로드 실패 / 폴리곤 선분 꼬임(Intersect) --&gt; I[Preflight Fail: Geofence Invalid 경고 발송 및 기동 거부]
 </code></pre>
-<p>제시된 제어 로직에서 파라미터 <code>COM_DL_LOSS_T</code> (데이터 링크 손실 감지 타임아웃, 시스템 기본값 10초)를 초과하여 Heartbeat가 갱신되지 못하면 비행 전 점검 시퀀스는 즉각 실패(Fail) 스위핑으로 분기된다. 시스템 설계 상 통신 단절을 이륙 이후에 감지하는 Failsafe 반응과 별도로, 이륙 전 감지하는 Pre-flight Check 단계는 훨씬 보수적인 링크 임계치를 체택하여 불안정한 채널에서의 이륙 시도 체인을 선제적으로 봉쇄한다.</p>
-<h2>2.  지오펜스(Geofence) 기반 공간 안전성 점검 및 검증</h2>
-<p>지오펜스는 위성항법 좌표계 상의 가상 3차원 울타리를 의미하며, 무인기가 비행 금지 구역(No-Fly Zone)에 진입하거나 사전에 인가받지 않은 운용 범위를 이탈하는 심각한 상황을 기계적으로 방지한다. 비행 전 점검 스테이지에서 PX4는 단순히 지오펜스 모듈의 활성화 여부만 파악하지 않고, 두 가지 치명적 공간적 안전 요소를 교차 검증한다.</p>
-<ol>
-<li><strong>지오펜스 파일 데이터 수학적 무결성:</strong> GCS에서 메모리로 업로드된 지오펜스 폴리곤(Polygon) 꼭짓점 좌표들이 자체 교차(Self-intersection)하여 논리적 불능망을 생성하지는 않는지 판단한다. 아울러 최대 고도 및 반경 안전 한계치(<code>GF_MAX_HOR_DIST</code>, <code>GF_MAX_VER_DIST</code>)의 파라미터 할당이 모순이 없는지 점검한다.</li>
-<li><strong>현재 위치의 지오펜스 소속 여부(Inclusion Test):</strong> <code>vehicle_global_position</code> 데이터를 기준으로, 시스템 전원이 인가되고 글로벌 GPS Lock이 확보된 현재 홈(Home) 기준 위치나 기체의 좌표가 이미 지오펜스 외부(Violation State)에 존재하는지 판별하는 고립 분리(Isolation) 테스트를 수행한다.</li>
-</ol>
-<pre><code class="language-mermaid">graph TD
-    A[GCS에서 MAVLink 기반 지오펜스 다각형 업로드] --&gt; B[Navigator 모듈 Geofence.cpp 수신]
-    B --&gt; C{폴리곤 좌표 배열 유효성 및 자체 교차 검사}
-    C -- 무결성 실패 --&gt; D[MAV_MISSION_DENIED: 업로드 REJECTED]
-    C -- 무결성 성공 --&gt; E[좌표 데이터 메모리 플래시 저장 및 uORB 갱신]
-    E --&gt; F[Commander 루프 Pre-flight Check 작동]
-    F --&gt; G{현재 통합 GPS 위치 ∈ 지오펜스 폴리곤 내부?}
-    G -- 불포함 한계 초과 --&gt; H[Arming 거부 래치: Geofence Violation 탐지]
-    G -- 정상 포함 --&gt; I[공간 안전성 승인 패스 수용]
-</code></pre>
-<p>만일 비행 시작 전에 지오펜스 검증 루틴을 통과하지 못하면, 멀티로터나 고정익 플랫폼 구분 없이 이륙(Takeoff/Arming) 요청은 NACK 처리되며 GCS에 “Geofence violation” 에러 상태가 표출되어 운영자의 임무 수정이 강제된다.</p>
-<h2>3.  Ardupilot 공간 제어 체계와의 설계 비교 평가</h2>
-<p>PX4는 지오펜스 검증의 주요 책임을 자율 비행 트랙을 담당하는 <code>Navigator</code> 서브모듈 계층에 위임하며, 이는 자동 비행(Auto/Mission Mode) 궤적을 제어하고 연산하는 로직과 밀접하게 객체 융합되어 있다. 또한, 최대 반경을 한정하는 단순 원통형 실린더(Cylinder) 펜스와 다각형(Polygon) 복합 펜스를 유기적 결합을 통해 하나로 단일화하여 관리한다.</p>
-<p>반면, Ardupilot은 지오펜스 관리를 특정 비행 모드의 연장에 국한된 제어가 아닌, 시스템의 기저를 호위하는 핵심 라이브러리로 승격시켜 <code>AP_Fences</code> 모듈을 통해 저수준 아키텍처 추상화(Low-level Architecture Abstraction) 계층으로 끌어내렸다. Ardupilot 체계는 ’Fence Action’이라는 별도의 강력한 대응 파라미터군을 두어, 이탈 인지 시점의 반응 조치(강제 RTL 진입, 에어 브레이크, 스마트 셧다운, 스마트 비상 착륙 등)를 보다 모듈식으로 조합하는 하드웨어 방어자 방식을 고수하고 있다. 즉, 공간 안전성 체계 구조 자체가 PX4는 ‘비행 궤적 관리의 부분 집합’의 관점에 가깝다면, Ardupilot은 ‘기체 최고 결재 권한을 지닌 독립된 시스템 보호구역’의 뉘앙스에 방점이 찍힌다.</p>
-<h2>4.  ROS2 (uXRCE-DDS) 연동 및 오프보드 제어 환경의 공간 안전 대역</h2>
-<p>단순 조종을 위한 지상 관제용 MAVLink 기반 QGroundControl 환경에 그치지 않고, 자율 에이전트 다기능 확장 개발 목적의 ROS2 연동 환경(Offboard Mode)에서도 제어 통신망 무결성 진단은 필수다. Micro XRCE-DDS(uXRCE-DDS) 에이전트를 매개체로 연결될 시, 기체 내부 혹은 외부의 ROS2 Companion Computer에서 송신되는 <code>OffboardControlMode</code> 메시지와 속도/자세 Setpoint 미세 제어 메시지의 데이터 전송 빈도가 일정 임계치를 하회하면, <code>COM_OF_LOSS_T</code> 파라미터 정책에 의해 오프보드 연결의 통제 불능(Loss of Control) 상실로 규정된다.</p>
-<p>외부 GCS가 아닌 임무를 주관하는 온보드 컴퓨터(Companion Computer)와의 제어 루프 무결성을 이륙 전에 명확히 검증하기 위해, 시스템은 오프보드 비행 제어 토픽이 시스템 백플레인을 타고 통상 2Hz 이상으로 연속 수신되는지를 점검한다. 이를 통해 완전 자율 비행 AI 알고리즘 구동 전, 데이터 버스의 대역폭 병목을 사전 차단하고 공간 이탈에 따른 물리적 추락 사고 위험도를 철저하게 봉쇄할 수 있다.</p>
+<p>PX4의 지오펜스 차단 로직은, 이륙 전 기체의 현재 좌표계(Home Position)가 지오펜스의 경계 밖으로 이미 벗어나 있거나, 혹은 펜스 경계선의 폴리곤(Polygon) 꼭짓점 유효 좌표가 비정상적으로 교차되어 논리적 오류가 파생할 시 지체 없이 락(Lock)을 건다. 이는 조종자가 기체를 세팅한 실제 지점과, GCS에서 사전 데스크 공간에서 작성하여 불러온 임무 지형이 완전히 엇갈려버리는, 흔하면서도 가장 치명적인 인적 오류(Human Error)를 초기에 봉쇄한다.</p>
+<h2>4. Ardupilot과 PX4-Autopilot의 통신/공간 차단 철학 비교</h2>
+<p>공간 구역 통제와 통신 단절을 대하는 안전 설계 측면에서 두 시스템 생태계는 각각의 주력 운영 도메인에 극명히 대비되는 철학을 배태하고 있다.</p>
+<ul>
+<li><strong>PX4-Autopilot</strong>: 중앙집중식 네비게이션 트리거 및 엄격한 격리.<br />
+PX4 환경은 지오펜스의 위반을 시스템 전역의 파멸적인 예외 상태(Critical State)로 엄중히 취급한다. 비행 전 점검에서 기체가 펜스 구역 반경 외부에 위치할 경우, 소프트웨어적 임시 우회(Bypass)를 허용하기보다는 펜스 반경 파라미터를 조절하거나 기체의 홈 좌표를 재수신(Hot Start)하도록 운용자에게 물리적인 교정을 엄격하게 강제한다. 공간 통제 위반 시 구동되는 페일세이프 트리거 동작(RTL, Hold, 비행 강제 종료 Termination 등)이 매우 강압적이고 직관적이다.</li>
+<li><strong>Ardupilot</strong>: 유연한 단계별 경고 시스템 및 재량권 이관.<br />
+Ardupilot(특히 콥터 환경) 진영은 지오펜스의 기하학적 유형을 유연화(기둥형, 다각형 혼합 등)하며, 사용자 파라미터 레이어 계측을 통해 단순 경고(Report Only), 고도만 제한 컷오프(Altitude Only) 등 부드러운 단계별 통제를 용이하게 허용한다. Pre-flight 점검 중에도 조종관의 판단에 따라 펜스 기능 스위치를 임시로 끄고 비행을 당장 시작한 뒤, 공중 체공 중 안정권에 들어섰을 때 펜스를 복원 활성화할 수 있는 폭넓은 작전 재량권을 보장한다.</li>
+</ul>
+<h2>5. QGroundControl 환경에서의 관제 및 디버깅 가이드</h2>
+<p>무인기 비행 실무 현장에서 지상 관제국 운용은 네트워크 공간적 안전을 위해 다음과 같은 절차를 의무적으로 안내한다.</p>
+<ul>
+<li><strong>지오펜스 업로드 워크플로우 숙지</strong>: 현장에 도착하면 파일럿은 반드시 QGC의 ‘Safety(안전)’ 탭 메뉴로 진입하여 Maximum Altitude(최강 고도 한계)와 Maximum Radius(최대 반경 한계 거리), 그리고 Custom Polygon Fence를 기체의 현 날씨 임무 반경에 맞게 꼼꼼히 작성하여 보드로 직접 업로드(Upload)하라. 변경된 반경 데이터가 내부에 완벽히 캐싱되었음을 디버깅 콘솔 메시지로 재차 교차 확인하는 것이 필수적이다.</li>
+<li><strong>비행 전 점검 거부 현상 대응법</strong>: QGC 알람 콘솔에 붉은 글꼴로 <code>Preflight Fail: Vehicle outside geofence</code>가 출력된다면, 이는 GNSS 수신기 안테나에서 튀어 오르는 부정확한 초기 신호 좌표(Multi-path 오차 반향 등) 연유로 홈(Home) 포인트가 실제 기체 위치와 한참 동떨어진 산지에 허위로 찍혔거나, 이전 다른 지역 임무 구역의 통제 파일이 메모리에서 지워지지 않은 채 잔류했기 때문이다. 이 교란 상태에서는 절대로 비행 시동을 시도해서는 안 되며, GPS 수신 위성(Sats) 수가 15개 이상, HDOP 값이 1.0 이하로 충분히 수렴할 때까지 대기하여 홈 위치 십자선 마커가 지도 화면 기체 정중앙에 정확히 일치됨을 시각적으로 인계받아야 한다.</li>
+<li><strong>데이터 링크 상실 시나리오 선행 점검</strong>: 자율 동작 에이전트(Autonomous Agent)가 건물 등 GCS의 Wi-Fi, LTE 직사파 음영 지역에 돌입하여 통신망을 상실할 가능성을 완벽히 대비하여, 통신 단절 시 기체가 어떠한 방어 행동(예: Return, Land, Loiter)을 취할 것인지 지정하는 <code>COM_DL_LOSS_T</code> 및 <code>NAV_DLL_ACT</code> 코어 파라미터가 현장 임무 성격에 적합하게 매핑되어 있는지 비행 개시 전 철저히 시뮬레이션하라.</li>
+</ul>
 
             </article>
             <footer>

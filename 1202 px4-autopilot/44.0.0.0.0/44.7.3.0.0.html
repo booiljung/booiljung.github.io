@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:44.7.3 이륙 중 센서 이상 감지(FDI: Fault Detection and Isolation) 및 예외 제어 천이</title>
+    <title>BIJUNG:44.7.3. 이륙 중 센서 이상 감지(FDI: Fault Detection and Isolation) 및 예외 제어 천이</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,72 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>44.7.3 이륙 중 센서 이상 감지(FDI: Fault Detection and Isolation) 및 예외 제어 천이</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.7.3 이륙 중 센서 이상 감지(FDI: Fault Detection and Isolation) 및 예외 제어 천이</span></nav>
+                    <h1>44.7.3. 이륙 중 센서 이상 감지(FDI: Fault Detection and Isolation) 및 예외 제어 천이</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.7.3. 이륙 중 센서 이상 감지(FDI: Fault Detection and Isolation) 및 예외 제어 천이</span></nav>
                 </div>
             </header>
             <article>
-                <h1>44.7.3 이륙 중 센서 이상 감지(FDI: Fault Detection and Isolation) 및 예외 제어 천이</h1>
+                <h1>44.7.3. 이륙 중 센서 이상 감지(FDI: Fault Detection and Isolation) 및 예외 제어 천이</h1>
+<p>무인항공기(UAV)의 이륙(Takeoff) 단계는 기체의 동역학적 상태가 정지 상태(Static)에서 강한 가속도 및 진동이 수반되는 동적 상태(Dynamic)로 급격히 천이하는 가장 위험한 비행 구간이다. 이 과정에서 지면 효과(Ground Effect)로 인한 기압계(Barometer)의 과도한 노이즈, 모터 회전에 따른 급격한 자기장 간섭(Magnetic Interference), 그리고 강한 기체 진동에 의한 관성 측정 장치(IMU)의 클리핑(Clipping) 현상은 기체 추정기(Estimator)의 상태 발산을 유발할 수 있다. PX4-Autopilot은 이러한 이륙 시점의 치명적인 센서 결함을 실시간으로 감지하고 오염된 데이터를 필터링하기 위해 강력한 센서 이상 감지 및 격리(FDI: Fault Detection and Isolation) 알고리즘을 EKF2(Extended Kalman Filter 2) 모듈 내부에 탑재하고 있다. 본 절에서는 최신 PX4-Autopilot 펌웨어(v1.14.0 이상)의 아키텍처를 기반으로 이륙 중 센서 이상 감지와 관제 시스템의 예외 제어 천이 과정을 깊이 있게 분석한다.</p>
+<h2>1.  센서 이상 감지 및 격리(FDI) 아키텍처의 이론적 기반</h2>
+<p>PX4의 EKF2 알고리즘은 다중 센서 데이터를 융합하여 기체의 위치, 속도, 자세(State Vector)를 추정한다. 이 때, 결함이 있는 센서 데이터가 칼만 필터의 업데이트 단계(Measurement Update)에 반영되는 것을 막기 위해 <strong>혁신량(Innovation)</strong> 기반의 무결성 검사(Integrity Check)를 지속적으로 수행한다.</p>
+<p>FDI 메커니즘은 핵심적으로 두 가지 단계로 나뉜다.</p>
+<ol>
+<li><strong>결함 감지(Fault Detection)</strong>: EKF 예측 모델(Prediction)과 실제 센서 관측치(Observation) 사이의 차이인 혁신량(Innovation)을 모니터링한다. 이 혁신량이 통계적 허용 오차(Innovation Variance) 범위를 초과하는지 <span class="math math-inline">\chi^2</span> (카이제곱) 검정을 통해 판단한다.</li>
+<li><strong>결함 격리(Fault Isolation)</strong>: 특정 센서(예: GPS, 기압계, 자력계)의 관측치가 지속적으로 임계치(Threshold)를 초과하여 기각(Reject)될 경우, 해당 센서의 신뢰도(Health) 등급을 하향시키고 융합 가중치를 0으로 설정(Zeroing)하여 필터 업데이트에서 완전히 제외시킨다.</li>
+</ol>
+<p>특히, 이륙 단계에서는 <code>COM_ARM_MAG_STR</code>(시동 시 자력계 강도 검사)나 <code>COM_ARM_IMU_ACC</code>(가속도계 정합성 검사)와 같은 사전 검증(Pre-flight Check)을 통과했음에도 불구하고, 실제 스로틀(Throttle)이 인가됨과 동시에 나타나는 동적 노이즈를 걸러내는 것이 매우 중요하다.</p>
+<h2>2.  이륙 중 주요 센서별 FDI 모니터링 메커니즘</h2>
+<h3>2.1  기압계(Barometer) 및 지면 효과(Ground Effect) 예외 처리</h3>
+<p>멀티로터가 지면을 이탈하는 초기 수십 센티미터 구간에서는 프로펠러 하강 기류(Downwash)가 지면에 반사되어 기압계 판독값에 큰 음의 스파이크(Negative Spike)를 발생시킨다. PX4는 고도 추정의 발산을 막기 위해 이륙 상태 플래그(<code>takeoff_status</code>)가 활성화된 구간 동안 기압계의 혁신량 기각 임계치(Innovation Consistency Gate)를 일시적으로 완화(Relax)하거나 1차적인 고도 추정 의존도를 GPS 고도(Altitude) 또는 거리 측정 센서(Rangefinder) 결과로 전이시킨다. 결함이 지속 감지되면 EKF2는 파라미터 <code>EKF2_BARO_CTRL</code> 설정에 따라 기압계를 상태 추정에서 격리한다.</p>
+<h3>2.2  자력계(Magnetometer) 간섭 및 클리핑 방어</h3>
+<p>모터에 인가되는 대전류는 강력한 전자기장 교란(EMI)을 생성한다. 이륙 시 스로틀이 상승함에 따라 자력계 측정 벡터 계측 크기(Magnetic Field Strength)와 방향(Inclination)이 급격히 왜곡되면, EKF2는 요(Yaw) 혁신량의 카이제곱 검정 실패를 기록한다. PX4는 내장된 자기장 이상 감지기(Magnetic Interference Detector)를 통해 즉각적으로 자력계 융합을 중단하고, IMU의 자이로스코프(Gyroscope) 적분값 및 GPS의 진행 방향(Course Over Ground, COG) 데이터로 요(Yaw) 각도 추정을 대체(Fallback)하는 제어 천이를 수행한다.</p>
+<h2>3.  예외 제어 천이(Fallback &amp; Failsafe Transition) 로직</h2>
+<p>센서 격리(Isolation) 처리가 이루어졌음에도 불구하고 대체 가능한 센서(Redundant Sensor)마저 없어 비행 필수 상태(예: 전역 위치 정보, Local Position)를 유지할 수 없는 경우, 커맨더(Commander) 모듈은 치명적 예외 상황으로 판단하여 비상 제어 상태(Failsafe State)로 즉시 천이한다.</p>
+<ol>
+<li><strong>내비게이션 상태 강등(Navigation State Degradation)</strong>: <code>MISSION</code> 또는 <code>TAKEOFF</code> 모드 중 위치 정보 추정이 불가능해지면(<code>local_position_invalid</code>), PX4는 자율 비행 모드를 강제로 종료시키고 조종사의 수동 개입이 가능한 <code>ALTITUDE</code> (고도 유지) 혹은 지형 조건에 따라 <code>DESCEND</code> (비상 하강) 모드로 천이한다.</li>
+<li><strong>QGroundControl 측의 알림 및 동기화</strong>: PX4는 시스템 상태를 <code>MAV_SYS_STATUS_SENSOR_XY</code> 체계에 반영하여 QGC로 <code>SYS_STATUS</code> 메시지를 송신한다. 이와 동시에 <code>STATUSTEXT</code> MAVLink 메시지를 통해 “EKF primary changed”, “Magnetometer fault” 등의 치명적 경고(Critical Alert) 레이블을 송출한다. QGroundControl은 이 이벤트를 포착하여 오디오 경보(Audio Annunciation)를 발생시키고 UI 상단에 붉은색 상태 바(Status bar)를 점등하여 운영자에게 시각적 위기 상황을 즉시 전파한다.</li>
+</ol>
+<h3>3.1  ArduPilot과의 안전 제어 천이(Failsafe Transition) 차이점</h3>
+<p>ArduPilot의 EKF3(Extended Kalman Filter 3) 아키텍처는 코어 단위의 완전 분리형(Affinity) 인스턴스를 병렬로 실행하는 레인(Lane) 스위칭 방식을 선호한다. 센서 오류 감지 시 ArduPilot은 메인 EKF 코어를 백업 코어로 통째로 교체(Lane Switch)하여 생존성을 보장한다. 반면, PX4의 EKF2는 단일 인스턴스 내에서 융합되는 개별 센서 노드의 가중치(Weight)를 동적으로 재구성(Reconfiguration)하는 방향으로 설계되어 메모리 오버헤드가 적고 융합 전환이 부드럽다는 소프트웨어 아키텍처상의 설계 철학적 차이가 존재한다.</p>
+<h2>4.  EKF2 결함 감지 및 격리 프로세스 FSM</h2>
+<p>다음은 이륙 진행 중 센서 데이터 유입부터 결함에 따른 예외 제어 천이까지 수행되는 논리적 파이프라인의 아키텍처 다이어그램이다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; SensorMeasurementUpdate : 이륙 중 센서 관측치 수신
+    SensorMeasurementUpdate --&gt; InnovationCalculation : EKF 추정값과 비교
+    
+    InnovationCalculation --&gt; ChiSquareTest : 통계적 오차 검증
+    
+    ChiSquareTest --&gt; AcceptData : 오차 범위 내 (Pass)
+    ChiSquareTest --&gt; RejectData : 오차 범위 초과 (Fail)
+    
+    AcceptData --&gt; UpdateEKFState : 상태 벡터 업데이트
+    UpdateEKFState --&gt; [*]
+    
+    RejectData --&gt; FaultCounterIncrement : 기각 카운터 증가
+    FaultCounterIncrement --&gt; ThresholdCheck : 누적 횟수 검사
+    
+    ThresholdCheck --&gt; IgnoreTemporarySpike : 임계값 미만 (일시적 노이즈)
+    IgnoreTemporarySpike --&gt; [*]
+    
+    ThresholdCheck --&gt; FaultDetectionAndIsolation : 임계값 초과 (고장 판별)
+    
+    state FaultDetectionAndIsolation {
+        SensorIsolation: 해당 센서 융합 중지 (Isolation)
+        FallbackCheck: 대체 센서(Redundancy) 편입 확인
+    }
+    
+    FaultDetectionAndIsolation --&gt; RedundancyAvailable : 대체 센서 존재
+    RedundancyAvailable --&gt; UpdateEKFState : 가중치 변경 후 업데이트 재개
+    
+    FaultDetectionAndIsolation --&gt; CriticalFailure : 대체 센서 없음 (추정 불가)
+    CriticalFailure --&gt; CommanderFailsafe : Commander 모듈로 상태 보고
+    CommanderFailsafe --&gt; ModeTransition : ALTITUDE 또는 DESCEND 모드 강제 천이
+    ModeTransition --&gt; QGC_Notification : STATUSTEXT 및 비상 경고 전송
+    QGC_Notification --&gt; [*]
+</code></pre>
+<h2>5.  결론</h2>
+<p>최신 PX4-Autopilot의 EKF2가 제공하는 결함 감지 및 격리(FDI) 아키텍처는 이륙 구간에서 겪게 되는 무작위적인 외부 환경 요인(충격, 자기장 교란, 난기류)에 대응하는 핵심적인 보험 기제이다. 관제 시스템 및 애플리케이션 개발자는 단순 비행 명령 전송뿐만 아니라, <code>SYS_STATUS</code> 메시지의 센서 상태 비트(Health Bits)를 밀착 모니터링하여 강제 제어 천이가 발생하기 전 선제적인 이륙 취소(Takeoff Abort) 명령을 내릴 수 있는 안전장치(Safety-net)를 상위 소프트웨어 계층에 구현해야 한다.</p>
 
             </article>
             <footer>

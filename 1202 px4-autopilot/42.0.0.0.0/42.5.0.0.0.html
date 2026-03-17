@@ -115,59 +115,46 @@
             </header>
             <article>
                 <h1>42.5. 전력 시스템, 하드웨어 버스 및 물리적 안전 장치 점검 메커니즘</h1>
-<p>비행 전 점검(Pre-flight Check) 단계에서 무인기 시스템의 신뢰성을 결정짓는 가장 원초적이면서도 치명적인 계층은 물리적 하드웨어와 전력 분배망이다. 아무리 확장 칼만 필터(EKF2)의 위치 추정이 정밀하고 자율 에이전트 경로 계획이 우수하더라도, 이륙 시점의 전압 강하(Voltage Drop)나 통신 버스(I2C/SPI/CAN)의 전기적 노이즈는 기체 추락(Crash)으로 직결되기 때문이다. 본 절에서는 PX4-Autopilot의 커맨더(Commander) 모듈이 기체의 시동(Arming)을 허가하기 전에 전력 시스템과 하드웨어 버스, 그리고 물리적 안전 장치(Safety Switch)를 어떻게 검증하는지 시스템 아키텍처 및 소스 코드 수준에서 상세히 분석한다.</p>
-<h2>1.  전력 시스템(Power System) 점검 및 배터리 무결성 검증 아키텍처</h2>
-<p>PX4-Autopilot은 전원 공급 모듈(Power Module)에서 측정되는 아날로그 신호(전압/전류) 또는 스마트 배터리의 I2C/SMBus 디지털 텔레메트리를 uORB 토픽인 <code>battery_status</code>로 변환하여 시스템 전반에 퍼블리싱(Publishing)한다. 커맨더 모듈 내의 비행 전 점검 클래스(<code>PreFlightCheck.cpp</code>)는 시동이 요청되는 즉시 이 배터리 상태 데이터를 구독(Subscribe)하여 다음의 로직을 수학적으로 점검한다.</p>
-<ol>
-<li><strong>배터리 잔량 및 셀 전압 검사:</strong> 파라미터 <code>COM_ARM_BAT_MIN</code> 수준 이상으로 남은 용량 비율(Remaining Capacity)이 설정되어 있는지, 그리고 1셀당 평균 전압이 임계치를 넘는지 확인한다.</li>
-<li><strong>부하 테스트 예상치(Voltage Drop Prediction):</strong> 모터가 회전하기 시작할 때(Idle Spin) 발생하는 순간적인 전압 강하를 추정하여, 시동 직후 보드(FCU) 컴퓨터 파워가 리셋(Brown-out)될 가능성이 감지되면 시스템은 시동을 하드웨어적으로 거부(Deny)한다.</li>
-</ol>
-<pre><code class="language-mermaid">sequenceDiagram
-    participant ADC as ADC / Smart Battery
-    participant BattMgr as Battery Manager (uORB)
-    participant Cmd as Commander (PreFlightCheck)
-    participant QGC as QGroundControl (GCS)
-    
-    ADC-&gt;&gt;BattMgr: 원시 전압/전류 및 셀 밸런싱 데이터 전송
-    BattMgr-&gt;&gt;Cmd: battery_status 토픽 발행
-    Cmd-&gt;&gt;Cmd: COM_ARM_BAT_MIN 파라미터와 교차 검증
-    alt Threshold 이달 감지
-        Cmd--&gt;&gt;QGC: MAVLink SYS_STATUS / 배터리 레벨 경고
-        Note over Cmd: 차량 시동(Arming) 거부
-    else 정상 확인
-        Cmd-&gt;&gt;Cmd: 후속 하드웨어 버스 점검 통과
-    end
-</code></pre>
-<h2>2.  하드웨어 통신 버스(I2C, SPI, CAN) 진단 로직 및 소스 코드 분석</h2>
-<p>마이크로컨트롤러(NuttX RTOS 연산부)와 외곽 센서(IMU, 지자기, 기압계 등) 간의 통신 상태 검증은 에러 카운터(Error Counter) 모델을 기반으로 동작한다. PX4 소스 코드의 <code>sensors</code> 매니저 데몬은 기체 내부에 연결된 I2C 및 SPI 버스 드라이버의 송수신 실패 횟수(Transaction Error)를 초당 주기적으로 폴링(Polling)한다.</p>
-<pre><code class="language-cpp">// PX4 PreFlightCheck 루틴 내 하드웨어 버스 무결성 체크 예시 로직
-bool PreFlightCheck::checkSensors(const hrt_abstime &amp;time_now)
-{
-    // 각 센서 uORB 토픽 내에 실린 error_count를 누적 비교한다.
-    if (sensor_msg.error_count &gt; MAX_ALLOWED_BUS_ERRORS) {
-        mavlink_log_critical(&amp;mavlink_log_pub, "Preflight Fail: I2C/SPI 버스 에러 한계 초과");
-        return false; // 시동 거부
-    }
-    return true; // 하드웨어 버스 정상
-}
-</code></pre>
-<p>특히 UAVCAN(또는 DroneCAN) 프로토콜을 사용하는 지능형 노드(ESC, GPS 등)에 대해서는 단순 전기적 체크를 넘어, 각 CAN 노드로부터 정해진 주기(보통 1Hz) 이내에 <code>NodeStatus</code> 하트비트(Heartbeat)가 누락되지 않고 도착하는지 커맨더 모듈이 정밀하게 스케줄링 감시를 수행한다.</p>
-<h2>3.  물리적 안전 스위치(Safety Switch) 기반 하드웨어 잠금 메커니즘</h2>
-<p>Pixhawk 시리즈와 호환되는 하드웨어 아키텍처는 별도의 하드웨어 레이어에서 동작하는 <strong>안전 스위치(Safety Switch)</strong> 기능을 내장하고 있다. 이는 소프트웨어가 폭주(Runaway)하거나 GCS 해킹/오류로 인하여 오작동 암(Arm) 명령이 내려오더라도, 작업자가 기체 외부에서 물리적 버튼을 길게 눌러(약 3초간) 해제하지 않는 이상 액추에이터로 나가는 PWM/DShot 출력을 하드웨어 게이트(Hardware High-Z 또는 Pulldown) 수준에서 봉쇄하는 메커니즘이다.</p>
-<p>PX4의 IO 프로세서(PX4IO) 펌웨어 부트는 메인 프로세서(FMU) 운영체제와 분리되어 독립 작동하며, MAVLink 프로토콜의 <code>SYS_STATUS</code> 메시지 내 <code>MAV_SYS_STATUS_SENSOR_MOTOR_OUTPUTS</code> 비트마스크를 통해 현재 물리적 안전 버튼이 활성화(Safe) 상태인지 해제(Armed ready) 상태인지를 QGroundControl로 중계한다.</p>
-<h2>4.  Ardupilot (AP_Arming) 아키텍처와의 검증 층위 비교</h2>
-<p>하드웨어와 전계를 검증하는 아키텍처 철학에 있어 PX4-Autopilot과 Ardupilot은 대응 구조적 차이를 나타낸다.</p>
+<p>비행 전 점검(Pre-flight Check) 단계에서 무인항공기(UAV)의 항법 및 제어 알고리즘이 아무리 완벽하더라도, 하드웨어의 물리적 무결성이 확보되지 않으면 치명적인 비행 사고로 이어진다. PX4-Autopilot 아키텍처는 센서 데이터의 논리적 검증뿐만 아니라, 기체에 안정적인 전력을 공급하는 전력 시스템(Power System), 내부 컴포넌트 간 통신을 담당하는 하드웨어 버스(Hardware Bus: I2C, SPI, CAN), 그리고 안전 스위치 등 물리적 안전 장치의 상태를 엄격하게 점검하는 메커니즘을 내장하고 있다. 본 장에서는 PX4(Firmware v1.14 기준) 시스템에서 수행되는 물리적 계층의 사전 승인 로직과 GCS(QGroundControl)와의 상호작용을 심층적으로 분석한다.</p>
+<h2>1.  전력 시스템(Power System) 점검 로직</h2>
+<p>동력이 상실되거나 전압 강하(Brownout)가 발생하면 비행 제어기(Flight Controller, FC)가 재부팅되거나 제어 능력을 상실하게 된다. PX4 커맨더(Commander) 모듈은 전력 보드의 안정성을 다각도로 평가한다.</p>
+<h3>1.1  입력 전압(Input Voltage) 및 전류(Current) 모니터링</h3>
+<p>FC 하드웨어(예: Pixhawk 시리즈)는 주 전원 포트(Power Module) 및 예비 전원(USB, Servo Rail 등) 포트를 통해 들어오는 전압을 ADC(Analog-to-Digital Converter)로 측정한다.</p>
 <ul>
-<li><strong>PX4-Autopilot:</strong> 중앙 집중적인 <code>Commander</code> 모듈 하위의 <code>PreFlightCheck</code>가 일괄적으로 수집된 uORB 메시지 상태(Error Flags)를 블랙박스처럼 평가한다. 드라이버단(Device Driver)에서 스스로 1차적인 데이터를 정제하여 uORB에 밀어 넣으면, 커맨더는 이를 비즈니스 로직(시동 여부) 관점수에서만 해석하는 마이크로서비스(Microservice)적 결합도를 갖는다.</li>
-<li><strong>Ardupilot:</strong> <code>AP_Arming</code> 라이브러리 객체를 중심으로 운영된다. 하부의 <code>AP_BattMonitor</code>나 센서 백엔드(Sensor Backend) 라이브러리와 직접 강하게 결합(Tightly-coupled)되어 객체 지향적으로 체인(Chain) 호출을 시행하며 검증한다. 따라서 파라미터 설정(예: <code>ARMING_CHECK</code> 비트마스크) 측면에서 보드 전체 핀 레벨의 점검 통제가 조금 더 포괄적으로 전개된다.</li>
+<li><strong>정상 전압 범위(Threshold) 검증</strong>: 주 배터리 전압이 너무 낮거나(예: 셀당 <span class="math math-inline">3.2V</span> 미만), FC 작동 최소 전압(일반적으로 <span class="math math-inline">4.75V \sim 5.25V</span>)을 이탈하는지 점검한다. <code>battery_status</code> uORB 메시지를 통해 주기적으로 갱신되는 배터리의 잔량(Capacity) 및 순간 전압(Voltage) 드롭 징후가 이륙 전 허용치 이내에 있어야 시동(Arming)이 승인된다.</li>
+<li><strong>다중 전원 이중화(Redundancy)</strong>: 산업용 Pixhawk는 보통 2개 연동 이상의 전원 입력을 지원한다. PX4는 메인 파워 모듈에 이상이 발생 시, 두 번째 파워 모듈이나 다른 예비 전원 소스의 활성화 여부 및 정상 상태를 판단하여 가용성을 평가한다.</li>
 </ul>
-<h2>5.  QGroundControl 프론트엔드 연동 및 GCS 자율 관제 제어 기술</h2>
-<p>GCS 개발 시 이와 같은 딥-레벨 하드웨어 오류를 어떻게 사용자(오퍼레이터)에게 표현하고 자율 통제할지가 매우 중요하다. QGroundControl 내부의 <code>Vehicle.cc</code> 클래스는 PX4가 뱉어내는 MAVLink <code>STATUSTEXT</code> 심각도(Severity) 메시지 스펙트럼(Emergency/Critical/Warning)을 즉시 가로채어(Intercept), Qt 기반 <code>Qml</code> 프론트엔드의 최상단 UI(툴바 영역)에 스피커 피드백 및 시각적 적색 경고로 렌더링한다.</p>
-<p>또한, 자율 에이전트 다수(Swarm)를 동시 관제해야 하는 멀티 드론 오퍼레이션 환경이나 ROS2 기반의 로보틱스 관제 미들웨어 구축 상황이라면 다음과 같은 방어 로직 배치가 필수적이다.</p>
-<ol>
-<li>ROS2의 <code>/fmu/out/battery_status</code> 토픽을 서브스크라이빙하는 관제 서버(Fleet Manager) 노드를 구축한다.</li>
-<li>수 대의 드론 중 특정 기체의 하드웨어 버스 에러 카운터가 서서히 상승하는 징후(예비 고장 상태)가 보이면, PX4 Commander가 시동을 원천적으로 막기 전에 선제적으로 해당 에이전트를 임무 스케줄(Mission Array)에서 논리적으로 배제(Exclude)하는 상태 기반 제어(State-based Control) 아키텍처를 도입해야 치명적 항공 사고를 사전에 예방할 수 있다.</li>
-</ol>
+<h2>2.  하드웨어 버스(Hardware Bus) 무결성 검증</h2>
+<p>비행 제어 컴퓨터와 주변 장치(나침반, GPS, 광학 흐름 센서 등)는 I2C, SPI, UAVCAN과 같은 디지털 버스를 통해 데이터를 교환한다. 하드웨어 버스에 전기적 잡음(Noise)이 심하거나 단선, 커넥터 접촉 불량 등이 발생하면 통신 오류로 인한 I/O 병목이 초래된다.</p>
+<h3>2.1  I2C/SPI 버스 에러율 측정</h3>
+<p>PX4의 센서 드라이버 계층에서는 통신 시 발생한 오류 횟수(Error Count)를 자체적으로 누적하여 관리한다.</p>
+<ul>
+<li><strong>Bus Error Counter</strong>: 데이터 전송 중 체크섬(Checksum) 불일치, 응답 지연(Time-out), 디바이스 응답 없음(NACK - Negative Acknowledgement) 등의 오류가 발생하면 각 센서 드라이버가 카운터를 증가시킨다.</li>
+<li><strong>임계값 기반 차단</strong>: 커맨더 모듈은 부팅 이후 발생한 총 버스 에러율을 점검한다. 지속적으로 통신 에러가 발생하는 주변 장치 채널이 감지될 경우, 일시적인 노이즈가 아닌 하드웨어적 결함으로 판단하고 Pre-flight Check 실패(Fail)를 반환한다.</li>
+</ul>
+<h3>2.2  UAVCAN 노드 상태 관리</h3>
+<p>UAVCAN(DroneCAN) 프로토콜을 사용하는 지능형 노드(스마트 배터리, ESC, CAN GPS 등) 배열에 대해서는 각 노드가 일정한 주기로 송신하는 노드 상태 메시지(NodeStatus)를 모니터링한다. 노드가 “OFFLINE“이거나 “ERROR” 상태인지 점검하여 CAN 버스 기반 분산 아키텍처의 건전성을 확인한다.</p>
+<h2>3.  물리적 안전 장치(Safety Equipment) 점검</h2>
+<p>디지털 전력과 통신선 외에도 사용자의 물리적 개입이 필요한 스위치 및 안전 장치가 존재한다.</p>
+<h3>3.1  하드웨어 안전 스위치(Safety Switch) 상태 판별</h3>
+<p>사고 예방을 위해 대부분의 멀티로터 기체는 시동 전 모터로의 PWM(Pulse Width Modulation) 또는 DShot 신호 출력을 물리적으로 차단하는 안전 스위치를 구비하고 있다.</p>
+<ul>
+<li><strong>상태 전이 검증</strong>: QGroundControl(GCS)에서 시동 명령을 내리더라도 기체 본체의 안전 스위치가 여전히 눌려 있지 않은 체결 상태(Engaged/Safe)라면, 커맨더는 “Safety Switch is engaged” 경고를 발생시키며 시동을 거부한다.</li>
+<li><strong>CBRK(Circuit Breaker) 파라미터</strong>: 개발 환경이나 특수 목적 상 안전 스위치를 배제해야 할 경우를 대비해, 시스템 파라미터 <code>CBRK_IO_SAFETY</code>를 설정하여 스위치 검증 단계를 소프트웨어적으로 우회(Bypass)할 수도 있다. Ardupilot의 <code>BRD_SAFETYENABLE</code>과 유사한 역할을 수행한다.</li>
+</ul>
+<h2>4.  커맨더 모듈 하드웨어 점검 다이어그램</h2>
+<p>PX4 커맨더 로직 내 물리적 체크의 흐름을 시각적으로 나타내면 다음과 같다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[Pre-flight Check 호출] --&gt; B{전력 모듈(ADC) 전압 상태}
+    B -- 비정상 (저전압) --&gt; F[시스템 시동 거부 및 경고 출력]
+    B -- 정상 --&gt; C{하드웨어 버스 (I2C/SPI/CAN) 에러율}
+    C -- 임계치 초과 --&gt; F
+    C -- 정상 --&gt; D{물리적 안전 스위치 상태}
+    D -- Safe (활성화 상태) --&gt; F
+    D -- Unsafe (해제 상태) --&gt; E[모터 PWM 활성화 및 Arming 단계 진입 허용]
+</code></pre>
+<h2>5.  결론 및 요약</h2>
+<p>PX4-Autopilot의 전력 및 하드웨어 점검 메커니즘은 단순한 알고리즘적 추정치 검증을 넘어 기체의 실질적인 비행 능력을 담보하는 첫 번째 관문이다. 배터리의 입력 전압, I2C/SPI 버스의 에러 누적, UAVCAN 노드의 건전성, 그리고 사용자의 안전 스위치 개입 등을 복합적으로 점검함으로써 비행 도중 발생할 수 있는 갑작스러운 전기적 셧다운이나 통신 두절로 인한 치명적 추락 요인을 이륙 전에 원천 차단한다. GCS 개발자나 관제 운용자는 QGroundControl 상에 표시되는 <code>PREFLIGHT FAIL: hardware</code> 등의 통보를 심층적으로 분석하기 위해, 이처럼 물밑에서 돌아가는 다양한 물리적 검증 로직을 반드시 숙지해야 한다.</p>
 
             </article>
             <footer>

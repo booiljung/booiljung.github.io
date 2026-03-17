@@ -115,61 +115,32 @@
             </header>
             <article>
                 <h1>40.3.4.1.1 나이퀴스트 섀넌 표본화 정리(Nyquist-Shannon Sampling Theorem)에 따른 데드라인 오버샘플링(Oversampling) 마진 설정</h1>
-<p>이 절에서는 신호 처리 이론의 근간이 되는 나이퀴스트-섀넌 표본화 정리(Nyquist-Shannon Sampling Theorem)를 PX4-Autopilot(Firmware 버전: v1.14 기준)과 QGroundControl(v4.3 기준) 간의 MAVLink 통신 데드라인(Deadline) 제어에 어떻게 차용할 수 있는지 분석한다. 특히 앞서 다룬 RTOS의 타이밍 지터(Jitter) 환경 하에서, 명령어 전송 및 상태 동기화 실패를 방지하기 위해 데드라인의 오버샘플링(Oversampling) 마진을 설정하는 수학적, 실무적 관제 기법을 상세히 기술하라.</p>
-<h2>1.  MAVLink 통신 시스템에서의 표본화 정리 재해석</h2>
-<p>나이퀴스트-섀넌 표본화 정리에 따르면, 대역제한신호(Band-limited Signal)를 손실 없이 복원하기 위해서는 신호의 최대 주파수 <span class="math math-inline">f_{max}</span>의 최소 2배 이상의 샘플링 주파수 <span class="math math-inline">f_s</span> (<span class="math math-inline">f_s \geq 2 f_{max}</span>)로 표본화를 수행해야 한다.</p>
-<p>이를 GCS와 PX4 간의 실시간 관제 통신 모델로 해석하면 다음과 같다.</p>
-<ul>
-<li><strong>신호 주파수(<span class="math math-inline">f_{max}</span>):</strong> 기체 상태(State)의 최대 허용 변화 빈도, 혹은 GCS가 커맨드를 반복적으로 송출하여 기대하는 상태 동기화 유효 대역폭.</li>
-<li><strong>표본화 주기(<span class="math math-inline">T_s = 1/f_s</span>):</strong> GCS에서 MAVLink 응답(예: <code>COMMAND_ACK</code>) 타임아웃을 평가하고 미수신 시 재전송(Retry) 루틴을 수행하는 주기(Deadline).</li>
-</ul>
-<p>즉, PX4 기체의 상태 천이(예: Armed <span class="math math-inline">\rightarrow</span> Disarmed)가 성공적으로 이루어졌는지 GCS가 유실 없이 감지하려면, 역으로 타임아웃 재전송 폴링(Polling) 루프를 최소 <span class="math math-inline">2 f_{max}</span>의 빈도(절반의 데드라인 시간)로 가동하는 데드라인 오버샘플링이 요구된다.</p>
-<h2>2.  지터(Jitter) 환경 하의 데드라인 오버샘플링 마진</h2>
-<p>앞 절에서 분석한 바와 같이 PX4의 NuttX RTOS 기반 스케줄링 간섭 및 타이머 인터럽트로 인해, MAVLink 패킷은 일정한 주파수로 응답되지 않고 통계적 지터(Jitter)가 수반된다. 지터가 개입된 상태에서 이론적인 나이퀴스트 기준(Nyquist Rate, <span class="math math-inline">2 f_{max}</span>)만을 경직되게 차용하면 앨리어싱(Aliasing)과 유사한 위상 왜곡 측면의 관제 시점 불일치가 일어날 수 있다.</p>
-<p>이를 극복하기 위해 제어공학에서는 최소 기준 주파수보다 5배 <span class="math math-inline">\sim</span> 10배 높은 비율로 샘플링하는 **오버샘플링(Oversampling)**을 채택한다. GCS 제어 데드라인 <span class="math math-inline">T_{deadline}</span>을 설정할 때의 오버샘플링 계수(Oversampling Factor)를 <span class="math math-inline">K_{os}</span>라 하면, 요구되는 보완 데드라인은 다음과 같다.</p>
-<p><span class="math math-display"> T_{deadline} = \frac{1}{K_{os} \cdot f_{max}} \quad (\text{단, } K_{os} \geq 2) </span></p>
-<p>NuttX 컨텍스트 스위칭 지연의 최대 상한(Upper Bound)을 <span class="math math-inline">\tau_{max}</span>, RF 네트워크 전파 거리를 고려한 왕복 지연 연장분을 <span class="math math-inline">\delta_{RTT}</span>라고 할 때, 데드라인 로직이 붕괴하지 않기 위한 오버샘플링 팩터 함수는 다음과 같이 제약된다.</p>
-<p><span class="math math-display"> T_{deadline} &gt; \tau_{max} + \delta_{RTT} </span><br />
-<span class="math math-display"> \therefore K_{os} &lt; \frac{1}{f_{max}(\tau_{max} + \delta_{RTT})} </span></p>
-<p>QGroundControl과 PX4 간 커스텀 연동 기능을 개발할 때, 이 기법을 이용해 <span class="math math-inline">T_{deadline}</span>을 상기 지터 한곗값인 <span class="math math-inline">\tau_{max}</span>를 충분히 포괄하는 최소 시간으로 설정하고 빈번한 방어적 타임아웃을 허용함으로써 통신 왜곡을 보상하라.</p>
-<h2>3. PX4와 Ardupilot의 응답 파이프라인 차이에 따른 마진 설정 이원화</h2>
-<ul>
-<li><strong>PX4-Autopilot (동적 오버샘플링 필요):</strong><br />
-PX4의 핵심 미들웨어인 uORB 아키텍처는 비동기식 퍼블리시/서브스크라이브 패턴을 따르며, 통신 큐 병목 구간 등에서 메시지 유실(Message Drop)이 발생할 가능성을 구조적으로 내포한다. 그러므로 QGroundControl 명령 재전송 타임아웃을 결정할 때, RTOS 지터 분산치를 감안하여 높은 <span class="math math-inline">K_{os}</span> (예: 4~6배) 마진의 보수적인 오버샘플링 데드라인 전략을 채취해야 신뢰성을 보장할 수 있다.</li>
-<li><strong>Ardupilot (정적 데드라인 가능성):</strong><br />
-Ardupilot은 내부 센서 파이프라인 및 모듈 간 통신에서 전역 상태 객체의 공유(Shared Memory) 및 동기식(Synchronous) 콜백 구조를 많이 활용하므로 내재적 지연 편차가 상대적으로 적게 유지될 수 있다. 따라서 앨리어싱 영역을 회피하기 위한 기본 나이퀴스트 한계(예: <span class="math math-inline">K_{os} = 2.5 \sim 3</span>)에 가까운 보수적 정적 데드라인으로도 충분한 상태 제어가 이뤄진다.</li>
-</ul>
-<h2>4. GCS-PX4 데드라인 오버샘플링 시퀀스 설계</h2>
-<p>MAVLink 기반 지상 관제 시스템에 섀넌의 정리를 응용한 타임아웃 감시 모델을 아래 도표와 같은 시퀀스로 설계하라.</p>
-<pre><code class="language-mermaid">sequenceDiagram
-    participant GCS_Task as GCS Command Sender (QGroundControl)
-    participant Channel as Datalink / RF
-    participant PX4_MAV as PX4 MAVLink Module
-    participant PX4_uORB as PX4 uORB &amp; Flight Stack
-    
-    rect rgb(230, 240, 255)
-    Note over GCS_Task: Nyquist Deadline Margin Setup&lt;br&gt;K_os = 4, T_deadline = (1/4*f_max)
-    end
-    
-    GCS_Task-&gt;&gt;Channel: COMMAND_LONG (예: RTH 복귀 명령)
-    Channel-&gt;&gt;PX4_MAV: RTH 명령 전파
-    PX4_MAV-&gt;&gt;PX4_uORB: uORB Topic Publish 수행
-    
-    Note over PX4_uORB: RTOS Jitter 발생 (스케줄링 처리 지연)
-    
-    GCS_Task-&gt;&gt;GCS_Task: T_deadline 만료 (Oversampling 루프 트리거)
-    GCS_Task-&gt;&gt;Channel: COMMAND_LONG 재전송 (Aliasing 방지 표본화 개입)
-    Channel-&gt;&gt;PX4_MAV: RTH 명령 방어적 추가 수신 (명령 멱등성에 의해 중복 무시)
-    
-    PX4_uORB-&gt;&gt;PX4_MAV: COMMAND_ACK 준비 완료
-    PX4_MAV-&gt;&gt;Channel: COMMAND_ACK 송출
-    Channel-&gt;&gt;GCS_Task: ACK 수신 대조 (상태 동기화 확인)
-    
-    Note over GCS_Task: 초과된 표본화 감시 루틴 종료 및 상태 정상 반영
+<p>무인항공기(UAV)의 자세 제어(Attitude Control) 및 데이터 링크 기반 관제 통신은 모두 아날로그 공간에서의 물리적 변화를 이산화(Discretization)하여 제어하는 디지털 피드백 시스템(Digital Feedback System)을 전제로 한다. 이를 수학적 손실 없이 복원하고 안정적인 비행(Stability)을 담보하기 위한 가장 근본적인 명제가 바로 나이퀴스트-섀넌 표본화 정리(Nyquist-Shannon Sampling Theorem)이다. 특히 앞선 절에서 규명한 RTOS 스케줄링 지터(Jitter) 환경 하에서는 이론적인 임계 주파수에 더해 타임아웃 데드라인(Deadline)을 방어하기 위한 오버샘플링(Oversampling) 마진 설계가 지상 관제 시스템(GCS) 아키텍처 및 PX4-Autopilot 제어 튜닝에 필수적으로 동반되어야 한다.</p>
+<h2>1.  나이퀴스트 섀넌 표본화 정리의 관제 시스템 적용 원리</h2>
+<p>나이퀴스트 섀넌 표본화 정리는 아날로그 신호를 디지털로 변환할 때, 원본 신호가 포함하는 가장 높은 주파수 성분 <span class="math math-inline">f_{max}</span>의 최소 2배 이상의 주파수(<span class="math math-inline">f_s \ge 2f_{max}</span>)로 표본화를 수행해야만 에일리어싱(Aliasing, 신호 왜곡) 없이 신호를 완벽하게 재구성할 수 있다는 이론이다.</p>
+<p>멀티로터 기체의 물리적 동역학을 예로 들면, 프레임 진동(Vibration)이나 외부 돌풍(Wind Gust)에 의한 기체 상태 변화의 최대 주파수 대역이 <span class="math math-inline">f_{max}</span>라 할 때, MAVLink 통신 주기 또는 내부 제어 루프 주기 <span class="math math-inline">f_s</span>는 최소 <span class="math math-inline">2f_{max}</span>를 만족해야 한다. 하지만 실제 PX4 비행 제어기(Flight Controller) 모델링 실무에서는 이론적인 최하한선인 2배만을 고집하지 않으며, 필터의 지연 위상(Phase Delay)을 상쇄하고 제어 여유를 확보하기 위해 4배에서 최고 10배에 이르는 오버샘플링 계수(Oversampling Factor)를 부여한다.</p>
+<h2>2.  RTOS 지터 환경에서의 오버샘플링 마진 및 데드라인 수식화</h2>
+<p>QGroundControl(v4.3 기준) 등의 소프트웨어가 기체로 보내는 <code>SET_POSITION_TARGET_LOCAL_NED</code>와 같은 주파수 종속 제어 명령이나, 센서가 uORB로 발행하는 IMU 시계열 데이터는 앞서 분석한 바와 같이 컨텍스트 스위칭 지연(Context Switching Latency) 최댓값인 <span class="math math-inline">J_{max}</span>만큼 주기가 흔들리게(Fluctuation) 된다. 즉, 목표 표본화 주기 <span class="math math-inline">T_s = 1/f_s</span>는 실제 런타임에서 <span class="math math-inline">[T_s - J_{max}, T_s + J_{max}]</span>의 범위를 갖는다.</p>
+<p>최악의 시나리오(Worst-Case Execution Time; WCET) 즉, 가장 지터가 큰 순간 즉 시간 간격이 <span class="math math-inline">T_s + J_{max}</span>로 늘어난 시점에서도 나이퀴스트 조건을 위반하지 않으려면, 다음과 같은 하한 제약 조건을 충족하도록 오버샘플링 마진 상수 <span class="math math-inline">K_{margin}</span>을 더 높게 설정해야 한다.</p>
+<p><span class="math math-display"> T_s + J_{max} \le \frac{1}{2 f_{max} \cdot K_{margin}} </span></p>
+<p>여기서 수축 변수 <span class="math math-inline">\vert J_{max} \vert \ge 0</span> 와 같은 제한 조건이 수식 해석 범위 내에 존재하며, 이 원리는 오프보드(Offboard) 제어 개발 시 데드라인 마스킹(Deadline Masking)을 방지하는 안전 설계 기법의 토대가 된다.</p>
+<h2>3. 데드라인 지터와 오버샘플링 모형 (Mermaid 다이어그램)</h2>
+<p>아래의 모형은 정상적인 샘플링과 스케줄링 지터로 인해 데드라인이 지연될 때, 이를 오버샘플링 마진으로 극복하는 구조를 보여준다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[기체 동역학 대역폭 $f_{max}$ 도출] --&gt; B{나이퀴스트 임계치 $2f_{max}$ 계산}
+    B --&gt; C[이상적 샘플링 간격 $T_{nyquist}$ 할당]
+    C --&gt; D{RTOS 스케줄링 지터 $J_{max}$ 개입}
+    D --&gt;|오버샘플링 부재 시| E[에일리어싱 발생 및 제어 루프 불안정]
+    D --&gt;|Oversampling $K_{margin}$ 적용| F[지연이 발생해도 $T_s + J_{max} &lt; T_{nyquist}$ 충족]
+    F --&gt; G[비행 상태 무손실 복원 및 안정화 달성]
 </code></pre>
-<h2>5. 실무 적용 및 최적화 방법론</h2>
-<p>관제 시스템 소프트웨어를 개발할 때 데드라인 <span class="math math-inline">T_{deadline}</span> 상수를 지나치게 좁게(높은 <span class="math math-inline">K_{os}</span>) 잡으면 MAVLink 채널 대역폭(Bandwidth)을 고갈시키고 PX4 텔레메트리 파이프라인(Telemetry Pipeline) 전반에 큐 폭주(Queue Flooding)를 유발할 수 있다. 반대로 낮게 잡으면 나이퀴스트 조건을 위배하여 상태가 변하는 순간을 캐치하지 못하는 인지 불능(State Unobservability) 구간에 빠진다.</p>
-<p>따라서 QGroundControl의 <code>Vehicle::sendMavCommand</code> 백엔드 소스 코드를 수정 개입하여, 링크의 실시간 평균 RTT(Round-Trip Time)와 드롭률(Drop Rate)을 동적으로 계측하는 루틴을 구현하라. 이를 기반으로 <span class="math math-inline">f_{max}</span>를 적응형(Adaptive)으로 보정하는 칼만 필터(Kalman Filter) 혹은 PID 피드백 제어 공학적 방법론을 타임아웃 타이머에 결합하라. 논문 “Networked Control Systems: Nyquist Sampling Theorem under Packet Dropouts“에 나오는 바와 같이 패킷 유실률 상황에 실시간으로 연동된 오버샘플링 주파수 추종 기법을 관제 앱 단에 도입하는 것이 고수준 통합 엔지니어링의 핵심이다.</p>
+<h2>4. PX4, Ardupilot, 그리고 GCS/ROS2 통합 아키텍처에서의 해석</h2>
+<p>관제 프로토콜 통신 스케줄링과 관련하여 여러 오픈소스 시스템들은 상이한 엔지니어링 접근을 보여준다.</p>
+<ul>
+<li><strong>Ardupilot의 고정 스케줄링 하드웨어 의존성:</strong> 전통적인 Ardupilot은 루프 타임의 지터를 극한으로 억제하여 400Hz 등의 고속 루프(Fast Loop)를 거의 하드웨어 수준으로 고정하려는 성향이 강하다. 따라서 소프트웨어적 오버샘플링 마진을 동적으로 평가하기보다는, 하드웨어 로우패스 필터(Hardware Low-Pass Filter)의 컷오프 주파수(Cutoff Frequency) 설정을 통해 에일리어싱을 원천적으로 차단하는 방식에 집중한다.</li>
+<li><strong>PX4-Autopilot 및 uORB 생태계 유연성:</strong> 반면, PX4 시스템(v1.14 기준)은 다중 스레드의 독립적 스케줄링 특성상 약간의 지터를 허용하되, 이를 소프트웨어단(Estimator 등)의 비동기적 보간(Interpolation) 및 고배율 오버샘플링 기법으로 상쇄하는 설계를 채택하고 있다. 이는 모듈 간 커플링(Coupling)을 줄여 확장성을 보장하기 위함이다.</li>
+<li><strong>ROS2 uXRCE-DDS 및 오프보드(Offboard) 제어 백엔드의 의무:</strong> ROS2를 이용하여 다중 에이전트 군집 비행(Swarm Flight)을 관제할 경우, 지상 노드(GCS 또는 엣지 시스템)는 기체로 초당 수 회 이상의 위치 명령을 전송한다. 개발자는 에지 컴퓨터의 무선 네트워크 지터 한계치(<span class="math math-inline">J_{max}</span>)를 통계 추정(Statistical Estimation)한 후, 기체의 속도 제동 대역폭(<span class="math math-inline">f_{max}</span>) 대비 최소 3~5배수(<span class="math math-inline">K_{margin}</span>)의 오버샘플링 데드라인 마진을 설계하여 퍼블리싱 빈도(Publish Rate)를 50Hz 수준으로 아웃바운드 큐(Outbound Queue)에 로드해야만 GCS 레벨에서의 제어 손실과 추락을 방지할 수 있다.</li>
+</ul>
 
             </article>
             <footer>

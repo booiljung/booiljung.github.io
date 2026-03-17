@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:44.3.3 PX4 내부 파라미터 트리(Parameter Tree)의 이륙 속도 및 고도 연동 구조</title>
+    <title>BIJUNG:44.3.3. PX4 내부 파라미터 트리(Parameter Tree)의 이륙 속도 및 고도 연동 구조</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,81 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>44.3.3 PX4 내부 파라미터 트리(Parameter Tree)의 이륙 속도 및 고도 연동 구조</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.3.3 PX4 내부 파라미터 트리(Parameter Tree)의 이륙 속도 및 고도 연동 구조</span></nav>
+                    <h1>44.3.3. PX4 내부 파라미터 트리(Parameter Tree)의 이륙 속도 및 고도 연동 구조</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.3.3. PX4 내부 파라미터 트리(Parameter Tree)의 이륙 속도 및 고도 연동 구조</span></nav>
                 </div>
             </header>
             <article>
-                <h1>44.3.3 PX4 내부 파라미터 트리(Parameter Tree)의 이륙 속도 및 고도 연동 구조</h1>
+                <h1>44.3.3. PX4 내부 파라미터 트리(Parameter Tree)의 이륙 속도 및 고도 연동 구조</h1>
+<h2>1.  개요: 개방형 파라미터 아키텍처 (Open Parameter Architecture)</h2>
+<p>PX4-Autopilot(Firmware 버전 v1.14 기준)은 모듈형(Modular) 로보틱스 프레임워크 설계 철학을 바탕으로, 비행 제어 및 동작에 관여하는 모든 변수를 <strong>파라미터 트리(Parameter Tree)</strong> 라는 일원화된 데이터베이스로 관리한다. 이 파라미터 시스템은 단순한 상수(Constant)의 집합이 아니라, 비행 중에도 uORB(Micro Object Request Broker) 메시지를 통해 실시간으로 변경 사항을 퍼블리싱(Publishing)하고 서브스크라이빙(Subscribing)할 수 있는 동적 구조를 띤다.</p>
+<p>특히 기체가 지면을 박차고 오르는 이륙(Takeoff) 프로세스는 모터의 급출력, 지면 효과(Ground Effect), 그리고 고도 제어 시스템의 활성화가 복합적으로 일어나는 과정이므로, 이륙 속도와 고도에 대한 파라미터 연동 구조를 이해하는 것은 안정적인 GCS 관제 기술 및 커스텀 비행 제어기 개발에 필수적이다.</p>
+<h2>2.  핵심 이륙 파라미터(Takeoff Parameters) 계층 구조</h2>
+<p>멀티로터(Multicopter) 기반 PX4 시스템에서 이륙의 프로파일(Trajectory Profile)을 결정짓는 핵심 파라미터들은 주로 <code>MIS_</code> (Mission) 계열과 <code>MPC_</code> (Multicopter Position Control) 계열로 나뉘어 연동된다.</p>
+<ol>
+<li><strong><code>MIS_TAKEOFF_ALT</code> (Mission Takeoff Altitude):</strong></li>
+</ol>
+<ul>
+<li><strong>설명:</strong> GCS(예: QGroundControl)로부터 별도의 고도 지정 없이 이륙(Takeoff) 명령만 하달되었을 때, 혹은 임무(Mission) 모드에서 자동 이륙 시 기체가 도달하여 호버링(Hovering)해야 할 지면 대비 상대 고도(AGL, Above Ground Level)의 기본값을 지정한다.</li>
+<li><strong>단위:</strong> 미터 (m), <strong>기본값:</strong> 2.5m</li>
+</ul>
+<ol start="2">
+<li><strong><code>MPC_TKO_SPEED</code> (Multicopter Takeoff Speed):</strong></li>
+</ol>
+<ul>
+<li><strong>설명:</strong> 이륙 시 기체가 상승하는 최대 수직 속도를 정의한다.</li>
+<li><strong>단위:</strong> m/s, <strong>기본값:</strong> 1.5m/s</li>
+</ul>
+<ol start="3">
+<li><strong><code>MPC_TKO_RAMP_T</code> (Takeoff Ramp Time):</strong></li>
+</ol>
+<ul>
+<li><strong>설명:</strong> 이륙 명령이 떨어지고 모터가 공회전(Idle) 상태에서 이륙 필요 추력(Takeoff Thrust)에 도달하기까지 스로틀(Throttle)을 부드럽게 증가시키는 스루 레이트(Slew-rate)의 시간 상수이다.</li>
+<li><strong>단위:</strong> 초 (s), <strong>기본값:</strong> 3.0s</li>
+</ul>
+<h2>3.  이륙 속도 및 고도의 내부 연동 로직 (Source Code Architecture)</h2>
+<p>위에서 정의된 파라미터들은 단순히 제어기에 그대로 전달되는 것이 아니라, 궤적 생성기(Trajectory Generator)인 <code>FlightTaskTakeoff</code> 클래스를 거쳐 부드러운 위치 및 속도 설정점(Setpoint)으로 변환된다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[GCS Takeoff Command] --&gt; B[Commander Module]
+    B --&gt; C{Parameter Evaluation}
+    C --&gt;|Fetch MIS_TAKEOFF_ALT| D[Target Altitude Z_target]
+    C --&gt;|Fetch MPC_TKO_SPEED| E[Max Ascent Velocity Vz_max]
+    C --&gt;|Fetch MPC_TKO_RAMP_T| F[Ramp Up Time]
+    
+    D --&gt; G[(FlightTaskTakeoff \nTrajectory Generator)]
+    E --&gt; G
+    F --&gt; G
+    
+    G --&gt;|Smoothly Increment Z_sp| H[Position Controller (PosControl)]
+    G --&gt;|Slew-limited Vz_sp| H
+    H --&gt; I[Mixer &amp; Actuator Drivers]
+</code></pre>
+<h3>3.1  궤적 생성의 수학적 스무딩(Smoothing)</h3>
+<ul>
+<li>기체가 이륙할 때 시스템은 단순히 목표 고도(<code>MIS_TAKEOFF_ALT</code>)와 목표 속도(<code>MPC_TKO_SPEED</code>) 스텝 입력(Step Input)을 위치 제어기(PID)로 던지지 않는다.</li>
+<li>대신, 현재 바닥에 있는 고도 상태에서 시작하여 매 타임 스텝(<code>dt</code>)마다 <code>MPC_TKO_SPEED</code>를 넘지 않는 선에서 점진적으로 증가하는 중간 목표 고도 <span class="math math-inline">Z_{sp}(t)</span> 곡선을 수학적으로 생성한다(Jerk-limited Trajectory).</li>
+<li>이로 인해 제어 포화(Actuator Saturation)를 방어하고 부드러운 스풀업(Spool-up)이 가능해진다.</li>
+</ul>
+<h2>4.  QGroundControl(GCS)과의 동적 연동 메커니즘</h2>
+<p>운영자가 QGC(v4.3.0)에서 비행 전 이륙 고도를 슬라이더나 텍스트 박스로 조정하면, QGC는 백엔드 통신 모듈을 통해 <code>PARAM_SET</code> MAVLink 메시지를 PX4로 전송하여 <code>MIS_TAKEOFF_ALT</code> 파라미터 값을 실시간으로 덮어쓴다(Overwrite).</p>
+<ul>
+<li>PX4의 파라미터 서버는 변경을 감지하고 <code>parameter_update</code> uORB 토픽을 브로드캐스트한다.</li>
+<li><code>FlightModeManager</code>와 <code>Navigator</code> 모듈은 이 이벤트를 서브스크라이빙(Subscribe)하여 즉각적으로 다음번 이륙이나 오프보드(Offboard) 모드 진입 시의 고도 한계 기준을 새로운 값으로 갱신한다.</li>
+</ul>
+<h2>5.  Ardupilot과 PX4 파라미터 철학의 차이 (비교)</h2>
+<p>이륙 프로파일을 다루는 파라미터 트리 구조에서 PX4와 Ardupilot(Mission Planner)은 서로 다른 아키텍처 설계 철학을 보여준다.</p>
+<ul>
+<li><strong>PX4-Autopilot의 계층 구조:</strong> PX4는 파라미터를 기능 모듈별 접두사(<code>MPC_</code>, <code>MIS_</code>, <code>EKF2_</code>)로 매우 엄격하고 체계적으로 구분한다. 이륙 속도 하나를 제어하더라도 코어 비행 제어 모듈인 멀티로터 위치 제어(<code>MPC_</code>)에 파라미터를 귀속시켜 전역적인 모드 간 간섭을 분리한다.</li>
+<li><strong>Ardupilot의 편의성 중심 구조:</strong> Ardupilot은 <code>WPNAV_SPEED_UP</code> (웨이포인트 상승 속도)이나 <code>PILOT_TKOFF_ALT</code>와 같이 사용자나 조종사(Pilot) 관점에서의 직관적인 네이밍을 선호하며, 하나의 파라미터가 임무 주파수나 여러 비행 모드에 다중으로 영향을 미치는 통합적인(Tight-coupled) 설계 성향이 짙다.</li>
+</ul>
+<p>파라미터 중심의 트리 구조는 개발자가 재컴파일(Recompile) 과정 없이 기체의 동역학에 맞춰 무한히 시스템을 튜닝할 수 있게 만드는 오픈소스 오토파일럿의 본질이며, GCS 개발자는 이 파라미터 모듈 시스템의 메타데이터(Metadata) 명세를 완벽히 이해해야만 커스텀 제어 환경을 올바르게 구축할 수 있다.</p>
+<hr />
+<p><strong>[참고문헌 및 공식 문서]</strong></p>
+<ol>
+<li>PX4-Autopilot Official Documentation: <em>“Parameter Reference.”</em></li>
+<li>PX4-Autopilot Source Code Repository: <code>src/modules/flight_mode_manager/tasks/Takeoff/FlightTaskTakeoff.cpp</code>.</li>
+<li>MAVLink Protocol Specification: <em>“Parameter Protocol.”</em></li>
+</ol>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:39.7.3. 물리 및 전송 계층의 패킷 드롭 검출 실무</title>
+    <title>BIJUNG:39.7.3 물리 및 전송 계층의 패킷 드롭 검출 실무</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,68 +109,50 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>39.7.3. 물리 및 전송 계층의 패킷 드롭 검출 실무</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.7.3. 물리 및 전송 계층의 패킷 드롭 검출 실무</span></nav>
+                    <h1>39.7.3 물리 및 전송 계층의 패킷 드롭 검출 실무</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 39. 명령어 전달 신뢰성: COMMAND_LONG 및 ACK/NACK 처리 로직</a> / <span>39.7.3 물리 및 전송 계층의 패킷 드롭 검출 실무</span></nav>
                 </div>
             </header>
             <article>
-                <h1>39.7.3. 물리 및 전송 계층의 패킷 드롭 검출 실무</h1>
-<h2>1.  개요</h2>
-<p>무인항공기 시스템(UAS)의 원격 통신망(Telemetry Link)은 지상 관제 시스템(GCS)과 비행 제어기(PX4-Autopilot) 간의 MAVLink 메시지를 실어 나르는 핵심 생명선이다. 그러나 드론의 운용 환경 특성상 전자기 간섭(EMI), 다중 경로 페이딩(Multipath Fading), 하드웨어 버퍼 오버플로우 등 물리 계층(Physical Layer) 및 전송 계층(Transport Layer)에서 예기치 않은 데이터 유실, 즉 패킷 드롭(Packet Drop) 현상이 빈번하게 발생한다.</p>
-<p>이러한 통신 불안정성은 GCS의 고도 및 위치 업데이트 지연, 센서 파라미터 동기화 실패, 심지어 치명적인 제어 명령어(Command) 유실을 초래할 수 있다. 본 절에서는 통신 프로토콜 스택(Protocol Stack) 구조에서 패킷 드롭이 발생하는 근본 원인을 분석하고, MAVLink 통계 카운터 및 텔레메트리 상태 메시지를 활용하여 데이터 손실률을 정밀하게 검출(Detection)하는 실무적 기법을 기술하라.</p>
-<h2>2.  통신 스택별 패킷 손실 메커니즘</h2>
-<p>통신 단절의 원인을 진단하기 위해서는 OSI(Open Systems Interconnection) 7계층 모델에 빗대어 하위 계층에서부터 병목 지점을 추적해야 한다.</p>
-<h3>2.1  물리 계층(Physical Layer) 수준의 유실</h3>
-<p>이는 전파 환경 또는 하드웨어 결함에 의한 원시 데이터(Raw Byte) 손실을 의미한다. 주요 원인은 다음과 같다.</p>
-<ul>
-<li><strong>RF 신호 감쇠 및 간섭</strong>: 텔레메트리 라디오(예: SiK Radio, Microhard)의 송수신 출력 한계 초과, 안테나 지향성 문제, 또는 주변의 강력한 전파 간섭(RF Interference)으로 인해 비트 에러율(BER, Bit Error Rate)이 급증하는 경우이다.</li>
-<li><strong>포트 속도(Baud Rate) 불일치</strong>: PX4의 직렬 포트(UART) 설정과 무선 모뎀 간의 전송 속도가 미세하게 어긋나 스트림 싱크(Sync)가 깨지는 경우이다.</li>
-<li><strong>하드웨어 흐름 제어(Hardware Flow Control) 부재</strong>: RTS(Request to Send) 및 CTS(Clear to Send) 핀이 연결되지 않은 상태에서 대량의 기체 로그 데이터 전송 시, UART DMA 수신 버퍼(FIFO)에 병목이 발생하여 프레임이 오버라이트(Overwrite)되는 버퍼 오버런(Buffer Overrun) 현상이다.</li>
-</ul>
-<h3>2.2  전송 계층(Transport Layer) 및 MAVLink 프로토콜 수준의 유실</h3>
-<p>물리 계층에서는 바이트를 수신했으나, MAVLink 프로토콜 프레이머(Framer)가 유효한 패킷으로 조립(Reassembly)하는 단계에서 기각(Discard)되는 경우이다.</p>
-<ul>
-<li><strong>체크섬 에러(Checksum Error)</strong>: 패킷의 페이로드(Payload) 비트 중 일부가 통신 노이즈로 변형(Corrupt)되었을 때, 수신 측(QGroundControl 또는 PX4 <code>mavlink_receiver</code>)의 순환 중복 검사(CRC, Cyclic Redundancy Check) 실패로 인해 패킷 전체가 폐기된다.</li>
-<li><strong>시그니처 인증 실패(Signature Verification Failure)</strong>: MAVLink 2.0의 패킷 서명(Packet Signing) 기능이 활성화된 환경에서, 무선 구간의 해킹 또는 지연에 의해 타임스탬프 기반 암호화 해시 유효기간이 만료되면 위조된 패킷으로 간주되어 드롭된다.</li>
-</ul>
-<h2>3.  시스템 무결성 검증을 위한 데이터 플로우</h2>
-<p>아래 표상된 통신 무결성 다이어그램을 통하여 패킷 발생 점부터 MAVLink 파서(Parser)를 거쳐 드롭이 결정되는 과정을 도식화하라.</p>
-<pre><code class="language-mermaid">flowchart LR
-    GCS[GCS MAVLink 엔진] --&gt;|UART/Radio Tx| RF((RF 무선 링크\n잡음/간섭 영역))
-    RF --&gt;|UART Rx| DMA[PX4 UART DMA 버퍼]
-    DMA --&gt;|Raw Bytes| F(MAVLink Framer)
+                <h1>39.7.3 물리 및 전송 계층의 패킷 드롭 검출 실무</h1>
+<p>무인항공기 제어 시스템에서 지상 관제 시스템(GCS)과의 통신은 주로 가시권(LOS) 내의 무선 주파수(RF) 텔레메트리나 Wi-Fi, 혹은 LTE/5G 네트워크를 통해 이루어진다. PX4-Autopilot 환경에서 물리 계층(Physical Layer) 및 전송 계층(Transport Layer) 수준의 MAVLink 패킷 드롭(Packet Drop)은 기체 제어의 신뢰성을 심각하게 훼손할 수 있으므로, 이를 신속하게 검출하고 원인을 분석하는 실무적인 공학적 접근이 필수적이다.</p>
+<h2>1.  물리 및 전송 계층 패킷 드롭의 원인</h2>
+<p>비행 현장에서 발생하는 패킷 누락은 대개 다음 세 가지 영역 중 하나에서 기인한다.</p>
+<ol>
+<li><strong>물리 계층(Physical Layer) 오버헤드:</strong> RF 신호 간섭(Interference), 다중 경로 페이딩(Multipath Fading), 안테나 성능 저하 등으로 인해 무선 모뎀 구간에서 비트 에러(Bit Error)가 발생.</li>
+<li><strong>트랜시버 병목 버퍼 오버플로우:</strong> 고속으로 전송되는 직렬(Serial)/라디오 버퍼 데이터가 모뎀의 전송 허용 대역폭(Bandwidth)을 초과하여 UART 버퍼 오버플로우(Buffer Overflow) 발생.</li>
+<li><strong>전송 계층(Transport Layer) 네트워크 지연:</strong> UDP 기반의 IP 네트워크 환경에서 패킷 라우팅 지연, 라우터 스위칭 부하, 혹은 Wi-Fi 대역폭 포화(Bandwidth Saturation).</li>
+</ol>
+<h2>2.  검출 메커니즘 도식화 (Mermaid 도표)</h2>
+<p>다음은 MAVLink 시스템 내에서 패킷이 전송되는 흐름과 각 단계별 패킷 드롭 검출 포인트를 보여주는 다이어그램이다.</p>
+<pre><code class="language-mermaid">graph LR
+    A[PX4 MAVLink Module] --&gt;|UART Tx Buffer| B(Radio Transmitter)
+    B -.-&gt;|RF Link / Propagation| C(Radio Receiver)
+    C --&gt;|USB/Serial Rx Buffer| D[QGroundControl]
     
-    F --&gt;|Magic Byte 검사| S1{포맷 검사}
-    S1 -- 실패 --&gt; D1[Drop: Bad Magic]
-    S1 -- 통과 --&gt; C1{CRC 검증}
+    style B fill:#f9f,stroke:#333,stroke-width:2px
+    style C fill:#f9f,stroke:#333,stroke-width:2px
     
-    C1 -- 실패 --&gt; D2[Drop: CRC Error]
-    C1 -- 통과 --&gt; Seq{Sequence Number\nJump 판별}
-    
-    Seq -- 비연속적 --&gt; Warn[Drop 검출 로직\n패킷 누락 카운트 증가]
-    Seq -- 연속/정상 --&gt; u[uORB Topic Publish]
-
-    style RF fill:#fcc,stroke:#f00,stroke-width:2px,stroke-dasharray: 5 5
-    style D1 fill:#f99,stroke:#333,stroke-width:1px
-    style D2 fill:#f99,stroke:#333,stroke-width:1px
-    style Warn fill:#ff9,stroke:#333,stroke-width:1px
+    A -.-&gt;|Detect: mavlink status| A
+    B -.-&gt;|Detect: RADIO_STATUS| D
+    D -.-&gt;|Detect: Sequence Jump| D
 </code></pre>
-<h2>4.  패킷 드롭 검출 지표 및 진단 실무</h2>
-<p>드론 개발 엔지니어 및 운영자는 다음과 같은 시스템 지표를 활용하여 무선 물리 계층의 상태를 추론하고 진단해야 한다.</p>
-<h3>4.1  시퀀스 번호(Sequence Number) 점프 검사</h3>
-<p>MAVLink 프레임 헤더에는 0에서 255까지 순환 증가하는 8비트의 <code>seq</code> 필드가 존재한다. 수신 측 모듈은 이 스니펫을 감시하여 직전에 수신된 <code>seq</code>와 현재 수신된 <code>seq</code> 간의 차이를 통해 누락된 패킷 개수를 정확하게 계산(Calculate)한다.<br />
-예를 들어 직렬 포트 관리를 담당하는 내부 구동 코드는 누락된 패킷 수를 <code>mavlink_status_t</code> 구조체의 <code>packet_rx_drop_count</code> 변수에 지속적으로 합산하여 기록한다.</p>
-<h3>4.2  RADIO_STATUS 메시지를 통한 링크 품질 모니터링</h3>
-<p>호환되는 텔레메트리 하드웨어(SiK Radio 계열 등)는 펌웨어 차원에서 백그라운드로 <code>RADIO_STATUS</code> (#109) 메시지를 발생시킨다.</p>
+<h2>3.  실무적 검출 및 디버깅 기법</h2>
+<h3>3.1  NuttShell(<code>mavlink status</code>)을 이용한 진단</h3>
+<p>PX4 펌웨어(1.14 이상)에 접속된 NuttShell(NSH) 시스템에서 <code>mavlink status</code> 명령어를 입력하면, 각 MAVLink 인스턴스의 트래픽 및 버퍼 상태를 진단할 수 있다.</p>
 <ul>
-<li><strong><code>rxerrors</code></strong>: 수신 측 라디오 코프로세서가 감지한 물리 계층 파편화, CRC 오류 바이트의 누적 개수이다.</li>
-<li><strong><code>fixed</code></strong>: 순방향 오류 정정(FEC, Forward Error Correction) 알고리즘을 통해 자동으로 복원된 프레임 수치이다.</li>
-<li><strong><code>noise</code> 및 <code>remnoise</code></strong>: 배경 잡음 수준을 표시하며, 패킷 손실률(Packet Loss Rate)이 상승할 때 이 수치가 높다면 안테나 교체 나 주파수 대역 회피(Hopping) 설정이 요구된다.</li>
+<li><strong>TX errors / rate mult:</strong> UART 전송 큐 오버플로우로 인해 PX4 내부에서 전송조차 하지 못한 패킷의 개수를 의미한다. 이 수치가 계속 상승한다면 <code>TELEM1</code> 또는 <code>TELEM2</code> 포트의 물리적 대역폭(Baudrate) 한계 수용량을 초과한 것이므로 스트리밍 레이트를 낮춰야 한다(예: <code>mavlink stream</code> 명령어 조절).</li>
 </ul>
-<h3>4.3  통신 최적화 권고사항</h3>
-<p>지속적인 패킷 드롭이 식별된 경우, 개발자는 맹목적으로 송신 출력(TX Power)을 올리기보다는 데이터 전송 레이어의 최적화를 우선적으로 고려하라.<br />
-PX4의 파라미터 <code>MAV_0_MODE</code> 등 MAVLink 인스턴스 설정에서 불필요한 시스템 디버그 상태 정보의 스트리밍 주기를 낮추고, 텔레메트리 모뎀에서 가용한 무선 대역폭(Air Data Rate)이 직렬 보드레이트(Baud Rate) 대비 충분한 비스 브로드캐스트 마진(Margin)을 확보하도록 설계하라.<br />
-또한, QGroundControl의 MAVLink Link Stats 패널(Settings &gt; Comm Links)을 활용하여 손실률이 5%를 지속적으로 상회하는지 여부를 실비행 테스트(SITL/HITL 및 야외 실증) 시 항상 검증해야 한다.</p>
+<h3>3.2  <code>RADIO_STATUS</code> 메시지 마이닝</h3>
+<p>무선 텔레메트리(SiK Radio 계열 등)는 통신 품질 상태를 MAVLink <code>#109</code> 메시지인 <code>RADIO_STATUS</code> 토픽으로 정기적으로 브로드캐스팅한다. QGroundControl 혹은 플라이트 로그 분석 단계에서 다음 필드를 주의 깊게 관찰하라.</p>
+<ul>
+<li><code>rssi</code> (Received Signal Strength Indicator): 수신 신호 강도.</li>
+<li><code>noise</code>: 배경 잡음 레벨.</li>
+<li><code>rxerrors</code>, <code>fixed</code>: 디코딩 에러 및 수신 측에서 에러 정정(Error Correction) 엔진에 의해 수정된 횟수. <code>fixed</code> 증가분 대비 <code>rxerrors</code>가 급증한다면, 근본적인 RF 환경 개선 혹은 안테나 위치 재선정이 필요하다.</li>
+</ul>
+<h3>3.3  Ardupilot 대비 통신 큐 처리의 차이점</h3>
+<p>Ardupilot과 PX4-Autopilot은 동일한 하드웨어 다이얼로그(텔레메트리)를 사용할 수 있으나, NSH 운영체제를 활용하는 PX4는 직렬 포트(Serial Port)의 FIFO 버퍼 인터럽트 처리 방식에서 Ardupilot과는 구조적 차이를 갖는다. PX4는 여러 MAVLink 인스턴스를 동시 다발적으로 관리하며, uORB 기반 라우팅을 통해 특정 포트에 부하가 집중되지 않도록 동적으로 트래픽을 분산할 수 있다. 반면 버퍼 오버플로우 발생 시 PX4 내부의 누락(Tx Error) 통계가 NSH 터미널에서 상대적으로 더 명확하고 객관적인 지표로 조회되는 특징이 있다.</p>
+<p>결론적으로, 물리/전송 계층의 패킷 드롭 검출을 위해서는 PX4 내부 전송 버퍼 통계(<code>mavlink status</code>)와 텔레메트리 RF 상태(<code>RADIO_STATUS</code>), 그리고 지상 관제 시스템 레벨에서의 MAVLink 시퀀스 번호 모니터링을 상호 교차 검토(Cross-validation)해야 한다.</p>
 
             </article>
             <footer>

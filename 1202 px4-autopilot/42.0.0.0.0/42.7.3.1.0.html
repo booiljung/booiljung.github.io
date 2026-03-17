@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:42.7.3.1 비동기 원격 프로시저 호출(Asynchronous RPC) 관점에서의 명령어 전달 및 수락 기한(Deadline) 검증</title>
+    <title>BIJUNG:## 0.1  비동기 원격 프로시저 호출(Asynchronous RPC) 관점에서의 명령어 전달 및 수락 기한(Deadline) 검증</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,65 +109,50 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>42.7.3.1 비동기 원격 프로시저 호출(Asynchronous RPC) 관점에서의 명령어 전달 및 수락 기한(Deadline) 검증</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</a> / <span>42.7.3.1 비동기 원격 프로시저 호출(Asynchronous RPC) 관점에서의 명령어 전달 및 수락 기한(Deadline) 검증</span></nav>
+                    <h1>## 0.1  비동기 원격 프로시저 호출(Asynchronous RPC) 관점에서의 명령어 전달 및 수락 기한(Deadline) 검증</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</a> / <span>## 0.1  비동기 원격 프로시저 호출(Asynchronous RPC) 관점에서의 명령어 전달 및 수락 기한(Deadline) 검증</span></nav>
                 </div>
             </header>
             <article>
-                <h1>42.7.3.1 비동기 원격 프로시저 호출(Asynchronous RPC) 관점에서의 명령어 전달 및 수락 기한(Deadline) 검증</h1>
-<p>지상 관제 시스템(GCS; Ground Control Station) 혹은 외부 파트너 컴퓨터(ROS2 Companion Computer)에서 무인항공기(UAV) 방향으로 명령을 송신하고 그 결과를 회신받는 체계는, 분산 시스템 아키텍처 관점에서 비동기 원격 프로시저 호출(Asynchronous RPC; Remote Procedure Call)의 대표적인 형태라 할 수 있다. 무선 링크 기반의 드론 통신 환경은 패킷 손실률이 높고 지연 시간(Latency)이 가변적이다. 따라서 명령어의 신뢰성 있는 전달과 수락 기한(Deadline)의 엄격한 관리는 기체의 안전 보장에 가장 기본이 되는 아키텍처이다.</p>
-<p>본 절에서는 최신 PX4 펌웨어(v1.14 기준) 및 QGroundControl(v4.3 기준) 환경을 중심으로 MAVLink 및 ROS2 연동 시점에서의 비동기 RPC 동작 원리와 명령어 타임아웃(Timeout)/기한 검증 메커니즘을 심층 분석한다.</p>
-<h2>1.  MAVLink 프로토콜의 비동기 RPC 설계 철학</h2>
-<p>네트워크 상단에서 볼 때, QGroundControl(클라이언트)이 PX4-Autopilot(서버)에게 <code>COMMAND_LONG</code> (혹은 <code>COMMAND_INT</code>) 메시지를 송신하는 행위는 특정 제어 함수를 원격으로 “호출“하는 행위이다.</p>
-<p>하지만 임베디드 실시간 운영체제(NuttX 등)를 구동하는 기체의 특성상, 수신 즉시 모터 시동(Arming)이나 모드 변경(Mode Switch)과 같은 무거운 상태 천이 로직을 동기식(Synchronous)으로 끝마치고 응답을 반환할 여력이 없다. 따라서 PX4는 다음과 같은 비동기(Asynchronous) 디커플링 구조로 설계되어 있다.</p>
-<ol>
-<li><strong>요청 수신</strong>: <code>mavlink_receiver.cpp</code> 모듈이 <code>COMMAND_LONG</code> 패킷을 해석하여 즉시 uORB 메시징 버스 상에 <code>vehicle_command</code> 토픽을 발행(Publish)한다. 수신 모듈의 역할은 여기까지이며, 더 이상 호출 블로킹(Blocking)에 걸리지 않는다.</li>
-<li><strong>명령 처리</strong>: 커맨더(<code>Commander.cpp</code>) 스레드 등에서 해당 토픽을 폴링 스케줄에 따라 가져가서 유효성 점검, 파라미터 점검 등을 수행한 후 실제 기체 상태를 변경한다.</li>
-<li><strong>결과 반환</strong>: 처리가 완료되면 <code>vehicle_command_ack</code> 내부 토픽을 재발행하고, 이를 송신 담당 모듈(<code>mavlink_messages.cpp</code>)이 낚아채어 GCS 방향으로 MAVLink <code>COMMAND_ACK</code> 메시지를 재전송한다.</li>
-</ol>
-<p>이러한 논블로킹(Non-blocking) 비동기 파이프라인의 핵심은 GCS 측에서 명령어의 처리 완료 시점을 보장받기 위해 <strong>“수락 기한(Deadline)”</strong> 및 <strong>“유효 타임아웃(Timeout)”</strong> 메커니즘을 엄격히 구현해야 한다는 점이다.</p>
-<h2>2.  수락 기한(Deadline) 검증 및 재전송(Retry) 아키텍처</h2>
-<p>비동기 시스템에서 GCS는 자신이 보낸 RPC 요청이 공중에서 유실되었는지, 기체가 처리 중인지, 아니면 기체가 응답을 보냈으나 ACK가 유실되었는지를 즉각적으로 구별할 수 없다. 이를 위해 QGroundControl 매니저 클래스 내부에는 각 명령 별로 개별적인 타이머(Timer)가 구동된다.</p>
-<pre><code class="language-mermaid">sequenceDiagram
-    participant GCS as QGroundControl (v4.3)
-    participant UART as Radio Link (RF)
-    participant PX4 as PX4 Commander Subsystem
-
-    GCS-&gt;&gt;UART: COMMAND_LONG 전송 (Attempt 1)
-    activate GCS
-    Note over GCS: Deadline Timeout 타이머 시작 (예: 500ms)
-    UART--&gt;&gt;PX4: [Packet Lost]
-    Note over GCS: 타임아웃 만료! (No ACK Recv)
-    GCS-&gt;&gt;UART: COMMAND_LONG 재전송 (Attempt 2)
-    Note over GCS: 타이머 재시작
-    UART-&gt;&gt;PX4: 패킷 정상 수신
-    activate PX4
-    PX4--&gt;&gt;PX4: uORB 변환 및 상태 머신 실행
-    PX4-&gt;&gt;UART: COMMAND_ACK (Result: 0=Accepted)
-    deactivate PX4
-    UART-&gt;&gt;GCS: ACK 수신
-    deactivate GCS
-    Note over GCS: 비동기 RPC 트랜잭션 정상 종료
-</code></pre>
-<p>QGC는 명령 송신 후 규정된 기한(일반적으로 500ms ~ 1000ms 내외) 이내에 <code>COMMAND_ACK</code>를 받지 못하면 실패 횟수(Retry Count)를 차감하며 동일 패킷을 재시도한다. 완전히 횟수가 소진되면 UI 스레드 상에 “명령 전송 실패“를 팝업으로 표출하게 된다.</p>
-<h3>2.1 PX4 소스 코드 상의 Stale 데이터 검증 로직</h3>
-<p>기체 역시 지연된 패킷(Stale Command)이 뒤늦게 도착하여 기체가 원치 않는 타이밍에 예기치 못한 거동을 하는 사태를 막아야 한다. PX4 내부 <code>vehicle_command_s</code> 구조체는 고정밀 타임스탬프(<code>timestamp</code>) 필드(단위: 마이크로초)를 포함한다.<br />
-<code>Commander</code> 모듈은 명령을 수신한 시점의 내장 클록 시간(<code>hrt_absolute_time()</code>)과 <code>vehicle_command</code> 구조체의 생성 타임스탬프를 비교하여, 너무 오래 전(예: 수 초 전)에 유입되었거나 통신 지연으로 인해 스케줄러 큐에 정체되어 있던 명령은 과감하게 폐기(Drop)하도록 구현되어 있다. (방어적 프로그래밍 관점)</p>
-<h2>3.  ROS2 (uXRCE-DDS) 브리지 환경에서의 기한(Deadline) 관리</h2>
-<p>자율 에이전트 비행을 구현하기 위해 ROS2의 Micro XRCE-DDS 프로토콜을 이용할 때, 명령어 전달 체계의 신뢰성은 DDS의 QoS(Quality of Service) 프로파일 설정을 통해 조율된다.</p>
-<p>ROS2의 <code>Action Server</code> 개념을 차용하거나, 오프보드 제어를 위해 <code>VehicleCommand</code> 메시지를 직접 퍼블리시할 경우, 송신 노드(ROS2) 측에서는 DDS QoS 정책 중 <code>Deadline QoS</code>와 <code>Reliability = RELIABLE</code> 속성을 복합적으로 조정하여, 설정된 기한 내에 명령 토픽이 안정적으로 전파되었는지 모니터링한다. 무선 와이파이(Wi-Fi)나 LTE 환경 상의 ROS2 네이티브 연동 시에는, 기존 시리얼 기반의 타임아웃 로직보다 이와 같은 미들웨어 수준의 세밀한 네트워크 패킷 재송신 및 트래픽 폭주(Congestion) 제어 관리가 더욱 강력한 효과를 낸다.</p>
-<h2>4.  Ardupilot 대비 관제 시스템의 차이</h2>
-<p>Ardupilot을 주로 관제하는 Mission Planner(C# 기반) 역시 비동기 MAVLink 처리를 수행하지만, 재시도 주기의 스케줄러 및 타임아웃 큐 대기 시간 설정값에 차이가 있다. Ardupilot은 특정 제어 명령(예: 캘리브레이션 등 시간이 오래 걸리는 프로시저)에 대해서 <code>COMMAND_ACK</code> 중 ’처리 중(IN_PROGRESS)’이라는 응답 상태를 적극적으로 반환하여 GCS가 타임아웃에 의해 불필요한 재전송을 반복하지 않도록 통제하는 기법(<code>MAV_RESULT_IN_PROGRESS</code>)을 상대적으로 광범위하게 활용하는 편이다.</p>
-<p>반면 PX4 생태계 시스템은 특정 트리거 명령어들을 uORB에 즉결 캐싱(Caching)하고 최대한 단시간에 처리하여 직관적이고 상태 확정적인 <code>ACCEPTED</code> 혹은 <code>DENIED</code>를 피드백하는 구조적 단결성(Simplicity)을 띄기 위해 노력한다.</p>
-<h2>5.  요약: 아키텍처 관점에서의 안정성 보장 지침</h2>
-<ol>
-<li>GCS나 오프보드 에이전트 개발자는 PX4 API나 MAVSDK를 호출할 때 동기식 콜(Synchronous block method)을 설계하기보다는, 항상 Callback 기반 혹은 Future/Promise 디자인 패턴 구조를 통해 백드롭(Backdrop) 타임아웃 기한을 설정해야 한다.</li>
-<li>장거리 혹은 노이즈가 많은 비가시권(BVLOS) 비행에서 원격 프로시저 호출(RPC)의 데드라인 제어를 간과할 경우, 재전송 폭풍(Retry Storm)으로 텔레메트리 대역폭이 소진될 가능성이 대두된다.</li>
-<li>PX4 펌웨어 수정 단계에서는 새로 추가하는 커스텀 <code>vehicle_command</code>가 혹여나 1,000 마이크로초 이상의 지연 시간을 유발하지 않도록 연산 주기를 최적화해야 RPC 응답 실패를 회피할 수 있다.</li>
-</ol>
+                <h1>## 0.1  비동기 원격 프로시저 호출(Asynchronous RPC) 관점에서의 명령어 전달 및 수락 기한(Deadline) 검증</h1>
+<p>지상 관제 시스템(GCS)과 PX4-Autopilot 컴포넌트 간의 MAVLink 명령어 교환 매트릭스는 통신 퀄리티 스터빌리티가 보장되지 않는 거친 무선 RF(Radio Frequency) 대기 환경 위에서 표류 동작하기 때문에, 본질적으로 비동기 원격 프로시저 호출(Asynchronous Remote Procedure Call, Async RPC) 모델에 기반을 둘 수밖에 없다. 특히 비행 전 점검 강제화(<code>MAV_CMD_RUN_PREARM_CHECKS</code>)나 기체 시동 활성 조작(<code>MAV_CMD_COMPONENT_ARM_DISARM</code>)과 같이 시스템의 물리적 임계 상태를 직접적으로 훼손 및 변이시키는 크리티컬한 명령어의 경우, 송신과 응답 사이의 정확한 수락 기한(Deadline) 검증과 물리적 타이밍 동기화 방어 로직이 필수불가결한 백본으로 자리한다. 본 항에서는 PX4 체계 내 명령어 전달 프로토콜 생태계를 비동기 RPC 구조의 관점에서 역해석하고 여기서 파장 파생되는 딜레이 및 타임아웃 방어 메커니즘을 심부 해부 분석한다.</p>
+<h4>0.1.1  MAVLink 커맨드 프로토콜의 비동기 단방향(Asynchronous One-way) 구조 특성</h4>
+<p>통상적인 지상 웹 통신 아키텍처 생태계(REST API, gRPC 등)가 TCP/IP 기반의 무결한 신뢰성 전이중(Full-Duplex) 연결 채널을 전제로 깔고 가는 것과 극명하게 대척점을 이루어, MAVLink 통신계는 UDP 혹은 원초적 시리얼(UART) 포맷의 비동기 단방향 메시지 스트리밍 방식을 고집스럽게 채택하고 있다. 이는 공중망 텔레메트리 패킷의 유실, 시퀀스 순서 뒤바뀜, 무한 중복 복제 수신 증후군이 언제든 늪처럼 일어날 수 있음을 암묵적으로 내포한다.</p>
+<p>지상 관제 기지국(GCS) 단말이 특정 명령 제어를 목적으로 기체로 <code>COMMAND_LONG</code> (혹은 최신 <code>COMMAND_INT</code>) 메시지 패킷을 전송하는 일방적 행위는 특정 타깃 서버의 서브 펑션 함수를 원격에서 트리거 호출해 버리는(RPC) 디자인 패턴과 완벽히 상응하는 일치점을 지닌다. 단, 이 공중파 호출은 클라이언트 측 스레드를 동기적으로 블로킹(Blocking) 시키지 아니하고, 비동기 스레드 풀 스택 큐(Queue)에 적재된 채 멀미가 날 정도로 막연하게 기체의 리턴(<code>COMMAND_ACK</code>)을 무작정 기다려야만 하는 핸디캡 구조로 전개된다.</p>
+<h4>0.1.2  PX4 Commander 메인 모듈의 명령어 수용 기한(Deadline) 파라미터 타임리미트 제어망</h4>
+<p>PX4-Autopilot의 최상급 코어 브레인인 <code>Commander</code> 데몬 프로세스 모듈은 GCS 브릿지로부터 하달 파생받은 명령(Command) uORB 내부 토픽을 메인 이벤트 루프에서 인터셉트 수신할 때, 단순히 전달된 명령의 인자 내용만을 맹목적으로 판별 추종하는 것이 지양된다. 오퍼레이션 수행 직전 반드시 명령의 물리적 수락 기한(Deadline / Timeout)을 병행 교차 확인 점검하여 시스템의 물리적 완전한 안전을 이중 보증한다.</p>
 <ul>
-<li><strong>참고 문서</strong>: PX4 Developer Guide - <a href="https://docs.px4.io/main/en/middleware/uorb.html">uORB Messaging</a>, MAVLink Protocol - <a href="https://mavlink.io/en/services/command.html">Command Delivery Verification</a></li>
+<li><strong>스케줄링 지연 타임아웃(Stale Timeout) 강제 방어:</strong> 텔레메트리 송출 기지국의 통신 라우팅 딜레이나 기체 OS 컨텍스트 태스크 스위칭 부하, 혹은 버퍼 큐 대역 병목 현상으로 인해 명령 본래의 생성 수신 시점(<code>timestamp</code>)과 실제 <code>Commander</code> 스레드가 해당 콜 이벤트를 온전히 파싱하는 시간(<code>hrt_absolute_time()</code> 클럭 콜) 사이에 허용 임계치를 일탈한 과도한 파이프라인 타임 캡(Gap)이 생겼다면, PX4 프로세서는 해당 명령이 “너무 오래되어 유효성이 소실 상실된 신뢰할 수 없는 쓰레기 파편 데이터(Stale Data)“에 불과하다고 묵살 판정 조치하고 <code>MAV_RESULT_DENIED</code> 결과값을 패키징해 무자비하게 돌려보낸다.</li>
+<li><strong>동시성 충돌(Concurrency Collision) 예방 및 Busy 포화 상태 기각 처리:</strong> 기체가 이미 육중하게 할당된 거대 사전 명령(예를 들어, 센서 캘리브레이션 10초 무한 대기 록킹 중)을 온보드 실행하고 있는 마찰적 과부하 상태 도중에는, 틈새를 뚫고 새롭게 당도하는 비동기 RPC 콜에 대해 메인 태스크 리시버가 즉각 <code>MAV_RESULT_IN_PROGRESS</code> 혹은 <code>MAV_RESULT_TEMPORARILY_REJECTED</code> ACK 패킷을 매몰차게 토해내 방어한다. 이는 동시다발적 스레드 경합 붕괴(Race Condition)를 원천적으로 차단 통제하는 가장 원시적이면서도 구조적으로 강력히 견고한 오토파일럿 무결성 로직이다.</li>
 </ul>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant GCS as 지상 관제 시스템 (QGC)
+    participant AirBuffer as RF 공중망 노이즈 버퍼 지연 체류
+    participant MAVLink as PX4 MAVLink 파서 미들웨어
+    participant Commander as PX4 코어 Commander
+    
+    GCS-&gt;&gt;AirBuffer: COMMAND_LONG (시동 명령) 타임스탬프 스탬핑 발송 (T=0)
+    AirBuffer...&gt;&gt;MAVLink: 극심한 전파 간섭으로 패킷 대기열 늦게 지연 도달 (T=1500ms 경과 파라미터 붕괴)
+    MAVLink-&gt;&gt;Commander: 내부 uORB 토픽 브로드캐스트 발행 (최초 명령 타임스탬프 원폰 패키징 = T_0)
+    Commander-&gt;&gt;Commander: 현재 클럭 기상 타임(T=1505ms) 비교 검증 알고리즘
+    note over Commander: 치명적 타임아웃 임계치(예: 1000ms 기준 차) 초과 감지 스니핑
+    Commander-&gt;&gt;GCS: MAV_RESULT_DENIED (Stale Command 타각 무시 및 응답 송출)
+</code></pre>
+<h4>0.1.3  QGroundControl (GCS) 클라이언트 측면의 RPC 타임아웃(Timeout) 및 무한 루프 재제재 로직망</h4>
+<p>비동기 서버 구조에 대하여 완연하게 클라이언트(Client) 역할을 이행해야 하는 QGroundControl 프레임워크 아키텍처는 기체 펌웨어 대역으로부터 <code>COMMAND_ACK</code> 응답 콜 사인이 영구 소실되어 버릴 최악의 전파 오프라인 블랙 엣지 케이스 시나리오를 철저히 염두에 두고 가장 공격적이고 강력한 클라이언트 타임아웃 머신(Client Timeout State Machine)을 구조 안에 병합 설계 구축하였다.</p>
+<ol>
+<li><strong>ACK 대기 기한(Timeout Wait Limit) 타이머 세팅:</strong><br />
+명령어를 허공에 안착 송출한 그 즉시 직후 GCS는 내부 데몬 타이머 프로시저를 발동시킨다. 통상적인 범용 MAVLink 커맨드는 치명도에 따라 유동적이나 보편적으로 1,000ms(1초)에서 맥시멈 2,000ms 사이 범용의 ACK 초도 응답 시간제한(Deadline) 규약 리미트를 지닌다.</li>
+<li><strong>재전송(Retry) 백오프(Backoff) 알고리즘 체커:</strong><br />
+규정 시간 리미트 내에 기체가 통신 침전에 가라앉거나(영구 응답 없음), 텔레메트리 브리지 패킷 드롭이 물리적으로 누수 발생할 경우 QGroundControl 백엔드 프로세스는 본래 송출했던 명령 원본 패킷을 동일 매개변수로 약 3~5회 연속 재전송(Retry) 타격 시도한다. (이 과정에서 재전송 됨을 기체에 고지하고자 명령 구조체 내의 고유 <code>confirmation</code> 필드 카운터 스택이 +1씩 증가 누적 스탬핑됨)</li>
+<li><strong>최종 단절 사망 선고 및 UX 블로킹 모달 강제 해제 스위칭:</strong><br />
+맥시멈 재도전(Max Retries Configuration) 허용 횟수 파이버마저 야속하게 모두 묵살당할 경우, 해당 진입 비동기 호출 요청은 <code>Timout Failure</code>로 최종 사망 결정된다. GCS 연산자는 사용자 화면 정면에 적색 에러 팝업 모달 창(“Vehicle did not respond to command” 등의 경고문)을 강렬히 띄우고, 이륙 대기 상태나 캘리브레이션 무한 락(Lock) 상태의 혼수 속에 진입해 대기를 타던 본인의 소프트웨어 루프 진행 막대(Process Bar)를 백지 상태 강제 초기화(Reset) 시켜버리고 풀려나, 자칫 영구 앱 프리징(Freezing) 크래시 현상에 매몰될 운명을 소프트하게 우회 탈출한다.</li>
+</ol>
+<h4>0.1.4  상태 머신 정합성(State Consistency)의 유지 절대 철학 확립</h4>
+<p>이와 같은 비동기 원격 호출 통신의 최대 단점 리스크는 송신자 레이어(GCS)와 수신자 코어 레이어(PX4) 간의 논리적 환상 동상(Phase) 불일치 오류 오버랩 현상이다. GCS 터미널은 패킷을 성공리 쏘아 보냈으므로 “거리가 멀지만 필히 기체는 아밍되었을 것이다“라고 관대히 예측 오판하지만, 실체적 기체는 내부 시스템 에러나 수락 기한 지각 만료로 NACK를 시도한 상태로 아직 계류 중일 수 있다.<br />
+이를 철저하고 잔혹하게 바로잡기 위해 PX4-Autopilot 생태계와 QGroundControl 간의 통합 관제 최규 규약은 단일 대전제를 고수하고 있다.<br />
+<strong>“상태 전이(State Transition)의 최종 소유권 및 확증 권한결정은 언제나 온보드(Autopilot MCU)에 종속 복속된다”</strong><br />
+이 철학에 입각하여 GCS는 본인 로컬 터미널의 가상 상태를 지 멋대로 어림짐작하여(Optimistic UI 설계 회피) 조종 관제 조작 패널을 강제로 무단 활성화 선입 전환하지 아니한다. 오직 창공의 기체가 주체적으로 쏘아보내는 무수한 고빈도 허트비트 주기(<code>HEARTBEAT</code> 스트리밍) 토픽 내부 헤더 구획의 베이스 모드(<code>base_mode</code>)와 시스템 상태(<code>system_status</code>) 플래그 비트마스크 실제 물리적 변이를 확인(Verification Cross-Check) 해내야만 비로소, 그 옛날 쏘아 올렸던 통신 비동기 호출이 최종 물리적으로 인가 성공했다고 역산 판독 증명하여 GCS 메인 관제 화면의 무장 UI 토글 스위치를 푸른 녹색으로 동기화(Sync) 업데이트 전환 점등하게 되는 완결된 무결성 철학을 구현하고 있다.</p>
 
             </article>
             <footer>

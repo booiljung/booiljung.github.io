@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:42.7.4 시동 명령 응답 프로토콜: NACK(Negative Acknowledge) 처리 및 피드백 디버깅</title>
+    <title>BIJUNG:42.7.4. 시동 명령 응답 프로토콜: NACK(Negative Acknowledge) 처리 및 피드백 디버깅</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,55 +109,77 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>42.7.4 시동 명령 응답 프로토콜: NACK(Negative Acknowledge) 처리 및 피드백 디버깅</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</a> / <span>42.7.4 시동 명령 응답 프로토콜: NACK(Negative Acknowledge) 처리 및 피드백 디버깅</span></nav>
+                    <h1>42.7.4. 시동 명령 응답 프로토콜: NACK(Negative Acknowledge) 처리 및 피드백 디버깅</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</a> / <span>42.7.4. 시동 명령 응답 프로토콜: NACK(Negative Acknowledge) 처리 및 피드백 디버깅</span></nav>
                 </div>
             </header>
             <article>
-                <h1>42.7.4 시동 명령 응답 프로토콜: NACK(Negative Acknowledge) 처리 및 피드백 디버깅</h1>
-<p>지상 관제 시스템(GCS; Ground Control Station)에서 무인항공기(UAV)로 하달되는 제어 명령 중 가장 중대한 권한 이양 행위는 바로 시스템의 프로펠러나 액추에이터에 동력을 인가하는 시동(Arming) 명령이다. MAVLink 프로토콜 상에서 이는 <code>MAV_CMD_COMPONENT_ARM_DISARM</code> 명령으로 송출된다. 그러나 비행 제어기(Flight Controller)는 센서 이상, 배터리 부족, 안전 스위치 체결 상태 등을 이유로 이 명령을 수락할 수 없는 경우가 빈번하게 발생한다. 이 때 기체가 단순한 무응답으로 일관하지 않고 명시적인 반려 의사와 그 사유를 반환하는 체계를 NACK(Negative Acknowledge) 응답 프로토콜이라 칭한다.</p>
-<p>본 절에서는 최신 PX4 펌웨어(v1.14 기준) 및 QGroundControl(v4.3 기준) 환경을 중심으로, 시동 명령 거절 시 발생하는 펌웨어 내부의 NACK 생성 아키텍처와 이를 지상 관제 시스템 혹은 ROS2 연동 환경에서 어떻게 디버깅하고 렌더링하는지 심층적으로 다룬다.</p>
-<h2>1.  PX4-Autopilot의 NACK 생성 아키텍처 및 철학</h2>
-<p>GCS가 <code>COMMAND_LONG</code> 폼을 빌려 암(Arm) 명령을 지시하면, 기체 내 <code>mavlink_receiver</code>를 거쳐 <code>vehicle_command</code> uORB 토픽 형태로 PX4 커맨더(<code>Commander.cpp</code>) 스레드에 도착한다. 커맨더 스레드는 현재 시스템 상태 머신(State Machine) 상에서 시동이 가능한지 검문사격과 같은 ‘Pre-flight check’ 혹은 강제 권한(Override) 제약 조건을 모두 스캔한다.</p>
-<p>만일 단 하나의 조건이라도 위배되어 시동을 인가할 수 없는 경우, 커맨더는 즉시 <code>vehicle_command_ack</code> 토픽을 다음과 같은 결과 코드(Result Code)를 실어 발행한다.</p>
+                <h1>42.7.4. 시동 명령 응답 프로토콜: NACK(Negative Acknowledge) 처리 및 피드백 디버깅</h1>
+<h2>1. 개요</h2>
+<p>무인기 시스템 관제에서 시동(Arming) 명령은 기체의 프로펠러 등 액추에이터 구동을 물리적으로 허가하는 가장 민감하고 중요한 절차이다. 지상 관제 시스템(QGroundControl)이나 컴패니언 컴퓨터가 시동을 요청하면, PX4-Autopilot은 단순히 수락 여부만을 결정하는 것이 아니라 내부적인 비행 전 점검(Pre-flight Check) 로직을 거친다. 조건이 충족되지 못한 경우 시동 명령은 거부되며, 이를 명확한 사유와 함께 관제 시스템으로 피드백하는 프로토콜이 필수적이다.</p>
+<p>본 절에서는 MAVLink 프로토콜 상의 시동 명령 전달 체계와, PX4 내부에서 부정 응답(NACK, Negative Acknowledge)이 발생했을 때 이를 어떻게 처리하고 디버깅 가능한 형태로 GCS에 피드백하는지 소스 코드와 아키텍처 관점에서 심층 분석한다. (최신 PX4 Firmware v1.14 이상, QGroundControl v4.3 이상 산출물 기준)</p>
+<h2>2. MAVLink 기반 시동 명령과 COMMAND_ACK 프로토콜 구조</h2>
+<p>GCS는 기체 시동을 위해 MAVLink의 <code>COMMAND_LONG</code> 혹은 <code>COMMAND_INT</code> 메시지를 사용하여 <code>MAV_CMD_COMPONENT_ARM_DISARM</code> (명령 ID: 400) 명령을 전송한다. 이 명령에 대한 처리 결과는 반드시 <code>COMMAND_ACK</code> (메시지 ID: 77) 메시지를 통해 피드백되어야 한다.</p>
+<h3>2.1 COMMAND_ACK의 Result 필드</h3>
+<p><code>COMMAND_ACK</code> 메시지는 처리 결과를 <code>result</code> 필드(Enum 형식 <code>MAV_RESULT</code>)로 반환한다.</p>
 <ul>
-<li><code>MAV_RESULT_DENIED</code> (4): 논리적으로 해당 상태에서 절대 실행 불가능한 명령(예: 센서 캘리브레이션 미수행)</li>
-<li><code>MAV_RESULT_TEMPORARILY_REJECTED</code> (3): 시스템이 아직 초기화 중이거나 잠시 후 정상 수락될 가능성이 있는 경우</li>
+<li><code>MAV_RESULT_ACCEPTED</code> (0): 명령 수락 (시동 성공)</li>
+<li><code>MAV_RESULT_TEMPORARILY_REJECTED</code> (1): 일시적 거부 (예: 아직 센서 캘리브레이션 중이거나 시스템 초기화 중)</li>
+<li><code>MAV_RESULT_DENIED</code> (2): 거부 (시동 전제 조건 위반, 가장 잦은 NACK 유형)</li>
+<li><code>MAV_RESULT_UNSUPPORTED</code> (3): 미지원 명령</li>
+<li><code>MAV_RESULT_FAILED</code> (4): 명령 실행 중 실패</li>
 </ul>
-<p>하지만 이러한 1바이트 크기의 상수형 결과 코드만으로는 관제석에 앉은 조종사나 에이전트가 “동력 인가가 왜 거절되었는지” 원인을 특정할 수 없다. 따라서 PX4 펌웨어 설계 철학은 NACK 전송 시 반드시 인간 단위에서 식별 가능한 <strong>원인 규명 텍스트 이벤트</strong>를 동반하도록 강제하고 있다.</p>
-<h2>2.  NACK 피드백 병합을 통한 GCS의 팝업 디버깅 파이프라인</h2>
-<p>QGroundControl (v4.3) 수신단은 시동 거절 사태를 매끄럽게 사용자 인터페이스(UI)로 파싱해 내기 위해, 다음과 같은 병렬 트랜잭션을 수집하는 아키텍처를 지니고 있다.</p>
+<p>시동 거부 시 PX4는 주로 <code>MAV_RESULT_DENIED</code> 형태의 NACK를 반환한다.</p>
+<h3>2.2 시동 명령 요청 및 NACK 처리 시퀀스 (Mermaid)</h3>
 <pre><code class="language-mermaid">sequenceDiagram
-    participant UI as QGC 사용자 UI
-    participant MAV_MGR as QGC MAVLink Manager
-    participant PX4 as PX4 Commander Subsystem
-
-    UI-&gt;&gt;MAV_MGR: 슬라이더 조작 (Arm 명령 실행 지시)
-    MAV_MGR-&gt;&gt;PX4: COMMAND_LONG (MAV_CMD_..._ARM_DISARM)
-    activate PX4
-    PX4--&gt;&gt;PX4: 상태 점검: GPS 3D Fix 상실 확인
-    PX4-&gt;&gt;MAV_MGR: COMMAND_ACK (Result: 4 = DENIED)
-    PX4-&gt;&gt;MAV_MGR: STATUSTEXT ("PREFLIGHT FAIL: NO 3D FIX")
-    PX4-&gt;&gt;MAV_MGR: EVENT ("gps_not_fixed_error")
-    deactivate PX4
-    MAV_MGR--&gt;&gt;MAV_MGR: ACK 결과와 수신된 텍스트 이벤트 병합 타이머 구동
-    MAV_MGR-&gt;&gt;UI: 시동 실패 알림 및 "NO 3D FIX" 에러 배너 표출
+    participant GCS as QGroundControl
+    participant PX4 as PX4-Autopilot (통신/제어)
+    participant Cmdr as Commander 모듈
+    
+    GCS-&gt;&gt;PX4: COMMAND_LONG (MAV_CMD_COMPONENT_ARM_DISARM, param1=1)
+    PX4-&gt;&gt;Cmdr: uORB: vehicle_command 발행
+    Cmdr-&gt;&gt;Cmdr: Arming 조건 및 Pre-flight Check 검증
+    alt 검증 실패 (예: GPS Fix 없음, 센서 캘리브레이션 미비)
+        Cmdr--&gt;&gt;PX4: uORB: vehicle_command_ack (Result=DENIED)
+        Note right of Cmdr: 이벤트 시스템(Event System)을 통한 구체적 사유 생성
+        PX4-&gt;&gt;GCS: COMMAND_ACK (Result=MAV_RESULT_DENIED)
+        PX4-&gt;&gt;GCS: EVENT / STATUSTEXT (Severity=ERROR, "Preflight Fail: No GPS Fix")
+        GCS-&gt;&gt;GCS: NACK 코드 파싱 및 텍스트 알림 UI 팝업
+    else 검증 성공
+        Cmdr--&gt;&gt;PX4: uORB: vehicle_command_ack (Result=ACCEPTED)
+        PX4-&gt;&gt;GCS: COMMAND_ACK (Result=MAV_RESULT_ACCEPTED)
+        PX4-&gt;&gt;GCS: STATUSTEXT (Severity=INFO, "Armed")
+    end
 </code></pre>
-<p>위의 위상 연계도에서 알 수 있듯, GCS의 프로토콜 해석 매니저는 <code>COMMAND_ACK</code>에서 거절(DENIED) 값을 감지하게 되면, 즉각적으로 UI에 에러를 표출하기보다는 짧은 타이머 한도 내에 병렬로 도착하는 <code>STATUSTEXT</code> 혹은 MAVLink v2.0 기반의 <code>EVENT</code> 메시지를 낚아챈 뒤 이들을 논리적으로 결합(Merge)하여 상세한 디버깅 피드백 창을 완성한다. 이를 통해 엔지니어는 굳이 ULog 파일을 열어보지 않고도 기체의 문제를 신속하게 규명할 수 있다.</p>
-<h2>3.  ROS2 (uXRCE-DDS) 기반 오프보드 연동 시의 예외 처리 로직</h2>
-<p>근래 드론 응용 분야에서 부각되고 있는 로봇 운영 체제(ROS2) 환경 하에서는 사람이 콘솔을 보지 않고 자율 에이전트가 스크립트 기반으로 비행을 주도한다.</p>
-<p>C++ 혹은 Python으로 작성된 오프보드(Offboard) 노드에서 <code>VehicleCommand</code> 토픽 구조체를 채워 시동을 지시했을 때, 에이전트 노드는 반드시 <code>VehicleCommandAck</code> 서브스크라이버(Subscriber) 콜백 함수를 구성하여 <code>result</code> 필드 값을 검증해야 한다. 코드가 NACK 처리에 대한 대비 없이 강압적으로 다음 스테이지(임무 이동)를 트리거하게 되면 시스템 루프가 데드록(Deadlock)에 빠질 수 있기 때문이다.<br />
-ROS2 설계 시에는 NACK 결과값을 획득했을 때 지수 백오프(Exponential Backoff) 알고리즘을 사용한 재시도 로직을 구성하거나, 안전 기동 모드로 강제 복귀하도록 Failsafe 트리를 짜는 프로그래밍 가이드라인이 강조된다.</p>
-<h2>4.  Ardupilot의 NACK 철학 대비 아키텍처 비교</h2>
-<p>Ardupilot 환경 또한 <code>MAV_RESULT_DENIED</code>를 통해 시동 거절을 표현하지만, PX4와 비교 시 다음과 같은 구조적 차이가 존재한다.<br />
-Ardupilot은 내부 모듈별 비트마스크(Bitmask) 검증 로직 결과 자체를 지상 관제 시스템(예: Mission Planner)이 질의하여 가져갈 수 있도록 확장된 파라미터 세트와 <code>ARMING_CHECK</code> 하위 식별 코드를 심층적으로 운용한다. 즉 관제 시스템이 기체의 어느 파트 모듈에서 암(Arm) 제어를 블로킹하고 있는지 시스템 변수 레벨에서 추적하기가 상대적으로 직관적이다.</p>
-<p>반면 PX4-Autopilot 생태계는 MAVLink <code>EVENT</code> 채널을 이용한 상태 코드 기반의 이벤트 로깅(Logging) 철학에 큰 무게를 둔다. PX4 v1.14 이후부터는 문자열을 통째로 보내 시스템 대역폭을 낭비하는 대신, 고유 식별자가 담긴 이벤트 패킷을 반환하여 GCS 단에서 번역(Translation) 로직과 매핑하는 방식(메타데이터 기반 디버깅)으로 진화하여 NACK 사유 추적의 효율을 높이고 텔레메트리 혼잡도를 극적으로 낮추는 방향성을 고수하고 있다.</p>
-<p>결과적으로 PX4 소스 코드를 최적화하여 독자적인 GCS 환경을 구축하려는 엔지니어 조직에서는, 단순한 <code>COMMAND_ACK</code> 트래킹에 머물 것이 아니라 PX4의 이벤트(<code>events</code> 및 <code>statustext</code>) 파이프라인을 매끄럽게 관제 프론트엔드로 연동 파싱(Parsing)해 내는 디버깅 아키텍처 역량을 내재화해야 한다.</p>
+<h2>3. PX4 Commander 모듈의 시동 거부(NACK) 처리 아키텍처</h2>
+<p>PX4의 심장부인 <code>Commander</code> 모듈(<code>src/modules/commander/Commander.cpp</code>) 내부에는 시동을 통제하는 <code>arm_auth</code> 하위 시스템과 거대한 상태 머신(State Machine)이 존재한다.</p>
+<ol>
+<li><strong>명령 수신 및 검사</strong>: GCS가 전송한 명령은 <code>Commander::handle_command()</code> 함수 내부의 <code>case vehicle_command_s::VEHICLE_CMD_COMPONENT_ARM_DISARM:</code> 분기에서 가로채어진다.</li>
+<li><strong>사전 조건 검증 (<code>arm()</code> 함수 호출)</strong>: 내부에 구현된 <code>HealthAndArmingChecks</code> 서브클래스에서 각 센서, 배터리 상태, EKF(확장 칼만 필터) 상태를 순회(Iteraton)하며 점검한다.</li>
+<li><strong>NACK 결정 및 이벤트 발생</strong>: 어느 한 항목이라도 미달할 경우 <code>arm()</code> 호출은 실패로 돌아가며, <code>vehicle_command_ack</code> uORB 토픽의 <code>result</code> 필드에 거절 원인을 맵핑하여 퍼블리싱한다.</li>
+</ol>
+<h3>3.1 구체적 사유 전달: STATUSTEXT와 Event 패러다임 차이</h3>
+<p>과거 PX4 버전에서는 NACK를 보냄과 동시에 코드 내에서 직접 <code>mavlink_log_critical()</code> 매크로를 호줄하여 문자열(<code>STATUSTEXT</code>)을 송출하였다.<br />
+최신 PX4 버전에서는 유지보수성과 다국어 지원, 그리고 구조화를 위해 **이벤트 체계(Event Interface)**를 적극 도입했다. 시동이 실패하면 <code>events::send&lt;...&gt;(events::ID("commander_arm_rejected"), ...);</code> 형태의 이벤트가 트리거되고, 이는 MAVLink 이벤트 프로토콜과 호환되어 GCS로 포워딩된다. 이를 통해 GCS는 단순히 “시동 거부” 텍스트만 띄우는 것이 아니라, “나침반 센서 캘리브레이션 필요“라는 구체적인 해결책 조언을 UI 상에 반영할 수 있게 되었다.</p>
+<h2>4. Ardupilot과 PX4의 NACK 처리 및 피드백 구조 비교</h2>
 <ul>
-<li><strong>참조 문헌 및 가이드라인</strong>:</li>
-<li>MAVLink Command Protocol: <a href="https://mavlink.io/en/messages/common.html#MAV_RESULT">ACK Status codes</a></li>
-<li>PX4 Architecture Guide: <code>Commander</code> State Machine Architecture</li>
+<li><strong>PX4-Autopilot</strong>: NACK 발생 요인을 이벤트 모듈을 통해 구조화된 ID 맵핑 체계로 변환하여 텍스트 및 사운드(Tones)와 연동한다. GCS에 구체적인 디버깅 로그를 명확하게 전달하며, MAVSDK 및 uXRCE-DDS(ROS2) 환경에서도 해당 NACK 콜백과 사유를 객체 지향적으로 캐치업(Catch-up)할 수 있는 API 프레임워크를 제공한다.</li>
+<li><strong>Ardupilot</strong>: 전통적으로 문자열 로깅에 상당히 집착하는 구조다. <code>AP_Arming</code> 모듈에서 <code>PreArm: [문제부위]</code> 형식의 평문 <code>STATUSTEXT</code> 메시지를 <code>COMMAND_ACK</code>와ほぼ 동시에 대량으로 살포한다. 구조화된 이벤트 ID보다는 직관적인 텍스트 로깅 중심이라 미션 플래너(Mission Planner) 콘솔 창에서 텍스트 기반의 피드백 디버깅이 주를 이룬다.</li>
 </ul>
+<h2>5. QGroundControl 관점의 피드백 디버깅 메커니즘</h2>
+<p>QGC에서 NACK 수신 및 처리는 사용자 경험(UX) 및 디버깅 관점에서 매우 핵심적인 로직으로 설계되어 있다.</p>
+<ol>
+<li><strong>Ack 수집</strong>: <code>src/Vehicle/Vehicle.cc</code> 인스턴스에서 커맨드 트랜잭션을 관리하는 매니저가 <code>COMMAND_ACK</code>를 대기한다.</li>
+<li><strong>결과 파싱</strong>: <code>MAV_RESULT_DENIED</code>와 같은 NACK를 수신하면 트랜잭션 실패 이벤트 루프가 돌아가고, 즉시 경고음을 발생시킨다.</li>
+<li><strong>피드백 결합</strong>: QGC는 NACK 직후 수백 밀리초 단위로 수신되는 <code>STATUSTEXT</code> 혹은 <code>EVENT</code> 프로토콜 메시지들 중 ‘Preflight’ 필터링을 거친 문자열을 버퍼링하여 화상 중앙의 메시지 배너 박스(Message Banner) 상단 붉은색 알림 UI에 출력한다.</li>
+<li><strong>로깅</strong>: 이러한 NACK 사유 이력은 파일 백엔드 시스템 로그에 <code>[NACK]</code> 태그로 저장되어 사후 비행 기록 리뷰 파일(.tlog) 디버깅에 활용된다.</li>
+</ol>
+<h2>6. ROS2 자율 비행 응용 환경에서의 NACK 디버깅 기법</h2>
+<p>자율적인 컴패니언 컴퓨터가 ROS2 브릿지를 통해 직접 시동을 명령할 때는 GCS의 화려한 UI 백업이 없다. 개발자는 ROS2 노드(Node) 안에서 단순히 시동 서비스를 요청하고 True/False 결과만 기다려서는 안 된다. NACK 처리 시 디버깅을 원활히 하기 위해서는 다음의 아키텍처를 구현해야 한다.</p>
+<ol>
+<li><strong>동기식 서비스 한계 극복</strong>: ROS2 <code>vehicle_command</code>를 발행한 뒤 비동기 상태로 <code>vehicle_command_ack</code> 토픽을 명시적으로 서브스크라이빙하여 NACK 코드를 캡처한다.</li>
+<li><strong>사유 트래킹 노드</strong>: <code>event</code> 혹은 <code>mavlink_log</code> uORB 토픽을 브릿지를 통해 같이 구독하여, <code>result == 2 (DENIED)</code> 발생 시점 즈음의 텍스트 로그를 로컬 리눅스의 표준 에러 로그(<code>ROS_ERROR</code>)로 바인딩하여 백트래킹(Backtracking) 디버깅 환경을 최적화해야 실무에서 센서 오류 파악이 빠르다.</li>
+</ol>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:44.7.4 구동부 제어 출력 포화(Actuator Saturation) 지속 시 적분기 와인드업(Integrator Windup) 방지 루프 및 목표 고도 재할당을 통한 이륙 교착 상태(Deadlock) 해소</title>
+    <title>BIJUNG:44.7.4. 구동부 제어 출력 포화(Actuator Saturation) 지속 시 적분기 와인드업(Integrator Windup) 방지 루프 및 목표 고도 재할당을 통한 이륙 교착 상태(Deadlock) 해소</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,56 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>44.7.4 구동부 제어 출력 포화(Actuator Saturation) 지속 시 적분기 와인드업(Integrator Windup) 방지 루프 및 목표 고도 재할당을 통한 이륙 교착 상태(Deadlock) 해소</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.7.4 구동부 제어 출력 포화(Actuator Saturation) 지속 시 적분기 와인드업(Integrator Windup) 방지 루프 및 목표 고도 재할당을 통한 이륙 교착 상태(Deadlock) 해소</span></nav>
+                    <h1>44.7.4. 구동부 제어 출력 포화(Actuator Saturation) 지속 시 적분기 와인드업(Integrator Windup) 방지 루프 및 목표 고도 재할당을 통한 이륙 교착 상태(Deadlock) 해소</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.7.4. 구동부 제어 출력 포화(Actuator Saturation) 지속 시 적분기 와인드업(Integrator Windup) 방지 루프 및 목표 고도 재할당을 통한 이륙 교착 상태(Deadlock) 해소</span></nav>
                 </div>
             </header>
             <article>
-                <h1>44.7.4 구동부 제어 출력 포화(Actuator Saturation) 지속 시 적분기 와인드업(Integrator Windup) 방지 루프 및 목표 고도 재할당을 통한 이륙 교착 상태(Deadlock) 해소</h1>
+                <h1>44.7.4. 구동부 제어 출력 포화(Actuator Saturation) 지속 시 적분기 와인드업(Integrator Windup) 방지 루프 및 목표 고도 재할당을 통한 이륙 교착 상태(Deadlock) 해소</h1>
+<p>무인항공기(UAV)가 이륙(Takeoff)을 시도할 때, 탑재 중량(Payload)이 기체의 최대 추력(Maximum Thrust) 범위를 초과하거나 강한 하강 기류(Downdraft)를 맞닥뜨리게 되면 모터로 전달되는 제어 출력(Control Output)이 100%에 도달하는 <strong>구동부 포화(Actuator Saturation)</strong> 현상이 발생할 수 있다. 이 상태에서 기체는 GCS(Ground Control Station)가 지시한 목표 이륙 고도(Target Takeoff Altitude)에 도달하지 못한 채 지면에 머물거나 낮은 고도에서 상승을 멈추게 된다.</p>
+<p>문제는 위치 제어기(Position Controller) 내부의 PID 알고리즘이 목표 고도와 현재 고도 사이의 오차(Z-axis Position Error)를 보상하기 위해 적분기(Integrator) 값을 계속해서 누적(Windup)시킨다는 점이다. 이러한 <strong>적분기 와인드업(Integrator Windup)</strong> 상태가 장기화된 상태에서 갑자기 외란(하강 기류)이 사라지거나 일시적으로 모터 추력이 회복될 경우, 누적된 제어량 폭발로 인해 기체가 하늘로 솟구치듯 급상승하는 крайне 위험한 상황(Ballooning Effect)을 유발한다.</p>
+<p>PX4-Autopilot은 이와 같은 고추력 교착 상태(Deadlock)에서 기체를 보호하고 적분기 와인드업을 원천 차단하기 위해, 출력 포화 플래그(Saturation Flag)를 감지하고 동적으로 목표 고도(Setpoint)를 재할당하는 안티-와인드업(Anti-Windup) 제어 연쇄 루프를 도입하고 있다.</p>
+<h2>1.  제어기 포화(Saturation) 감지 및 적분기 동결(Anti-Windup) 메커니즘</h2>
+<p>PX4의 위치 제어 아키텍처(<code>FlightTaskAuto</code>) 내부에는 z축 위치 보상을 담당하는 위치 루프(Position Loop)와 속도 추종을 담당하는 속도 루프(Velocity Loop)가 직렬로 연결되어 있다.</p>
+<p>기체가 상승 속도(Up-velocity)를 확보하기 위해 스로틀(Throttle)을 최대로 개방하였음에도 불구하고 믹서(Mixer) 계층에서 구동부 출력이 최대 한계치(<code>PWM_MAX</code> 혹은 <code>MOT_MAX</code>)에 도달하면, 내부 제어기는 <code>saturation_z</code> 플래그를 <code>true</code>로 설정하여 상위 계층으로 피드백을 전달한다.</p>
+<h3>1.1  속도 제어기의 적분기 동결(Freezing)</h3>
+<p>출력 포화가 감지되면 속도 PID 제어기의 적분항(<span class="math math-inline">\int e_v dt</span>) 계산이 즉각적으로 동결(Freeze)된다. 이는 제어 변수가 하드웨어적인 한계에 다다라 더 이상 조작량을 늘릴 수 없을 때, 무의미한 에러 누적을 중단시키는 가장 원시적이면서도 효과적인 안티-와인드업 기법(Clamping)이다. 이를 통해 기체는 현재의 포화된 추력 상태를 유지하되, 억눌려 있던 오차 보상 제어량이 추후 위협적인 오버슈트(Overshoot)로 터져나오는 것을 예방한다.</p>
+<h2>2.  상승 속도 둔화 및 목표 고도 유연 재할당(Setpoint Reallocation) 로직</h2>
+<p>속도 제어기의 적분기 동결만으로는 근본적인 위치 오차의 교착 상태가 풀리지 않는다. 이륙 모드(<code>TAKEOFF</code> Mode)에서 GCS나 임무 파일이 지시한 설정 고도(예: 지표면으로부터 10미터)까지 상승하지 못한 채 고도 2미터에서 고착되었다면, 기체는 배터리 방전 시까지 최대 추력을 내뿜는 답보 상태(Deadlock)에 빠지게 된다.</p>
+<p>최신 PX4 알고리즘은 이러한 하드웨어 능력 한계 상황을 인정하고 목표 고도를 동적으로 깎아내려 시스템을 안정화하는 <strong>설정값 재할당(Setpoint Reallocation)</strong> 전략을 채택한다.</p>
+<ol>
+<li><strong>상승 속도 재계산</strong>: 위치 제어기는 출력 포화(<code>saturation_z</code>)가 일정 시간(<code>EKF2</code> 또는 제어 루프 틱 타임 의존) 이상 지속되고 기체의 실제 상승 속도가 목표 상승 속도(<code>MPC_Z_VEL_MAX_UP</code>)에 비해 현저히 떨어진다고 판단되면, 동적 제한기(Slew-rate Limiter)를 통해 목표 상승 속도를 스케일 다운(Scale-down)시킨다.</li>
+<li><strong>동적 고도 설정값 갱신(Dynamic Altitude Setpoint Update)</strong>: 상승 속도가 낮아진 상태에서도 타겟 고도 도달이 불가능할 경우, 커맨더(Commander) 계층은 목표 고도 자체를 기체가 도달하여 맴돌고 있는(Hovering) 현재 고도 수준으로 끌어내린다(Reallocation). 이를 통해 위치 오차(<span class="math math-inline">e_z</span>)를 강제로 0으로 수렴하게 만들고, 더 이상의 무리한 추력 요구를 차단하여 구동부 과부하(Overheating) 및 ESC 소손을 막는다.</li>
+</ol>
+<h2>3.  GCS(QGroundControl)와의 상호작용 및 예외 상태 전파</h2>
+<p>목표 고도가 현재 고도로 재할당되어 이륙이 조기 종료(Early Termination)에 가까운 상태가 되면, QGroundControl은 이 상황을 어떻게 인식할 것인가가 중요한 관제 이슈가 된다.</p>
+<p>GCS는 MAVLink <code>COMMAND_LONG</code>의 <code>MAV_CMD_NAV_TAKEOFF</code> 명령에 대한 ACK를 대기하지만, 지정한 파라미터(예: 고도 10m)에 기체가 완전히 도달하지 못하더라도 PX4의 비행 모드가 <code>TAKEOFF</code> 완료 트리거를 거치거나 내부 FSM이 <code>LOITER</code>(호버링) 상태로 천이하면 이륙 프로세스가 정상적으로 임무 인계(Hand-over)된 것으로 판별할 수 있다.</p>
+<p>이때 PX4 시스템은 <code>STATUSTEXT</code> 이벤트를 통해 “Actuator saturation detected” 혹은 “Takeoff constrained by performance“와 같은 진단 메시지를 전송한다. GCS 운영자는 해당 알람을 확인한 후, 기체의 잔여 배터리와 페이로드 탑재량을 재점검하고 임무를 속행할지, 아니면 즉각적인 <code>RTL</code>(복귀)을 수행할지 판단할 수 있도록 시각적 위기 지표를 화면에 표출(Rendering)해야 한다.</p>
+<h3>3.1  ArduPilot과의 차별점</h3>
+<p>ArduPilot(특히 Copter 아키텍처)의 경우, 위치 제어루프에서 <code>I terms</code>의 누적 한계(Limit)를 설정하는 <code>IMAX</code> 파라미터가 매우 엄격하게 동작하여 와인드업을 방지한다. 하지만 ArduPilot은 이륙 임무 단계에서 <code>WAYPOINT_NAV</code> 모듈이 목표 고도 도달 반경(Acceptance Radius) 내에 진입하기 전까지는 모드를 강제로 넘기지 않고 계속 상승을 시도하는 경향이 강해 고도 교착이 발생할 여지가 있다. 반면 PX4는 동역학적인 퍼블리싱 상태(<code>vehicle_local_position_setpoint</code>)를 기체의 물리적 한계에 따라 실시간으로 물려주어(Yield) 교착을 해결하는 보다 동적인 반응형 궤적(Responsive Trajectory) 설계를 지향한다.</p>
+<h2>4.  이륙 교착 해소 논리 흐름도 (Mermaid)</h2>
+<pre><code class="language-mermaid">flowchart TD
+    A[이륙 명령 수신: 목표 고도 10m] --&gt; B(위치 제어기 궤적 생성)
+    B --&gt; C(속도/가속도 제어 루프 인가)
+    C --&gt; D{모터 출력 최대치 도달?}
+    
+    D -- Yes --&gt; E[Actuator Saturation 감지]
+    D -- No --&gt; C
+    
+    E --&gt; F[속도 제어기: 적분항 누적 동결 Anti-windup]
+    F --&gt; G{기체 고도 상승률(Climb Rate) 확인}
+    
+    G -- "상승 중(목표 속도 미달)" --&gt; H[목표 상승 속도(Slew-rate) 감속 조정]
+    H --&gt; C
+    
+    G -- "상승 정지(Deadlock, 고도 2m 고착)" --&gt; I[목표 고도 재할당]
+    I --&gt; J[현재 고도 2m를 새로운 목표 고도 Setpoint로 갱신]
+    J --&gt; K[위치 에러(e_z) 강제 소멸 및 스로틀 하향 안정화]
+    K --&gt; L[이륙 프로세스 조기 완료 및 LOITER/HOLD 모드 천이]
+    L --&gt; M[QGC로 Saturation Warning 송출]
+</code></pre>
+<h2>5.  결론 및 실측 검증</h2>
+<p>이와 같은 구동부 출력 포화 시의 적분기 와인드업 방지 및 목표 재할당 알고리즘은 실차 비행 교착을 막고 추락 위험을 경감하는 가장 중요한 보험 로직이다. 개발자는 센서의 튜닝뿐만 아니라, <code>MPC_THR_MAX</code>, <code>MPC_Z_VEL_MAX_UP</code> 등의 동역학 제한 파라 파라미터들을 기체의 물리적 추진 시스템(Propulsion System) 사양에 맞게 철저히 프로파일링하여 포화 플래그의 민감도를 최적화해야 함을 명심해야 한다.</p>
 
             </article>
             <footer>

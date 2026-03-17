@@ -115,49 +115,47 @@
             </header>
             <article>
                 <h1>39.7.3.1. QGC 내장 통신 검사기(MAVLink Inspector)를 이용한 프로토콜 페이로드의 16진수(Hex) 바이트 스트림 파싱</h1>
-<h2>1.  개요</h2>
-<p>드론 지상 관제 시스템(GCS, Ground Control Station)의 사실상(De facto) 표준인 QGroundControl(QGC)은 단순한 비행 모니터링 UI를 넘어 강력한 통신 디버깅 기능들을 기본 탑재하고 있다. 그중에서도 가장 핵심적인 분석 도구가 바로 <strong>MAVLink Inspector</strong>이다.</p>
-<p>PX4-Autopilot과 QGC 간에 MAVLink v2.0 프로토콜을 통해 교환되는 모든 데이터는 궁극적으로 0과 1의 연속인 바이트 스트림(Byte Stream) 형태로 송수신된다. 고차원적인 비행 제어 문제나 새로운 커스텀 센서 포팅 및 uORB 토픽 맵핑 시 발생하는 통신 송수신 결함을 진단하기 위해서는, 단순히 QGC 화면에 로깅되는 텍스트 값을 확인하는 것을 넘어 프로토콜 원시 데이터인 16진수(Hexadecimal) 페이로드를 직접 파싱(Parsing)하고 검증할 수 있어야 한다. 본 절에서는 MAVLink Inspector를 활용하여 하위 수준(Low-level)의 패킷 스트림 무결성을 확인하는 공학적 분석 기법을 다루어라.</p>
-<h2>2.  MAVLink 프레임 아키텍처 및 16진수 맵핑</h2>
-<p>QGC로 유입되는 MAVLink v2.0 패킷 베이스 데이터는 최소 12바이트에서 최대 280바이트 구성의 프레임(Frame) 규격을 따른다. MAVLink Inspector는 이 프레임을 복호화(Decode)하여 보여주는데, 각 바이트(Byte)의 16진수 배열은 다음의 구조적 규칙을 지닌다.</p>
-<ol>
-<li><strong>Magic Byte (<code>STX</code>)</strong>: 패킷의 시작을 알리는 동기화 바이트로, v2.0 기준 항상 <code>0xFD</code> 값으로 고정된다.</li>
-<li><strong>Payload Length (<code>LEN</code>)</strong>: 명령어 또는 센서 데이터 등 실제 유의미한 페이로드의 길이를 1바이트로 나타낸다.</li>
-<li><strong>Incompatibility / Compatibility Flags (<code>INC FLAGS</code>, <code>CMP FLAGS</code>)</strong>: 서명(Signing) 여부 등 특수 기능을 명시하는 각 1바이트 크기의 플래그이다.</li>
-<li><strong>Sequence Number (<code>SEQ</code>)</strong>: 패킷 유실을 감지하기 위해 0번(<code>0x00</code>)부터 255번(<code>0xFF</code>)까지 순환 증가하는 식별자이다.</li>
-<li><strong>System ID / Component ID (<code>SYS ID</code>, <code>COMP ID</code>)</strong>: 기체의 번호(보통 <code>0x01</code>)와 하위 컴포넌트(예: Autopilot <code>0x01</code>, Camera <code>0x64</code>)를 나타낸다.</li>
-<li><strong>Message ID (<code>MSG ID</code>)</strong>: 3바이트(24비트)로 구성되어 해당 패킷이 <code>HEARTBEAT</code>(ID: 0)인지 <code>ATTITUDE</code>(ID: 30)인지를 명시한다.</li>
-<li><strong>Payload</strong>: 사용자가 정의하는 실제 데이터 공간이다 (0 ~ 255 바이트).</li>
-<li><strong>Checksum (<code>CKA</code>, <code>CKB</code>)</strong>: 2바이트로 구성된 X.25 CRC 값이다.</li>
-</ol>
-<p>MAVLink Inspector에서 특정 메시지를 선택한 후 ‘Show raw payload’ 옵션을 활성화하면 7번 항목인 페이로드(Payload)가 어떻게 직렬화(Serialization)되어 있는지를 관찰할 수 있다.</p>
-<h2>3.  QGC MAVLink Inspector 활용 및 디버깅 워크플로우</h2>
-<p>QGroundControl (v4.2 이상 권장)에서 원시 데이터를 분석하기 위한 절차를 숙지하라.</p>
-<ol>
-<li><strong>Inspector 호출</strong>: QGC 상단 메뉴의 “Analyze Tools” 아이콘을 클릭한 뒤, 하위 메뉴에서 “MAVLink Inspector” 도구를 실행한다.</li>
-<li><strong>메시지 트리 확장</strong>: 현재 활성화된 System 1 (기체) 내부의 Component 1 (PX4) 계층을 확장하면, 해당 시점에 수신율(Hz)이 카운트되며 쏟아지는 모든 MAVLink 토픽의 이름(예: <code>ATTITUDE</code>, <code>GPS_RAW_INT</code>)이 노출된다.</li>
-<li><strong>데이터 확인 및 파싱</strong>: 특정 메시지를 클릭하면, 메시지 내부에 포함된 변수 리스트(예: <code>pitch</code>, <code>roll</code>, <code>yaw</code>)와 할당된 값이 실시간(Real-time)으로 갱신되어 표출된다.</li>
-</ol>
-<p>이 도구 기반의 16진수 페이로드 디버깅 절차를 아래 시퀀스로 도식화하라.</p>
-<pre><code class="language-mermaid">sequenceDiagram
-    participant PX4 as PX4-Autopilot (Target)
-    participant QGC as QGroundControl (GCS)
-    participant MI as MAVLink Inspector (UI)
-    
-    PX4-&gt;&gt;QGC: UART/UDP 인터페이스를 통한 바이너리 전송 (0xFD...)
-    Note over QGC: MAVLink C/C++ 라이브러리의 Unpack 수행
-    QGC-&gt;&gt;MI: System ID, Comp ID, Msg ID 기반 분류
-    Note over MI: 사용자가 특정 메시지(예: DEBUG_VECT) 클릭
-    MI-&gt;&gt;MI: 구조체(Struct) 형태에서 Hex 바이트로 역변환 표출
-    MI--&gt;&gt;User: 변수 타입별 Little-Endian 인코딩 상태의 페이로드 가시화
+<p>지상 관제 시스템과 PX4-Autopilot 간의 제어 디버깅 과정에서, 수신된 데이터가 예상되는 값과 일치하지 않거나 프로토콜 파싱 에러(Parsing Error)가 발생할 경우, 최하위 수준의 원시 데이터(Raw Data)를 직접 분석해야 한다. 본 절에서는 QGroundControl(버전 4.2 이상 기준)에 내장된 통신 검사기(MAVLink Inspector)를 활용하여 프로토콜 페이로드 통신망으로 교환되는 16진수(Hex) 바이트 스트림(Byte Stream)을 추출하고 파싱하는 공학적 기초를 설명한다.</p>
+<h2>1.  MAVLink 2.0 패킷 아키텍처 및 페이로드</h2>
+<p>MAVLink 2.0 프로토콜은 통신 대역폭을 최소화하기 위해 C 언어의 <code>struct</code>를 직렬화(Serialization)하며, 각 필드는 리틀 엔디언(Little-Endian) 포맷으로 배열된다. 하나의 MAVLink 2.0 프레임은 메모리 상에서 아래와 같은 자료구조 형식을 나타낸다.</p>
+<pre><code class="language-mermaid">classDiagram
+    class MAVLink2_Frame {
+        +uint8_t magic_stx (0xFD)
+        +uint8_t payload_len
+        +uint8_t incompat_flags
+        +uint8_t compat_flags
+        +uint8_t seq (Sequence)
+        +uint8_t sysid (System ID)
+        +uint8_t compid (Component ID)
+        +uint24_t msgid (Message ID)
+        +uint8_t[] payload (0~255 Bytes)
+        +uint16_t checksum
+        +uint8_t[] signature (Optional)
+    }
 </code></pre>
-<h2>4.  페이로드 바이트 배열(Byte Ordering)과 자료형(Data Type) 검증 실무</h2>
-<p>스트림 파싱의 가장 핵심적인 과제는 시스템의 엔디안(Endianness) 특성을 이해하는 것이다. MAVLink 프로토콜은 통신 및 메모리 정렬의 최적화를 위해 의도적으로 모든 다중 바이트 자료형(예: <code>uint32_t</code>, <code>float</code>, <code>int16_t</code>)에 대해 <strong>리틀 엔디안(Little Endian)</strong> 배열 규칙을 차용한다.</p>
-<p>또한 최적화를 위해 페이로드 내부의 변수 배열 순서는 개발자가 작성한 <code>.xml</code> 로직 파일의 선언 순서가 아닌 자료형의 크기(Byte Size)를 기준으로 큰 것에서 작은 것 순서(<code>uint64_t</code> <span class="math math-inline">\rightarrow</span> <code>uint32_t</code> <span class="math math-inline">\rightarrow</span> <code>uint16_t</code> <span class="math math-inline">\rightarrow</span> <code>uint8_t</code>)로 자동 재정렬(Auto-reordering)된다.</p>
-<p>디버깅 중 송신된 커스텀 센서 데이터가 QGC에서 깨져 보인다면, MAVLink Inspector 상의 원시 16진수 바이트를 수기(Manual)로 파싱하여 배열 상태를 검증하라.<br />
-예를 들어 <code>float</code> 타입 송신 값 <span class="math math-inline">10.5</span> (IEEE 754 16진수 표기 시 <code>0x41280000</code>)의 경우 스트림 상에서 1바이트씩 분절되어 다음의 역순 스트림으로 나타나게 된다.</p>
-<p><span class="math math-display"> Payload_{Hex} = [ 00 \vert 00 \vert 28 \vert 41 ] </span></p>
-<p>만약 파싱 결과가 정상이라면 QGC 내의 커스텀 MAVLink 플러그인 컴파일(XML 생성) 문제이거나 기체 내 <code>mavlink_receiver</code>의 uORB 발행 시 구조체 크기 불일치 결함일 확률이 높으므로 시스템 전반의 컴포넌트 간 버전을 일치시켜 통신 무결성을 보장하라.</p>
+<p>위 구조에서 실질적인 제어 명령 및 텔레메트리 데이터가 담기는 구간이 <code>payload</code> 영역이다. QGC의 MAVLink Inspector는 이 페이로드를 읽어들여 사용자 친화적인 표준 단위(Engineering Units)로 변환한 후 대시보드에 표시한다. 그러나 송수신 측의 파서(Parser) 버전 불일치나 커스텀 메시지 통합 오류로 인해 값이 깨질 때는, 페이로드 내부의 16진수 원시 스트림을 파악하여 바이트 단위로 검증해야 한다.</p>
+<h2>2.  QGroundControl 대시보드에서의 Hex 데이터 추출 기술</h2>
+<p>QGroundControl에서 원시 MAVLink 스트림을 확인하고 로깅(Logging)하는 접근법은 다음과 같다.</p>
+<ol>
+<li>QGC의 <strong>Analyze View(분석 보기)</strong> 메뉴로 진입하여 <strong>MAVLink Inspector</strong> 창을 활성화하라.</li>
+<li>관측하고자 하는 특정 Message(예: <code>ATTITUDE</code> #30, <code>HEARTBEAT</code> #0 등) 항목을 클릭하여 트리를 확장한다.</li>
+<li>컴파일 시 디버깅 옵션이 활성화된 경우(또는 개발자 모드 설정 시), 특정 메시지 패킷에 대한 원시 덤프(Raw Dump) 옵션이나 상세 메시지 창에서 바이트 배열(Array of Bytes)을 16진수로 확인할 수 있다.</li>
+<li>더 심층적인 오프라인 분석이 필요한 경우, 비행 중 QGC에 저장된 텔레메트리 로그 파일(<code>*.tlog</code>)을 추출하고 Python의 <code>pymavlink</code> 라이브러리를 통해 파상 레이어(Parsing Layer)를 우회하여 직접 16진수 스트림을 출력하라.</li>
+</ol>
+<h2>3.  16진수(Hex) 바이트 스트림 파싱 실무 예시</h2>
+<p>예를 들어, PX4-Autopilot에서 수신된 특정 <code>RC_CHANNELS</code> (메시지 ID #65)의 페이로드 바이트 스트림의 앞 4바이트가 다음과 같이 16진수로 캡처되었다고 가정하라.</p>
+<p><code>Raw Payload: 20 04 D0 07 ...</code></p>
+<p>MAVLink 메시지는 내부적으로 리틀 엔디언(Little-Endian) 구조에 따라 메모리에 맵핑된다. 만약 첫 번째 필드가 <code>time_boot_ms</code> (uint32_t, 4바이트) 항목이라면, 이 16진수 배열의 해석 절차는 다음과 같이 전개된다.</p>
+<ol>
+<li><strong>바이트 분리 및 가중치 파악:</strong> <code>0x20</code> (LSB: Least Significant Byte), <code>0x04</code>, <code>0xD0</code>, <code>0x07</code> (MSB: Most Significant Byte)</li>
+<li><strong>리틀 엔디언 메모리 재정렬:</strong> LSB가 메모리의 가장 하위 주소에 위치하므로, 실제 32비트 값으로 조립할 때는 역순으로 재결합한다. ➡ <code>0x07D00420</code></li>
+<li><strong>10진수 변환 연산:</strong> 16진수 <code>0x07D00420</code> ➡ 10진수 <code>131073056</code></li>
+<li><strong>최종 결과 해석:</strong> 기체 시스템 부팅 후 경과 시간이 131073056 밀리초(약 36.4시간)임을 도출한다.</li>
+</ol>
+<p>이러한 수동 검증(Manual Verification) 방식은 사용자 정의(Custom) 인터페이스 개발 시 구조체 패딩(Struct Padding)의 불일치 문제나 부호 있는 정수형(Signed Integer)의 오버플로우 캐스팅(Type Casting) 오류를 찾아내는 가장 확실하고 근본적인 진단법이다.</p>
+<h2>4.  Ardupilot 및 타 GCS 대비 진단적 관점 차이</h2>
+<p>Ardupilot 에코시스템에서 폭넓게 사용되는 Mission Planner GCS 역시 강력한 MAVLink Inspector와 통신 터미널 창을 제공한다. Mission Planner의 통신 터미널은 MAVLink 프레임 헤더를 포함한 전체 바이트 스트림을 콘솔 상에 실시간으로 매우 상세하게 덤핑하는 원시 데이터 확인 기능에 최적화된 경향이 있다.</p>
+<p>이와 대조적으로 화면 UI 지향적인 QGroundControl은 Qt 프레임워크 기반의 시각적 플롯팅(Plotting)과 고도화된 스레드 모델에 중점을 두므로, 내장 Inspector만으로 극도로 미세한 원시 16진수를 실시간 추적하기에 UI 갱신 부하가 따를 수 있다. 따라서 PX4-Autopilot 기반의 관제 솔루션을 개발하거나 극심한 프로토콜 오류를 추적할 때에는, QGC 자체 툴 활용과 더불어 <code>MAVSDK</code> 혹은 <code>Wireshark</code>와 같은 외부 스트림 검열 툴을 병행 운용하는 것이 공학적으로 더욱 타당하다.</p>
 
             </article>
             <footer>

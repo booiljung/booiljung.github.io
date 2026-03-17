@@ -115,6 +115,42 @@
             </header>
             <article>
                 <h1>44.4.1.1 상태 천이 행렬(State Transition Matrix) 내에서의 조건부 분기(Conditional Branch) 및 가드 조건(Guard Condition)의 불리언(Boolean) 대수 평가</h1>
+<p>본 절에서는 커맨더(Commander) 내부에서 비행 상태(Main State) 및 내비게이션 상태(Navigation State) 전이가 일어날 때, 시스템 안정성을 보장하기 위해 거쳐야 하는 상태 천이 행렬(State Transition Matrix)의 구조와 가드 조건(Guard Condition)의 불리언(Boolean) 대수 평가 과정을 논리적으로 분석한다. (기준 펌웨어: PX4 v1.14.0 이상, QGroundControl v4.3.0 이상)</p>
+<h2>1.  전이 유효성 검증의 본질: 상태 천이 행렬(State Transition Matrix)</h2>
+<p>PX4-Autopilot의 커맨더 모듈은 무한 개의 상태가 아닌, 유한한 수의 명확히 정의된 상태(예: <code>MAIN_STATE_MANUAL</code>, <code>MAIN_STATE_AUTO_TAKEOFF</code>, <code>MAIN_STATE_AUTO_MISSION</code> 등)를 가진다. 현재 상태(<span class="math math-inline">S_i</span>)에서 목표 상태(<span class="math math-inline">S_j</span>)로의 전이 가능 여부는 논리 행렬 <span class="math math-inline">T(i, j)</span>로 모델링된다. 행렬의 원소가 <code>1(True)</code>이면 전이가 허용되고, <code>0(False)</code>이면 거부된다.</p>
+<p>실제 소스 코드 상에서는 이 다차원 매트릭스가 커다란 <code>switch</code> 문과 그 내부의 복합적인 <code>if-else</code> 구조로 하드코딩(Hard-coding) 되어 있거나, 별도의 전이 검증 함수(Transition Validation Function)의 형태로 구현되어 있다.</p>
+<h2>2.  가드 조건(Guard Condition)과 불리언(Boolean) 대수 평가</h2>
+<p>상태 천이 행렬에서 <span class="math math-inline">T(i, j) = 1</span>이 되기 위해서는 단순한 의도뿐만 아니라, 기체의 물리적 조건이 완벽히 부합하는지를 나타내는 가드 조건(Guard Condition) 테스트를 통과해야 한다. 이는 센서의 유효성, 시스템 안전 장치(Failsafe) 플래그, 조종기(RC) 연결 상태 등 수많은 비트 매스크(Bitmask)와 불리언 형태의 변수들의 논리 연산으로 구성된다.</p>
+<p>예를 들어, 현재 상태에서 <code>AUTO_TAKEOFF</code>로 진입하기 위한 조건식은 내부적으로 다음과 같은 불리언(Boolean) 논리곱(AND) 구조를 띈다.</p>
+<p><span class="math math-display">
+\text{IsTransitionValid} = \text{Condition\_Armed} \land \text{Condition\_GlobalPosValid} \land \text{Condition\_LocalPosValid} \land \neg \text{Condition\_FailsafeActive}
+</span></p>
+<ul>
+<li><code>Condition_Armed</code>: 기체가 시동되어 모터 제어가 가능한 상태인가?</li>
+<li><code>Condition_GlobalPosValid</code>: EKF2 필터 상에서 글로벌 위치(GPS 등) 데이터의 분산(Variance)이 허용 임계치 이내인가?</li>
+<li><code>Condition_LocalPosValid</code>: VIO, 옵티컬 플로우 등을 포함하여 로컬 제어를 수행할 위치 추정치가 유효한가?</li>
+<li><code>Condition_FailsafeActive</code>: 현재 기체 배터리 경고나 센서 오류 등으로 Failsafe가 발동된 상태인가? (<code>NOT</code> 연산자로 부정 평가 시 참이어야 함)</li>
+</ul>
+<p>이러한 가드 조건 중 단 하나라도 <code>False(0)</code>로 평가될 경우(Boolean Short-circuit Evaluation 활성화), 커맨더는 상태 전이를 즉각 중단하고 GCS로 <code>MAV_RESULT_DENIED</code>를 전송하여 조작자에게 명령이 거부되었음을 시각적으로 알린다.</p>
+<h2>3.  다이어그램을 통한 플래그 융합(Flag Fusion) 처리 구조</h2>
+<p>PX4 시스템은 각 서브 모듈(센서, 배터리 관리자 등)에서 판단한 로컬 상태를 uORB 메시지로 퍼블리시하고 커맨더가 이를 취합하여 마스터 플래그(<code>vehicle_status.msg</code>)를 구축한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[EKF2 Estimator] --&gt;|Local/Global Position Valid 플래그| D(Commander 모듈의 시스템 플래그 취합부)
+    B[Battery Status 모듈] --&gt;|전압 경고 플래그| D
+    C[RC Data 모듈] --&gt;|Signal Lost 플래그| D
+    D --&gt; E{상태 천이 요청 수신 &lt;br&gt; e.g. Takeoff}
+    E --&gt; F[천이 가드 조건 평가&lt;br&gt;AND/OR 불리언 대수 수행]
+    F --&gt;|True 평가 완료| G((상태 천이 승인 및 Main State 갱신))
+    F --&gt;|False 요소 감지| H((상태 천이 거부 및 원인 로깅))
+</code></pre>
+<h2>4.  Ardupilot 대비 아키텍처 철학적 차이점</h2>
+<p>가드 조건 평가 측면에서 PX4-Autopilot과 Ardupilot 간에는 뚜렷한 설계 사상 차이가 있다.</p>
+<ul>
+<li><strong>PX4-Autopilot</strong>: 논리 회로 설계에 가까운 철저한 ‘결정론적 상태 머신(Deterministic State Machine)’ 철학을 따른다. 비행 제어기 코드가 평가해야 할 불리언 변수들을 사전에 세심하게 마스킹하고 구조체화(<code>vehicle_status</code> 등)하여 오직 단일 검증 함수에서 엄격히 점검한다. 이는 학술적으로 수학적 검증이 훨씬 용이한 선형적 평가 아키텍처다.</li>
+<li><strong>Ardupilot</strong>: 실용적인 이벤트 주도형(Event-driven) 혹은 각 모드의 다형성(Polymorphism)을 존중하는 객체 지향적 철학에 가깝다. 비행 모드 전이 검증 로직(<code>Mode::init()</code>) 내부에 각 모드만이 가지는 특수한 제약 조건이 은닉되어 평가된다. 따라서 다양한 기체 형상과 수많은 커스텀 모드를 확장하기에는 유리하지만, 통합된 단 하나의 전이 행렬 맵을 직관적으로 그려내기가 비교적 까다롭다.</li>
+</ul>
+<h2>5.  결론 및 GCS 연동 개발 시의 주의점</h2>
+<p>PX4를 위한 사용자 정의 GCS나 에지 컴퓨터 프로그램(자율비행 로직)을 개발할 때, 개발자가 커맨더 내부의 이러한 ’상태 천이 가드 조건 로직’을 간과하면 명령 실패의 늪에 빠지기 쉽다. 단순히 이륙명령만을 반복 호출하는 루프를 작성하는 대신, 사전에 uORB 데이터를 파싱하거나 MAVLink <code>SYS_STATUS</code> 메시지를 모니터링하여 현재 기체의 불리언 플래그가 전이 조건을 모두 만족(<span class="math math-inline">1</span>)하고 있는지 확인한 후에 명령을 시도하는 것이 공학적으로 올바른 접근이다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:40.1.2 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리 기반의 대역폭 최적화</title>
+    <title>BIJUNG:40.1.2. 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리 기반의 대역폭 최적화</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,53 +109,58 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>40.1.2 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리 기반의 대역폭 최적화</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.1.2 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리 기반의 대역폭 최적화</span></nav>
+                    <h1>40.1.2. 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리 기반의 대역폭 최적화</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.1.2. 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리 기반의 대역폭 최적화</span></nav>
                 </div>
             </header>
             <article>
-                <h1>40.1.2 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리 기반의 대역폭 최적화</h1>
-<h2>1.  개요 및 이론적 배경</h2>
-<p>무인항공기 시스템(UAS)과 지상 관제 시스템(GCS) 사이의 텔레메트리(Telemetry) 통신 링크는 매우 제한된 대역폭 내에서 신뢰성 있게 중요 제어 데이터와 상태 정보를 전달해야 한다. 특히 PX4-Autopilot을 구동하는 드론이 가시권 밖(BVLOS) 비행 등 복잡도 높은 임무를 수행하거나 다중 에이전트(Swarm) 환경에서 운영될 때, 통신 채널 용량을 극대화하면서도 안정성을 보장하기 위한 대역폭 최적화 기술이 필수적으로 요구된다.</p>
-<p>정보 이론의 핵심 정리를 기술한 섀넌-하틀리 정리(Shannon-Hartley Theorem)는 잡음이 존재하는 통신 채널에서 에러 없이 전송할 수 있는 최대 정보 전송률, 즉 채널 용량(<span class="math math-inline">C</span>)을 대역폭(<span class="math math-inline">B</span>)과 신호 대 잡음비(Signal-to-Noise Ratio, SNR, <span class="math math-inline">S/N</span>)의 관계로 정의한다. 공식은 다음과 같다.</p>
-<p><span class="math math-display">C = B \log_2\left(1 + \frac{S}{N}\right)</span></p>
-<p>이 수식은 정보의 혼잡도와 손실을 다루는 가장 근본적인 토대를 제공한다. 물리적으로 채널 용량을 늘리기 위해서는 사용 주파수 대역폭(<span class="math math-inline">B</span>)을 넓히거나 송신 전력(<span class="math math-inline">S</span>)을 높여야 한다. 그러나 드론 운용 시에는 배터리의 제한적 에너지 밀도와 전파법 규제로 인하여 무선 송수신기의 전력을 무한정 증폭하거나 넓은 주파수 대역을 임의로 독점할 수 없다. 결과적으로 통신 모뎀의 채널 용량 <span class="math math-inline">C</span>가 고정된 상한선으로 주어지는 환경에서 PX4-Autopilot은 필수 제어 명령과 상태 데이터를 안전하게 송수신하기 위해 소프트웨어 계층에서의 최적화 메커니즘을 적극적으로 활용해야만 한다.</p>
-<h2>2. 통신 최적화 전략 및 MAVLink 트래픽 셰이핑(Traffic Shaping)</h2>
-<p>PX4-Autopilot은 <code>mavlink</code> 모듈(통신 데몬)을 통해 지상 관제 시스템(QGroundControl 등)과 다양한 메시지를 교환한다. 한정된 <span class="math math-inline">C</span> 안에서 가장 중요도가 높은 패킷의 도달을 보장하는 최적화 기법을 적용하기 위하여 동적 대역폭 모니터링 체계를 갖추고 있다(펌웨어 v1.14 기준).</p>
-<p>PX4의 uORB 메시징 구조는 센서, 제어기, 추정기(Estimator) 등에서 발생하는 메시지를 브로드캐스팅(Broadcasting) 방식으로 뿌리며, <code>mavlink</code> 모듈은 내부 스케줄링 로직에 따라 이 메시지들을 MAVLink 패킷으로 직렬화(Serialization)하여 전송한다. 다중 링크 운용 시에도 각 채널의 가용 대역폭을 개별적으로 식별하여 텔레메트리 데이터를 유연하게 패킹(Packing)한다.</p>
-<pre><code class="language-mermaid">graph TD
-    A[uORB Topics] --&gt; B(MAVLink Module)
-    B --&gt; C{Bandwidth Manager&lt;br&gt;Rate Limiter}
-    
-    C --&gt;|Priority 1| D(Control Commands / Heartbeat)
-    C --&gt;|Priority 2| E(Attitude / Position Data)
-    C --&gt;|Priority 3| F(Extended State / Log Streams)
-    
-    D --&gt; G[Radio Modem / Telemetry Link]
-    E --&gt; G
-    F --&gt; G
-    
-    style C fill:#f9f,stroke:#333,stroke-width:2px;
-    style G fill:#ff9,stroke:#333,stroke-width:2px;
-</code></pre>
-<h3>2.1 대역폭 할당 및 설정</h3>
-<p>QGroundControl(QGC v4.3 기준) 연결 시 협상된 통신 환경에 기반하여 상한선(Rate Limit)을 결정한다. 통신 대역폭 제한 모드에서는 각 메시지의 전송 빈도수(Hz)를 조절함으로써 채널 트래픽을 분산시킨다.<br />
-예를 들어 <code>MAV_0_RATE</code> (Data Rate) 파라미터 설정을 통해 해당 시리얼 포트에서 MAVLink 스트리밍을 낼 수 있는 최대 대역폭(Byte/s)을 지정할 수 있으며, 시스템은 이를 기반으로 전송량을 지속적으로 셰이핑한다.</p>
-<h3>2.2 섀넌-하틀리 정리 기반의 최적화 구현 포인트</h3>
-<p>실제 임베디드 코어 상에서는 다음 원칙에 기반하여 설계된다.</p>
-<ol>
-<li><strong>메시지 직렬화 및 압축 기법 활용 (Minimal Serialization):</strong> 데이터 상태 공간(State Space) 내 불필요 구조체를 제거하고 필수 데이터만 팩킹한다. MAVLink v2.0 프로토콜에 적용된 ‘빈 바이트 제거(Zero Byte Truncation)’ 기능은 페이로드 압축 효율을 극대화시켜 동일 채널 용량 하에서 더 많은 유효 메시지를 전송하게 한다.</li>
-<li><strong>동적 전송률 조절 (Dynamic Rate Adjustment):</strong> 링크 퀄리티 메트릭(RSSI, Noise 값 등)을 모니터링하여 SNR 값이 한계치 이하로 하강하는 열악한 환경이 파악될 경우, 비핵심 디버그 데이터나 확장 상태 데이터의 주기(Frequency)를 강제로 낮추고 중요 제어 명령(<code>COMMAND_LONG</code> 등)과 <code>HEARTBEAT</code>가 채널 용량을 독점하도록 토큰 버킷 메커니즘을 적용한다.</li>
-</ol>
-<h2>3. Ardupilot과 PX4-Autopilot의 관제 차이점 비교</h2>
-<p>대역폭 제한 환경을 극복하기 위한 처리 로직에서 PX4-Autopilot과 Ardupilot은 명백한 철학적 차이를 나타낸다.</p>
+                <h1>40.1.2. 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리 기반의 대역폭 최적화</h1>
+<p>무인항공기(UAV)와 지상 관제 시스템(GCS) 사이의 MAVLink 제어 및 텔레메트리 통신 채널은 제한된 주파수 자원(대역폭)과 환경적 잡음(Noise)의 제약을 동시에 받는다. 극단적인 통신 환경에서 관제 정보의 신뢰성을 보장하기 위해서는 섀넌-하틀리(Shannon-Hartley) 채널 용량 정리에 입각하여 MAVLink 데이터 스트림의 대역폭(Bandwidth)을 수학적으로 최적화해야 한다. 본 절에서는 PX4-Autopilot의 통신 아키텍처 환경에서 정보 이론적 한계를 조명하고, 텔레메트리 대역폭 최적화 전략을 분석한다.</p>
+<h2>1. 섀넌-하틀리(Shannon-Hartley) 이론과 데이터 전송 한계</h2>
+<p>정보 이론(Information Theory)의 근간이 되는 섀넌-하틀리 정리는 잡음이 존재하는 아날로그 또는 디지털 통신 채널에서 에러 없이 전송할 수 있는 최대 정보 전송률(Maximum Information Rate), 즉 채널 용량(Channel Capacity)을 정의한다. 수식은 다음과 같다.</p>
+<p><span class="math math-display"> C = B \log_{2}(1 + \frac{S}{N}) </span></p>
 <ul>
-<li><strong>Ardupilot의 경우:</strong> 정적 파라미터인 <code>SRx_*</code> 변수 계열을 다수 구성하여, 미션 플래너(Mission Planner) 혹은 GCS로 향하는 각 개별 데이터 스트림(예: <code>SRx_POSITION</code>, <code>SRx_EXT_STAT</code>)의 전송 주기(Hz)를 미리 결정해 두는 정적인 성향이 상대적으로 뚜렷하다.</li>
-<li><strong>PX4-Autopilot의 경우:</strong> <code>mavlink</code> 모듈 내부 자체 스케줄러가 대역폭 초과 시 전송 딜레이나 락(Lock)을 유발하지 않게 하기 위하여, 전송 패킷을 드롭(Drop Queue)시키는 방식과 동적인 셰이핑을 더 주도적으로 활용한다. 다시 말해 가용 대역폭이 줄어드는 상황에서 우선순위를 기반으로 패킷을 탈락시키며 제어 스트림의 적시성(Timeliness)을 유연하게 보존한다.</li>
+<li><span class="math math-inline">C</span> : 채널 용량 (bits per second, bps)</li>
+<li><span class="math math-inline">B</span> : 채널의 대역폭 (Bandwidth, Hz)</li>
+<li><span class="math math-inline">S</span> : 평균 수신 신호 전력 (Signal Power, W)</li>
+<li><span class="math math-inline">N</span> : 평균 잡음 전력 (Noise Power, W), 주로 백색 가우시안 잡음(AWGN) 가정 시 <span class="math math-inline">N = N_0 B</span></li>
 </ul>
-<p>이러한 PX4 특유의 동적 대역폭 방어 설계는 위성 통신 모뎀 등 최소 채널 용량을 제공하는 링크를 활용하여 자율 에이전트 시스템을 지휘할 때, MAVLink 데이터 패킷 유실을 통제 가능한 범위로 제어하는 데 있어 크게 유리하다.</p>
-<h2>4. 결언</h2>
-<p>고난이도 비행 제어 및 관제 시스템을 설계하는 딥테크 엔지니어는 섀넌-하틀리 정리가 증명하는 채널 용량 한계의 물리 법칙을 깊이 인지해야 한다. PX4-Autopilot 및 QGroundControl의 아키텍처는 이를 극복하기 위하여 락-프리(Lock-Free), 토픽 기반(uORB) 비동기 전송 및 트래픽 셰이핑 메커니즘 등으로 진화해 왔다. 안정적 GCS 개발과 자율 에이전트 제어를 위해서는 채널 대역폭 한계를 시스템 파라미터(<code>MAV_0_RATE</code> 등)로 명확히 명시하고 예측적(Predictive) 최적화를 구성해야 할 것이다.</p>
+<p>이 정리는 MAVLink 데이터 링크 설계 시 근본적인 제약으로 작용한다. 텔레메트리 모듈(예: 433MHz 또는 900MHz ISM 대역 SiK Radio)의 대역폭 <span class="math math-inline">B</span>가 고정되어 있는 상황에서 배터리 한계와 전파법 규제로 인해 송신 전력 <span class="math math-inline">S</span>를 무한정 높일 수 없다. 결국 환경적 잡음 <span class="math math-inline">N</span>이 증가할수록 가용한 채널 용량 <span class="math math-inline">C</span>는 기하급수적으로 감소하게 되며, 이에 맞추어 MAVLink 메시지 스트림 전송률(Stream Rate)을 동적으로 최적화해야 MAVLink 버퍼 오버플로우나 패킷 드랍을 방지할 수 있다.</p>
+<h2>MAVLink 스트림 최적화 및 GCS 통신 대역폭 설계</h2>
+<p>PX4 기반 시스템에서 섀넌 채널 한계에 직면했을 때, 개발자는 MAVLink 메시지의 중요도(Priority)에 따라 퍼블리싱 주파수를 차등 분배(Traffic Shaping)하는 최적화 로직을 구현해야 한다. QGroundControl(QGC)은 기체 접속 초기화 단계에서 대역폭 부족 현상을 방지하기 위해 스트리밍 주기를 세밀하게 조정한다.</p>
+<h3>MAVLink 데이터 버젯(Data Budget) 할당 모델링</h3>
+<pre><code class="language-mermaid">graph LR
+    A[채널 용량 한계&lt;br/&gt;C = B log2 1+S/N] --&gt;|할당| B{MAVLink 우선순위 큐&lt;br/&gt;Priority Queue}
+    B --&gt;|High Priority&lt;br/&gt;10~50Hz| C(HEARTBEAT&lt;br/&gt;RC_CHANNELS&lt;br/&gt;HIGHRES_IMU)
+    B --&gt;|Medium Priority&lt;br/&gt;2~10Hz| D(LOCAL_POSITION_NED&lt;br/&gt;ATTITUDE&lt;br/&gt;VFR_HUD)
+    B --&gt;|Low Priority&lt;br/&gt;0.5~1Hz| E(SYS_STATUS&lt;br/&gt;BATTERY_STATUS&lt;br/&gt;GPS_RAW_INT)
+    style A fill:#ff9,stroke:#333,stroke-width:2px
+    style B fill:#f9f,stroke:#333,stroke-width:2px
+</code></pre>
+<h3>PX4 대역폭 환경 변수 튜닝</h3>
+<p>PX4 펌웨어(v1.14.0 기준)에서는 <code>sercon</code> 베이스의 텔레메트리 포트 제어 시 <code>MAV_0_RATE</code>, <code>MAV_1_RATE</code> 등의 파라미터를 통해 초당 바이트 수(Bytes/sec)의 상한선을 물리적으로 강제 제한한다. 예를 들어 통신 환경이 나빠져 SNR이 하락할 경우, 채널 용량 <span class="math math-inline">C</span>가 하락하는 것에 맞추어 이 파라미터 값을 선제적으로 낮추지 않으면 큐 지연(Queue Delay)이 급증하고 텔레메트리가 끊기는 현상(Link Loss)이 발생한다.</p>
+<h2>SNR 하락에 따른 대역폭 최적화 마진 비교 (예시)</h2>
+<p>QGroundControl 관제 모니터링 시, SNR 및 Bandwidth에 따른 패킷 수용 능력을 다음과 같이 테이블로 정량화하여 운영 마진 설계를 수행할 수 있다.</p>
+<table><thead><tr><th style="text-align: center">신호 대 잡음비(SNR)</th><th style="text-align: center">채널 대역폭(B)</th><th style="text-align: center">이론적 채널 용량(C)</th><th style="text-align: center">권장 MAVLink 제한율</th><th style="text-align: left">비고</th></tr></thead><tbody>
+<tr><td style="text-align: center">30 dB</td><td style="text-align: center">250 kHz</td><td style="text-align: center">약 2.49 Mbps</td><td style="text-align: center">100 kByte/s</td><td style="text-align: left">근거리 LOS (우수)</td></tr>
+<tr><td style="text-align: center">10 dB</td><td style="text-align: center">250 kHz</td><td style="text-align: center">약 864 kbps</td><td style="text-align: center">25 kByte/s</td><td style="text-align: left">중거리 전파 감쇠 구간</td></tr>
+<tr><td style="text-align: center">3 dB</td><td style="text-align: center">250 kHz</td><td style="text-align: center">약 396 kbps</td><td style="text-align: center">10 kByte/s</td><td style="text-align: left">한계 도달 예상 영역</td></tr>
+<tr><td style="text-align: center">0 dB (<span class="math math-inline">S=N</span>)</td><td style="text-align: center">250 kHz</td><td style="text-align: center">250 kbps</td><td style="text-align: center">5 kByte/s</td><td style="text-align: left">Failsafe 발동 경계 마진</td></tr>
+</tbody></table>
+<blockquote>
+<p>참고: 채널 용량 한계에 근접할 경우, 중요도가 떨어지는 로그 메시지는 중단하고 <code>COMMAND_LONG</code> 등 상태 천이 명령에 대역폭을 우선 사용하도록 스케줄링해야 한다.</p>
+</blockquote>
+<h2>Ardupilot 대비 통신 큐(Queue) 관리의 차이점</h2>
+<p>Ardupilot 환경에서는 <code>SRnM_</code> 파라미터 그룹(예: <code>SR1_POSITION</code>, <code>SR1_EXTRA1</code> 등)을 통해 스트림 종류별 전송 주기(Hz)를 개별적으로 지정할 수 있는 매우 상세한 대역폭 제어 구조를 취한다. Mission Planner 역시 연결 초기에 채널 대역폭을 추정하고 적응형 레이트 컨트롤(Adaptive Rate Control)을 적용하여 동적으로 스트림을 요구한다.</p>
+<p>반면, PX4-Autopilot 아키텍처는 개별 메시지 스트림의 주기를 하나하나 튜닝하는 방식보다 MAVLink 모듈 자체를 여러 개의 인스턴스(Instance) 별로 분리 실행시키고 각 인스턴스에 <code>MAV_n_MODE</code> (예: <code>Normal</code>, <code>Onboard</code>, <code>OSD</code>, <code>Magic</code>) 단위로 거시적인 데이터 전송 프로파일을 묶어서 할당하는 설계 철학을 가진다. 섀넌 한계 도달 시, PX4는 하위 계층에서 송신 링 버퍼(Ring Buffer)가 꽉 찰 때 가장 오래된 패킷을 버리거나(Drop) 중요도(Severity) 플래그를 확인하여 선별적 드랍을 수행함으로써 한계 용량을 방어한다.</p>
+<h2>결론</h2>
+<p>장거리 통신이나 전파 방해가 존재하는 악조건에서 드론을 관제하기 위해서는, 물리 계층의 섀넌-하틀리 채널 용량 한계를 정확히 산출하고 이에 맞추어 MAVLink 텔레메트리의 대역폭을 최적화해야 한다. 이를 무시할 경우 극심한 제어 지연(Latency)이 발생하며, 치명적인 비행 사고로 직결될 수 있다.</p>
+<h3>참고 문헌 및 출처</h3>
+<ul>
+<li>기본 통신 이론 논문: <em>“A Mathematical Theory of Communication”</em> (C. E. Shannon)</li>
+<li>무인기 통신 대역폭 최적화 수식 검증논문: <em>“Capacity Limits and Bandwidth Optimization for UAV Telemetry Links”</em> 양식 참조</li>
+<li>MAVLink 아키텍처 공식 백서 (https://mavlink.io/en/messages/common.html)</li>
+</ul>
 
             </article>
             <footer>

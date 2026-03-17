@@ -115,6 +115,62 @@
             </header>
             <article>
                 <h1>42.8.3 사용자 정의 Pre-flight Check C++ 모듈의 빌드 시스템 등록</h1>
+<h2>1.  개요 및 설계 아키텍처</h2>
+<p>PX4-Autopilot의 비행 전 점검(Pre-flight Check) 시스템은 커맨더(Commander) 모듈에 단일 구조(Monolithic)로 종속되어 있지 않고, 서브시스템 검증 논리를 각각의 독립적인 C++ 클래스로 분리한 체계를 따른다. 기본적으로 제공되는 수많은 검증 루틴(센서, 배터리, 통신 링크 등) 외에도, 개발 목적에 맞게 새로운 센서 페이로드나 자체 통신망을 사용할 경우 사용자가 직접 **사용자 정의 검증 모듈(Custom Pre-flight Check Module)**을 작성하여 병합해야 한다.</p>
+<p>본 장에서는 개발자가 작성한 C++ 기반의 독자적인 <code>PreFlightCheck</code> 검사 모듈을 PX4의 CMake 빌드 시스템에 어떻게 등록(Registration)하고 커맨더 실행 주기에 동기화시키는지 그 구체적인 아키텍처 편입 과정을 다룬다.</p>
+<h2>2.  CMake 빌드 시스템(<code>CMakeLists.txt</code>) 구조의 이해</h2>
+<p>PX4 펌웨어의 빌드 파이프라인은 루트(Root) 디렉토리에서 시작해 컴포넌트별 소스 트리를 재귀적으로 순회하는 CMake 구조를 갖는다. 통상 Pre-flight 검증 모듈들은 <code>src/modules/commander</code> 하위 경로에 내포되어 있다.</p>
+<p>사용자가 새로운 검증 클래스 파일(예: <code>PreFlightCustomPayload.cpp</code>, <code>PreFlightCustomPayload.hpp</code>)을 작성했다면, 이 파일이 펌웨어 컴파일 시 목적 파일(Object file)로 정상 링크되기 위해서는 Commander 모듈의 빌드 지시자 트리인 <code>CMakeLists.txt</code>에 명시적 포함 선언을 해야 한다.</p>
+<h3>2.1  Commander CMakeLists.txt 파일 수정</h3>
+<p><code>src/modules/commander/CMakeLists.txt</code> 파일 내의 <code>SRCS</code> (Source files list) 블록을 찾아 사용자가 생성한 C++ 파일 경로를 추가한다.</p>
+<pre><code class="language-cmake">px4_add_module(
+    MODULE modules__commander
+    MAIN commander
+    STACK_MAIN 4096
+    SRCS
+        commander.cpp
+        state_machine_helper.cpp
+        # Built-in Pre-flight Checkers
+        PreFlightCheck.cpp
+        PreFlightCheck/PreFlightCamera.cpp
+        PreFlightCheck/PreFlightEKF.cpp
+        # [NEW] 여기서 사용자 정의 검증 소스코드를 등록한다.
+        PreFlightCheck/PreFlightCustomPayload.cpp
+    DEPENDS
+        # Required Library Dependencies
+        events
+)
+</code></pre>
+<h2>3.  정적 분배(Static Dispatch)를 통한 Commander 연동</h2>
+<p>단순히 C++ 파일이 빌드 과정에 포함되는 것만으로 커맨더가 해당 루틴을 실행해 주지는 않는다. 사용자 정의 클래스가 실제 검증 프로세스의 파이프라인(주로 <code>PreFlightCheck.cpp</code> 내부 루틴)에 스케줄링되도록 인스턴스를 주입(Injection)해야 한다.</p>
+<h3>3.1  <code>PreFlightCheck::preflightCheck()</code> 함수 수정</h3>
+<p>커맨더 모듈은 Arming 시도 시 혹은 타이머 콜백 반복 시 <code>PreFlightCheck::preflightCheck()</code>라는 중앙 통제 함수를 호출한다. 개발자는 이 함수 스택 내부에 새로운 모듈의 검사(Check) 함수 호출문을 병합해야 한다.</p>
+<pre><code class="language-cpp">bool PreFlightCheck::preflightCheck(orb_advert_t *mavlink_log_pub,
+                                    vehicle_status_s &amp;status,
+                                    // ... existing parameters ...
+                                    const bool prearm)
+{
+    // ... 기존 내장 점검 로직 전개 (Sensor, EKF, Battery) ...
+
+    /* 사용자 정의 Payload 무결성 점검 로직 주입 */
+    if (preflight_custom_payload_check(mavlink_log_pub) != true) {
+        check_failed = true;
+    }
+
+    // ... 최종 시동 허용 상태 리턴 로직 ...
+}
+</code></pre>
+<h2>4.  모듈화 및 Ardupilot 빌드 환경과의 차별성</h2>
+<p>Ardupilot의 경우 <code>AP_Arming</code>이라는 방대한 단일 라이브러리 객체 내에서 비트마스크(<code>ARMING_CHECK</code>) 기반의 수많은 분기문(<code>if-else</code> 또는 <code>switch-case</code>)을 통해 검증 루틴을 제어한다. 새로운 모듈 추가 시 <code>AP_Arming</code> 헤더 및 cpp 본체를 광범위하게 수정할 우려가 존재하며 소스 코드 간 결합도(Coupling)가 다소 높다.</p>
+<p>반대로 PX4-Autopilot은 <strong>관심사 분리(Separation of Concerns)</strong> 원리를 철저히 따른다. 객체 지향적(Object-Oriented) 클래스로 분할된 검사기들은 각각 자신이 검증해야 할 uORB 토픽(예: 페이로드 상태 토픽)만을 구독(Subscribe)하여 독자적인 평가를 내리고, 최종 상태 값만 커맨더에게 반환하는 구조를 지향한다.<br />
+CMake에 의한 모듈 블록 빌딩과 이러한 C++ 코드 아키텍처는 개별 하드웨어에 따른 커스텀 펌웨어 유지 보수성(Maintainability)을 극대화한다.</p>
+<h2>5.  최종 펌웨어 타겟(Target)별 설정 연동 (Kconfig)</h2>
+<p>작성한 모듈이 보드의 메모리나 플래시 한계로 특정 타겟(Target)에서만 활성화되도록 제어하고 싶다면 <code>px4_add_module</code> 단계를 넘어, 특정 펌웨어 매니페스트(<code>default.px4board</code> 등)와 Kconfig 시스템에 연계시켜야 한다.</p>
+<pre><code class="language-yaml"># boards/px4/fmu-v5x/default.px4board
+CONFIG_MODULES_COMMANDER=y
+CONFIG_COMMANDER_CUSTOM_CHECK=y  # Kconfig에 선언된 사용자 심볼 활성화
+</code></pre>
+<p>위와 같이 설정하면 CMake 구획 내에서 <code>if(CONFIG_COMMANDER_CUSTOM_CHECK)</code> 분기문을 통하여 커스텀 소스의 빌드 여부를 동적으로 켜고 끌 수 있는 고급 개발 환경 구축이 마무리된다.</p>
 
             </article>
             <footer>

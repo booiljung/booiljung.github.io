@@ -115,52 +115,45 @@
             </header>
             <article>
                 <h1>40.5. 분산 합의(Distributed Consensus) 및 동시성(Concurrency) 예외 처리 공간</h1>
-<p>PX4-Autopilot(펌웨어 1.14 이상 탑재)과 QGroundControl(버전 4.3 이상), 그리고 고성능 로직을 구현하는 보조 컴퓨터(Companion Computer, ROS2 탑재)가 동시에 하나의 무인항공기(UAV)를 통제하는 현대적 아키텍처는 전형적인 다중 노드 분산 시스템(Distributed System)의 형태를 띤다. 이러한 구조에서는 지휘 통제권(Command and Control 권한)을 행사하려는 2개 이상의 주체들이 비동기적으로 동시에 조종 명령을 내릴 때 발생하는 동시성(Concurrency) 문제와 그에 따른 내부 상태 전이 불일치 현상이 추락으로 이어지는 치명적인 예외 상황을 낳는다. 각 기체의 커맨더(Commander) 내부에서 이질적인 제어 주체들의 경쟁적 요구를 중재하고, 일관되고 안전한 단일 비행 상태로 수렴하기 위한 분산 합의(Distributed Consensus) 및 동시성 예외 처리 프레임워크 스페이스를 심층적으로 다룬다.</p>
-<h2>1.  드론 제어 시스템의 분산 동시성 문제 정의</h2>
-<p>과거 단순 조종기(RC) 환경이나 단일 GCS와 드론의 1:1 통신 환경과 달리, 자율형 AI 에이전트 시대에는 메인 지상 관제소, 기체에 장착된 로컬 ROS2 노드, 나아가 원격 클라우드 군집 제어 서버가 동시에 MAVLink 데이터 통신 버스를 통해 텔레메트리 열람 및 적극적인 조종 개입 명령을 전송한다.</p>
-<p>예를 들어 메인 GCS 측 운영자가 통신 단절을 우려해 긴급 규환(RTL, Return To Launch) 명령(<code>MAV_CMD_NAV_RETURN_TO_LAUNCH</code>)을 송신하는 바로 그 정확한 찰나에, 기체의 영상 비전 기반 충돌 회피 알고리즘(ROS2 노드 위치)이 장애물을 감지하고 오프보드(Offboard) 회피 기동명령 세트 포인트를 강력히 전송하는 극단적인 경쟁 상태(Race Condition)가 발생할 수 있다. 이때 비행 제어기(FC, Flight Controller)의 커맨더 모듈이 아무런 방어벽 없이 수신된 물리적 시간의 선후관계만으로 두 명령을 연속 덮어쓰기 방식으로 맹목 처리하면 예측이 불가한 발산형 비행 궤적이 도출된다. 따라서 개별 이벤트의 수신 레이턴시나 순서가 아닌, 글로벌 안전 관점에서의 합의된 일관성(Consistency) 수렴 보장이 엄격히 요구된다.</p>
-<h2>2.  분산 합의(Distributed Consensus) 메타 상태 머신 체계</h2>
-<p>제한된 컴퓨팅과 메모리 자원을 가진 PX4 시스템 마이크로컨트롤러(MCU) 레벨에서 전통적인 IT 분산 클러스터의 팩소스(Paxos)나 래프트(Raft)와 같은 복잡하고 무거운 다수결 무결성 리더 선출 알고리즘을 100% 동일하게 구현하기는 아키텍처상 부적합하다. 그러나 MAVLink <code>COMMAND_LONG</code> 획득 체계 내에서 <strong>확고한 단일 권위자(Single Source of Truth) 트랜잭션 원칙</strong>을 부분 차용하여 이 동시성 문제를 스마트하게 해결해라.</p>
-<ol>
-<li><strong>권한 수준(Priority Level) 피라미드 서열화</strong>: GCS(통제사 인간의 수동 개입), ROS2 자동화 에이전트, 기체 내부 로우레벨 센서의 안전장치(Failsafe) 등 각 MAVLink 명령 송신 컴포넌트(<code>comp_id</code>) 및 외부 시스템(<code>sys_id</code>) 단위별로 하드코딩된 변동 불가 우선순위 가중치를 선제적으로 부여하라.</li>
-<li><strong>명시적 잠금 및 양도(Lock &amp; Yield) 프로토콜</strong>: 특정 지능형 노드(예: ROS2 노드)가 막강한 오프보드 제어권을 가질 때, 타 하위 명령 노드(예: 권한이 낮은 보조 GCS 장비)의 일반 미션(Mission) 수정명령 수신을 논리적으로 락(Lock) 상태 공간으로 즉시 전환하여 파기(Drop) 거부하라.</li>
-<li><strong>명시적 트랜잭션 수락 프로토콜</strong>: 모든 노드의 제어 명령은 강제 실행 지시가 아닌 하나의 제안(Proposal)으로 안전하게 취급하고, 기체 자체 내부의 권위 있는 <code>commander</code> 상태 블록 모듈이 기체 동역학 및 센서 상태의 유효성을 깐깐히 검토한 뒤 <code>COMMAND_ACK</code> 패킷을 통로로 역송출하여 글로벌 수용(Accept) 또는 논리적 거부(Reject) 상태를 네트워크 너머에 합의 도출하라.</li>
-</ol>
-<h2>3.  동시성 충돌 발생 시 예외 처리 시퀀스 (Mermaid)</h2>
-<p>다음 컴포넌트 다이어그램은 이질적인 두 개의 제어 및 조종 주체가 동시에 상충하는 중대 모드 변경을 요구할 때, PX4 비행 제어기가 이를 스레드 상에서 중재하고 합의를 이끌어내는 예외 처리 공간의 방어 시퀀스를 명확히 묘사한다.</p>
-<pre><code class="language-mermaid">sequenceDiagram
-    participant GCS as GCS (Human Operator)
-    participant ROS2 as Companion Computer (Vision AI)
-    participant Cmd as PX4 Commander (FC Core)
-    participant SubSys as Sub-systems (Navigator/Position)
-
-    Note over GCS, ROS2: Concurrent Comm. MAVLink Packets Alert
-    GCS-&gt;&gt;Cmd: COMMAND_LONG: NAV_RETURN_TO_LAUNCH
-    ROS2-&gt;&gt;Cmd: COMMAND_LONG: DO_SET_MODE (Offboard Evasion)
-    
-    Note over Cmd: Enters Concurrency Exception Handling Space
-    Cmd-&gt;&gt;Cmd: Evaluate Priority Weight &amp; Current Stability
-    Cmd-&gt;&gt;Cmd: Critical Rule evaluated: Human Operator Overrides Local AI
-    
-    Cmd--&gt;&gt;ROS2: COMMAND_ACK [MAV_RESULT_DENIED]&lt;br&gt;Reason: High Priority Lock by System 255
-    Cmd-&gt;&gt;SubSys: Trigger Absolute RTL Engine Routine
-    Cmd--&gt;&gt;GCS: COMMAND_ACK [MAV_RESULT_ACCEPTED]
-    
-    SubSys--&gt;&gt;Cmd: Home Coordinates Altitude Reached
-    Cmd--&gt;&gt;GCS: HEARTBEAT Broadcast (Mode: Auto.RTL)
-    Cmd--&gt;&gt;ROS2: HEARTBEAT Broadcast (Mode: Auto.RTL)
-</code></pre>
-<p>이처럼 보호된 예외 처리 공간(Exception Handling Space)에서는 무질서한 덮어쓰기(Overwrite)가 찰나라도 발현되지 않도록, <code>MAV_RESULT_DENIED</code> 또는 복구가 가능한 거부인 <code>MAV_RESULT_TEMPORARILY_REJECTED</code> 코드를 적극적으로 적재 활용하여 패배한(상대적으로 우선순위가 낮은) 제안자 노드 측 애플리케이션 계층에게 합의 실패 사유를 명시적으로 알리고 통보하라.</p>
-<h2>4.  Ardupilot과 PX4-Autopilot의 권위 및 구동 예외 처리 철학 차이</h2>
-<p>Ardupilot 관제 철학 라인은 시스템 태생적으로 “명령을 지속해 내리고 있는 그 메인 GCS 채널“에 암묵적으로 절대적인 마스터 통제 권한을 지속 부여하는 하향식(Top-Down) 경향이 강하게 깔려 있다. 미션 플래너(Mission Planner) 등 주로 권한을 선점한 1개의 절대 마스터 GCS가 전체 텔레메트리 궤환 루프를 강철같이 주도하며, 기체의 예외 상황에 대한 최상위 통제 결정권을 바깥에서부터 독점한다.</p>
-<p>정반대의 위치에서 비행하는 현대의 최신 PX4-Autopilot 아키텍처는 내부 uORB 메시지 지향 버스망 구조와 외부 Micro XRCE-DDS 미들웨어 연동이라는 거대한 통신 생태계를 근원적인 전제로 삼아 설계되었기에, “드론 자체가 독립적인 지능과 주도권을 완전히 가지고 있는 결정적 분산 합의의 핵심 서버(Server)” 관점으로 독자 동작한다. GCS나 거대 ROS2 노드는 단지 유효한 클라이언트(Client)의 지위일 뿐이며, 비행 상태(Vehicle Status)의 합의와 전환 거부 판정은 전적으로 비행 제어기의 펌웨어(Safety, Navigator &amp; Commander 메인 모듈) 내부에 자체적으로 마련된 다단계 락-프리(Lock-Free) 예외 처리 코드 블록에 냉정히 위임된다.</p>
-<h2>5.  실무 아키텍처 엣지 설계 방어 지침</h2>
+<p>과거의 단순한 원격 조종(RC) 패러다임을 넘어, 현대의 자율 에이전트(Autonomous Agent) 관제 시스템은 다수의 지상 관제 시스템(GCS), 보조 컴퓨터(Companion Computer), 그리고 백엔드 클라우드 서버가 동시에 기체의 제어권을 분할하고 공유하는 마이크로서비스(Microservices) 아키텍처로 진화하고 있다. PX4-Autopilot 및 ROS2 생태계가 융합된 복합 시스템에서는 필연적으로 여러 제어 주체가 동시에 상충되는 명령(예: 한 GCS는 귀환, 다른 보조 컴퓨터는 충돌 회피)을 하달하는 상황(Concurrency)이 발생한다. 이러한 분산 제어 환경에서 일관성 없는 상태(Inconsistent State)를 방지하고, 단일 진실 공급원(Single Source 단일 진실 공급원(Single Source of Truth)을 유지하기 위해 필수적인 분산 합의(Distributed Consensus) 이론과 예외 처리(Exception Handling) 아키텍처를 본 절에서 탐구한다.</p>
+<h2>1.  MAVLink 네트워크에서의 동시성(Concurrency) 문제</h2>
+<p>동시성 문제는 두 개 이상의 노드(Node)가 공유 자원(Shared Resource)—여기서는 기체의 비행 모드나 웨이포인트(Waypoint) 리스트—을 동시에 변경하려고 시도할 때 발생한다.</p>
+<p>예를 들어, GCS A와 GCS B가 동일한 PX4 기체(System ID 1)를 관제하고 있다고 가정하자.</p>
 <ul>
-<li><strong>다중 GCS 통제권 분리(Token-based Operation Lock)</strong>: 물리적 대륙이 떨어진 2개의 GCS가 극비리의 1대 기체를 동시에 모니터링 및 통제해야 하는 특수 관제망 구조를 C++로 구축할 때, MAVLink v2.0 패킷 프로토콜 확장을 영리하게 이용해 가상의 ’조종 암호화 토큰(Control Token)’을 온전히 보유한 세션 쪽 명령망만 유효 명령(Valid Command)으로 처리되도록 QGroundControl 커스텀 애플리케이션 코드를 하드코딩 설계하라.</li>
-<li><strong>교착 상태(Deadlock) 방어 및 롤백 타이머 결합</strong>: 동시성 제어 도중 서로의 락(Lock)을 기다리다 상태 전이 진행이 무한정 중단되는 데드락 현상이 발생했을 경우, 드론 기체를 창공에서 잃어버리는 치명적 대형 비행 사고 물리적 타격으로 직결될 수 있다. 반드시 하드웨어 와치독(Watchdog) 기반의 롤백(Rollback) 타이머를 소프트웨어와 듀얼로 구성하여, 합의가 응답 없이 교착 상태에 깊이 빠지면 즉시 개입을 모두 차단하고 기체가 판단하는 가장 안전한 물리적 상태(Loiter/Hold 또는 홈으로 RTL)로 강제 회귀(Fallback)하는 고립 안전망(Isolated Safety Failsafe)을 확보하라.</li>
-<li><strong>Heartbeat 주파수 모니터링을 통한 클라이언트 투표(Voting)</strong>: 다수 기체 군집 비행 제어 등 연결 노드 토폴로지 복잡도가 극단적으로 높은 시스템에서는, 백엔드가 수신하는 <code>HEARTBEAT</code> 메시지의 송출 주파수 안정성 및 지연 델타(Delta) 시간을 실시간 모니터링하여 무선 라디오 링크 연결 품질이 가장 우수한 송신 노드 쪽에 동적으로 제어 가중치(Control Priority Weight)를 자동으로 높여 부여하는 응용 계층의 펙소스(Applied Paxos) 소프트웨어 디자인 패턴 적극 도입을 신중히 고려하라.</li>
+<li>GCS A는 기체에게 고도 50m로 상승하라는 임무(Mission)를 작성하여 업로드 중이다.</li>
+<li>이와 완벽히 동시에, 네트워크 지연으로 인해 상황 업데이트를 늦게 받은 GCS B가 기체에 비상 착륙(RTL) 명령을 전송한다.</li>
 </ul>
-<p>이러한 성숙한 학술적 수준의 분산 합의 디자인과 원자적(Atomic) 동시성 예외 처리 철학을 기저 펌웨어 계층부터 백엔드까지 치밀하게 구축 관철하여, AI 군집 에이전트 다수와 긴급 투입된 인간 원격 조종사가 동시에 단일 무기고 개입을 노리는 살얼음판 같은 복합 칵핏(Cockpit) 교전 환경 속에서도 완벽히 오차율 0%의 비행 무결력(Flight Integrity)을 흔들림 없이 유지하라.</p>
+<p>Ardupilot이나 초창기 단순 MAVLink 파서(Parser)의 경우, 이러한 경쟁 상태(Race Condition)에서 수신되는 패킷의 순서에 따라 기체 상태가 엎치락뒤치락하는(Thrashing) 치명적인 불안정성을 겪을 수 있다. PX4는 이러한 분산 오류 공간(Distributed Error Space)을 통제하기 위해 MAVLink 마이크로 서비스 규칙(MAVLink Microservices)에 따른 엄격한 트랜잭션(Transaction) 및 프로토콜 락(Protocol Lock) 메커니즘을 적용한다.</p>
+<h2>2.  분산 합의(Distributed Consensus)의 적용: 상태 권한 분리</h2>
+<p>분산 시스템 이론에서 널리 쓰이는 합의 알고리즘(예: 팍소스(Paxos)나 래프트(Raft))처럼 무거운 마스터-슬레이브(Master-Slave) 투표를 오프보드 제어에 그대로 적용하기엔 임베디드 통신 채널(예: SiK Telemetry)의 대역폭이 턱없이 부족하다. 따라서 PX4-Autopilot은 **“상태 권한의 명시적 분리(Explicit Separation of Authority)”**라는 경량화된 합의 메커니즘을 사용한다.</p>
+<h3>2.1  제어 권한(Control Authority)의 위임 구조</h3>
+<p>PX4 시스템은 MAVLink 프로토콜의 <code>SET_POSITION_TARGET_LOCAL_NED</code> 나 <code>COMMAND_LONG</code> 메시지를 받을 때, 기체가 **어느 주체(System ID &amp; Component ID)**로부터의 지시를 신뢰할 것인지 사전에 합의(Consensus)하는 과정을 거친다.</p>
+<ul>
+<li><strong>오프보드 모드(Offboard Mode):</strong> ROS2 컴패니언 컴퓨터가 제어 권한을 획득하기 위해서는 1차적으로 GCS 또는 조종기의 명시적인 ‘모드 전환’ 허가가 필요하다. 일단 오프보드 모드에 진입하면, 기체는 특정 컴펀넌트 ID(예: MAV_COMP_ID_ONBOARD_COMPUTER)에서 오는 주기적인(최소 2Hz 이상) 타겟 메시지만을 수용한다. 다른 GCS 노드가 끼어들어 동시성 충돌을 일으키는 것을 프로토콜 설계 단에서 락(Lock)을 걸어 무시하게 된다.</li>
+</ul>
+<h3>2.2  임무(Mission) 프로토콜의 트랜잭션 분리</h3>
+<p>가장 심각한 동시성 문제는 임무(Waypoints)를 수정할 때 발생한다. MAVLink 미션 프로토콜은 기체와 GCS 간에 철저한 요청-응답(Request-Response) 트랜잭션 구조를 가진다.<br />
+<code>MISSION_REQUEST_LIST</code>를 보내면, 다른 노드는 해당 기체의 임무 편집 상태가 잠금(Lock) 형태의 유휴 대기 상태임을 알 수는 없으나, 기체의 <code>commander</code> 컴포넌트는 내부 상태 머신(State Machine)을 ’임무 수신 중(Receiving)’으로 전이시켜, 다른 GCS 프레임으로부터 들어오는 불법적인 병렬 쓰기(Write) 연산을 NACK(거절) 처리한다.</p>
+<h2>3.  예외 처리 공간(Exception Space)과 네트워크 분할(Network Partition)</h2>
+<p>분산 시스템의 CAP 정리(CAP Theorem)에 의하면 일관성(Consistency), 가용성(Availability), 분할 내성(Partition Tolerance) 중 두 가지만을 완벽히 만족시킬 수 있다. 드론과 GCS 네트워크에서는 빈번한 통신 단절(Network Partition)이 상수(Constant)로 취급되므로, GCS 개발자는 C(일관성)와 A(가용성) 사이에서 타협하는 예외 처리 공간을 설계해야 한다.</p>
+<ul>
+<li><strong>비일관적 가용성 선호(AP):</strong> RC 조종기가 끊어졌음에도 컴패니언 컴퓨터(보조 컴퓨터)의 VIO 트래킹을 믿고 자율 주행을 계속하도록 허용하는 상태. 통신망 분할 상태에서도 기체의 “임무 가용성“을 극대화한다.</li>
+<li><strong>강한 일관성 선호(CP):</strong> 통신망이 단절(Data Link Loss)되는 즉시 0.5초 안에 기체의 내부 모드를 Failsafe(RTL 또는 Land)로 락(Lock)시켜버린다. 이는 GCS의 지시(일관된 명령)와 기체 행동 간의 오차를 원천 차단하는 보수적인 철학으로 QGroundControl에서의 기본 Failsafe 설계 방침에 해당한다.</li>
+</ul>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; Connected: Handshake
+    Connected --&gt; Normal_Operation: Consensus Achieved
+    Normal_Operation --&gt; Concurrent_Conflict: Dual Cmd Received
+    Concurrent_Conflict --&gt; Normal_Operation: Priority Filter / NACK (Idempotent)
+    
+    Normal_Operation --&gt; Network_Partition: Link Loss Triggered
+    Network_Partition --&gt; Exception_Handling: Enter CP Fallback
+    Exception_Handling --&gt; Failsafe_RTL: Safety Override
+    Exception_Handling --&gt; Autonomous_Hold: AP Fallback (Offboard)
+</code></pre>
+<h2>4.  QGroundControl 백엔드의 동시성 방어 철학</h2>
+<p>QGroundControl(v4.3 기준)의 백엔드는 C++ 기반으로 이러한 분산 환경의 비동기적 트랜잭션을 매우 철저하게 관리한다. <code>Vehicle</code> 객체 내부에 구현된 <code>MissionManager</code>, <code>ParameterManager</code> 등의 클래스들은 동시적인 UI 조작(예: 사용자가 파라미터 2개를 동시에 Refresh 누르는 상황)이나 다중 링크(Wi-Fi 라디오와 LTE 모뎀)를 통해 들어오는 혼재된 메시지 응답을 큐(Queue)와 뮤텍스 락(Mutex Lock)을 이용해 직렬화(Serialization)한다.</p>
+<p>결과적으로 최신 PX4-Autopilot 기반의 군집 관제 솔루션을 설계할 때는 단일 기체-단일 조종기라는 스칼라 세계관을 탈피해야 한다. 동시성 제어 큐(Concurrency Control Queue)와 상태 시퀀스 락(State Sequence Lock) 계층을 아키텍처 다이어그램 중앙에 배치하고, 분산된 각 노드 간의 위임(Delegation)과 합의 메커니즘을 예외 처리 공간에 수용하는 것이 차세대 드론 제어 공학의 필수 요소이다.</p>
 
             </article>
             <footer>

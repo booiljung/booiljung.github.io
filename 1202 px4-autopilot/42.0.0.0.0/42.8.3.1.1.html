@@ -115,6 +115,126 @@
             </header>
             <article>
                 <h1>42.8.3.1.1 의존성 주입(Dependency Injection)을 통한 결합도(Coupling) 최소화 및 단위 테스트(Unit Test) 커버리지 보장 구조</h1>
+<p>비행 제어 시스템(Flight Control System)은 센서 데이터 수집부터 구동기(Actuator) 제어에 이르기까지 수많은 소프트웨어 모듈이 상호 작용하는 복잡한 아키텍처를 지닌다. 안정성과 무결성이 생명인 무인항공기 소프트웨어의 특성상, 모듈 간의 강한 결합(Tight Coupling)은 작은 변경점 하나가 시스템 전체의 연쇄적인 오동작으로 이어지는 치명적인 위험을 내포한다. 최신 PX4-Autopilot(Firmware v1.14 기준) 환경에서는 이러한 위험을 방지하고 소프트웨어의 유지보수성(Maintainability)과 검증 가능성(Testability)을 극대화하기 위해 <strong>의존성 주입(Dependency Injection, DI)</strong> 패턴을 적극적으로 도입하여 단위 테스트(Unit Test) 커버리지를 보장하는 구조를 채택하라.</p>
+<h2>1. 의존성 주입(Dependency Injection)의 개념과 결합도(Coupling) 완화</h2>
+<p>의존성 주입(Dependency Injection)은 객체 지향 프로그래밍(Object-Oriented Programming) 설계 패턴 중 하나로, 어떤 객체가 필요로 하는 다른 객체(의존성)를 내부에서 직접 생성하는 것이 아니라 외부에서 주입해 주는 방식을 의미한다. 이를 통해 모듈 간의 결합도를 획기적으로 낮출 수 있다. 현대 무인기 소프트웨어의 테스팅 방법론과 구조적 단위 테스트의 필요성은 관련 학술 논문(예: <em>A Comprehensive Approach to Software Testing for Unmanned Aerial Systems</em>)에서도 소프트웨어 결함 최소화의 핵심 전략으로 지속적으로 강조된다.</p>
+<p>특정 컴포넌트가 구체 클래스(Concrete Class)에 직접적으로 의존하게 될 경우, 해당 클래스가 변경되거나 다른 플랫폼으로 이식될 때 막대한 수정 비용이 발생한다. 반면, 인터페이스(Interface) 기반의 설계에 의존성 주입을 결합하면 구현체(Implementation)를 언제든 교체할 수 있으므로 극적인 유연성을 얻게 된다. Ardupilot의 코드베이스가 하드웨어 종속성을 일부 강하게 가지는 거대한 모놀리식(Monolithic) 구조를 띠는 반면, PX4-Autopilot은 POSIX 표준 기반의 모듈식 아키텍처를 지향하므로 의존성 주입 패턴을 융합했을 때 그 효과가 배가된다. 시스템의 지속 가능한 확장을 위해 각 모듈의 생명 주기 관리와 의존성 생성을 철저히 분리하라.</p>
+<h2>2. PX4 아키텍처 내에서의 의존성 주입 메커니즘 설계</h2>
+<p>사용자 정의 비행 전 점검(Pre-flight Check) 모듈을 설계한다고 가정하자. 이 모듈은 배터리 상태, GPS 수신율, IMU 센서 데이터 등을 종합적으로 판단해야 한다. 의존성 주입 패턴을 적용하지 않는다면 검증 모듈 내부에서 <code>BatteryManager</code>, <code>GpsReceiver</code> 등의 인스턴스를 직접 생성하고 접근하게 되어 강한 파급 효과(Ripple Effect)를 낳는다.</p>
+<p>이를 차단하기 위해 C++의 순수 가상 함수(Pure Virtual Function)를 활용하여 추상 인터페이스를 선언하고, 생성자(Constructor)를 통해 의존성을 주입받는 구조로 설계하라.</p>
+<h3>2.1 생성자 주입(Constructor Injection) 예시 코드</h3>
+<p>다음은 의존성 주입 메커니즘을 적용한 사용자 정의 Pre-flight Check 클래스의 아키텍처 예시이다.</p>
+<pre><code class="language-cpp">#pragma once
+
+// 추상 인터페이스 정의 (의존성 분리)
+class ISensorDataProvider {
+public:
+    virtual ~ISensorDataProvider() = default;
+    virtual float getBatteryVoltage() const = 0;
+    virtual int getGpsSatelliteCount() const = 0;
+};
+
+// 검증 로직을 수행하는 메인 클래스
+class CustomPreflightChecker {
+private:
+    // 구체 클래스가 아닌 인터페이스 참조 변수에 의존
+    ISensorDataProvider&amp; _sensorProvider; 
+
+public:
+    // 생성자 주입(Constructor Injection)을 통해 외부에서 의존 객체를 전달받음
+    explicit CustomPreflightChecker(ISensorDataProvider&amp; provider)
+        : _sensorProvider(provider) {}
+
+    bool executeCheck() const {
+        if (_sensorProvider.getBatteryVoltage() &lt; 14.8f) {
+            return false; // 배터리 저전압 감지
+        }
+        if (_sensorProvider.getGpsSatelliteCount() &lt; 8) {
+            return false; // GPS 수신 위성 수 부족
+        }
+        return true;
+    }
+};
+</code></pre>
+<p>위 구조에서 <code>CustomPreflightChecker</code> 컴포넌트는 센서 데이터가 실제 하드웨어 버스(I2C, SPI)에서 수집되는지, 소프트웨어 시뮬레이터(SITL)에서 송신되는지 인지할 필요가 없다. 오직 전달받은 데이터를 검증하는 단일 책임 원칙(Single Responsibility Principle)에 충실하므로 객체 지향의 원칙을 철저히 준수하게 된다.</p>
+<h2>3. 단위 테스트(Unit Test) 커버리지 보장 및 모의 객체(Mock Object) 활용</h2>
+<p>컴포넌트 간 결합도를 최소화해야 하는 가장 중요한 이유는 완벽하고 독립적인 <strong>단위 테스트(Unit Test)</strong> 환경을 구축하기 위함이다. 의존성 주입 구조가 완성되면, 실제 하드웨어나 복잡한 uORB 메시지 처리 파이프라인에 의존하지 않고도 원하는 상태를 강제로 모사하는 모의 객체(Mock Object)를 쉽게 주입할 수 있다. PX4는 빌드 트리에 다양한 Google Test (gtest) 구성을 기본 내장하고 있으며, 이를 통해 발생 가능한 모든 엣지 케이스(Edge Case)를 시뮬레이션하여 커버리지(Coverage)를 극대화한다. 모든 분기 코드에 대한 검증을 수행하라.</p>
+<h3>3.1 GTest 프레임워크를 활용한 모의 객체(Mock Object) 테스트 작성</h3>
+<p>아래의 코드는 앞서 설계한 의존성 주입 구조를 활용하여 결함 상태(Fault State)를 강제로 주입하고, 검증 로직이 정확히 동작하는지 확인하는 GTest 프레임워크 기반의 단위 테스트 예시이다.</p>
+<pre><code class="language-cpp">#include &lt;gtest/gtest.h&gt;
+#include "CustomPreflightChecker.h"
+
+// GTest와 연동하기 위한 센서 데이터 모의 객체(Mock Object) 구현
+class MockSensorDataProvider : public ISensorDataProvider {
+public:
+    float mocked_voltage = 15.0f;
+    int mocked_satellites = 10;
+
+    float getBatteryVoltage() const override { return mocked_voltage; }
+    int getGpsSatelliteCount() const override { return mocked_satellites; }
+};
+
+// 시나리오 1: 저전압 결함 상태에 대한 테스트
+TEST(CustomPreflightCheckTest, BatteryLowVoltageDetection) {
+    MockSensorDataProvider mockProvider;
+    mockProvider.mocked_voltage = 13.0f; // 임계치(14.8V) 미만의 강제 결함 상태 주입
+    mockProvider.mocked_satellites = 10;
+
+    // 모의 객체를 CustomPreflightChecker 코어에 주입
+    CustomPreflightChecker checker(mockProvider); 
+    
+    // 검증 로직이 실패(false)를 정확히 반환하는지 단언(Assert)
+    EXPECT_FALSE(checker.executeCheck()); 
+}
+
+// 시나리오 2: 정상 궤도(Nominal State) 비행 전 점검 통과 테스트
+TEST(CustomPreflightCheckTest, NominalStateValidation) {
+    MockSensorDataProvider mockProvider;
+    mockProvider.mocked_voltage = 16.0f;
+    mockProvider.mocked_satellites = 12;
+
+    CustomPreflightChecker checker(mockProvider);
+    
+    // 정상 지표에 대해 검증을 통과(true)하는지 단언(Assert)
+    EXPECT_TRUE(checker.executeCheck()); 
+}
+</code></pre>
+<p>제어 엔지니어나 비행 제어 소프트웨어 개발자는 이와 같은 방법론을 통해 무한에 가까운 임의의 시스템 결함 상태를 고가의 하드웨어 파손 위협 없이 안전하게 테스트할 수 있다. 새로운 기능의 추가나 대대적인 리팩토링(Refactoring) 작업이 수행되더라도, 설정된 회귀 테스트(Regression Test)가 예기치 않은 결함을 자동으로 탐지하므로 RTOS 환경에서의 소프트웨어 동작 신뢰성을 비약적으로 높일 수 있다.</p>
+<h2>4. 시스템 아키텍처 다이어그램 (System Architecture Diagram)</h2>
+<p>실제 구동 환경과 단위 테스트 환경 간의 객체 생성 및 의존 관계를 명확히 이해하기 위해 시스템의 아키텍처 다이어그램을 도식화하라.</p>
+<pre><code class="language-mermaid">classDiagram
+    class ISensorDataProvider {
+        &lt;&lt;Interface&gt;&gt;
+        +getBatteryVoltage() float
+        +getGpsSatelliteCount() int
+    }
+    
+    class CustomPreflightChecker {
+        -ISensorDataProvider&amp; _sensorProvider
+        +CustomPreflightChecker(ISensorDataProvider&amp; provider)
+        +executeCheck() bool
+    }
+    
+    class HardwareSensorDriver {
+        +getBatteryVoltage() float
+        +getGpsSatelliteCount() int
+    }
+    
+    class MockSensorDataProvider {
+        +mocked_voltage float
+        +mocked_satellites int
+        +getBatteryVoltage() float
+        +getGpsSatelliteCount() int
+    }
+    
+    CustomPreflightChecker ..&gt; ISensorDataProvider : Dependency Request
+    HardwareSensorDriver --|&gt; ISensorDataProvider : Real Implementation (Runtime)
+    MockSensorDataProvider --|&gt; ISensorDataProvider : Mock Implementation (Testing)
+    
+    note for CustomPreflightChecker "인터페이스 계층에만 의존하여\n컴포넌트 상호 결합도 최소화"
+    note for MockSensorDataProvider "단위 테스트 커버리지 확장을 위한\n임의의 결함 인자 반환"
+</code></pre>
+<p>Mermaid 다이어그램에서 직관적으로 파악할 수 있듯이, 로직의 핵심부를 담당하는 <code>CustomPreflightChecker</code>는 하드웨어 구현체와의 종속성이 논리적으로 완전히 격리되어 있다. 런타임(Runtime) 환경에서는 정적 팩토리 메서드(Static Factory Method) 등을 통해 할당된 실제 센서 드라이버 인스턴스를 주입받으며, 자동화된 테스트 환경에서는 GTest 모의 객체를 주입받는다. 이를 통해 소스 코드 커버리지(Code Coverage) 100% 달성을 촉진하고 시스템의 물리적 추락 사고로 직결될 수 있는 논리적 결함을 원천 배제하라.</p>
 
             </article>
             <footer>

@@ -115,59 +115,89 @@
             </header>
             <article>
                 <h1>42.6.2. GCS와의 양방향 데이터 링크 품질 및 Heartbeat 지연 시간(Latency) 점검</h1>
-<p>무인항공기(UAV) 시스템의 비행 전 점검(Pre-flight Check) 단계에서 지상 관제 시스템(Ground Control Station, GCS)과 비행 제어기(Flight Controller) 간의 양방향 데이터 링크 건전성은 필수 검증 요소이다. 단순히 물리적인 전파 강도(RSSI)를 측정하는 것을 넘어서, MAVLink 프로토콜의 생존 신호인 Heartbeat의 전송 지연 시간(Latency)과 수신율 분석을 통해 응용 계층(Application Layer)에서의 실제적 통신 품질을 담보해야 한다. 본 절에서는 PX4-Autopilot 아키텍처를 중심으로 GCS 양방향 데이터 링크 품질의 점검 메커니즘을 상세히 다룬다.</p>
-<h2>1.  개요 및 이론적 배경</h2>
-<p>PX4와 QGroundControl(QGC) 등 GCS 간의 통신은 주로 MAVLink (Micro Air Vehicle Link) 프로토콜을 기반으로 이루어진다. 이 프로토콜은 <code>HEARTBEAT</code> (Message ID: 0) 메시지를 일정한 주기(일반적으로 1Hz)로 양방향 교환하며 시스템의 연결 상태, 비행 모드(Flight Mode), 그리고 에이전트의 현재 상태 인지 여부를 갱신한다.</p>
-<p>양방향 데이터 링크의 품질은 다음 두 가지 주요 지표로 평가된다.</p>
-<ul>
-<li><strong>수신 패킷 손실률(Packet Loss Rate)</strong>: 전송된 패킷의 시퀀스 번호(Sequence Number) 누락을 기반으로 산출되는 손실 비율.</li>
-<li><strong>지연 시간(Latency / Round-Trip Time, RTT)</strong>: 특정 명령어(예: <code>PING</code> 또는 시스템 시간 동기화 메시지) 송출 후 응답이 도달할 때까지 소요되는 총 시간.</li>
-</ul>
-<p>네트워크 이론상 지연 시간이 임계치를 초과하거나 불안정(Jitter)하면, 자율 에이전트의 상태 동기화가 실패하거나 자동 복귀(RTL)와 같은 안전 장치(Failsafe)가 오작동할 수 있다. 따라서 비행 전 체계적인 통신 링크 무결성을 수학적, 구조적으로 평가하는 과정이 요구된다.</p>
-<h2>2.  PX4-Autopilot의 Heartbeat 모니터링 아키텍처</h2>
-<p>PX4 내부에서는 MAVLink 인스턴스가 독립적인 모듈로 동작하며, GCS로의 Heartbeat 송신과 GCS의 Heartbeat 수신을 분리하여 관리한다.</p>
-<h3>2.1  uORB 토픽 기반의 연결 상태 관리</h3>
-<p>GCS로부터 <code>HEARTBEAT</code> 메시지가 MAVLink 수신 스레드(Receiver Thread)에 도달하면, 시스템은 <code>telemetry_status</code> uORB 토픽을 갱신한다. PX4 Commander 모듈은 이 토픽을 구독하여 GCS 연결의 건전성을 판단한다.</p>
+<p>무인항공기(UAS) 운용에 있어서 지상 관제 시스템(GCS)과의 안정적인 양방향 데이터 링크(Bi-directional Data Link)는 텔레메트리 데이터 수신과 기체 제어 명령 송신을 위한 가장 핵심적인 인프라다. 통신 단절(Data Link Loss)이나 극심한 지연 시간(Latency)은 조종 불능 상태를 초래할 수 있으므로, 비행 전 점검(Pre-flight Check) 및 비행 중 상태 모니터링 단계에서 이를 엄격하게 점검해야 한다. PX4-Autopilot은 MAVLink 프로토콜의 <code>HEARTBEAT</code> 메시지를 기반으로 양방향 통신의 무결성을 평가하며 네트워크 지터(Jitter) 및 지연을 지속적으로 감시한다.</p>
+<h2>1. 양방향 데이터 링크 무결성 평가 원리</h2>
+<p>데이터 링크는 기체에서 GCS로 향하는 하향 링크(Downlink, 텔레메트리 스트림)와 GCS에서 기체로 향하는 상향 링크(Uplink, 제어 명령 및 파라미터 설정)로 구성된다. 통신 품질에 이상이 생기면 패킷 손실, 비트 에러율(BER, Bit Error Rate) 증가, 대기열 지연(Queueing Delay) 누적으로 인해 상호 간의 통신 지연 시간이 급증하게 된다.</p>
+<p>PX4-Autopilot은 이 양방향 링크의 살아있음(Liveness)을 확인하기 위해 <code>HEARTBEAT</code> 메시지의 송수신 빈도를 측정한다. MAVLink 프로토콜 규격에 따라 GCS와 비행 제어기(Flight Controller)는 통상적으로 1Hz의 주기로 <code>HEARTBEAT</code> 패킷을 브로드캐스팅(Broadcasting)한다.</p>
 <pre><code class="language-mermaid">sequenceDiagram
-    participant QGC as QGroundControl (GCS)
-    participant MAVLink_RX as PX4 MAVLink 수신 모듈
-    participant COMMANDER as PX4 Commander 모듈
-    participant Failsafe as 안전 장치 (Failsafe)
+    participant PX4 as PX4-Autopilot (FC)
+    participant Link as Telemetry Link
+    participant GCS as GCS (QGroundControl)
     
-    loop Every 1 Hz
-        QGC-&gt;&gt;MAVLink_RX: MAVLink HEARTBEAT Msg
-        MAVLink_RX-&gt;&gt;MAVLink_RX: 수신 Timestamp 및 시퀀스 검증
-        MAVLink_RX-&gt;&gt;COMMANDER: uORB: telemetry_status (Heartbeat 수신 갱신)
-        COMMANDER-&gt;&gt;COMMANDER: 타임아웃 감시 (COM_DL_LOSS_T)
-        alt 타임아웃 초과 판단 (Latency &gt; Threshold)
-            COMMANDER-&gt;&gt;Failsafe: 데이터 링크 상실 (Data Link Loss) 이벤트 트리거
-        end
-    end
+    PX4-&gt;&gt;Link: HEARTBEAT (1Hz)
+    Link--&gt;&gt;GCS: HEARTBEAT 수신
+    GCS-&gt;&gt;Link: HEARTBEAT (1Hz)
+    Link--&gt;&gt;PX4: HEARTBEAT 수신
+    
+    Note over PX4,GCS: 상호 Heartbeat 타임스탬프 갱신 및 Latency 계산
+    
+    PX4-&gt;&gt;Link: RADIO_STATUS (주기적)
+    Link--&gt;&gt;GCS: SNR, Noise, TX/RX Error 보고
 </code></pre>
-<h3>2.2  통신 품질 지표: 타임아웃과 지연 시간 측정</h3>
-<p>PX4 파라미터 중 <code>COM_DL_LOSS_T</code> (기본값 10초)는 GCS로부터의 Heartbeat가 끊겼다고 최종 판단하는 타임아웃 임계치이다. 비행 전 점검 파이프라인에서, Commander는 GCS 연결이 일정 시간(예: 최근 2~3초) 내에 안정적으로 유지되었는지 검사한다.</p>
-<p>또한 핑(PING, Message ID: 4) 메시지나 시스템 시간(SYSTEM_TIME, Message ID: 2) 메시지를 통해 RTT를 계측한다. RTT 계측 알고리즘 모델은 다음과 같이 정의된다.</p>
-<p><span class="math math-display"> RTT = T_{receive} - T_{send} - \Delta T_{processing} </span></p>
-<p>비행 전 점검 시, 텔레메트리 레이블에서의 RTT 누적 분포의 편차(Jitter)가 지정된 허용도를 초과할 경우, 데이터 처리량 폭주 상태로 간주하여 이륙을 보류할 수 있다.</p>
-<h2>3. QGroundControl 아키텍처를 통한 MAVLink 관제</h2>
-<p>QGroundControl(이하 QGC)의 경우, C++ 백엔드의 구조에서 차량(Vehicle)과의 연결 상태를 감시하는 시스템이 마련되어 있다. QGC 소스 코드 내 관리 객체(<code>src/Vehicle/Vehicle.cc</code>)는 PX4-Autopilot에서 보내오는 <code>HEARTBEAT</code>와 텔레메트리 데이터 속도를 실시간 실시간으로 감시한다.</p>
+<h3>1.1 지연 시간(Latency)과 타임아웃 메커니즘</h3>
+<p>수신된 <code>HEARTBEAT</code> 메시지의 타임스탬프를 현재 시스템 시간과 비교함으로써 통신망의 일방향 지연(One-way Delay) 징후를 파악할 수 있다. 보다 정확한 왕복 지연 시간(RTT, Round-Trip Time)은 시간 동기화(Timesync) 메시지인 <code>TIMESYNC</code> 패킷을 전송하여 측정되지만, Failsafe 트리거의 관점에서는 GCS의 마지막 <code>HEARTBEAT</code>가 언제 도달했는지를 나타내는 **수신 타임아웃(Timeout)**이 절대적인 기준으로 작용한다.</p>
+<p>네트워크 혼잡이나 전파 음영 지역 진입으로 인해 지정된 시간 임계치(예: 10초) 동안 GCS의 <code>HEARTBEAT</code>가 수신되지 않으면, 모듈은 GCS 연결 손실 상태(GCS Connection Lost)로 전환하며, 이는 곧 계층적인 Failsafe 절차를 촉발한다.</p>
+<h2>2. PX4-Autopilot 데이터 링크 GCS 점검 설정 및 구성</h2>
+<p>PX4-Autopilot(v1.14 이상)에서는 데이터 링크 손실(Data Link Loss) 판별 및 후속 안전 조치를 위해 다음의 파라미터들이 유기적으로 결합되어 작동한다.</p>
+<ol>
+<li><strong><code>COM_DL_LOSS_T</code> (Data Link Loss Timeout)</strong>: GCS 등으로부터 텔레메트리(특히 Heartbeat) 수신이 중단된 시간을 감지하는 임계값(초 단위)이다. 이 시간이 초과되면 데이터 링크 손실로 간주된다. 기본값은 통상 10초로 설정되어 있으나, 장거리 비행 시 일시적인 페이딩을 고려하여 보수적으로 15~20초 수준으로 조정하기도 한다.</li>
+<li><strong><code>NAV_DLL_ACT</code> (Data Link Loss Action)</strong>: 링크 손실이 확인되었을 때 기체가 취해야 할 행동을 정의한다. <code>Return mode</code>(RTL), <code>Land mode</code>, <code>Hold mode</code>, 비행 종료(Flight Termination) 등을 선택할 수 있으며, 이 파라미터 세팅에 따라 상태 머신의 천이가 결정된다.</li>
+<li><strong><code>COM_RC_IN_MODE</code></strong>: RC 제어와 GCS 제어 중 어떤 것을 신뢰할 것인지 결정한다. 조종기(RC Radio) 없는 완전자율 비행(GCS Only) 환경이라면 GCS 링크의 무결성이 곧 조종 권한의 상실로 직결되므로 지연 시간에 더욱 민감하게 반응해야 한다.</li>
+</ol>
+<h3>2.1 ArduPilot 대조: GCS 관측 철학의 차이</h3>
+<p>ArduPilot과 PX4는 모두 GCS 페일세이프(GCS Failsafe) 개념을 갖추고 있으나 처방과 내부 상태 모델에서 차이가 존재한다.</p>
 <ul>
-<li><strong>LinkManager 모니터링</strong>: QGC는 다중 링크 접속(예: UDP 연결과 시리얼 텔레메트리 동시 접속)을 보조한다.</li>
-<li><strong>Heartbeat 프로그레스바 및 UI 렌더링</strong>: QML 프론트엔드는 백엔드에서 집계된 지연 시간 통계(Latency Info)를 기반으로 헤더 바에 연결 상태를 그래픽으로 표시한다. 만일 GCS 측에서 PX4로부터의 Heartbeat가 규정된 시간(기본 3~5초 범위) 안에 감지되지 않으면, UI 상에서 통신 오류 알림을 표출함과 동시에, 조종자의 즉각적인 개입을 요구한다.</li>
+<li><strong>PX4-Autopilot</strong>: Commander 모듈을 통제타워로 하여 GCS 연결 상태를 매우 엄격한 <code>State-based</code> 트리거 조건으로 취급한다. 통신 두절 시 정의된 복구 정책에 따라 즉각적으로 모드 전환(예: Auto -&gt; Return)을 강제하며, 복구(Re-acquisition) 시에도 사용자 설정(<code>COM_DL_REGAIN_T</code>)에 따라 점진적으로 권한을 회복하는 보수적인 접근을 취한다.</li>
+<li><strong>ArduPilot</strong>: ArduPilot의 GCS Failsafe(<code>FS_GCS_ENABLE</code>) 역시 타임아웃 감지 방식으로 동작하지만, RC 신호가 살아있거나 <code>AUTO</code> 미션 수행 중일 때는 GCS 연결 유실을 덜 차단적으로(Non-blocking) 취급하도록(Continue with Mission in Auto) 개별 예외 처리가 유연하게 분산되어 있다.</li>
 </ul>
-<h2>4. Ardupilot 대비 관제 차이점</h2>
-<p>Ardupilot 아키텍처는 보편적으로 <code>GCS_Failsafe</code> 서브루틴을 통해 Heartbeat 단절을 모니터링하며, AP_Mission 등 서브시템과 강하게 결합된 하드코딩(Hard-coding)된 타이머 스레드에 주로 의존한다. Mission Planner와 같은 Ardupilot 지향 GCS는 패킷 손실률에 보다 직접적으로 인터페이스 경고를 뿌리는 성향이 강하다.</p>
-<p>반면, PX4-Autopilot은 상태 동기화 및 전반적인 이벤트 라우팅(uORB 아키텍처)의 이점을 적극 활용한다. 즉, GCS의 Heartbeat 상실은 단순한 통신 두절 에러에 그치는 것이 아니라, Commander 모듈 내 다중 계층 상태 머신(Multi-tier State Machine)의 전환 조건으로 통합된다. 이를 통해 텔레메트리 장애 시 대기, 귀환, 혹은 보조 통신망(Companion Computer의 LTE/5G DDS 등)으로의 매끄러운 롤오버(Rollover) 처리 능력을 유연하게 제공한다.</p>
-<h2>5. 자율 비행 응용: ROS2 연동 관점에서의 데이터 링크 품질</h2>
-<p>근래의 자율 에이전트 개발은 MAVLink에 국한되지 않고, PX4-ROS2 브리지인 uXRCE-DDS 구조를 빈번하게 이용한다. ROS2 Offboard 마이크로서비스 아키텍처 하에서 GCS의 개념은 분산 제어 시스템(Distributed Control System)의 노드들로 확장된다.</p>
-<p>ROS2 환경에서 보조 컴퓨터의 제어 명령이 PX4로 인가될 때, uXRCE-DDS 미들웨어의 QoS 프로파일(예: <code>Reliable</code> vs <code>Best Effort</code>)에 따라 레이턴시는 극적으로 달라진다. 따라서 자율 비행 시스템의 비행 전 점검 단계에서는 DDS 노드 간의 상태(Ping/Pong 또는 ROS2 헬스체크) 지연 시간이 엄격한 기준(예: 실시간성을 보장해야 하는 50ms 미만) 내에 들어오는지 별도의 노드 모니터링 유닛이 검증해야 하며, 실패 시 PX4로 반려 트리거(Abort Trigger)를 푸시(Push)하는 추가 관제 기술이 요구된다.</p>
-<hr />
-<p><strong>참고 문헌 및 소스 코드 경로</strong></p>
+<h2>3. 소스 코드 분석: MAVLink Heartbeat 감지 아키텍처</h2>
+<p>PX4의 내부 구조에서 GCS 연결 상태는 <code>mavlink_receiver.cpp</code>를 거쳐 <code>telemetry_status</code> 토픽으로 유통되며, 최종적으로 <code>commander.cpp</code>의 Failsafe 상태 머신에서 평가된다.</p>
+<pre><code class="language-cpp">// src/modules/mavlink/mavlink_receiver.cpp (개념적 요약)
+void MavlinkReceiver::handle_message_heartbeat(mavlink_message_t *msg)
+{
+    mavlink_heartbeat_t heartbeat;
+    mavlink_msg_heartbeat_decode(msg, &amp;heartbeat);
+
+    // GCS 컴포넌트인지 확인 (시스템 ID 및 컴포넌트 ID 필터링)
+    if (msg-&gt;compid == MAV_COMP_ID_MISSIONPLANNER || 
+        heartbeat.type == MAV_TYPE_GCS) {
+        
+        telemetry_status_s tstatus{};
+        tstatus.heartbeat_time = hrt_absolute_time(); // 마지막 Heartbeat 도달 시간 기록
+        tstatus.telem_time = tstatus.heartbeat_time;
+        
+        // GCS 접속 유지 상태를 uORB로 전달
+        _telemetry_status_pub.publish(tstatus);
+    }
+}
+</code></pre>
+<p>생성된 <code>telemetry_status</code> 데이터는 Commander 상주 스레드에서 주기적으로 (보통 수십 Hz 주기로) 검사된다. Commander는 현재 시각과 <code>telemetry_status.heartbeat_time</code> 간의 오프셋(Offset)을 계산하고, 이 값이 파라미터 <code>COM_DL_LOSS_T</code>를 초과하는 순간 다음과 같은 상태 플래그를 변형시킨다.</p>
+<pre><code class="language-cpp">// src/modules/commander/Commander.cpp 의 Data Link Loss 감지 로직 예
+const hrt_abstime time_since_last_gcs = hrt_absolute_time() - telemetry_status.heartbeat_time;
+
+if (time_since_last_gcs &gt; (hrt_abstime)(_param_com_dl_loss_t.get() * 1_s)) {
+    // 타임아웃 발생
+    if (!_gcs_connection_lost) {
+        _gcs_connection_lost = true;
+        // Data Link Loss Failsafe (NAV_DLL_ACT 동작) 시퀀스 진입
+        set_failsafe_state(FailsafeState::DATA_LINK_LOSS);
+    }
+} else {
+    // GCS 연결 회복 및 Latency 안정화 
+    if (_gcs_connection_lost &amp;&amp; (time_since_last_gcs &lt; (hrt_abstime)(_param_com_dl_regain_t.get() * 1_s))) {
+         _gcs_connection_lost = false;
+         recover_failsafe_state();
+    }
+}
+</code></pre>
+<p>위와 같은 로직을 통해 단일 MAVLink 메시지 누락으로 인한 펄스성 오작동을 방지하고, 지속적인 통신망 단절 및 지연시간 폭주 상황에서만 정밀하게 회피 기동을 인가하게 된다.</p>
+<h2>4. QGroundControl 관점의 지연 시간 하한계 검사</h2>
+<p>GCS 측(QGroundControl 최신 버전)에서도 역으로 기체 통신 상태를 모니터링한다. QGC 내부의 <code>Vehicle.cc</code> 및 <code>MAVLinkProtocol.cc</code> 모듈은 타겟 노드(드론)로부터 넘어오는 <code>HEARTBEAT</code> 간의 수신 인터벌(Interval)을 누적 분석(Rolling Average)한다.</p>
 <ul>
-<li>PX4 Firmware: <code>src/modules/commander/PreflightCheck.cpp</code></li>
-<li>QGroundControl Source: <code>src/Vehicle/Vehicle.cc</code>, <code>src/comm/LinkManager.cc</code></li>
-<li>MAVLink Developer Guide: <code>HEARTBEAT</code> (Message ID: 0), <code>PING</code> (Message ID: 4)</li>
+<li><strong>지연 시간 시각화</strong>: 기체로부터의 지연(Latency)이 특정 범위를 넘어서면 QGC 화면 상단의 연결 상태 아이콘이 황색 또는 적색으로 경고를 띄운다.</li>
+<li><strong>Pre-flight Check 보류</strong>: 이륙 전 점검 단계에서 양방향 지연 시간이 임계값을 상회하여 제어 명령(<code>COMMAND_LONG</code>)의 <code>ACK</code> 응답 속도를 보장할 수 없다고 판단되면, 시스템 아밍(Arming) 버튼 자체를 비활성화(Disable) 처리하기도 한다.</li>
 </ul>
+<p>따라서 항공 로보틱스 연구자는 PX4 시스템 개발 시 통신 채널에 유의미한 데이터 트래픽이 병목을 일으키지 않도록(예: 불필요한 고해상도 로그 및 영상 스트리밍 대역폭 잠식 등) 텔레메트리 레이트 조절 파라미터(<code>MAV_1_MODE</code>, <code>MAV_1_RATE</code>)를 사전에 조율해야 한다. 이러한 지연 시간의 근본적인 한계 점검은 기체 자체 시스템과 지상 관제 시스템 간의 강력한 커플링을 통해 무인기 비행 무결성을 담보한다.</p>
 
             </article>
             <footer>

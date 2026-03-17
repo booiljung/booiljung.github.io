@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:44.8.3 통합 GCS 개발 시 하드웨어 추상화 계층(HAL) 개념을 응용한 펌웨어별 객체 지향적 다형성(Object-Oriented Polymorphism) 기반 MAVLink 인터페이스 설계 패턴</title>
+    <title>BIJUNG:44.8.3. 통합 GCS 개발 시 하드웨어 추상화 계층(HAL) 개념을 응용한 펌웨어별 객체 지향적 다형성(Object-Oriented Polymorphism) 기반 MAVLink 인터페이스 설계 패턴</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,117 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>44.8.3 통합 GCS 개발 시 하드웨어 추상화 계층(HAL) 개념을 응용한 펌웨어별 객체 지향적 다형성(Object-Oriented Polymorphism) 기반 MAVLink 인터페이스 설계 패턴</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.8.3 통합 GCS 개발 시 하드웨어 추상화 계층(HAL) 개념을 응용한 펌웨어별 객체 지향적 다형성(Object-Oriented Polymorphism) 기반 MAVLink 인터페이스 설계 패턴</span></nav>
+                    <h1>44.8.3. 통합 GCS 개발 시 하드웨어 추상화 계층(HAL) 개념을 응용한 펌웨어별 객체 지향적 다형성(Object-Oriented Polymorphism) 기반 MAVLink 인터페이스 설계 패턴</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.8.3. 통합 GCS 개발 시 하드웨어 추상화 계층(HAL) 개념을 응용한 펌웨어별 객체 지향적 다형성(Object-Oriented Polymorphism) 기반 MAVLink 인터페이스 설계 패턴</span></nav>
                 </div>
             </header>
             <article>
-                <h1>44.8.3 통합 GCS 개발 시 하드웨어 추상화 계층(HAL) 개념을 응용한 펌웨어별 객체 지향적 다형성(Object-Oriented Polymorphism) 기반 MAVLink 인터페이스 설계 패턴</h1>
+                <h1>44.8.3. 통합 GCS 개발 시 하드웨어 추상화 계층(HAL) 개념을 응용한 펌웨어별 객체 지향적 다형성(Object-Oriented Polymorphism) 기반 MAVLink 인터페이스 설계 패턴</h1>
+<p>무인항공기 생태계가 다변화됨에 따라 지상 관제 시스템(GCS)은 특정 펌웨어에 종속되지 않고, PX4-Autopilot, Ardupilot, 커스텀 비행 제어기 등 다양한 시스템을 단일 사용자 경험(UX) 하에서 안전하게 운용해야 파편화(Fragmentation)를 막을 수 있다.<br />
+비록 모든 기체가 공통 프로토콜인 MAVLink를 사용한다 할지라도, 앞선 장들에서 살펴본 바와 같이 이륙 명령(<code>MAV_CMD_NAV_TAKEOFF</code>) 하나를 처리함에 있어서 요구되는 사전 모드 전환 규격이나, 예외 처리 파이프라인은 펌웨어 철학에 따라 크게 상이하다.<br />
+본 절에서는 QGroundControl(QGC) 등 선진 GCS 시스템의 소스 코드 기저에 깔려 있는 디자인 패턴을 분석하고, 운영체제 설계의 근간인 하드웨어 추상화 계층(HAL, Hardware Abstraction Layer) 개념을 어떻게 객체 지향적 다형성(Polymorphism)으로 승화시켜 범용 MAVLink 관리 인터페이스를 구축하는지 논의한다.</p>
+<h2>1.  MAVLink 다이얼렉트(Dialect)와 비동기 프로토콜 통신의 파편화 문제</h2>
+<p>범용 GCS를 구축하기 어려운 가장 큰 이유는 MAVLink 프로토콜 자체가 규격화된 메시지 형식(Format)만 제공할 뿐, 명령(Command)에 따르는 <strong>기체의 상태 천이(State Transition) 트랜잭션</strong>까지는 강제하지 않기 때문이다.<br />
+지상 관제 시스템 관점에서는 다음과 같은 예외 관리가 발생한다.</p>
+<ul>
+<li>PX4는 이륙 전 반드시 <code>Flight Mode</code>를 특정 자율 비행 상태(Offboard 또는 Hold 등)로 동기화할 것을 요구하며, 실패 시 NACK를 단호하게 반환한다.</li>
+<li>Ardupilot은 이륙 명령을 받으면 내부에서 허용 가능한 한 모드 자체 전환을 시도하거나, 혹은 GCS가 아닌 라디오 컨트롤러(RC)의 스로틀이 0이 아닐 것을 요구하는 등 암묵적이고 유연한 조건이 붙는다.</li>
+</ul>
+<p>단일 루틴(Spaghetti Code) 안에서 <code>if (is_px4) { ... } else if (is_ardupilot) { ... }</code> 방식으로 제어 로직을 구성하면 향후 새로운 펌웨어를 지원하거나 로드를 확장할 때 기술 부채(Technical Debt)가 걷잡을 수 없이 증가하게 된다.</p>
+<h2>2.  하드웨어 추상화 계층(HAL) 패턴의 탑재 (GCS 측면 적용)</h2>
+<p>일반적으로 C/C++ 시스템 프로그래밍에서 HAL은 특정 칩셋(MCU)의 레지스터 구조를 숨기고 일관된 인터페이스(<code>gpio_write_pin()</code> 등)를 상위로 제공하는 데 쓰인다. 통합 GCS 개발에서는 이 개념을 애플리케이션 계층에 응용, 이른바 **펌웨어 플러그인 추상화 계층(Firmware Abstraction Layer)**을 구성한다.</p>
+<h3>2.1  메인 통신 객체와 차량 인스턴스(Vehicle Object)의 분리</h3>
+<p>QGroundControl 소스 코드 아키텍처(C++/Qt 기반)를 참조하면, <code>Vehicle</code> 클래스는 가장 최상위 베이스(Base) 객체로 존재하며, 그 자체로 특정 펌웨어의 로직을 품지 않고 오로지 MAVLink 패킷 수신과 기본 Heartbeat 유지 관리만 담당한다.<br />
+실제 펌웨어 종속적인 행동들은 <code>FirmwarePlugin</code> 클래스를 상속받은 별도의 고유 객체로 분리된다.</p>
+<h2>3.  객체 지향적 다형성(Polymorphism) 기반 인터페이스 설계 가이드</h2>
+<p>이륙 제어를 예로 들어, 올바른 통합 GCS 개발을 위한 C++ / 객체 지향 설계 계층은 다음과 같이 구성된다.</p>
+<h3>3.1  베이스 클래스 (Abstract Base Class)</h3>
+<p>기체의 비행을 제어하는 매니저 클래스 내부에, 하위 펌웨어 플러그인 클래스가 반드시 구현해야 하는 가상함수(Pure Virtual Function)를 선언하여 다형성을 강제한다.</p>
+<pre><code class="language-cpp">// GCS Firmware Plugin Base Class
+class FirmwarePlugin {
+public:
+    virtual void startTakeoff(Vehicle* vehicle) = 0;
+    virtual bool isCapableOfTakeoff(Vehicle* vehicle) const = 0;
+    // 그 외 모드 파싱 로직, 배터리 파싱 로직 등...
+};
+</code></pre>
+<h3>3.2  PX4 종속적 파생 클래스 (PX4-Autopilot Plugin)</h3>
+<p>PX4의 경우 엄격한 전제 조건을 요구하므로, 다형성 함수 오버라이딩(<code>override</code>) 시 이를 철저히 준수하는 로직을 심어둔다.</p>
+<pre><code class="language-cpp">class PX4FirmwarePlugin : public FirmwarePlugin {
+public:
+    void startTakeoff(Vehicle* vehicle) override {
+        // 1. PX4는 Arming 전에 모드 전환이 먼저 필요할 수 있음
+        vehicle-&gt;setFlightMode("Takeoff"); 
+        
+        // 2. Arming 커맨드 선 발송
+        vehicle-&gt;sendMavCommand(MAV_CMD_COMPONENT_ARM_DISARM, 1);
+        
+        // 3. Command_Long 동기적 발송 후 수신된 ACK가 MAV_RESULT_ACCEPTED일 경우에만 UI 변경
+        vehicle-&gt;sendMavCommand(MAV_CMD_NAV_TAKEOFF, ...);
+    }
+};
+</code></pre>
+<h3>3.3  Ardupilot 종속적 파생 클래스 (APM Plugin)</h3>
+<p>Ardupilot의 경우 <code>Mode_Guided</code> 전환이나 이륙 런(Run) 등 융통성 있는 처리를 진행한다.</p>
+<pre><code class="language-cpp">class APMFirmwarePlugin : public FirmwarePlugin {
+public:
+    void startTakeoff(Vehicle* vehicle) override {
+        // 1. Copter 등 기종 판단
+        if (vehicle-&gt;isCopter()) {
+            vehicle-&gt;setFlightMode("Guided");
+        }
+        
+        // 2. Pre-Arm 텍스트 상태 점검 후 Arming
+        // 3. MAV_CMD_NAV_TAKEOFF 전송.
+        // 이때 Ardupilot의 STATUSTEXT 이벤트를 비동기 폴링(Polling)하도록 리스너(Listener) 등록
+    }
+};
+</code></pre>
+<h2>4.  다형성 인터페이스 라우팅 아키텍처 모델</h2>
+<p>다음은 GCS 사용자가 “이륙 버튼“을 눌렀을 때, <code>FirmwarePlugin</code> 다형성을 타고 들어가 기체에 맞는 패킷 전송을 수행하는 아키텍처 다이어그램이다.</p>
+<pre><code class="language-mermaid">classDiagram
+    class Vehicle {
+        -FirmwarePlugin* _firmwarePlugin
+        +takeoff()
+        +getFirmwareType()
+    }
+    
+    class FirmwarePlugin {
+        &lt;&lt;interface&gt;&gt;
+        +startTakeoff(Vehicle* v)*
+        +handleNack(Log* l)*
+    }
+    
+    class PX4FirmwarePlugin {
+        +startTakeoff(Vehicle* v)
+        +handleNack(Log* l)
+    }
+    
+    class APMFirmwarePlugin {
+        +startTakeoff(Vehicle* v)
+        +handleNack(Log* l)
+    }
+    
+    Vehicle --&gt; FirmwarePlugin : Uses
+    FirmwarePlugin &lt;|-- PX4FirmwarePlugin : Implements
+    FirmwarePlugin &lt;|-- APMFirmwarePlugin : Implements
+</code></pre>
+<p>상기 구조에서 <code>Vehicle</code> 객체의 <code>takeoff()</code> 호출은 다음과 같은 한 줄의 트리거 코드로 귀결된다.<br />
+<code>_firmwarePlugin-&gt;startTakeoff(this);</code><br />
+즉, GCS 비즈니스 로직(UI 계층)은 대상 기체가 PX4인지 Ardupilot인지 따질 필요가 사라지며, 추상화 계층(HAL 플러그인)이 MAVLink 인터페이스의 모든 책임을 전가받게 되는 이상적인 모듈형 패턴이 확립된다.</p>
+<h2>5.  결론</h2>
+<p>다중 펌웨어 시대를 열어가는 통합 GCS 개발 환경에서, <code>if-else</code> 분기문으로 펌웨어를 구분하는 하드코딩 모델은 MAVLink 프로토콜의 파편화 늪에 빠질 수밖에 없다. HAL 기반의 객체 지향 다형성(Polymorphism)을 통한 펌웨어 오버라이딩 패턴의 도입은:</p>
+<ol>
+<li>PX4-Autopilot의 엄격한 상태 검증 머신 철학과</li>
+<li>Ardupilot의 유연한 절차 지향적 제어 철학<br />
+을 단일 QGroundControl 또는 독자적 GCS 애플리케이션의 아키텍처 내부에서 가장 자연스럽게 해소(Decoupling)시켜 줄 수 있는 핵심 소프트웨어 공학 파이프라인이다.<br />
+향후 MAVSDK나 ROS2 통신 모듈(uXRCE-DDS) 기반 에이전트 시스템을 설계할 때에도 이와 같은 추상 플러그인 전략 계층을 유지보수성 확보의 1원칙으로 삼아야 한다.</li>
+</ol>
+<p><strong>참고문헌 및 링크:</strong></p>
+<ul>
+<li><a href="https://dev.qgroundcontrol.com/master/en/getting_started/architecture.html">QGroundControl Source Code Architecture</a></li>
+<li>[Design Patterns: Elements of Reusable Object-Oriented Software. Gamma et al, 1994. (Strategy Pattern)]</li>
+</ul>
 
             </article>
             <footer>

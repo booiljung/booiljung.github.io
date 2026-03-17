@@ -115,45 +115,46 @@
             </header>
             <article>
                 <h1>40.4.3.1.1. 논리적 시계(Logical Clock)를 이용한 부작용(Side-effect) 발현 억제 벡터(Vector) 제어</h1>
-<p>PX4-Autopilot(펌웨어 버전 1.14 이상 기준)과 QGroundControl(버전 4.3 이상) 환경에서 지상 관제 시스템(GCS, Ground Control Station)과 무인항공기(UAV, Unmanned Aerial Vehicle) 간의 비동기적 통신망은 메시지 전송 지연과 순서 역전 현상에 취약하다. 이를 해결하기 위해 논리적 시계(Logical Clock) 알고리즘, 특히 램포트 타임스탬프(Lamport Timestamp) 또는 벡터 시계(Vector Clock) 방식이 분산 제어 시스템 설계에서 점차 중요하게 다뤄지고 있다. 네트워크 통신에서는 이전 상태의 지연된 수신으로 인해 기체가 의도치 않은 동작(Side-effect)을 수행할 위험이 있으며, 이를 방지하기 위한 억제 벡터(Suppression Vector) 제어 메커니즘을 상세히 분석한다.</p>
-<h2>1.  분산 시스템에서의 논리적 시계(Logical Clock) 도입 배경</h2>
-<p>드론 제어 시스템은 GCS, 비행 제어기(FC, Flight Controller), 보조 컴퓨터(Companion Computer) 등이 상호 작용하는 전형적인 분산 시스템(Distributed System)이다. 물리적 시계(Physical Clock) 동기화 오류는 네트워크 지연이나 시스템 부하 발생 시 제어 명령의 인과적 순서를 왜곡시킬 수 있다.</p>
-<p>따라서 상태 업데이트 필터링을 위해 각 메시지에 단조 증가(Monotonically Increasing)하는 논리적 시계 카운터를 부여하여, 제어 명령의 시공간적 인과 관계(Causality)를 엄격히 보존하라. 램포트의 시간 이론에 따라 논리적 시간 <span class="math math-inline">L(e)</span>가 주어진 이벤트 <span class="math math-inline">e</span>에 대해, <span class="math math-inline">a \rightarrow b</span> (이벤트 <span class="math math-inline">a</span>가 <span class="math math-inline">b</span>보다 선행함)라면 <span class="math math-inline">L(a) &lt; L(b)</span>가 항상 성립하도록 설계해야 한다.</p>
-<h2>2.  부작용(Side-effect) 발현 억제를 위한 상태 필터링</h2>
-<p>PX4-Autopilot은 GCS로부터 수신된 설정, 경로, 제어 명령을 처리하는 과정에서 멱등성(Idempotency)을 부분적으로 지원한다. 하지만 특정 연속 동작(예: 이륙 후 웨이포인트 변경, 오프보드 기동 상태 업데이트)의 경우 동일한 패킷이 지연 전송(Delayed Transmission)되어 늦게 도달하거나 순서가 뒤섞이면 내부 상태 머신(State Machine)에 치명적인 부작용이 발현된다.</p>
-<p>이러한 부작용을 원천적으로 억제하기 위해 수신단은 **억제 벡터(Suppression Vector)**를 유지하라. 내부에 저장된 이전 벡터 상태와 비교하여, 타임스탬프가 낮거나 이미 처리 완료된 논리적 시계 값을 가진 MAVLink 명령을 즉각 식별하여 폐기(Drop)하는 상수 시간(O(1)) 구조의 정책을 구비해야 한다.</p>
-<h2>3.  벡터 제어(Vector Control) 메커니즘과 통신 다이어그램</h2>
-<p>각 서브시스템(예: GCS, PX4 커맨더(Commander), ROS2 에이전트)은 자신만의 독립적인 논리적 시계 카운터를 관리한다. 상태 업데이트 발생 시, 각 모듈의 벡터값을 전파하고 동기화하여 글로벌 상태 합의(Global State Consensus)를 달성하라.</p>
-<pre><code class="language-mermaid">sequenceDiagram
-    participant GCS as GCS (Lamport Clock: C)
-    participant Companion as Companion Computer (ROS2)
-    participant PX4 as PX4-Autopilot (FC)
-
-    GCS-&gt;&gt;PX4: MAVLink COMMAND_LONG [C=10]&lt;br&gt;Mode: Offboard
-    PX4--&gt;&gt;GCS: COMMAND_ACK [C=10]&lt;br&gt;Vector Updated: {G:10, P:1}
-    
-    GCS-&gt;&gt;PX4: MAVLink SET_POSITION_TARGET [C=11]
-    Note over GCS, PX4: Network Delay Occurs
-    
-    Companion-&gt;&gt;PX4: uXRCE-DDS Trajectory Setpoint [C=12]
-    PX4--&gt;&gt;Companion: ACK [C=12]&lt;br&gt;Vector Updated: {G:10, P:2, C:12}
-    
-    Note over PX4: Delayed GCS Packet Arrives
-    PX4-&gt;&gt;PX4: Check Logical Clock&lt;br&gt;GCS [C=11] vs Internal State (C &gt;= 12)
-    PX4-&gt;&gt;PX4: Suppress Side-effect (Drop Packet)
-</code></pre>
-<p>위 다이어그램은 ROS2(Companion Computer) 기반 에이전트와 GCS가 동시에 제어 권한을 행사하려 할 때, 네트워크 정체로 늦게 도착한 과거의 GCS 제어 정보가 현재의 기동에 오개입(Side-effect 발현)하는 것을 내부 벡터 시계를 통해 억제 및 폐기결정(Drop)하는 과정을 명확히 보여준다.</p>
-<h2>4.  Ardupilot과 PX4-Autopilot의 통신 동기화 구조 차이</h2>
-<p>Ardupilot의 통신 스택은 상대적으로 강력한 물리적 동기화(Time Synchronization) 체계를 주로 활용하며, 연속적인 <code>heartbeat</code> 주기 및 타임아웃 윈도우에 엄격하게 의존하여 통신 손실과 패킷 역전을 판단한다.<br />
-반면 PX4-Autopilot 아키텍처는 내부 uORB(Micro Object Request Broker) 버스와 단단히 결합되어 있으며, 서브모듈 간 고도의 비동기 메시지 패싱(Asynchronous Message Passing)을 근간으로 작동한다.</p>
-<p>이러한 설계 차이에 기인하여 PX4 환경에서 복수의 지휘 제어 체계(Multi-GCS 운영 또는 GCS + 다수 ROS2 노드 구조)를 구성할 때는 MAVLink의 단순 타임스탬프 의존성을 넘어, 애플리케이션(QGroundControl 및 사용자 ROS2 노드) 계층에서 명령의 논리적 흐름 및 인과율을 자체적으로 제어 및 보정하는 논리 벡터 식별 규약(Vector Clock Identification Protocol)을 필히 구현해야 한다.</p>
-<h2>5.  아키텍처 설계 시 실무 고려 사항</h2>
+<p>여러 대의 지상 관제 시스템(GCS)이 단일 기체를 제어하거나, 군집 비행(Swarm Flight) 중인 다수의 드론이 메쉬(Mesh) 네트워크 망을 통해 통신할 때, 분산 시스템(Distributed System)의 고질적인 문제인 패킷 도달 순서 역전(Out-of-order Delivery) 현상이 빈번하게 발생한다. 특히 반송파가 끊기거나(Drop) 다중 경로 페이딩(Multipath Fading)으로 인해 재전송(Retransmission)이 일어날 경우, 과거에 내린 제어 명령이 최신 명령보다 늦게 기체에 도착할 수 있다. 본 절에서는 이러한 비동기적 통신 환경에서 구식(Stale) 명령으로 인한 의도치 않은 역주행 및 상태 붕괴(Side-effect)를 원천 차단하기 위해, PX4-Autopilot과 QGroundControl 간 통신에서 논리적 시계(Logical Clock)와 벡터(Vector) 제어를 어떻게 활용하는지 탐구한다.</p>
+<h2>1.  램포트의 논리적 시계(Lamport’s Logical Clock) 기반 인과율 제어</h2>
+<p>분산 시스템 이론에서 레슬리 램포트(Leslie Lamport)가 창안한 논리적 시계 모델은, 노드 간의 물리적 시간(Physical Time, 동기화가 불완전한 GPS 시간이나 RTC)에 전적으로 의존하는 대신 이벤트의 선후 인과 관계(Causality)를 수학적 단조 증가(Monotonically Increasing) 카운터로 추적하는 기법이다. MAVLink 프로토콜의 패킷 헤더(Header)에 존재하는 시퀀스 번호(Sequence Number) 필드가 이 논리적 시계의 가장 훌륭한 물리적 실체다.</p>
+<p>PX4-Autopilot 수신단에서는 특정 시스템 및 컴포넌트(<code>target_system</code>, <code>target_component</code>)별로 가장 마지막에 성공적으로 수신 및 처리한 논리적 시계 값(벡터 <span class="math math-inline">V_{sys}</span>)을 유지한다. GCS로부터 새로운 제어 명령 패킷 <span class="math math-inline">p</span>가 도달하면 수신된 패킷의 논리 시계 <span class="math math-inline">V(p)</span>와 로컬 벡터를 다음과 같이 비교한다.</p>
+<p><span class="math math-display"> V(p) \le V_{sys} </span></p>
+<p>만약 <span class="math math-inline">V(p)</span> 가 작거나 같다면, 이는 네트워크 상에서 지연되어 뒤늦게 도착한 “과거의 이벤트“로 간주된다. 즉, 이미 더 미래의 인과율(<span class="math math-inline">V_{sys}</span>)이 시스템 상태에 반영되었으므로, 해당 패킷의 명령어(Command)나 제어 집합점(Setpoint) 업데이트는 시스템의 불변성을 깨뜨릴 부작용(Side-effect) 인자로서 판별되어 즉각 폐기(Discard)된다.</p>
+<h2>2. 벡터 제어(Vector Control)를 통한 다차원 부작용 억제</h2>
+<p>단일 GCS와 단일 드론 간에는 스칼라(Scalar) 형태의 시퀀스 넘버만으로도 인과율 검증이 가능하지만, 다중 GCS(Multi-GCS) 운영이나 ROS2 기반 다중 노드(Multi-node) 연결체계에서는 각 명령 주체별 독립적인 시계선(Clock-line)을 다변량 벡터 형태로 파악해야 한다.</p>
+<p><span class="math math-display">\mathbf{V}_{sys} = [v_{GCS1}, v_{GCS2}, v_{ROS2\_Companion}]</span></p>
+<p>PX4-Autopilot(v1.14 기준) 내부의 MAVLink 수신기(<code>mavlink_receiver.cpp</code>)나 uXRCE-DDS 클라이언트(Client)는 수신되는 메시지의 송신자 식별자(System ID 및 Component ID)를 인덱스로 삼아 다차원 배열(Vector 배열) 형태로 타임스탬프와 시퀀스 상태를 기록한다.</p>
 <ul>
-<li><strong>카운터 오버플로우 방지 및 방어</strong>: 논리적 시계 구현 시 <code>uint64_t</code>와 같은 충분한 크기의 자료형을 활용하거나 순환형 윈도우(Circular Window) 제어 코드를 적용하여 단조 증가 시계의 롤오버(Rollover) 문제로 촉발되는 순서 역전 오류를 철저히 방지하라.</li>
-<li><strong>통신 대기시간(Latency) 평가와의 결합</strong>: 지연된 메시지를 억제하는 것은 시스템 안전(Safety)을 확보하는 방어적 수단이다. 따라서 무인기 제어 정확도(Precision)는 QGroundControl과 기체 간 네트워크 지연 튜닝 및 MAVLink 최적화로 본질적인 문제를 선형적으로 해소해 나가야 한다.</li>
-<li><strong>MAVLink 확장 적용</strong>: MAVLink v2.0 프로토콜 규격은 데이터 무결성을 위해 메시지 서명(Signature) 메커니즘을 지원하지만, 인과성 제약을 직접 보장하지는 않는다. 고수준의 제어 앱에서는 <code>COMMAND_LONG</code> 전송 시 페이로드 또는 시퀀스 필드에 논리적 시계 해시값을 삽입하여 비행 제어기 측 억제 로직과 수직으로 결합하라.</li>
+<li><strong>예제 시나리오:</strong> QGroundControl(System ID 255)이 기체에 <code>이동(Goto)</code> 명령(<span class="math math-inline">v_{GCS1}=5</span>)을 내린 직후, 부착된 라즈베리 파이(Companion Computer, System ID 1)가 컴퓨터 비전 기반 충돌 회피를 위해 긴급 <code>비행 정지(Hold)</code> 명령(<span class="math math-inline">v_{ROS2\_Companion}=12</span>)을 발행했다고 가정하라.</li>
+<li><strong>부작용 방어:</strong> 만약 네트워크 지연으로 인해 QGC의 <code>Goto</code> 명령(<span class="math math-inline">v_{GCS1}=5</span>)이 늦게 도달하여 <code>Hold</code> 상태를 덮어쓰려고 시도한다면, 각 제어기 주체 간의 우선순위 가중치 텐서(Tensor)와 결합된 논리적 시계 검증 로직이 과거의 임무 재개를 거부함으로써 기체 충돌이라는 치명적 부작용(Side-effect)을 억제한다.</li>
 </ul>
-<p>본 접근법은 소프트웨어 공학과 분산 컴퓨팅(Distributed Computing)의 클래식한 동시성 제어(Timestamp-based Concurrency Control) 이론을 적용한 핵심적 설계 메커니즘이다. 이를 자율 비행 응용 소프트웨어에 반영하여, 예측 불허한 무선 네트워크 환경에서도 에이전트의 안정성을 견고히 보장하라.</p>
+<h2>2.  Ardupilot 대비 PX4의 오프보드(Offboard) 벡터 제어 우위</h2>
+<p>Ardupilot은 전통적으로 RC(Remote Controller) 입력이나 단일 GCS 통제에 최적화되어 있어, 시퀀스 유실이나 지연 명령에 대해 큐(Queue)를 버리거나 단순히 타임아웃 시간(Time-to-Live)에 의존하는 경향이 강했다.</p>
+<p>반면, 컴퓨터 비전 기반 자율 주행 연구에 깊이 뿌리를 둔 PX4-Autopilot 아키텍처는 수많은 외부 제어 스크립트(MAVSDK, ROS2)가 동시다발적으로 개입하는 상황을 상정하여 설계되었다. 특히 Offboard 모드 제어에서는 초당 50Hz 이상으로 쏟아지는 제어 위치/속도 벡터(Vector) 입력에 대하여 데이터 노후화(Staleness)를 엄격히 감시한다. MAVLink 데이터나 uORB 토픽의 수신 타임스탬프(물리적 누적 시계 <code>hrt_absolute_time</code>)와 시퀀셜 플래그를 결합 처리하여, 시스템 상태가 과거의 제어 벡터로 퇴행(Regression)하는 것을 방지하는 아키텍처가 매우 훌륭하게 구현되어 있다.</p>
+<h2>3.  논리적 시계 및 상태 전이 다이어그램</h2>
+<p>아래의 다이어그램은 네트워크 지연 환경에서 논리적 시계가 구식 명령(Stale Command)을 어떻게 걸러내어 기체 상태 오염을 방지하는지 시각적으로 보여준다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant GCS1 as QGroundControl
+    participant GCS2 as Secondary GCS (Observer)
+    participant Net as High-Latency Network
+    participant PX4 as PX4-Autopilot&lt;br&gt;(Vector Clock State)
+
+    GCS1-&gt;&gt;Net: Cmd A: Waypoint 1 (Seq: 10)
+    Note over Net: Packet A Delayed (Congestion)
+    
+    GCS1-&gt;&gt;Net: Cmd B: Hold Position (Seq: 11)
+    Net-&gt;&gt;PX4: Receive Cmd B (Seq: 11)
+    Note over PX4: Vector Updated: {GCS1: 11}&lt;br&gt;State -&gt; Hold
+    PX4-&gt;&gt;GCS2: MAVLink Telemetry (Status: Hold)
+    
+    Net-&gt;&gt;PX4: Receive Cmd A (Seq: 10) [Delayed]
+    Note over PX4: Check Logical Clock:&lt;br&gt;10 &lt; 11 (V(p) &lt; V_sys)
+    Note over PX4: Stale Command Detected!&lt;br&gt;Side-effect Suppressed (Drop)
+    
+    PX4-&gt;&gt;GCS1: COMMAND_ACK (Result: DENIED / IGN_STALE)
+</code></pre>
+<p>이 시퀀스 다이어그램에서 통신 지연으로 인해 뒤늦게 도착한 <code>Cmd A (Seq: 10)</code> 패킷은 PX4의 논리적 시계 필터에 의해 부작용 인자로 차단된다. 이를 통해 PX4-Autopilot은 이기종 다중 연결 환경에서도 시스템 내부 변수나 비행 궤적이 손상되지 않고, 가장 최신의 의도(Intention)만을 추종하는 강건한(Robust) 제어 안정성을 달성한다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:42.8 Pre-flight Check의 강제 승인(Override) 메커니즘 및 커스터마이징 전략</title>
+    <title>BIJUNG:42.8. Pre-flight Check의 강제 승인(Override) 메커니즘 및 커스터마이징 전략</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,65 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>42.8 Pre-flight Check의 강제 승인(Override) 메커니즘 및 커스터마이징 전략</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</a> / <span>42.8 Pre-flight Check의 강제 승인(Override) 메커니즘 및 커스터마이징 전략</span></nav>
+                    <h1>42.8. Pre-flight Check의 강제 승인(Override) 메커니즘 및 커스터마이징 전략</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</a> / <span>42.8. Pre-flight Check의 강제 승인(Override) 메커니즘 및 커스터마이징 전략</span></nav>
                 </div>
             </header>
             <article>
-                <h1>42.8 Pre-flight Check의 강제 승인(Override) 메커니즘 및 커스터마이징 전략</h1>
+                <h1>42.8. Pre-flight Check의 강제 승인(Override) 메커니즘 및 커스터마이징 전략</h1>
+<h2>1. 개요</h2>
+<p>무인항공기(UAV) 운용에 있어서 비행 전 점검(Pre-flight Check)은 기체의 안전을 담보하는 최후의 보루이다. 그러나 실내 비행(Indoor Flight), 데스크탑 개발 및 디버깅, GPS 음영 지역에서의 특수 임무, 혹은 결함이 의심되는 센서를 의도적으로 배제하고 비행해야 하는 비상 상황 등에서는 오히려 이 엄격한 검증 로직이 임무 수행을 가로막는 장애물이 될 수 있다.</p>
+<p>이러한 특수 목적의 운용을 지원하기 위해 PX4-Autopilot은 사전 설정된 파라미터 기반의 서킷 브레이커(Circuit Breaker)와 관제 시스템(GCS)에서의 강제 시동(Force Arming) 인터페이스를 제공한다. 본 절에서는 Pre-flight Check를 우회(Override)하는 메커니즘과, 자체 개발 센서를 위한 커스텀 점검 로직 통합 전략을 소스 코드 관점에서 분석한다.</p>
+<h2>2. 서킷 브레이커(Circuit Breaker) 파라미터 아키텍처</h2>
+<p>PX4의 <code>Commander</code> 모듈은 내부 건강 상태(Health)를 점검할 때, <code>CBRK_</code> 접두사를 가지는 파라미터 그룹을 가장 먼저 열람한다. 이 파라미터들은 각 점검 항복에 대한 ‘차단기(Circuit Breaker)’ 역할을 수행하며, 특정 매직 넘버(Magic Number)를 입력함으로써 해당 점검 로직을 완전히 무효화시킬 수 있다.</p>
+<h3>2.1 주요 서킷 브레이커 파라미터 (설정 및 구성)</h3>
+<ul>
+<li><code>CBRK_SUPPLY_CHK</code> (매직 넘버: 894281): 데스크탑 환경에서 전원 모듈(Power Module)이 연결되지 않고 USB로만 전원이 공급될 때 아밍(Arming)을 허용한다.</li>
+<li><code>CBRK_USB_CHK</code> (매직 넘버: 197848): 비행 중 USB 케이블이 연결되어 있으면 본래 시동을 막지만, 이 검사를 우회하여 USB 텔레메트리 디버깅 비행을 가능케 한다.</li>
+<li><code>CBRK_VELPOSERR</code> (매직 넘버: 201607): EKF의 속도 및 위치 혁신(Innovation) 오차가 너무 커서 내비게이션 상태가 불량하더라도, 오프보드(Offboard)나 매뉴얼 스러스트 제어를 위해 강제로 위치 점검을 무시한다.</li>
+<li><strong>GPS 우회 파라미터 (<code>COM_ARM_WO_GPS</code>)</strong>: 실내 다이렉트 제어 혹은 옵티컬 플로우(Optical Flow) 전용 비행 시, GPS가 Fix되지 않아도 시동을 허가한다.</li>
+</ul>
+<h3>2.2 소스 코드 내 검증 회피 로직</h3>
+<p><code>src/modules/commander/HealthAndArmingChecks/HealthAndArmingChecks.cpp</code> 파일 내부를 살펴보면, 각 검증 함수 도입부에 서킷 브레이커 통과 조건문이 존재한다.</p>
+<pre><code class="language-cpp">// 전원 공급장치 검증 우회 예시
+if (_param_cbrk_supply_chk.get() == CBRK_SUPPLY_CHK_MAGIC) {
+    // 전원 시스템 오류가 있어도 검증을 강제 통과(Pass) 처리함
+    return true; 
+}
+</code></pre>
+<p>유효하지 않은 아무 숫자(예: 1)나 입력하면 우회되지 않으며, 반드시 설계자가 의도한 고유 코드(매직 넘버)를 입력해야만 작동하는 Fail-safe 지향적 파라미터 설계를 보여준다.</p>
+<h2>3. QGroundControl 관점의 강제 시동(Force Arming) 메커니즘</h2>
+<p>QGC 사용자는 파라미터 수정 없이 즉각적인 현장 판단 하에 강제 승인을 내릴 수 있다.<br />
+일반적인 시동 명령(<code>MAV_CMD_COMPONENT_ARM_DISARM</code>) 전송 시 1번 파라미터(param1)에 1(Arming)을 담아서 보내지만, 이 명령이 Pre-flight 에러로 인해 거부(NACK) 당했을 경우, QGC UI는 사용자에게 붉은색 경고와 함께 <strong>“강제 시동(Force Arm)”</strong> 체크박스가 포함된 확인 슬라이더를 표출한다.</p>
+<ul>
+<li><strong>강제 시동 명령 구성</strong>: 사용자가 Force Arm을 승인할 경우, GCS는 <code>MAV_CMD_COMPONENT_ARM_DISARM</code>의 **2번 파라미터(param2)**에 특별한 값 <code>21196</code>(매직 넘버)을 담아서 재전송한다.</li>
+<li><strong>기체 수신 로직</strong>: PX4 커맨더는 <code>param2 == 21196.0f</code>임을 감지하면, 치명적인 하드웨어 부재(예: IMU 센서 없음)가 아닌 이상, 자력/GPS 에러 등 대부분의 Preflight Check를 강제로 건너뛰고 모터를 회전시킨다.</li>
+</ul>
+<pre><code class="language-mermaid">flowchart TD
+    GCS[QGroundControl] --&gt;|MAV_CMD: param1=1, param2=0| CMD[PX4 Commander]
+    CMD --&gt; Check{Pre-flight Check}
+    Check --&gt;|통과| Arm[Armed 상태 진입]
+    Check --&gt;|실패| NACK[COMMAND_ACK DENIED 발송]
+    NACK --&gt; ui[GCS: 오류 출력 및 Force Arm UI 노출]
+    ui --&gt;|사용자 강제 승인| action[GCS: MAV_CMD param1=1, param2=21196]
+    action --&gt; CMD2[PX4 Commander]
+    CMD2 --&gt; Bypass((Check Bypass))
+    Bypass --&gt; Arm
+</code></pre>
+<h2>4. Ardupilot과 PX4의 Override 아키텍처 비교</h2>
+<ul>
+<li><strong>PX4-Autopilot</strong>: 우회 정책이 매우 세분화되어 있다. 배터리, USB, 위치 오차 등 항목별 유니크한 매직 넘버 기반의 <code>CBRK_</code> 파라미터를 사용하며, GCS Force Arm 역시 MAVLink 표준 파라미터를 통한 이중 안전망(param2=21196) 구조로 설계되어 있다.</li>
+<li><strong>Ardupilot</strong>: <code>ARMING_CHECK</code> 비트마스크(Bitmask) 파라미터 하나로 모든 것을 통제한다. 이 값을 <code>0</code>으로 설정하면 문자 그대로 기체의 모든 안전 점검이 비활성화되어, 즉시 프롭이 회전할 수 있는 무방비 상태가 된다. 세밀한 점검 항목 켜기/끄기는 비트마스크 연산(예: GPS 점검 해제 = 전체 값 - 8)을 통해 Mission Planner에서 체크박스 형태로 설정한다.</li>
+</ul>
+<h2>5. 커스터마이징 전략 및 개발 가이드</h2>
+<p>자율 에이전트 개발 시 자체 개발한 센서나 딥러닝 보드(Jetson 등)의 연결 상태를 Pre-flight Check 단계에서 검증하고 싶다면, 단순히 외부 스크립트로 처리하는 것을 넘어 PX4 펌웨어 단에 커스텀 검증 로직을 추가해야 한다.</p>
+<ol>
+<li><strong>커스텀 uORB 토픽 생성</strong>: <code>my_custom_sensor_status</code> 토픽 제정.</li>
+<li><strong>HealthAndArmingChecks 모듈 확장</strong>: <code>src/modules/commander/HealthAndArmingChecks/checks</code> 디렉토리 내에 새로운 C++ 클래스(예: <code>custom_sensor_check.cpp</code>)를 생성한다.</li>
+<li><strong><code>checkAndReport()</code> 함수 오버라이딩</strong>:<br />
+해당 함수 내에서 <code>my_custom_sensor_status</code> 토픽을 구독하고 건강 수치를 판별한다. 만약 에러 상태라면 <code>reporter.armingCheckFailure("커스텀 센서 응답 없음");</code> 을 호출하여 아밍 프로세스가 정상적으로 멈추고 GCS에 한글 내지 영문 에러 메시지가 퍼블리싱 되도록 구성할 수 있다.</li>
+<li><strong>커스텀 CBRK 파라미터 연결</strong>: 개발 중 잦은 블로킹을 막기 위해 커스텀 센서 역시 <code>COM_ARM_NO_CUSTOM_SENS</code> 파라미터를 하나 정의하여, 이 값이 1일 경우 체크 로직을 <code>return true;</code>로 조기 종료하도록 커스터마이징하면 우수한 안전 아키텍처를 확보할 수 있다.</li>
+</ol>
 
             </article>
             <footer>

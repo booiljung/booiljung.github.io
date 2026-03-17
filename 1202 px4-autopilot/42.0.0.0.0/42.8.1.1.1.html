@@ -115,6 +115,49 @@
             </header>
             <article>
                 <h1>42.8.1.1.1 조건부 확률(Conditional Probability) 하에서의 단일 고장점(Single Point of Failure) 파급 효과 시뮬레이션</h1>
+<h2>1.  개요 및 분석 목적</h2>
+<p>무인항공기 시스템(UAS)과 같은 고안전성 통합 제어 환경에서, 특정 안전 제약 조건이 훼손되거나 <code>CBRK_*</code> 파라미터를 통해 고의로 마스킹(Masking)될 경우, 해당 하위 시스템은 전체 프레임워크 내에서 잠재적인 **단일 고장점(Single Point of Failure, SPOF)**으로 전락하게 된다.</p>
+<p>이 절에서는 단순히 고장이 발생할 절대적 확률을 분석하는 데에서 벗어나, “안전망이 우회(Bypass)된 마스킹 조건 속에서 물리적 결함이 발현되었을 때, 이것이 기체의 치명적 실패(Catastrophic Failure)로 확산될 조건부 확률(Conditional Probability)“을 정량적으로 모델링하고, 시뮬레이션 기반 파급 효과(Ripple Effect)를 도출하는 기법을 다룬다.</p>
+<h2>2.  단일 고장점(SPOF)과 조건부 확률의 수학적 모델링</h2>
+<p>안전 로직이 해제된 비이상적 상태에서 시스템 단위의 실패 확률 <span class="math math-inline">P(F)</span>를 정의할 때, 특정 센서 블록 <span class="math math-inline">S</span>의 결함이 미치는 영향은 베이즈 정리(Bayes’ Theorem)에 기반한 다이내믹 결함 트리(Dynamic Fault Tree)로 모델링된다.</p>
+<ul>
+<li><span class="math math-inline">P(M)</span> : 특정 <code>CBRK_*</code> 파라미터가 활성화(마스킹)되어 안전 장치가 정지될 확률 (또는 확정적 상태 변수)</li>
+<li><span class="math math-inline">P(S_{fail})</span> : 특정 센서 인스턴스(예: GPS 1, IMU 1)의 하드웨어적 혹은 알고리즘적 고장 확률</li>
+<li><strong>마스킹 환경에서의 조건부 고장 확률</strong>: <span class="math math-inline">P(F \vert S_{fail} \cap M)</span></li>
+</ul>
+<p>정상 상태(마스킹 미적용, <span class="math math-inline">M^c</span>)에서는 Failsafe 로직 체계가 즉각 개입하여 오류를 격리시키므로 <span class="math math-inline">P(F \vert S_{fail} \cap M^c) \ll 1</span>에 수렴한다. 그러나 조건 <span class="math math-inline">M</span>(마스킹 됨) 하에서는 제어기(Controller)를 방어할 2차 안전망이 부재하게 되므로 다음이 성립한다.<br />
+<span class="math math-display">P(F \vert S_{fail} \cap M) \approx 1</span></p>
+<p>즉, 국소적인 결함이 발생함과 동시에 에러 전파(Error Propagation)가 가속화되어 시스템 전체의 상태 추정(State Estimation)과 제어 지령(Control Command)이 발산 수준으로 붕괴된다.</p>
+<h2>3. 시뮬레이션 환경(SITL) 기반 파급 효과 분석 시나리오</h2>
+<p>단일 고장점의 물리적 파급력을 실비행에서 모사하는 것은 기체의 영구적 추락 혹은 파손을 초래하므로 지양해야 한다. 대신, PX4-Autopilot의 Gazebo 기반 SITL(Software In The Loop) 시뮬레이션 환경에 오류 주입(Fault Injection) 기법을 접목하여 파급 효과를 검시한다.</p>
+<h3>3.1 조건부 파급 시뮬레이션 루틴 설계</h3>
+<ol>
+<li><strong>베이스라인(Baseline) 안정화 모델링</strong>: 정상적인 항법 궤도를 추종하는 상태의 기체 데이터를 로깅(ULog)한다.</li>
+<li><strong>조건부 환경(마스킹 <span class="math math-inline">M</span>) 주입</strong>: QGroundControl 등을 통해 <code>CBRK_GPSFAIL</code> 파라미터 등 타깃 안전망을 우회하는 매직 넘버를 강제 설정한다.</li>
+<li><strong>가상 오류(Fault) 주입</strong>: 비행 도중 SITL 플러그인 또는 MAVLink 디버그 API를 이용하여 GPS 위성 신호 유효 범위(HDOP/VDOP) 파괴나 센서 노이즈 추가 등 랜덤 워크 에러를 고의로 발생시킨다.</li>
+<li><strong>결과 분석 및 발산 관측</strong>: PX4 내 확장 칼만 필터(EKF2)가 잘못된 데이터를 신뢰함에 따라 발생하는 속도(Velocity) 및 위치 제어 루프(Position Control Loop)의 누적 오차(Cumulative Error) 발산을 정량적으로 플로팅(Plotting)한다.</li>
+</ol>
+<pre><code class="language-mermaid">graph LR;
+    subgraph "Conditional SPOF Simulation &amp; Injection Flow"
+    A[Start SITL Flight] --&gt; B[Set Parameter \n CBRK_GPSFAIL=240024];
+    B --&gt; C[Initialize ULog Record];
+    C --&gt; D[Execute GPS Glitch / Jamming \n via MAVLink Injector];
+    D --&gt; E{EKF2 Innovation Check};
+    E --&gt;|Failsafe is Bypassed| F[Velocity/Position Divergence \n No Return RTL];
+    F --&gt; G[System Control Loss / Crash \n SPOF Confirmed];
+    end
+    
+    style F fill:#ffcccc,stroke:#cc0000,stroke-width:2px;
+    style G fill:#ff6666,stroke:#aa0000,stroke-width:2px;
+</code></pre>
+<h2>4. 파급 모델링의 아키텍처적 및 엔지니어링적 의의</h2>
+<p>시뮬레이터 상에서 증명된 이 조건부 파급 효과 모델은 무인기 하드웨어 추상화(Hardware Abstraction) 단계에서 구조적 결함을 사전 식별하는 중요한 평가 지표로 쓰인다.</p>
+<ul>
+<li><strong>안전 신뢰도 정량화(Reliability Quantification)</strong>: 닫힌계(Closed System)에서 특정 우회 코드를 장착한 채 비행하는 행위가 시스템 강건성(Robustness)을 얼마나 취약하게 떨어뜨리는지 수학적으로 수치화한다.</li>
+<li><strong>이중화(Redundancy) 설계의 근거 마련</strong>: <span class="math math-inline">P(S_{fail} \vert M)</span>의 파급력 데이터는 개발자로 하여금, 테스트 편의를 위해 마스킹이 불가피한 요소에 대해서는 물리적인 듀얼-트리플 리던던트(Dual-Triple Redundant) 센서를 장착해야만 한다는 강제적 설계 당위성을 부여한다. (예: 2개의 독립적인 GPS, 3중 분리 전원 공급 등).</li>
+</ul>
+<h2>5. 결론</h2>
+<p>파라미터 마스킹에 의한 안전 조건 비활성화는 Ardupilot이나 PX4-Autopilot를 막론하고 단일 고장점(SPOF)을 양산하는 취약성을 지닌다. 조건부 확률(Conditional Probability) 하에서의 파급 효과 시뮬레이션은 이러한 파라미터 조작이 단순한 “경고 억제“를 넘어선 “시스템 붕괴의 교두보“임을 증명하며, 결함 감내(Fault Tolerance) 시스템을 구축하려는 항공 공학자들에게 필수적인 분석 및 검증 방법론으로 자리 매김한다.</p>
 
             </article>
             <footer>

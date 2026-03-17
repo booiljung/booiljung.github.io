@@ -115,6 +115,44 @@
             </header>
             <article>
                 <h1>44.4.1 Commander 모듈의 명령어 수신 대기열(Queue) 처리 및 전이 상태(Transition State) 유효성 검증 로직</h1>
+<p>본 절에서는 지상 관제 시스템(GCS)으로부터 전달된 이륙(Takeoff) 명령을 포함한 제어 명령이 PX4-Autopilot의 커맨더(Commander) 모듈 내부에서 어떻게 수신, 큐잉(Queueing), 그리고 상태 전이(State Transition) 측면에서 검증되는지 그 논리적 아키텍처를 상세히 분석한다. (기준 펌웨어: PX4 v1.14.0 이상, QGroundControl v4.3.0 이상)</p>
+<h2>1.  <code>vehicle_command</code> 수신 메커니즘</h2>
+<p>GCS에서 MAVLink 통신을 통해 <code>COMMAND_LONG</code> 또는 <code>COMMAND_INT</code> 메시지가 전송되면, PX4의 <code>mavlink_receiver</code> 모듈이 이를 파싱(Parsing)하여 내부의 비동기적 통신 미들웨어인 uORB(Micro Object Request Broker)의 <code>vehicle_command</code> 토픽으로 배포한다. 커맨더 모듈은 내부 런프(Run Loop) 체계 안에서 이 토픽을 폴링(Polling) 방식 혹은 구독(Subscription) 체인으로 수신하여 명령어 처리를 개시한다.</p>
+<h2>2.  명령어 수신 대기열(Queue) 처리 로직</h2>
+<p>로봇 제어 시스템에서 동시다발적으로 들어오는 유효하지 않거나 충돌하는 명령을 방지하기 위해, 커맨더는 들어온 <code>vehicle_command</code> 메시지를 순차적으로 평가한다.</p>
+<ul>
+<li><strong>명령 큐(Command Queue)</strong>: 커맨더는 명령이 접수되면 내부 버퍼로 이동시켜 동시에 여러 명령이 상태 머신을 변경하려는 경쟁 상태(Race Condition)를 원천 차단한다.</li>
+<li><strong>실시간(Real-time) 제약</strong>: 각 명령에 대해 처리가 완료되거나 실패 판정이 날 때까지 다음 명령의 처리는 블록(Block)되거나 드랍(Drop)될 수 있다. 따라서 타임아웃(Timeout) 내에 <code>vehicle_command_ack</code>를 발송하지 못하면 GCS는 명령을 재전송(Retry)하게 된다.</li>
+</ul>
+<h2>3.  전이 상태(Transition State) 유효성 검증 로직 구조</h2>
+<p>가장 핵심적인 로직은 수신된 명령이 현재 기체의 상태에서 수행될 수 있는가(유효성)를 판별하는 전이 상태 검증 체계이다. 커맨더 모듈 내의 코드는 거대한 조건부 분기(Switch-case 절 혹은 함수 포인터 맵)로 구성되어 있다.</p>
+<p>이륙 명령(<code>MAV_CMD_NAV_TAKEOFF</code>)이 큐에서 꺼내졌을 때, 다음의 엄밀한 가드 조건(Guard Condition)을 차례로 통과해야 한다.</p>
+<ol>
+<li><strong>사전 비행 검사(Pre-flight Check) 합격 여부</strong>: 센서 캘리브레이션, 글로벌 포지션 유효성(EKF Local/Global Position Valid), 배터리 전압 조건 등이 만족되어야 한다.</li>
+<li><strong>현재 시동 상태(Arming State) 검증</strong>: 시동이 걸리지 않은 체공 대기 상태(<code>ARMING_STATE_STANDBY</code>)라면, 자동 시동 허용 여부를 점검하고 기체를 1차적으로 <code>ARMED</code> 상태로 강제 전환할 수 있는지 판별한다. (보통 안전상의 이유로 이륙 전 명시적인 시동 명령 <code>MAV_CMD_COMPONENT_ARM_DISARM</code>을 선행하도록 요구한다.)</li>
+<li><strong>현재 주 상태(Main State) 검증</strong>: 현재 모드가 수동 제어(Manual Base Mode)인지 아니면 오토 모드(Auto Mode)인지 확인한다. 이륙 제어를 위해서는 <code>MAIN_STATE_AUTO_TAKEOFF</code>로 상태 전이가 이루어져야 하므로, 전환 조건이 수학적으로 명확히 정의된 행렬(Matrix) 구조를 통과해야 한다.</li>
+</ol>
+<pre><code class="language-mermaid">flowchart TD
+    A[GCS MAVLink 명령 송신] --&gt; B(mavlink_receiver 디코딩)
+    B --&gt; C[uORB: vehicle_command 발행]
+    C --&gt; D[Commander 모듈 수신 큐(Queue) 진입]
+    D --&gt; E{명령어 파싱: 이륙 명령 여부?}
+    E --&gt;|Yes| F{사전 비행 검사 통과 여부}
+    F --&gt;|Yes| G{현재 Arming 및 Main State 검증}
+    G --&gt;|유효| H[상태 전이 승인: AUTO_TAKEOFF 진입]
+    G --&gt;|공중/불가 상태| I[명령 거부 및 ACK 반환]
+    F --&gt;|No| I
+    H --&gt; J[uORB: vehicle_command_ack 성공 응답]
+    I --&gt; J
+</code></pre>
+<h2>4.  Ardupilot 대비 철학 및 아키텍처 비교</h2>
+<p>PX4-Autopilot과 Ardupilot 모두 예기치 못한 동작을 방지하기 위한 이중, 삼중의 방어벽을 가지고 있으나, 논리 처리의 응집도 측면에서 차이점이 명확하다.</p>
+<ul>
+<li><strong>PX4-Autopilot의 커맨더 응집성</strong>: 모든 상태 결정권이 단일 스레드 구조의 Commander 모듈에 밀집되어 있다. 따라서 다른 모듈(예: 위치 제어기)이 임의로 비행 상태를 변경할 수 없으며, 모든 전이는 <code>vehicle_status</code> uORB 메시지를 통해서만 전파된다. 이 구조는 아키텍처적인 예측 가능성이 매우 높고 안전성 해석 논문(참고: “Formal Verification of a Flight Control Subsystem”) 등에 부합하는 엄격한 구조를 제공한다.</li>
+<li><strong>Ardupilot의 분산 처리</strong>: Ardupilot은 GCS 명령어 처리가 <code>GCS_MAVLink</code> 클래스 주변에 다소 넓게 퍼져 있으며, 모터 라이브러리나 각 비행 모드 모듈 내부(<code>mode_takeoff.cpp</code> 등)가 상태 전이 로직의 일부를 부담한다. 즉, GCS 명령이 커맨더 중앙을 거치지 않고 직접 특정 모드 컨트롤러로 트리거(Trigger)되는 구조를 가지므로 유연성은 높으나 상태 흐름 추적이 상대적으로 복잡하다.</li>
+</ul>
+<h2>5.  요약 및 실무 적용</h2>
+<p>명령어 큐 처리와 상태 검증 로직은 GCS 단에서 PX4 기체를 제어하려는 개발자에게 매우 중요한 통찰을 준다. 단순히 MAVLink로 <code>MAV_CMD_NAV_TAKEOFF</code> 패킷을 전송하는 프로그램 맹목적으로 구현하면, 내부 커맨더 모듈의 <code>FAIL</code> 응답(NACK)과 마주하게 된다. 성공적인 시스템 통합을 위해서는 반드시 <code>COMMAND_ACK</code> 응답의 에러 코드(<code>MAV_RESULT</code> 분기)를 파싱하여, 앞선 상태 머신 전제 조건 중 어떤 유효성 검증(예: Position Invalid, Not Armed)에 걸려 명령어 대기열에서 실패했는지를 파악하고 로직을 보완해야 한다.</p>
 
             </article>
             <footer>

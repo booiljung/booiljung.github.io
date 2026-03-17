@@ -115,48 +115,39 @@
             </header>
             <article>
                 <h1>42.5.6.1.1. 마모 평준화(Wear Leveling) 알고리즘 결함에 따른 플래시 메모리 배드 블록(Bad Block) 마운트 실패 검증</h1>
-<p>현대의 무인항공기 비행 제어기(Flight Controller, FC)는 주로 NAND 또는 NOR 플래시(Flash) 기반의 비휘발성 메모리(NVM)를 활용하여 시스템 파라미터, 센서 캘리브레이션 프로파일, 임무(Mission) 정보, 그리고 비행 로그를 영구적으로 저장한다. 그러나 플래시 메모리는 쓰기/지우기 사이클(P/E Cycle: Program/Erase Cycle)에 물리적 한계를 지니며, 이러한 수명을 연장하기 위해 마모 평준화(Wear Leveling) 알고리즘이 필수적으로 적용된다. 본 절에서는 마모 평준화 알고리즘의 최적화 한계 및 소스 코드적 결함으로 인해 배드 블록(Bad Block)이 급증할 때 발생하는 메모리 마운트 실패(Mount Failure) 현상과, 이를 검증하고 방어하는 PX4-Autopilot의 아키텍처 시스템을 상세히 다룬다.</p>
-<h2>1.  하드웨어적 수명 한계와 마모 평준화(Wear Leveling)의 필요성</h2>
-<p>플래시 메모리의 기본적 물리 특성은 데이터를 덮어쓰기 위해 반드시 해당 블록을 초기화, 즉 지워야(Erase) 한다는 점이다. 특정 메모리 셀(Cell) 구간에만 파라미터 업데이트를 과도하게 반복하게 되면, 해당 셀의 산화막이 급격히 열화되어 데이터를 일관되게 보존할 수 없는 배드 블록(Bad Block)으로 전락하게 된다. 이를 방지하기 위한 핵심 기술 계층이 마모 평준화(Wear Leveling, WL) 알고리즘이다.</p>
-<ul>
-<li><strong>동적 마모 평준화(Dynamic Wear Leveling):</strong> 들어오는 새로운 데이터를 가용 블록 중 지우기 횟수(Erase Count)가 가장 적은 블록에 동적으로 할당하는 방식이다.</li>
-<li><strong>정적 마모 평준화(Static Wear Leveling):</strong> 운영 체제나 고정 펌웨어 바이너리처럼 변경되지 않는 데이터가 차지하고 있는 블록의 주소까지도 주기적으로 순환 이동시켜, 메모리 칩셋 전체의 지우기 횟수를 균등하게 분포시키는 고도화된 방식이다.</li>
-</ul>
-<p>항공 시스템의 실시간 운영 체계에서 빈번한 비행 데이터 로깅(Logging) 및 특정 파라미터의 주기적 오토 세이브(Auto-save) 발생 시, 마모 평준화 알고리즘이 비효율적으로 설계되었거나 특정 논리적 플래시 영역에 데이터가 집중될 때 셀 손상이 가속화된다.</p>
-<h2>2.  배드 블록 마운트 실패(Mount Failure) 메커니즘과 방어 로직</h2>
-<p>PX4-Autopilot은 부트스트랩(Bootstrap) 단계에서 NuttX RTOS의 가상 파일 시스템(VFS)을 통해 <code>/fs/mtd_params</code> 또는 <code>/fs/microsd</code> 경로에 비휘발성 메모리를 마운트(Mount)한다. 이 과정에서 통합 메모리 기술 장치(Memory Technology Device, MTD) 계층 드라이버는 파일 시스템 테이블을 파싱하며 데이터 무결성을 1차적으로 확인한다.</p>
-<p>만약 WL 알고리즘의 소프트웨어적 결함으로 인해 배드 블록 관리(Bad Block Management, BBM)가 실패하여 파일 노드 메타데이터가 파괴되거나 파일 할당 테이블 자체가 손상되었다면, 마운트 프로세스가 교착 상태(Deadlock)에 빠지거나 시간 초과(Timeout)에 이르게 된다.</p>
-<pre><code class="language-mermaid">sequenceDiagram
-    participant Boot as PX4 Bootloader
-    participant OS as NuttX VFS
-    participant MTD as MTD Driver / LittleFS
-    participant Flash as Flash Memory
-
-    Boot-&gt;&gt;OS: 시스템 전원 인가 및 마운트 명령
-    OS-&gt;&gt;MTD: mtd_mount("/fs/mtd_params")
-    MTD-&gt;&gt;Flash: 배드 블록 테이블 및 노드 트리 판독
-    alt 정상 마모 상태 (WL 성공)
-        Flash--&gt;&gt;MTD: 유효한 파일 데이터 구조 반환
-        MTD--&gt;&gt;OS: 마운트 성공 (OK) 반환
-    else 배드 블록 확산 (WL 결함 임계치 도달)
-        Flash--&gt;&gt;MTD: Read Error / Timeout 인터럽트 발생
-        MTD--&gt;&gt;OS: 마운트 실패 알림 (-EIO)
-        OS--&gt;&gt;Boot: 비상 안전 체제(Failsafe) 강제 진입
-    end
+<h2>1. 개요</h2>
+<p>이 절에서는 무인항공기(UAV)의 데이터 보존 핵심인 플래시 메모리(Flash Memory)와 마이크로 SD 카드의 물리적 수명 한계를 보상하는 마모 평준화(Wear Leveling) 알고리즘의 결함이 비행 안전에 미치는 영향을 분석한다. 비행 제어기(Flight Controller, FC)는 초당 수백 회의 고해상도 센서 데이터와 임무 로그를 비휘발성 저장 매체에 기록하므로 특정 메모리 셀(Cell)이 급격히 마모될 위험이 상존한다. PX4-Autopilot 시스템은 이러한 메모리의 배드 블록(Bad Block) 발생을 부팅 및 마운트(Mount) 단계에서 선제적으로 검증하여, 오염된 파손 저장 공간 위에서 비행을 감행하는 참사를 방지하는 방어 기동 로직을 내장하고 있다. 본 문서는 PX4-Autopilot 1.14 펌웨어와 QGroundControl(QGC) 4.3 관제 환경을 기준으로 역학을 서술한다.</p>
+<h2>2. 마모 평준화(Wear Leveling)와 배드 블록(Bad Block)의 물리적 역학</h2>
+<p>NAND 플래시 칩을 기반으로 제조된 모든 저장 매체는 내부 셀의 지우기/쓰기 주기(Program/Erase Cycle) 제한이라는 극심한 물리적 수명 한계를 갖는다. 무인항공기의 방대한 비행 데이터를 파일 시스템 전면에 단순히 순차적으로 기록할 경우, 파일 시스템의 구조인 파일 할당 테이블(FAT)이나 고정된 디렉터리 주소 공간이 집중적으로 파괴되어 불과 몇 주 만에 저장장치 전체가 수명을 다하는 악재를 겪게 된다.</p>
+<p>이를 방어하기 위해 저장 장치 컨트롤러 펌웨어(비행 제어기의 펌웨어와는 별개의 내장 칩셋)나 임베디드 OS 커널은, 전체 논리 블록 주소(Logical Block Address, LBA)를 물리적 칩의 덜 닳은 셀 빈 곳으로 지속하여 순환 분산 기록하는 <strong>마모 평준화(Wear Leveling)</strong> 알고리즘을 수행한다.</p>
+<p>그러나 방진/방진이 취약한 조립식 기체 환경, 저가형 SD 카드 채택, 극심한 전자기 간섭(EMI), 그리고 배터리 동요에 의한 잦은 비정상 전원 차단(Power-off)이 일어날 시 이 웨어 레벨링 알고리즘 테이블은 자체적인 매핑 결함을 일으킨다. 이에 쓰기 부하를 균등하게 분산하지 못하고 특정 섹터의 게이트 산화막을 파괴해 버리며, 결국 영구적인 **배드 블록(Bad Block)**을 집단 양산하는 결과를 초래한다.</p>
+<h2>3. PX4-Autopilot의 배드 블록 마운트 실패 철통 검증 루틴</h2>
+<p>PX4 시스템은 전원 기동 시점과 비행 전 점검(Pre-flight Check) 단계에서 내부 MTD(Memory Technology Device) 파티션 영역과 외부 SD 카드의 파일 시스템 트리(File System Tree)를 마운트(Mount)하는 VFS(Virtual File System) 초기화 시퀀스를 수행한다. 배드 블록으로 인해 FAT 등 헤더 정보가 찢기거나 논리 마운트가 거절될 경우 아래와 같은 단호한 방어 메커니즘을 전개한다.</p>
+<pre><code class="language-mermaid">flowchart TD
+    A[기체 전원 인가 및 NuttX RTOS 부트스트랩] --&gt; B[NuttX VFS 시스템 입출력 모듈 가동]
+    B --&gt; C{SD 카드 및 플래시 매체 블록 인터페이스 진입 시도}
+    C --&gt; D[컨트롤러의 웨어 레벨링 테이블 기반 논리 블록(LBA) 접근]
+    D -- 하드웨어 정상 응답 --&gt; E[저장 매체 완전 마운트 인가 (주로 /fs/microsd 디렉토리)]
+    D -- 입출력(I/O) 타임아웃 또는 CRC 체크 결함 보고 --&gt; F[배드 블록에 의한 파일 시스템 구조 파괴 감지 확정]
+    F --&gt; G[소프트웨어 레벨 마운트 실패 인터럽트(Mount Failure) 리턴]
+    G --&gt; H[메인루프의 Commander 모듈로 오류 즉각 통지]
+    H --&gt; I[Preflight Fail: SD Card Mount Failed MAVLink 전송 및 시스템 이륙 잠금(Arming Lock)]
 </code></pre>
-<p>최근 PX4 펌웨어 생태계에서는 플래시 수명 극대화와 정전 대응력(Power-loss Resilience) 강화를 위해 구형 FAT32 대신 LittleFS와 같은 플래시 전용 마이크로 파일 시스템을 채택하는 추세이다. LittleFS는 자체적으로 블록 레벨의 소프트웨어 웨어 레벨링 알고리즘을 통합하고 있으나, 기반 하드웨어의 불량 셀 확산 속도가 스프트웨어의 보정 임계치를 초과할 시 OS 커널은 커맨더를 향해 Mount Timeout을 방출하고 비행 불능 상태를 래치 킨다.</p>
-<h2>3.  PX4 및 Ardupilot 소프트웨어 아키텍처 철학 차이</h2>
-<p>NuttX OS의 POSIX 파일 시스템 인터페이스 레이어에 높은 의존성을 가지는 PX4-Autopilot은, 웨어 레벨링 처리를 RTOS 수준의 하위 MTD 계층 또는 전용 파일 시스템(LittleFS 및 ROMFS) 커널 모듈에 투명하게 위임하는 구조적 철학을 따른다. 따라서 개발자 입장에서는 PX4 FC 애플리케이션 수준에서 플래시의 웨어 레벨링 알고리즘 로직에 직접 간섭하기보다는, 최적화된 파일 시스템 드라이버를 포팅하는 형태의 O/S 레벨 접근이 주를 이룬다.</p>
-<p>반면, Ardupilot은 특정 운영체제의 커널 종속성을 탈피하기 위해 독자적인 추상화 체계인 <code>AP_Flash</code> 및 스토리지 매니저(Storage Manager) 구조를 취한다. ChibiOS 환경 아래에서 Ardupilot 메인 루프는 페이지 소거 및 핑퐁(Ping-pong) 할당 방식 등 커스텀된 웨어 레벨링 알고리즘을 소스 코드 단에서 직접 제어한다. 이는 개별 섹터의 소모율 메트릭(Endurance Metric)을 수집하여 MAVLink 주기적 시스템 리포트로 사용자에게 직접 반환할 수 있는 세밀한 제어 능력에서의 강점을 지닌다. 결론적으로 Ardupilot의 접근 방식이 ’직접적인 플래시 메모리 레벨 컨트롤’을 표방한다면, PX4는 ‘운영 체제 위임형 VFS 인터페이스’ 시스템 디자인 철학이라고 평가할 수 있다.</p>
-<h2>4.  GCS(QGroundControl) 연동 및 치명적 관제 대응</h2>
-<p>마모 평준화 실패에 따른 배드 블록 임계치 돌파로 비휘발성 파라미터 스토리지 마운트가 최종 불가 판정을 받을 시, PX4의 커맨더(Commander) 프로세스는 이를 시스템 아키텍처의 심각한 오류(Hard Fault)로 정의하고 기체 내부를 통제한다. 이 상태에서 QGroundControl(GCS)을 향해 즉각 <code>STATUSTEXT</code> (메시지 심각도: <code>MAV_SEVERITY_CRITICAL</code> 또는 <code>MAV_SEVERITY_EMERGENCY</code>) 패킷을 전송하여 관제 통제망에 기체 이상의 직관적 지표를 노출시킨다.</p>
-<p>지상 관제용 QGC 텍스트 알람 UI에는 해당 증상 발현 시 다음과 같은 형태의 메시지가 표출된다.</p>
+<p>이 방어 시퀀스의 최상위 핵심 원칙은 **‘완벽히 무결한 저장 공간이 확보되지 않으면 어떠한 이륙(Takeoff) 명령도 수용하지 않는다’**이다. 마모 평준화 알고리즘 결함 여파로 배드 블록이 FAT 영역 인덱스에 침범한 경우, PX4의 운영체제인 NuttX는 해당 파티션을 읽기 전용(Read-Only) 파티션으로 강등 마운트하거나 아예 오프라인 탈락(Offline) 상태로 처분한다. 이 사태가 Commander 모듈에 인지되는 즉시 기동 상태 머신은 무기한 중단된다. 이는 공중 체공 중 ULog 기록 지연(I/O Blocking) 현상이 메인 쓰레드 병목으로 전이되어 커널 패닉(Kernel Panic) 혹은 자세 제어 루프가 동결되는 끔찍한 연쇄 붕괴를 원천 차단하기 위한 필수 불가결한 공학적 설계이다.</p>
+<h2>4. Ardupilot과 PX4의 메모리 열화 검증 철학 비교</h2>
+<p>마모 평준화 붕괴로 야기되는 하드웨어 논리 결함 사태에 대처하는 관점에서 두 아키텍처 진영은 분명한 차이를 보여준다.</p>
 <ul>
-<li><code>EMERGENCY: /fs/mtd_params Mount Failed - EIO</code></li>
-<li><code>CRITICAL: Hardware parameter storage fault. Arming denied.</code></li>
+<li><strong>PX4-Autopilot</strong>: 절대적 하드웨어 무결성주의(Strict Integrity).<br />
+PX4 중심 생태계에서는 웨어 레벨링 알고리즘 자체 오류든 배드 블록 발생이든 I/O 타임아웃 오류가 하나라도 표출되어 미디어 마운트가 지연/실패할 경우, 상황을 불문하고 이를 절대 타협할 수 없는 결함(Fatal Error)으로 재단한다. 항공 로그(ULog) 기록 없는 비행체 운용은 상용 등급(Commercial Grade)에서 명백한 금기이므로, 운용자나 엔지니어에게 물리적인 저장 매체(SD 카드 등)의 전격 교체를 강력히 강제한다. 이 시스템 잠금을 강제로 풀기 위한 런타임 우회 수단(Bypass Pipeline)이 극도로 엄격하게 통제되어 있다.</li>
+<li><strong>Ardupilot</strong>: 유연한 운영 및 임시 작전 우회 지향(Flexible Fallback).<br />
+Ardupilot 진영에서는 SD 카드 매체의 파일 체계가 무너져 <code>Bad Logging</code> 알람이 시스템에 등재되더라도, 군사적 혹은 산업적 임무의 긴급성을 최우선으로 간주하여 파라미터 트리 내의 <code>ARMING_CHECK</code> 비트 체인 중 Logging 검사 플래그를 비활성화함으로써 시스템 차단을 해제할 수 있다. 즉, 하드웨어 저장 매체의 마운트에 완벽히 실패하여 배드 블록이 난무하는 위험한 국면임에도 불구하고, 파일럿의 절대적 재량과 책임하에 블랙박스 없는 눈먼 비행(Blind Flight)을 묵인하고 감행할 수 있도록 폭넓은 여지를 보장해 둔다.</li>
 </ul>
-<p><strong>현업 관제 조치 방안:</strong><br />
-플래시 메모리의 배드 블록 집적에 의해 파일 시스템 마운트 자체가 시스템 단에서 실패하는 증상은 일시적 소프트웨어 에러나 통신 불량이 아닌 물리적 하드웨어의 불가역적 노화 상태(Degradation)를 의미한다. 사용자 또는 현장 관제사는 QGC를 통한 단순 파라미터 재설정(Factory Reset)과 같은 소프트웨어적 방법론으로 이 징후를 무마시킬 수 없으며, 반드시 비행 제어기(Flight Controller, FC) 기판 자체를 소자 수명이 리셋된 신품으로 물리적 교체해야 한다. กรณี에 따라 Micro SD 카드 인터페이스를 통해 파라미터 저장소 경로를 우회(Bypass)하는 편법적 대응책이 존재할 수 있으나, 신뢰성 확보가 최우선인 무인항공기 공인 안전 기준(Aviation Safety Certification Standard) 측면에서 이는 실전 투입 기체에 엄격히 금지된다.</p>
+<h2>5. QGroundControl을 활용한 마운트 실패 현장 진단 실무</h2>
+<p>지상국 소프트웨어 QGC는 비행 전 파일 시스템의 파괴적 진단을 관제 인력에게 명확히 보고하도록 설계되었다.</p>
+<ul>
+<li><strong>마운트 실패 에러 문자열 해석</strong>: 기동 전 점검 단계에서 QGC UI 상단 배너에 빨간색 경고로 <code>Preflight Fail: SD Card missing or bad</code> 오류나 정체불명의 <code>FC IO Error</code> 텍스트가 간헐적으로 출력된다면, 이는 단순한 포맷 오류가 아니다. 컨트롤러 내부 메모리의 배드 블록 발생 빈도가 웨어 레벨링(Wear Leveling) 알고리즘의 보정 가능 한계(Coverage)를 이미 완전히 넘어섰다는 가장 강력한 물리적 사형 선고이다.</li>
+<li><strong>하드웨어 신뢰성 개선 엔지니어링 가이드</strong>: 상기 현상이 관측되거나 예상될 경우, 저비용의 일반 소비자용(Consumer-grade) 플래시 메모리 카드를 드론 제작에서 즉각 배제하라. 시스템 설계를 변경하여, 내부에 자체 독립 연산 능력을 갖춘 진보된 웨어 레벨링 컨트롤러 컨트롤 칩(Controller Chip)을 탑재한 <strong>‘고내구성(High Endurance) 산업 표준의 TLC/MLC 등급 SD 카드 혹은 eMMC’</strong> 플랫폼으로 전면 교체하라. 하드웨어 삽입 전, 데스크톱 PC 환경에서 H2testw, F3(Fight Flash Fraud)와 동일선에 있는 가혹한 무결성 스트레스 검증 전문 소프트웨어로 배드 블록 딥 스캔(Deep Scan)을 진행하여 신뢰율을 100% 능증한 뒤 비행체에 실장하는 최고 수준의 엔지니어 마인드셋을 함양하라.</li>
+</ul>
 
             </article>
             <footer>

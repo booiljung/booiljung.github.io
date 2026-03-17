@@ -115,6 +115,69 @@
             </header>
             <article>
                 <h1>44.7.2 비동기 무선 통신 환경에서의 명령 타임아웃(Timeout) 판별 및 재전송(Retransmission) 스케줄링 로직</h1>
+<p>무인항공기 시스템(UAS)의 지상 관제 시스템(GCS)과 PX4-Autopilot 간의 데이터 링크(Data Link)는 일반적으로 900MHz/433MHz 대역의 텔레메트리 라디오(Telemetry Radio)나 Wi-Fi와 같은 무선 주파수(RF) 환경을 사용한다. 이러한 비동기 무선 통신 환경은 다중 경로 간섭(Multipath Interference), 스펙트럼 혼잡(Spectrum Congestion), 혹은 이륙 시 기체 이동에 따른 안테나 방사 패턴의 사각지대 진입 등으로 인해 극심한 패킷 손실(Packet Drop)에 노출되기 쉽다.</p>
+<p>특히 이륙(Takeoff)과 같이 기체의 상태를 중대하게 변경하는 제어 명령(<code>COMMAND_LONG</code> 메시지)이 손실되거나, 이에 대한 응답(<code>COMMAND_ACK</code>)이 소실될 경우, GCS 내부 상태 머신과 기체의 실제 비행 상태가 어긋나게 된다. 본 절에서는 이러한 통신 불확실성을 극복하기 위해 GCS(예: QGroundControl) 및 MAVSDK 프레임워크 수준에서 구현되어 있는 명령 타임아웃(Timeout) 판별 알고리즘과 재전송(Retransmission) 스케줄링 로직을 심층적으로 분석한다.</p>
+<h2>1.  무선 통신 환경의 패킷 손실(Packet Loss) 모델 및 타임아웃의 필요성</h2>
+<p>MAVLink 프로토콜의 스트리밍 데이터(Continuous Telemetry)는 UDP나 Serial 기반의 비연결 지향형 통신 위에 구현되므로 기본적으로 손실이 허용(Loss-Tolerant)되는 구조이다. 하지만 이륙, 착륙, 비행 모드 변경 등의 이벤트 트리거(Event Trigger) 명령은 반드시 도달해야 하는 신뢰성(Reliability)을 요구한다. MAVLink 자체는 TCP와 같은 내장 핸드셰이크(Handshake) 복구 레이어(Layer)가 없으므로, 애플리케이션(Application) 계층 즉 GCS의 통신 매니저 모듈에서 직접 재전송 기반의 ARQ(Automatic Repeat reQuest) 제어를 수행해야 한다.</p>
+<p>통신 채널에서 명령 또는 응답 패킷 중 하나만 유실되더라도 GCS는 명령이 수행되었는지 여부를 확정할 수 없다. 따라서 GCS는 명령 송신 직후부터 타이머를 구동하여, 일정 시간 내에 긍정 또는 부정 응답이 수신되지 않을 경우 이를 타임아웃(Timeout)으로 판별(Detect)한다.</p>
+<h2>2.  타임아웃(Timeout) 판별 알고리즘 아키텍처</h2>
+<p>QGroundControl 및 MAVSDK의 C++ 백엔드는 각 명령 트랜잭션마다 독립적인 비동기 타이머 로직을 구동한다.</p>
+<ul>
+<li><strong>T1 타임아웃 기반 응답 대기 시간(Command Timeout Threshold):</strong><br />
+일반적으로 MAVLink 제어 명령 전송 후, ACK를 대기하는 초기 타임아웃 기준 시간은 약 500ms(밀리초) ~ 1000ms(1초)로 설정된다.</li>
+<li><strong>판별 로직:</strong><br />
+타이머가 만료(Expire)되기 전까지 <code>COMMAND_ACK</code>가 매칭된 시퀀스 또는 Command ID로 수신되면 타이머는 즉시 해제(Cancel)된다. 타이머가 만료 이벤트 슬롯(Slot)을 트리거하면, 응답 패킷이 유실되었거나 기체 측의 시스템 로드(Load)로 인해 처리가 늦어진 것으로 간주하여 재전송 큐(Queue)로 작업을 이관한다.</li>
+</ul>
+<h2>3.  재전송(Retransmission) 스케줄링 및 지수 백오프(Exponential Backoff) 로직</h2>
+<p>단순히 한 번의 타임아웃만으로 이륙 명령을 완전히 포기(Abort)하는 것은 매우 비효율적이다. 따라서 GCS 통신 모듈은 지정된 최대 재전송 횟수(Max Retry Count)만큼명령을 반복 전송하는 멱등성(Idempotence) 기반의 스케줄링을 수행한다.</p>
+<ul>
+<li><strong>최대 재시도 횟수(Max Retry Count):</strong><br />
+QGroundControl 아키텍처 기준, 중요 명령의 경우 통상적으로 3회에서 최대 5회까지 재전송을 시행한다.</li>
+<li><strong>재전송 타이머 설정 방침:</strong><br />
+첫 번째 타임아웃은 짧게(예: 500ms) 설정하여 일시적인 전파 간섭을 빠르게 복구하고, 이후 재시도 과정에서는 500ms, 1000ms, 1500ms 등으로 딜레이를 선형 혹은 지수적 백오프(Exponential Backoff) 방식으로 늘리는 스케줄링 로직을 설계하기도 한다. 이는 무선 대역폭 자원 고갈(Bandwidth Starvation) 현상을 방지하기 위함이다.</li>
+<li><strong>포기(Abort) 결정 및 예외 처리:</strong><br />
+최대 재시도 횟수마저 모두 타임아웃될 경우, 시스템은 통신 두절(Data Link Loss)에 준하는 심각한 고립 상태로 판별하고, 펜딩(Pending)된 이륙 트랜잭션을 완전히 폐기한다. 이후 조종자 UI에 “이륙 명령 응답 없음(Timeout)” 이라는 치명적 오류를 시그널링(Signaling)한다.</li>
+</ul>
+<p>특히, 이륙과 같은 상태 변경 명령은 멱등적(Idempotent) 성질을 가진다. 즉, PX4가 이미 이륙 명령을 수용하여 이륙 상태로 진입한 직후 ACK 패킷만 유실된 상태에서 GCS가 이륙 명령을 재전송하더라도, PX4는 “이미 이륙 중이거나 이륙 상태“로 판별하여 시스템에 논리적 충돌 없이 안전하게 무시하거나 ACK를 다시 반환할 수 있도록 설계되어 있다.</p>
+<h2>4.  타임아웃 및 재전송 시퀀스 다이어그램 (Mermaid)</h2>
+<p>다음 다이어그램은 GCS에서 전송된 패킷의 응답이 유실되었을 때, 타이머 기반 타임아웃 감지와 멱등적(Idempotent) 특성을 활용한 MAVLink 명령 재전송 과정을 보여준다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant UI as GCS UI (QML)
+    participant Cpp as GCS Backend (C++)
+    participant RF as 무선 링크 (RF 채널)
+    participant PX4 as PX4 Commander
+
+    UI-&gt;&gt;Cpp: 이륙 명령 실행
+    Cpp-&gt;&gt;RF: MAV_CMD_NAV_TAKEOFF 발송
+    Note over Cpp: 타이머 구동 (예: Timeout = 500ms)
+    RF-&gt;&gt;PX4: 커맨드 수신 완료
+    
+    Note over PX4: 명령 수용 및 이륙 시작
+    PX4-&gt;&gt;RF: COMMAND_ACK 전송
+    Note over RF: 통신 간섭으로 ACK 패킷 유실 (Drop)
+    
+    Note over Cpp: 500ms 만료 (Timeout 발생!)
+    
+    Cpp-&gt;&gt;Cpp: 재시도 카운트 증가 (Retry 1/3)
+    Cpp-&gt;&gt;RF: MAV_CMD_NAV_TAKEOFF 로그 발송 (재전송)
+    Note over Cpp: 타이머 재구동
+    
+    RF-&gt;&gt;PX4: 재전송 커맨드 수신
+    Note over PX4: 멱등성 평가: "이미 이륙 중"
+    PX4-&gt;&gt;RF: COMMAND_ACK (수용 상태 재확인)
+    RF-&gt;&gt;Cpp: 수신 완료
+    
+    Note over Cpp: 타이머 해제 (Cancel Timer)
+    Cpp-&gt;&gt;UI: 이륙 명령 최종 승인 및 UI 갱신 (Progress On)
+</code></pre>
+<h2>5.  아키텍처 요약 및 개발자의 고려사항</h2>
+<p>무선 통신 링크(Data Link)는 본질적으로 비신뢰적(Unreliable)이라는 전제하에 관제 소프트웨어를 설계해야 한다. PX4 생태계의 주요 GCS들은 이벤트 큐(Event Queue), 논블로킹 타이머(Non-blocking Timer), 그리고 재시도 메커니즘을 집약하여 애플리케이션 계층에서의 전송 신뢰성(Transport Reliability)을 보장하고 있다. 독자적인 커스텀 GCS나 MAVSDK를 활용한 자율 에이전트 개발 시에도, 반드시 네트워크 지연이나 응답 손실에 대비한 타임아웃(Timeout) 스케줄링 루프를 명시적으로 구현해야 한다. 이러한 에지 케이스(Edge Case) 방어 로직의 수준이 바로 상용 드론 소프트웨어와 프로토타입 시스템을 가르는 척도가 된다.</p>
+<hr />
+<p><strong>참고문헌(References)</strong></p>
+<ul>
+<li><a href="https://mavlink.io/en/guide/routing.html">MAVLink Developer Guide: Message Routing and Retransmission</a></li>
+<li><a href="https://dev.qgroundcontrol.com/master/en/getting_started/architecture.html">QGroundControl Source Architecture: Vehicle Communications</a></li>
+</ul>
 
             </article>
             <footer>

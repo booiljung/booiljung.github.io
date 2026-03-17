@@ -115,6 +115,73 @@
             </header>
             <article>
                 <h1>44.5.2 지면 접촉 상태(<code>ground_contact</code>, <code>maybe_landed</code>, <code>landed</code>)의 슈미트 트리거(Schmitt Trigger) 기반 이력 현상(Hysteresis) 임계치 모델링</h1>
+<p>무인항공기(UAV)의 이착륙 과정은 로터에 의한 와류(Vortex)와 지면 효과(Ground Effect)로 인해 센서 데이터에 극심한 기계적 진동과 공기역학적 노이즈를 동반한다. 이러한 잡음 속에서 기체가 지면에 완전히 착륙했는지 판별하기 위해, PX4-Autopilot(Firmware v1.14 기준)의 Land Detector 모듈은 단순한 불리언(Boolean) 기반의 1차원 판별 로직을 탈피하고, 3단계 계층적 상태 구조(<code>ground_contact</code>, <code>maybe_landed</code>, <code>landed</code>)와 슈미트 트리거(Schmitt Trigger)를 응용한 시간 기반 이력 현상(Hysteresis) 필터를 도입하였다. 본 장에서는 이 모델의 수학적·논리적 아키텍처를 분석한다.</p>
+<h2>1.  3단계 계층적 지면 접촉 추정 모델 (3-Stage Estimation Model)</h2>
+<p>단일 임계치를 적용할 경우 기체가 살짝 바운싱(Bouncing)될 때마다 상태가 빈번하게 토글(Toggle)되는 채터링(Chattering) 현상이 발생한다. PX4는 상태의 전환을 3단계로 분리하여 각 판별 조건과 요구 유지 시간을 다르게 설정한다.</p>
+<ol>
+<li><strong>지면 접촉 (Ground Contact, <code>ground_contact</code>):</strong></li>
+</ol>
+<ul>
+<li><strong>의미:</strong> 기체의 랜딩 기어가 물리적으로 지면에 터치다운(Touchdown)했음을 1차적으로 감지하는 가장 민감한 상태이다.</li>
+<li><strong>조건:</strong> 수직 속도(<span class="math math-inline">V_z</span>)가 0 근처(<code>LNDMC_Z_VEL_MAX</code> 미만)에 도달하고, Z축 목표 설정 추력(Thrust Setpoint)이 유의미하게 하락했을 때 활성화된다.</li>
+</ul>
+<ol start="2">
+<li><strong>착륙 가능성 (Maybe Landed, <code>maybe_landed</code>):</strong></li>
+</ol>
+<ul>
+<li><strong>의미:</strong> <code>ground_contact</code>가 트리거된 이후, 비행을 재개하려는 조종사의 조작(예: 스로틀 급상승)이 없음을 필터링하는 과도기(Intermediate) 상태이다.</li>
+<li><strong>조건:</strong> <code>ground_contact</code> 상태가 해제되지 않고, 수평 방향의 이동(<span class="math math-inline">V_{xy}</span>)이나 거센 회전(Rotation)이 감지되지 않은 상태가 임정 시간 이상 유지될 때 켜진다.</li>
+</ul>
+<ol start="3">
+<li><strong>최종 착륙 확정 (Landed, <code>landed</code>):</strong></li>
+</ol>
+<ul>
+<li><strong>의미:</strong> 기체가 완전히 지면에 도달하여 모터를 정지(Disarming)해도 안전한 최종 확정 상태이다.</li>
+<li><strong>조건:</strong> <code>maybe_landed</code> 상태가 지정된 히스테리시스 타이머(Hysteresis Timer)를 완전히 소진할 만큼 장해 없이 유지될 때 최종적으로 펌웨어에 공표(Publish)된다.</li>
+</ul>
+<h2>2.  슈미트 트리거(Schmitt Trigger) 및 시간 이력 현상(Hysteresis)의 공학적 모델링</h2>
+<p>전자 공학에서의 슈미트 트리거 소자 메커니즘을 소프트웨어적으로 차용하여, 상승 에지(Rising Edge)와 하강 에지(Falling Edge)의 판별 임계치를 다르게 설계하고(비대칭성), 여기에 타이머(Timer) 기반 지연 검증을 추가한 것이 PX4 히스테리시스 필터이다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; In_Air
+    In_Air --&gt; Ground_Contact : Vz &lt; 임계치 &amp; Thrust 하락 감지
+    Ground_Contact --&gt; In_Air : Vz 급증 또는 Thrust 급상승 (짧은 지연시간)
+    
+    Ground_Contact --&gt; Maybe_Landed : Ground_Contact 연속 유지 (Hysteresis 시간 초과)
+    Maybe_Landed --&gt; In_Air : 조종사 상승 명령 
+    
+    Maybe_Landed --&gt; Landed : Maybe_Landed 상태 무결성 검증 통과
+    Landed --&gt; In_Air : 높은 스로틀 &amp; 이륙 의지 인가 및 가속도 감지
+</code></pre>
+<h3>2.1  Hysteresis 필터의 핵심 변수</h3>
+<p>객체 지향적으로 분리된 <code>Hysteresis</code> 클래스 객체가 이 상태 전이 타이머를 전담한다.</p>
+<ul>
+<li><code>set_hysteresis_time_from(false, true)</code>: <code>In_Air</code> (false) 에서 <code>Landed</code> (true) 로 전이되기까지 요구되는 지연 시간이다. 보통 착륙 확정을 위해 엄격하고 보수적인 시간(예: 수백 밀리초 ~ 1초)이 요구된다.</li>
+<li><code>set_hysteresis_time_from(true, false)</code>: 역으로 지면을 이탈하여 비행(In_Air)으로 판별할 때 요구되는 시간이다. 기체가 튀어오를 경우 신속하게 자세 제어 적분기(Integrator)를 복구해야 하므로 착륙 판별 시간보다 훨씬 짧은 임계치로 세팅된다.</li>
+</ul>
+<h2>3.  관련 PX4 파라미터 및 Ardupilot과의 차이 분석</h2>
+<table><thead><tr><th style="text-align: left">파라미터명 (PX4 v1.14)</th><th style="text-align: left">공학적 의미 및 역할</th></tr></thead><tbody>
+<tr><td style="text-align: left"><code>LNDMC_TRIG_TIME</code></td><td style="text-align: left"><code>maybe_landed</code>에서 최종 <code>landed</code> 상태로 안전하게 확정 짓기 위해 필요한 최소 유지 시간(Hysteresis Threshold Time). 노이즈에 견디기 위해 보통 1초 정도로 구성.</td></tr>
+<tr><td style="text-align: left"><code>MPC_THR_MIN</code></td><td style="text-align: left">이륙 의지가 없는 것으로 판단하는 스로틀의 절대 최소치. <code>ground_contact</code> 진입을 위한 동역학적 조건.</td></tr>
+</tbody></table>
+<h3>3.1  PX4와 Ardupilot 간 아키텍처적 관점의 차이</h3>
+<ul>
+<li><strong>Ardupilot (Firmware v4.4):</strong> Ardupilot은 착륙 점검(Land Check) 기능을 커맨더 스케줄러 계층에 병합하여 10hz나 400hz 등 메인 루틴 안에서 속도 및 추력 조건을 다중 카운터(Counter) 변수(<code>land_detector_count</code>)로 증가시키며 판단(<code>LAND_DETECTOR_TRIGGER_SEC</code> 참조)한다. 플래그 관리에 가깝다.</li>
+<li><strong>PX4-Autopilot:</strong> 상태 간의 결합도를 낮추기 위해 별도 쓰레드의 Land Detector 모듈 내에서 <code>Hysteresis</code>라는 독립 유틸리티 클래스를 주입(Injection)하여 사용한다. 시간 만료(Timeout) 로직을 RTOS 고해상도 타임스탬프(<code>hrt_absolute_time</code>)에 의존하여 구동하므로 타이밍 관리가 수학적으로 대단히 정교하다.</li>
+</ul>
+<h2>4.  GCS(QGroundControl)와의 MAVLink 상호 작용</h2>
+<p>PX4 내부에서 슈미트 트리거 로직을 통과하여 최종적으로 <code>landed = true</code> 상태로 수렴하게 되면, 해당 결과는 uORB 메시지 구조체인 <code>vehicle_land_detected</code> 토픽으로 출판(Publish)된다.</p>
+<ul>
+<li>커맨더 모듈은 이를 즉각 수신하여 특정 모드(예: 자동 복귀 후 착륙 등)에 따라 모터를 완전히 끄는 Auto-Disarm 절차를 시작한다.</li>
+<li>MAVLink의 <code>EXTENDED_SYS_STATE</code> 브로드캐스팅을 통해 관제 측 QGroundControl(QGC, v4.3 기준)에 전달되며, 이를 통해 관제 화면 상의 상태 아이콘이 “In_Air“에서 실시간으로 갱신된다. 만일 센서 튜닝 값이 잘못되어 <code>landed</code> 상태로 넘어가지 않는다면(예컨대 바닥의 호버링 이펙트를 해소하지 못해 Vz가 임계치 내에 못 들어감), 드론은 착륙 중임에도 무기한 모터를 끄지 못하는 불상사로 이어질 수 있으므로 임계치 튜닝은 매우 치명적인 과정이다.</li>
+</ul>
+<h2>5.  결론</h2>
+<p>최신 펌웨어의 PX4-Autopilot은 단순한 값 비교 판별에서 벗어나, 데이터 노이즈와 채터링을 소프트웨어 수준에서 여과하는 전자공학적 슈미트 트리거 메커니즘과 Hysteresis 필터를 적용하였다. <code>ground_contact</code>부터 <code>landed</code>에 이르는 예측-검증-확인의 3단계 파이프라인 덕분에, 불규칙한 비포장 지면이나 선박 위 착륙 시에도 오동작 없이 기체 파손을 방지한다. 이 구조는 ROS2를 기반으로 자율 이착륙 에이전트를 개발하거나 특수 거리 측정 스캐너 센서를 융합할 때, 상위 제어기가 신뢰할 수 있는 단일한 착륙 진실치(Ground Truth)를 제공해준다는 의의를 갖는다.</p>
+<p><strong>참고 문헌 및 출처:</strong></p>
+<ul>
+<li>PX4 Autopilot 개발 가이드 - <a href="https://docs.px4.io/">Land Detector Module Logic</a></li>
+<li><em>A Schmitt Trigger Logic Model for Drone Landing Detection Synthesis</em> (무인기 착륙 감지 알고리즘 응용 이론)</li>
+<li>QGroundControl MAVLink Source - Vehicle state enums (<code>EXTENDED_SYS_STATE</code>)</li>
+</ul>
 
             </article>
             <footer>

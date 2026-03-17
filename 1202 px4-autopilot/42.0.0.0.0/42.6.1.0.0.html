@@ -115,52 +115,39 @@
             </header>
             <article>
                 <h1>42.6.1. 무선 조종(RC) 신호의 수신 품질 및 패킷 손실률(Packet Loss Rate) 평가</h1>
-<p>무인기 시스템에 있어 최후의 보루인 수동 개입(Manual Override)을 보장하기 위해서는, 조종기(Radio Control, RC) 송신기와 기체 수신기(Receiver) 사이의 무선 물리 계층(Physical Layer)이 안정적으로 유지되어야 한다. 비행 전 점검(Pre-flight Check) 단계 및 실시간 운용 중 PX4-Autopilot 아키텍처는 단순한 장치 연결(Connected) 유무를 판단하는 수준을 넘어, 다중 경로 페이딩(Multipath Fading)이나 전자기 간섭(EMI) 환경에서도 정상적인 스틱 제어가 가능한 수준인지를 통계적으로 진단한다. 본 절에서는 수신 신호 강도만을 평가하는 기존의 한계를 보완하기 위해 도입된 패킷 손실률(Packet Loss Rate) 평가 알고리즘과 관련 시스템 소프트웨어 아키텍처를 심층 분석한다.</p>
-<h2>1.  수신 신호 강도 지시자(RSSI)의 한계와 평가 패러다임 전환</h2>
-<p>전통적으로 항공 통신 링크 상태는 수신 신호 강도 지시자(RSSI, Received Signal Strength Indicator)를 기반으로 평가되었다. 이는 수신 안테나 디바이스에 유도되는 RF 신호의 아날로그 전압 레벨을 데시벨 밀리와트(dBm) 단위나 0~100% 비율로 정규화한 값이다. 그러나 아날로그적 척도인 RSSI 수치는 도심 환경, 폐쇄 공간 구역 등과 같이 신호 반사 및 굴절이 심한 공간에서는 간섭 노이즈 파워(Noise Power)까지 합산되어 수신 강도가 높게 표출되는 가짜 강건성(False Robustness) 현상을 초래하는 근본적 허점을 지닌다.</p>
-<p>따라서 현대의 PX4-Autopilot 아키텍처는 RSSI와 더불어, 디지털 프레임 기반의 ‘패킷 손실률(Packet Loss Rate, PLR)’ 또는 ‘링크 품질 지수(Link Quality Indicator, LQI)’ 메트릭을 교차 검증하는 하이브리드(Hybrid) 진단 패러다임을 도입하고 있다.</p>
-<h2>2.  프로토콜별 통신 품질 메트릭 추출 구조 메커니즘</h2>
-<p>PX4 운영체제 하단 시스템은 MCU의 직렬 통신(UART/SPI) 버스 하드웨어 드라이버 모듈을 통해 조종기 수신기의 프레임을 실시간 디코딩한다. 지원하는 수신기 텔레메트리 프로토콜 스펙에 따라 링크 품질 정보를 획득하는 소스 코드 라우팅 체계가 구별되도록 설계되었다.</p>
-<ol>
-<li><strong>SBUS (Futaba/FrSky 계열):</strong> 프로토콜 프레임 헤더 내에 명시적인 통신 품질(RSSI 등) 필드가 할당되지 않은 경우가 많다. 이 경우 프레임 디코더 내부에 위치한 페일세이프 비트(Failsafe Bit) 구조 및 프레임 손실 비트(Frame Lost Bit)를 기반으로 PX4 소프트웨어 단에서 통계적 PLR을 역산으로 판별해낸다. 일부 상용 수신기는 특정 가상 채널(예: Channel 16)에 PWM 출력 형태로 RSSI를 담아 보내는데, 이 경우 PX4 파라미터 인터페이스 <code>RC_RSSI_PWM_CHAN</code>을 통해 소프트웨어적으로 매핑할 수 있다.</li>
-<li><strong>CRSF (TBS Crossfire / ExpressLRS 계열):</strong> 양방향 초저지연 프레임워크인 CRSF 체계는 명시적으로 <code>Link Statistics</code> 패킷 데이터(<code>0x14</code> 프레임 ID)를 네이티브 수준에서 지원한다. 여기에는 SNR(신호 대 잡음비), 활성 안테나 인덱스 상태(Antenna Diversity), 그리고 업링크 통신 품질 지수(Uplink Link Quality)가 정밀하게 포함된다. PX4 커스텀 드라이버는 이를 직접 바이너리 파싱하여 코어 <code>input_rc</code> uORB 토픽 버스에 고해상도로 갱신한다.</li>
-</ol>
-<h2>3.  패킷 손실률(Packet Loss Rate) 도출 알고리즘 및 구현 분석</h2>
-<p>명시적인 자체 LQI 패킷을 송출하지 못하는 범용 저가형 수신기를 모두 고려하여, PX4 디바이스 디코더 드라이버 계층은 일정 시간 윈도우(Time Window) 블록 동안 주기적으로 정상 디코딩된 프레임 빈도 수와 타이머 기반 예상 프레임 수를 비교하여 자체적인 패킷 손실률 모델을 도출해낸다. 다음은 관련 데이터 처리 로직의 아키텍처 실행 흐름이다.</p>
-<pre><code class="language-cpp">// src/drivers/rc_input/RCInput.cpp 의 로직 의사 코드(Pseudo-code) 구조 분석
-void RCInput::calculate_rc_link_quality() {
-    const hrt_abstime now = hrt_absolute_time();
-    
-    // 타임스탬프 분석을 통한 프레임 주기 시간 간격(Delta t) 계산
-    float dt = (now - _last_rc_timestamp) / 1e6f; 
-    
-    // 예상 프레임 통신 빈도 대비 실제 통신 디코딩 완료 프레임 카운트 산정
-    uint32_t expected_frames = expected_hz * time_window;
-    uint32_t lost_frames = expected_frames - _valid_frames_count;
-
-    // 순간적인 지터(Jitter) 혹은 드롭으로 인한 수치 급격한 뜀(Spike)을 방지하기 위한 
-    // 저역 통과 필터(Low-pass Filter) 연산 적용
-    float instantaneous_loss = (float)lost_frames / expected_frames;
-    _rc_packet_loss_rate = (0.9f * _rc_packet_loss_rate) + (0.1f * instantaneous_loss);
-    
-    // 집계 윈도우 카운터 초기화
-    _valid_frames_count = 0;
-}
+<h2>1. 개요</h2>
+<p>이 절에서는 무인항공기(UAV)와 외부 조종기(Remote Controller) 간에 형성되는 일차적인 물리적 통신망인 무선 조종(RC) 링크의 건전성을 정밀하게 평가하는 수신 품질(Signal Quality) 계측 및 패킷 손실률(Packet Loss Rate, PLR) 검증 아키텍처를 분석한다. 조종자의 개입이 필수적인 수동 비행(Manual/Stabilized/Acro)이나 위치 제어(Position Control) 모드에서 RC 링크의 미세한 끊김이나 패킷 지연(Latency)은 즉각적인 제어 이탈 및 충돌로 이어지므로, 비행 제어기(Flight Controller, FC)는 수신되는 프레임(Frame)의 연속성을 통계학적으로 철저히 모니터링해야 한다. 본 서술은 PX4-Autopilot 1.14 펌웨어와 최신 QGroundControl(QGC) 관제 프로토콜 구조를 반영하여 공학적 측면에서 기술한다.</p>
+<h2>2. RC 수신 품질(Signal Quality)과 RSSI의 이해</h2>
+<p>현대적인 무인기 수신기(Receiver) 프로토콜(예: SBUS, CRSF/Crossfire, FPort 등)은 단순히 조종 스틱의 직렬 데이터값(PWM 채널 펄스)만 이관하는 것이 아니라, 수신 안테나에서 계측된 무선 전파의 물리적 강도와 패킷의 온전함에 대한 메타데이터(Metadata)를 비행 제어기(Pixhawk 등) 코어 모듈로 함께 전송한다.</p>
+<p>이 품질 평가의 가장 기본이 되는 기준 지표가 **수신 신호 강도 지표(RSSI, Received Signal Strength Indicator)**이다. RSSI는 대기 중의 전파 에너지를 백분율(0%~100%) 또는 음의 데시벨(-dBm) 스케일로 환산하여 표현하는데, 이 수치가 시스템이 규정한 특정 임계점(Threshold) 아래로 곤두박질치면 물리적인 연결이 살아있더라도 시스템은 비행을 극도로 억제하거나 비상 대응 체제(Failsafe)로 이관한다.</p>
+<h3>2.1 패킷 손실률(Packet Loss Rate, PLR) 평가 알고리즘</h3>
+<p>순수한 아날로그 전파 강도(RSSI) 수치 이면에는 노이즈가 혼입될 수 있으므로, 그것만으로는 ’데이터가 제시간에 정확히 들어오는지’를 완벽히 담보할 수 없다. 이에 PX4-Autopilot의 내부 수신기 드라이버는 개별 프로토콜 스트림의 시간 연속성을 검증하여 ’패킷 손실률(PLR)’을 교차 연산한다.</p>
+<pre><code class="language-mermaid">flowchart TD
+    A[RC 수신기 라디오 아키텍처 (SBUS / CRSF 등)] --&gt; B[비동기 시리얼(Serial) 버스 스트림을 통한 프레임 수신]
+    B --&gt; C{드라이버 파서(UART Parser) 내부 알고리즘 루프}
+    C --&gt; D[유효 채널 데이터 분석 및 수신기 헤더 RSSI 디코딩]
+    C --&gt; E[타임스탬프(Timestamp) 간극 및 시퀀스 넘버 대조 유효성 평가]
+    E -- 누락 프레임 발생 (Dropout) --&gt; F[패킷 손실률(PLR) 카운터 누적 연산]
+    D &amp; F --&gt; G{최종 링크 품질 상태 판별 (0~100% RC Quality % 환산)}
+    G --&gt; H[rc_input 및 input_rc 토픽으로 내부 uORB 네트워크망 퍼블리시]
+    H --&gt; I[Commander: 임계치 초과 시 RC Loss 페일세이프 트리거 (RTL/Hold/Land 등 발동)]
 </code></pre>
-<p>제시된 통계적 알고리즘을 통해 계산된 <code>_rc_packet_loss_rate</code> (수학적 0.0 ~ 1.0 비율 범위) 구조체는 RSSI 파생 정보와 병합 파싱되어 <code>input_rc</code> 메시지 페이로드에 담기며, 최상위 Commander의 시스템 상태 검사 파이프라인 연산기 요소로 넘겨진다.</p>
-<h2>4.  Ardupilot 대비 통신 아키텍처 및 철학적 비중 차이</h2>
-<p>다중 채널 생존성 측면에서 PX4-Autopilot은 이중화 RC 다이버시티(Receiver Diversity, 수신기 2개 하드웨어 동시 연결) 설정 시, 두 수신기 포트 버스에서 병렬적으로 올라오는 스트림 중 패킷 손실률(PLR) 및 타임스탬프 최신성을 비교 연산하여 가장 양호한 라우팅 데이터 채널을 실시간 우선 스위칭하는 동적 지능(Dynamic Switching) 메커니즘을 내장하고 있다. 이는 통신 자원의 유연성과 플랫폼 범용성을 중시하는 PX4의 핵심 특성이다.</p>
-<p>반면, Ardupilot 체계 시스템은 무인기 제어의 전통적으로 물리 라인 기반의 다중 수신기 인터페이스 입력에 대한 강력한 하드웨어 페일오버(Failover) 스위치 철학을 고수하며, RC 직렬 수신 프로세스(<code>AP_RCProtocol</code> 모듈 객체) 단에서 더욱 보수적인 디바운싱(Debouncing) 타임을 할당한다. 산출된 수신 품질 데이터를 활용하는 정책 결정을 내릴 때, PX4는 <code>commander</code> 단의 고수준 상태 추론기(High-Level Estimator)에서 이를 통계적으로 부드럽게 필터링하여 판단 모체의 재료로 쓰는 반면, Ardupilot은 디바이스 드라이버 최하단 계층이 즉각적으로 Muxing을 통제 스위칭하고 상위로 제어 우선 권한의 결과를 통보하여 이양하는 직접적인 하드웨어 인터럽트 성격의 비중이 상대적으로 훨씬 높고 직렬적이다.</p>
-<h2>5.  지상 관제망(QGroundControl) 모니터링 체계 및 Failsafe 연동 동작</h2>
-<p>비행 전 상태 인지 단계에서 도출된 패킷 손실률 수치가 통상 허용 임계 밴드인 일정 수준(일반적으로 커스텀 모델별 15%~30% 범위로 상이함)을 초과할 경우, 시스템은 조종사 조타 입력 지연의 불확실성 위험 인가 진입을 방지하기 위해 Pre-flight 기본 요건 불충족 판단 및 이륙(Arming)을 원천적으로 거부한다.</p>
-<p>GCS(QGroundControl) 애플리케이션의 메인 HUD 툴바 상단 패널에는 RC 수신 상태 표시 아이콘이 실시간으로 전시되는데, 이는 단순 RSSI가 아닌 패킷 손실률과 안테나 정보가 정규식 기반으로 결합된 신뢰도 매트릭스를 시각화하여 운영자에게 전달한다.</p>
-<p>자율 비행 혹은 수동 계기 비행 운용 중 해당 손실률이 급주행하여 유효 프레임이 파라미터 <code>COM_RC_LOSS_T</code> (시스템 기본값 0.5초 대기) 윈도우 타임 동안 완전히 도달하지 않는다면, FC는 시스템 제어기를 즉각 <code>RC Loss Failure</code> 위력 상태 공간으로 천이시킨다. 이후 시스템 제어권은 사전에 할당된 <code>NAV_RCL_ACT</code> 파라미터 정책 프로토콜에 의거하여 다음과 같이 결단 수행 체인에 진입한다.</p>
+<p>수신 드라이버는 매 예상 도착 주기(예: SBUS의 14ms 프레임 레이트)마다 온전한 프레임(Frame) 구조가 도달하지 않거나 CRC 체크섬(Checksum) 무결성이 깨진 더미 프레임을 선별하여 탈락(<code>Drop</code>) 처리한다. 이 누락 빈도의 통계가 모여 패킷 손실률을 형성하며, PX4는 내부적으로 외부 수신기가 던져준 생태를 0~100점 만점의 <code>RC Quality</code> 지수로 정규화(Normalization)하여 Commander 모듈의 페일세이프 검열 단상에 보고한다.</p>
+<h2>3. Ardupilot과 PX4-Autopilot의 RC 품질 관리 철학 비교</h2>
+<p>전파 환경 교란으로 인한 RC 신호의 퇴조(Degradation)를 인식하고 비상 처리하는 방어 기동 기조에 있어서, 두 시스템 진영은 상당한 편차를 보인다.</p>
 <ul>
-<li><strong>RTL (Return to Launch):</strong> 기체가 비행을 자체 중단 후 홈 회귀, 고도 하강 및 자동 착륙 단계 진입. (대부분의 실외 공간 비행 시스템 기본 권장값 설정)</li>
-<li><strong>Hold / Loiter:</strong> 제자리 공중 체공(Hovering)하며 일시적인 물리적 전파 음영 지대 환경의 이탈을 대기.</li>
-<li><strong>Terminate/Land:</strong> 통제 불능 위험 구역 진입 조짐으로 판단 시 대지 즉각 자동 착륙 단계를 밟거나 극단적일 경우 모터 구동 모듈 정지 명령 투사.</li>
+<li><strong>PX4-Autopilot</strong>: 수학적 지수화 창구 일원화 및 엄격한 페일세이프.<br />
+PX4 생태계는 다양한 서드파티 텔레메트리/RC 프로토콜(CRSF, SBUS, DSM 등)의 복잡다단한 통신 스펙을 내부적으로 정규화하여 <code>rc_input.rssi</code>라는 0~100 구간의 통일된 uORB 인트라넷 표준 수치로 변환 수용한다. 이 품질 데이터 수치가 설정된 임계치 이하로 하강하여 RC Loss 상태 머신(State Machine) 비상에 돌입하면, 사용자가 조종 스틱을 억지로 흔드는 RC 개입만으로 락을 해제하거나 비행 모드를 바꾸는 것이 엄격히 제어된다. 동시에 파라미터 <code>COM_RC_IN_MODE</code> 설정에 따라 즉각 오프보드(Offboard)나 자율 복귀(RTL)로 조향 제어 권한이 강제로 시스템에 귀속된다.</li>
+<li><strong>Ardupilot</strong>: 유연한 매핑 및 PWM 아날로그 채널 의존 관행 존중.<br />
+Ardupilot 진영은 프로토콜 자체의 정규화를 지원하는 한편, 전통적인 관행인 수신기 여분 채널(예: Channel 8)을 통해 아날로그 RSSI PWM 펄스파 신호를 드론 측 핀으로 직접 집어넣고 이를 판독하는 하드웨어적 백도어 구조도 매우 폭넓게 계승 보유하고 있다. 또한 짧은 연결 끊김 현상(Glitch) 시, 조종자가 시야에서 조종기 데드존(Deadzone) 바깥으로 스틱을 강하게 흔들어 쳐서 기계적으로 로직 통제권을 곧바로 되찾아오게끔 용인하는 매우 유연한(Flexible) 조종자 수동 개입주의 철학을 견지한다.</li>
 </ul>
-<p>학술 시스템 설계 관점에서, 이러한 패킷 손실률 기반 수신 채널 품질(Channel Quality) 진단 평가는 무전통신 시절의 전통적인 지속파(Continuous Wave) 아날로그 수신 강도 측정 단일 기법의 한계를 일탈하여, 고속 디지털 비트 에러 정정 및 타이밍 동기화 체결 확률을 종합 반영하므로 차세대 자율 비행 안전 공간 추정의 수학적 시스템 신뢰도를 획기적으로 향상시키는 공학적 기여를 지닌다.</p>
+<h2>4. QGroundControl 관제 환경에서의 디버깅 및 엔지니어링 가이드</h2>
+<p>기체의 물리적 전파 수신율 한계치 돌파 및 패킷 손실의 빙산 전조 증상은 지상 통제 소프트웨어인 QGC 인터페이스상에 다음과 같이 명확히 현시된다.</p>
+<ul>
+<li><strong>신호 인디케이터 콘솔의 사전 해석</strong>: QGC 모니터의 상단 상태 헤더 표시줄의 조종기 안테나 아이콘(RC Icon) 게이지는, PX4 소프트웨어가 송출하는 MAVLink의 <code>RC_CHANNELS</code> 메시지 배열에 캡슐화된 0~254 단위의 RSSI 인디케이터 값을 백분율로 환산하여 그대로 체현한다. 만약 이 수치가 이륙 시도를 앞둔 지상 관제 단계에서 지근거리임에도 70% 언저리를 밑돌거나 막대 색상이 수시로 붉은색(Red) 경고로 요동친다면, 조종자에게 조종기(Remote Controller) 안테나 파손이나 혼선이 깃든 것이므로 <strong>절대 이륙(Arming) 시도를 인가해서는 안 된다.</strong></li>
+<li><strong>설치 환경(Placement) 엔지니어링 개선 책무</strong>: 패킷 손실률(PLR)이 지속 상승하는 구조적 주요 원인은 2.4GHz / 900MHz 안테나의 실장(Placement) 결함이다. 조립된 동체 내부의 무선 통신 모뎀, 고출력 GPS 전파 안테나, 그리고 특히 수십 암페어의 고전류가 굽이치는 배터리 전원 케이블(Power Line)과 RC 수신 안테나가 밀착되어 묶여 있을 경우, 유도 기전력 블렌딩(Blending)과 스파이크 플럭스(Spike)가 발생하여 직렬 패킷을 거세게 분쇄해 버린다. 수신 안테나를 즉시 카본 동체 외부로 분리 인출하여 수직/수평 90도 교차 다이버시티(Diversity) 형태로 이격시키고 구리판을 통한 전파 쉴딩(Shielding)을 필수 보장하라.</li>
+<li><strong>파라미터 안전망 설계 가이드 (자율 임무 특화)</strong>: 조종자의 수동 개입이 아예 불필요한 100% 완전 자율 GCS 임무(Auto Mission)의 경우, 되려 불안정하고 약한 RC 신호의 간헐적 끊김 인터럽트가 기체에 불필요한 Failsafe 귀환(RTL) 트리거를 발생시켜 값비싼 임무 궤적을 망치는 주범으로 돌변하기도 한다. 이 산업 특수 환경하에서는 <code>NAV_RCL_ACT</code> 파라미터(RC Loss Action)를 과감히 ’Disable’로 설정하거나, 혹은 <code>COM_RC_IN_MODE</code> 변수를 자율 비행 지향형 수신 무시 형태로 시스템 아키텍처를 세팅하여 순수 MAVLink 데이터 링크(Data Link) 관제만으로 비행 통제력을 유일 이관하는 듀얼 네트워크 분리 전략을 채택할 것을 권고한다.</li>
+</ul>
 
             </article>
             <footer>

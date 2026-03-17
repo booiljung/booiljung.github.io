@@ -115,6 +115,66 @@
             </header>
             <article>
                 <h1>44.4.3 이륙 궤적 생성기(Trajectory Generator) 및 위치 제어기(Position Controller)의 추종 알고리즘</h1>
+<h2>1.  개요 및 궤적 생성의 필요성</h2>
+<p>드론의 자동 이륙 단계에서 단순히 목표 고도를 지령하는 계단 입력(Step Input)을 제어기에 인가하게 되면 모터의 급격한 회전수 변화, 과도한 추력 발생, 그리고 기체의 물리적 진동(Resonance)을 유발하게 된다. 이를 방지하기 위해 PX4-Autopilot(버전 1.14 기준)은 이륙 지령이 내려지면 플라이트 태스크 내의 **궤적 생성기(Trajectory Generator)**를 통해 시간에 따라 부드럽게 변하는 위치, 속도, 가속도 참조 프로파일(Reference Profile)을 생성한다. 위치 제어기(Position Controller)는 이 생성된 참조 궤적을 실시간으로 추종(Tracking)함으로써 기체를 목표 고도로 안정적으로 상승시킨다. 본 절에서는 이륙 시 궤적 생성기와 위치 제어기 사이의 상호 작용 및 추종 알고리즘의 비선형(Nonlinear) 및 기하학적 제어(Geometric Control) 모델을 상세히 분석한다.</p>
+<h2>2.  이륙 참조 궤적(Reference Trajectory) 모델링</h2>
+<p>이륙 궤적 생성기는 현재 상태(위치, 속도, 가속도)와 목표 이륙 고도(<span class="math math-inline">h_{target}</span>)를 입력으로 받아, 기체의 동역학적 한계계수(Kinematic Constraints)를 만족하는 경로를 계산한다. 이 과정에서 파라미터로 지정된 최대 상승 속도(<code>MPC_TKO_SPEED</code>), 최대 가속도(<code>MPC_ACC_UP_MAX</code>), 그리고 저크(Jerk) 한계값(<code>MPC_JERK_MAX</code>)이 동역학 구속 조건(Kinematic Constraints)으로 작용한다.</p>
+<p>생성기의 출력은 매 샘플링 시간(<span class="math math-inline">\Delta t</span>)마다 갱신되는 3차원 참조 벡터 세트로 구성된다.</p>
+<ul>
+<li>참조 위치 (Reference Position): <span class="math math-inline">\mathbf{p}_{ref}(t)</span></li>
+<li>참조 속도 (Reference Velocity): <span class="math math-inline">\mathbf{v}_{ref}(t)</span></li>
+<li>참조 가속도 (Reference Acceleration): <span class="math math-inline">\mathbf{a}_{ref}(t)</span></li>
+</ul>
+<p>이러한 삼중 파생 변수(Triple Derivative Variables)를 동시에 제공하는 것은 하위 위치 제어기가 단순한 오차 보정(Feedback)뿐만 아니라 예측 보정(Feedforward)을 수행할 수 있도록 하여, 지연 시간(Lag)이 없는 정밀한 추종을 가능하게 한다.</p>
+<h2>3.  다중 루프 제어(Cascaded Control) 기반 위치 제어 알고리즘</h2>
+<p>PX4의 멀티로터 제어기(<code>mc_pos_control</code>)는 위치 루프와 속도 루프가 직렬로 연결된 **다중 루프 구조(Cascaded Structure)**를 갖는다. 이륙 궤적 생성기로부터 수신된 참조 값들을 추종하는 수학적 법칙은 다음과 같다.</p>
+<h3>3.1  위치 제어 루프 (Position Control Loop)</h3>
+<p>위치 제어기는 참조 위치 <span class="math math-inline">\mathbf{p}_{ref}</span>와 EKF2에서 추정된 현재 기체 위치 <span class="math math-inline">\mathbf{p}</span>의 오차 <span class="math math-inline">\mathbf{e}_p</span>를 계산하여, 필요 목표 속도 <span class="math math-inline">\mathbf{v}_{target}</span>을 산출한다. 위치 오차 보상에는 비례 제어(Proportional Control)가 사용되며, 궤적 지연 없는 추종을 위해 참조 속도 피드포워드가 결합된다.</p>
+<p><span class="math math-display"> \mathbf{e}_p = \mathbf{p}_{ref} - \mathbf{p} </span><br />
+<span class="math math-display"> \mathbf{v}_{target} = \mathbf{K}_p \mathbf{e}_p + \mathbf{v}_{ref} </span></p>
+<p>여기서 <span class="math math-inline">\mathbf{K}_p</span>는 파라미터(<code>MPC_XY_P</code>, <code>MPC_Z_P</code>)로 설정되는 3×3 위치 비례 이득(Position Proportional Gain) 대각 행렬(Diagonal Matrix)이다. 속도 피드포워드 <span class="math math-inline">\mathbf{v}_{ref}</span>가 더해져 위치 오차가 없더라도 참조 목표 속도를 즉각적으로 추종할 수 있다.</p>
+<h3>3.2  속도 제어 루프 (Velocity Control Loop)</h3>
+<p>산출된 <span class="math math-inline">\mathbf{v}_{target}</span>과 기체의 현재 추정 속도 <span class="math math-inline">\mathbf{v}</span>의 오차 <span class="math math-inline">\mathbf{e}_v</span>를 기반으로, 속도 제어기는 요구 추력 가속도 <span class="math math-inline">\mathbf{a}_{target}</span>을 계산한다. 속도 제어 루프에서는 환경의 항력(Drag)과 외란을 억제하기 위해 완전한 PID 제어와 참조 가속도 피드포워드가 사용된다.</p>
+<p><span class="math math-display"> \mathbf{e}_v = \mathbf{v}_{target} - \mathbf{v} </span><br />
+<span class="math math-display"> \mathbf{a}_{target} = \mathbf{K}_{v,p} \mathbf{e}_v + \mathbf{K}_{v,i} \int \mathbf{e}_v dt + \mathbf{K}_{v,d} \frac{d\mathbf{e}_v}{dt} + \mathbf{a}_{ref} - \mathbf{g} </span></p>
+<p>여기서 <span class="math math-inline">\mathbf{K}_{v,p}, \mathbf{K}_{v,i}, \mathbf{K}_{v,d}</span>는 각각 속도 제어기의 비례, 적분, 미분 이득이며, <span class="math math-inline">\mathbf{a}_{ref}</span>는 궤적 생성기의 가속도 피드포워드, <span class="math math-inline">-\mathbf{g}</span>는 중력 보상(Gravity Compensation) 항이다. 이륙 상승 과정에서 중력에 반대되는 일정한 추력이 요구되므로, 중력 보상 항은 제어기의 적분기 와인드업(Integrator Windup) 현상을 방지하고 이륙 지연을 대폭 단축시켜 준다.</p>
+<h3>3.3  참조 가속도에서 추력(Thrust) 및 자세(Attitude) 변환</h3>
+<p>계산된 <span class="math math-inline">\mathbf{a}_{target}</span> 벡터는 드론의 질량(Mass) 및 공기역학적 특성을 반영하여 정규화된 추력(Normalized Thrust) 지령 벡터 지령 및 기체의 목표 자세 세트포인트(Roll, Pitch, Yaw Setpoint)로 역기구학 모델을 거쳐 하위 자세 제어기(<code>mc_att_control</code>)로 전달된다.</p>
+<h2>4.  추종 제어 신호 흐름도</h2>
+<p>다음 다이어그램은 궤적 생성기에서 위치 제어기로 이어지는 추종 알고리즘 내부의 캐스케이드(Cascade) 신호 흐름을 명확하게 보여준다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Trajectory Generator
+        TG((Trajectory\nState Unit))
+        TG --&gt;|p_ref| SumP((+))
+        TG --&gt;|v_ref| FF_V[Feedforward\nVelocity]
+        TG --&gt;|a_ref| FF_A[Feedforward\nAcceleration]
+    end
+
+    subgraph EKF2 Estimator
+        EST_P[Estimated p_z]
+        EST_V[Estimated v_z]
+    end
+
+    subgraph Position Control Loop
+        EST_P --&gt;|-| SumP
+        SumP --&gt;|e_p| Kp[K_p Gain Matrix]
+        Kp --&gt; SumVTarget((+))
+        FF_V --&gt; SumVTarget
+    end
+
+    subgraph Velocity Control Loop
+        SumVTarget --&gt;|v_target| SumV((+))
+        EST_V --&gt;|-| SumV
+        SumV --&gt;|e_v| PID_V[PID Controller]
+        PID_V --&gt; SumATarget((+))
+        FF_A --&gt; SumATarget
+        GRAV[Gravity Comp] --&gt; SumATarget
+        SumATarget --&gt;|a_target| ATT_GEN[Attitude &amp; Thrust\nSetpoint Generator]
+    end
+</code></pre>
+<h2>5.  ArduPilot과의 비교 분석 및 학술적 시사점</h2>
+<p>PX4 통일된 위치 제어 다중 루프 구조는 제어 공학의 최신 지향점인 “Geometric Tracking Control of a Quadrotor UAV on SE(3)” 형태의 철학을 충실히 반영하고 있다. 특히 가속도 피드포워드(<span class="math math-inline">\mathbf{a}_{ref}</span>)를 속도 제어 루프에 명시적으로 주입함으로써 응답성(Responsiveness)을 극대화한다.</p>
+<p>반면, ArduPilot의 자동 제어 비행(Position/Altitude Hold 기반) 아키텍처에서는 전통적으로 P-PID 제어망을 주로 사용하며 곡률형(Kinematic smoothing)을 적용하지만, PX4만큼 속도, 가속도 측면의 선형 피드포워드 체인이 강력하고 명시적으로 분리되어 있지 않아, 고성능 레이싱 쿼드콥터나 좁은 공간에서의 고기동 자율 비행(Agile Autonomous Flight) 이륙 시, 초기 추종 오버슈트(Overshoot) 및 응답 지연 특성에서 소폭 차이가 발생한다. PX4의 이러한 포괄적 궤적 추종 알고리즘 설계는 외부의 강한 돌풍(Disturbance) 유입 시에도 추종 성능 트레이드오프(Trade-off)를 최소화하는 견고한(Robust) 제어 아키텍처를 제공한다.</p>
 
             </article>
             <footer>

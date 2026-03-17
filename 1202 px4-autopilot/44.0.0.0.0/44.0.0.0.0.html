@@ -115,6 +115,49 @@
             </header>
             <article>
                 <h1>Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</h1>
+<h2>1.  개요</h2>
+<p>무인항공기 시스템(Unmanned Aerial System, UAS)의 자율 비행에 있어서 이륙(Takeoff) 단계는 지면과의 정적 접촉 상태에서 동적 비행 상태로 전환되는 가장 결정적이고 위험도가 높은 구간이다. PX4-Autopilot(펌웨어 버전 1.14 기준)은 이러한 이륙 단계를 안전하고 신뢰성 있게 수행하기 위해 정교한 상태 머신(State Machine)과 제어 로직을 구현하고 있다. 본 장에서는 PX4-Autopilot 기체의 이륙 명령 제어 아키텍처, 이륙 목표 고도(Takeoff Altitude)의 설정 및 추종 메커니즘, 그리고 기체가 성공적으로 이륙을 마쳤음을 판별하는 이륙 완료 상태(Takeoff Completion State)의 기준과 검증 알고리즘에 대해 상세히 분석한다.</p>
+<h2>2.  PX4-Autopilot의 이륙 명령 제어 아키텍처</h2>
+<p>PX4-Autopilot 내에서의 이륙은 사용자의 비행 모드 설정 및 지상 관제 시스템(Ground Control Station, GCS)으로부터 전달되는 MAVLink 명령에 의해 개시된다. 커맨더(Commander) 모듈은 현재 기체의 무장(Arming) 상태, 센서 상태, 위치 측정 유효성을 종합적으로 평가하여 이륙 허가를 결정한다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant GCS as QGroundControl (v4.3)
+    participant MAVLink as MAVLink Receiver
+    participant Commander as Commander Module
+    participant Navigator as Navigator (Takeoff)
+    participant Controller as Position/Attitude Controller
+    participant Estimator as EKF2 Estimator
+
+    GCS-&gt;&gt;MAVLink: MAV_CMD_NAV_TAKEOFF (목표 고도 포함)
+    MAVLink-&gt;&gt;Commander: 이륙 명령 디코딩
+    Commander-&gt;&gt;Commander: Pre-flight Check 및 Arming 상태 확인
+    Commander-&gt;&gt;Navigator: Takeoff 모드 활성화 요구
+    Navigator-&gt;&gt;Controller: 가상의 목표 위치(Setpoints) 지속 전달
+    Controller-&gt;&gt;Controller: 추력(Thrust) 및 자세(Attitude) 제어
+    Estimator-&gt;&gt;Navigator: 실시간 고도(Altitude) 피드백
+    Navigator-&gt;&gt;Commander: 이륙 완료(Takeoff Reached) 상태 통보
+</code></pre>
+<p>이륙 명령은 MAVLink 프로토콜의 <code>MAV_CMD_NAV_TAKEOFF</code> 메시지 형태로 수신된다. 이 메시지에는 이륙 목표 위치의 위경도 좌표 및 필수적인 목표 고도 파라미터가 포함된다. PX4 내의 Navigator 모듈은 이 이륙 명령을 수신하면 <code>Takeoff</code> 항법 상태(Navigation State)로 전환하며, Z축 위치 제어 루프(Position Control Loop)에 점진적인 고도 상승 목표치(Setpoint)를 인가한다.</p>
+<h2>3.  이륙 고도 설정(Takeoff Altitude Setting) 메커니즘</h2>
+<p>이륙 고도는 PX4-Autopilot의 파라미터 시스템에 의해 정의되며, 기본적으로 <code>MIS_TAKEOFF_ALT</code> 파라미터(기본값: 2.5m)를 참조한다. 사용자가 QGroundControl을 통해 명시적으로 고도를 지정하지 않거나, 이륙 명령에서 고도 필드가 생략될 경우 해당 파라미터 값이 목표 고도로 체결된다.</p>
+<ul>
+<li><strong>절대 고도(AMSL) 대 상대 고도(AGL)</strong>: 이륙 명령 처리 시, 입력된 고도는 기준 프레임(Reference Frame)에 따라 다르게 해석된다. 홈 위치(Home Position)가 유효하게 설정되어 있다면, 일반적으로 홈 위치 대비 상향 고도(Above Ground Level, AGL)로 변환되어 비행 제어기(Flight Controller)에 전달된다.</li>
+<li><strong>상승 속도 제어</strong>: 이륙 시 목표 고도에 도달하기 위한 상승 속도(Vertical Climb Rate)는 <code>MPC_TKO_SPEED</code> 파라미터에 의해 제한된다. 갑작스러운 추력 증가로 인한 자세 불안정을 막기 위해, 위치 제어기(Position Controller)는 3차 미분 구속 조건(Jerk Constraint) 또는 스무딩(Smoothing) 프로파일을 적용하여 부드러운 상승 경로를 생성한다.</li>
+</ul>
+<h2>4.  이륙 완료(Takeoff Completion) 상태 판별 로직</h2>
+<p>기체가 목표 고도에 도달했음을 선언하고 다음 임무(Mission) 단계나 호버링(Hovering) 상태로 부드럽게 전환하기 위해서는 이륙 완료 상태 판별이 정확히 이루어져야 한다. PX4-Autopilot은 다음과 같은 복합 조건(Multi-condition)을 통해 이를 검증한다.</p>
+<ol>
+<li><strong>고도 도달 오차(Altitude Error Tolerance)</strong>: 실시간 확장 칼만 필터(EKF2)로부터 추정된 기체의 수직 위치가 목표 고도의 특정 오차 범위 내(예: <code>NAV_ACC_RAD</code> 설정값에 연동된 수직 오차 마진)로 진입해야 한다.</li>
+<li><strong>수직 속도 수렴(Vertical Velocity Convergence)</strong>: 기체가 고도 허용 오차 내에 진입하더라도 상승 관성이 남아 있다면 이륙 완료로 취급하지 않는다. Z축 속도 추정값이 0에 가깝게 수렴(영구속 상태 접근)해야 한다.</li>
+<li><strong>지속 시간 윈도우(Time Window Validation)</strong>: 일시적인 센서 노이즈나 돌풍 등으로 인한 오판을 방지하기 위해, 위 두 가지 조건이 특정 시간(예: 수백 밀리초) 동안 연속적으로 만족되어야만 상태 전이(State Transition)가 확정된다.</li>
+</ol>
+<h2>5.  Ardupilot과의 이륙 명령 처리 및 관제 차이</h2>
+<p>오픈소스 비행 제어 생태계를 양분하는 Ardupilot과 비교할 때, PX4-Autopilot의 이륙 처리 아키텍처는 몇 가지 두드러진 차이점을 지닌다.</p>
+<ul>
+<li><strong>명령 수행의 엄격성</strong>: PX4는 무장(Armed) 상태와 비행 모드의 위계(Hierarchy)를 비교적 엄격하게 분리한다. Ardupilot(버전 4.4 기준)은 특정 상황에서 Guided 모드로 진입과 동시에 이륙 명령을 단일 트랜잭션으로 처리하는 데 유연한 반면, PX4는 Offboard 모드 또는 지정된 자동 모드(Takeoff mode) 전환이 명확히 선행된 뒤 설정된 위치 추종(Setpoint tracking)이 안정화되고 나서야 상승을 허용하는 경향이 짙다.</li>
+<li><strong>제어기 구조(Controller Architecture)</strong>: Ardupilot은 이륙 시 외란(Wind Disturbance)에 대항하는 I항(적분항)의 축적(Wind-up)을 관리하는 로직이 이륙 단계에 특화되어(Takeoff Controller) 내장되어 있는 반면, PX4는 범용적인 다단계 P-PID 구조(Position-Velocity-Attitude) 내에서 이륙 스무딩 궤적(Trajectory)을 발생기를 통해 위치 제어기로 입력하는 방식으로 설계되었다. 이는 PX4의 코드가 궤적 생성기(Trajectory Generator)와 하위 제어기 간의 책임을 명확하게 분리하는 구조적 특성을 반영한다.</li>
+</ul>
+<h2>6.  결론</h2>
+<p>이륙 명령 제어와 고도 도달 완료 판별은 기체의 물리적 환경과 센서 시스템, 그리고 상태 추정기가 긴밀하게 교류하는 폐루프 제어(Closed-loop Control)의 정수이다. GCS와의 지속적인 상태 동기화를 통해 관제 시스템은 통제권을 유지할 수 있으며, 이 메커니즘을 명확히 이해하는 것은 ROS2 기반의 자율 에이전트 확장 및 고수준 비행 애플리케이션 개발의 필수적인 토대라 할 수 있다.</p>
 
             </article>
             <footer>

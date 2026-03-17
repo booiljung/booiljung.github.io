@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:40.3 적응형 타임아웃(Adaptive Timeout)의 시계열 제어 이론 적용</title>
+    <title>BIJUNG:40.3. 적응형 타임아웃(Adaptive Timeout)의 시계열 제어 이론 적용</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,81 +109,70 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>40.3 적응형 타임아웃(Adaptive Timeout)의 시계열 제어 이론 적용</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.3 적응형 타임아웃(Adaptive Timeout)의 시계열 제어 이론 적용</span></nav>
+                    <h1>40.3. 적응형 타임아웃(Adaptive Timeout)의 시계열 제어 이론 적용</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 40. GCS 제어 명령 타임아웃(Timeout) 및 재전송(Retry) 처리 기법</a> / <span>40.3. 적응형 타임아웃(Adaptive Timeout)의 시계열 제어 이론 적용</span></nav>
                 </div>
             </header>
             <article>
-                <h1>40.3 적응형 타임아웃(Adaptive Timeout)의 시계열 제어 이론 적용</h1>
-<p>본 문서에 사용된 기준 버전은 PX4-Autopilot v1.14.0 및 QGroundControl v4.3.0이다.</p>
-<p>무인항공기(UAV)와 지상 관제 시스템(GCS) 사이의 MAVLink 기반 텔레메트리(Telemetry) 통신은 RF 서브시스템(RF Subsystems), 고도, 주변 지형지물, 전파 간섭 등 통신 환경에 따라 왕복 지연 시간(Round-Trip Time, RTT)이 시시각각 변동한다.<br />
-관제 명령(Command)을 GCS에서 기체로 전송할 때 고정된 타임아웃(Static Timeout)을 설정할 경우, 통신 지연이 일시적으로 커질 때마다 불필요한 패킷 재전송(Retransmission)이 폭주하여 제한된 대역폭(Bandwidth)을 마비시키거나, 반대로 지연 예외 처리가 너무 늦어지는 제어 부작용을 낳게 된다.</p>
-<p>이를 근본적으로 해결하기 위해 QGroundControl(QGC) 백엔드와 PX4-Autopilot의 커맨더(Commander) 양단에서는 **적응형 타임아웃(Adaptive Timeout)**이라는 시계열 제어 이론(Time-Series Control Theory)을 적용하여 동적인 네트워크 응답성을 도모해야 한다.</p>
-<h2>1.  고정 타임아웃(Static Timeout)의 한계와 적응형 제어의 필요성</h2>
-<p>과거 GCS나 초기 Ardupilot 연동 관제 체계에서는 중요한 명령(예: <code>COMMAND_LONG</code>)을 보낸 뒤 <code>COMMAND_ACK</code>가 오기까지 기다리는 시간을 500ms 혹은 1초와 같이 하드코딩된 정적 변수로 취급했다. 이러한 접근 방식은 다음과 같은 맹점을 지닌다.</p>
+                <h1>40.3. 적응형 타임아웃(Adaptive Timeout)의 시계열 제어 이론 적용</h1>
+<p>지상 관제 시스템(GCS)과 무인항공기(UAV) 간의 무선 통신 환경은 다중 경로 페이딩(Multipath Fading), 간섭(Interference), 기체 자세 변화에 따른 안테나 방사 패턴의 제약 등으로 인해 지연 시간(Latency)이 동적으로 변화한다. 기존의 고정된 타임아웃(Static Timeout) 방식은 이러한 네크워크 특성을 반영하지 못해 불필요한 재전송(Retransmission)을 유발하거나, 심각한 데이터 손실을 감지하는 속도를 지연시킨다. 본 절에서는 QGroundControl(설명 기준: v4.3 이상)과 PX4-Autopilot(설명 기준: v1.14 이상)의 MAVLink 통신 스택에 시계열 제어 이론(Time-Series Control Theory)을 적용한 적응형 타임아웃(Adaptive Timeout) 모델을 살펴본다.</p>
+<h2>1.  적응형 타임아웃(Adaptive Timeout)의 개념 및 필요성</h2>
+<p>적응형 타임아웃은 이전 송수신 트랜잭션에서 측정된 패킷 왕복 시간(RTT: Round-Trip Time)의 통계적 특성을 기반으로, 다음 트랜잭션의 타임아웃 주기를 동적으로 조절하는 기법이다. 통신이 원활할 때는 타임아웃을 짧게 유지하여 패킷 유실을 빠르게 감지하고 대응하며, 네트워크가 혼잡하여 지연 시간이 길어질 때는 타임아웃을 연장하여 불필요한 중복 재전송을 방지한다.</p>
 <ul>
-<li><strong>False Positive (오탐지):</strong> 일시적으로 통신 거리가 멀어져 RTT가 600ms로 늘어났는데 타임아웃 변수 설정값이 500ms라면, 패킷이 정상적으로 도착하고 있음에도 불구하고 GCS는 실패로 오판하여 동일한 패킷을 반복 전송함으로써 귀중한 무선 대역폭 자원을 낭비한다.</li>
-<li><strong>통신 폭주(Congestion Collapse):</strong> 불필요한 재전송이 텔레메트리 모뎀의 큐 리스트를 꽉 채워버리면서 진짜 시급한 자세 제어 메시지(Attitude)나 위치 추적(Local Position) 텔레메트리의 수신을 막는 연쇄 셧다운 현상을 초래한다.</li>
+<li><strong>고정 타임아웃의 한계:</strong> 설정된 타임아웃 <span class="math math-inline">T</span>가 실제 RTT보다 짧으면(Early Timeout) 불필요한 재전송 폭풍(Retransmission Storm)이 발생하고, 실제 RTT보다 길면 통신 장애 감지 및 Failsafe 발동이 늦어져 기체 제어권을 잃을 위험이 증가한다.</li>
+<li><strong>적응형 타임아웃의 이점:</strong> 네트워크 지연의 변동성(Jitter)을 동적으로 학습하여 시스템 대역폭을 보존하고 관제 신뢰성을 높인다.</li>
 </ul>
-<p>따라서 PX4-Autopilot 환경에서는 시계열 데이터를 면밀히 수집 및 분석하여 네트워크의 실시간 지연 상태를 능동적으로 추정하는 폐루프(Closed-loop) 제어 모델을 도입해야 한다.</p>
-<h2>2.  적응형 타임아웃(Adaptive Timeout) 제어 모델 및 수식화</h2>
-<p>QGC나 분산 브릿지 서버(ROS2 uXRCE-DDS 에이전트 등)에서 적정 타임아웃 타이머 한계인 <span class="math math-inline">T_{RTO}</span> (Retransmission Timeout)를 동적으로 결정하기 위해서는, RTT의 과거 샘플들을 필터링하며 부드럽게 추종(Tracking)하는 알고리즘 패턴이 요구된다.<br />
-일반적으로 TCP/IP의 혼잡 제어(Congestion Control)에서 널리 검증된 Jacobson / Karels 평활화 알고리즘 구조를 차용하라.</p>
-<h3>2.1  왕복 시간(RTT) 연속 계측 (Real-time <span class="math math-inline">RTT</span> Measurement)</h3>
-<p>MAVLink 프로토콜의 표준 패킷 기능인 <code>PING</code> 메시지나 내부 타임스탬프가 포함된 <code>TIMESYNC</code> 메시지 규격을 활용하여 이산 샘플 <span class="math math-inline">RTT_i</span> 값을 주기적으로 샘플링(Sampling)한다.</p>
-<h3>2.2  지수 가중 이동 평균(EWMA)을 통한 평활화 (Smoothing)</h3>
-<p>단발적인 RF 노이즈나 일시적 채널 간섭으로 인한 RTT 튐(Spike) 현상이 타임아웃을 비합리적으로 요동치게 만드는 것을 방어하기 위해, 시계열 평활화 필터인 SRTT(Smoothed RTT)와 RTTVAR(RTT Variation) 상태 변수를 갱신한다.</p>
-<p><span class="math math-display"> SRTT_{i} = (1 - \alpha) \cdot SRTT_{i-1} + \alpha \cdot RTT_i </span><br />
-<span class="math math-display"> RTTVAR_{i} = (1 - \beta) \cdot RTTVAR_{i-1} + \beta \cdot \vert SRTT_{i-1} - RTT_i \vert </span></p>
-<p>위 수식에서 <span class="math math-inline">\alpha</span>(통상 0.125 적용)와 <span class="math math-inline">\beta</span>(통상 0.25 적용)는 제어 필터의 극점(Pole)과 수렴 속도를 결정하는 수학적 가중치 팩터이다.<br />
-PX4의 uORB 워크 큐 혹은 QGroundControl의 텔레메트리 쓰레드 갱신 라인 내부에서, 이 수식을 소프트웨어 메인 타이머 주기와 연계하여 빈틈없이 계산하라.</p>
-<h3>2.3  <span class="math math-inline">T_{RTO}</span> (Retransmission Timeout)의 최적 한계점 설정</h3>
-<p>최종적으로 어플리케이션이 다음 재전송을 트리거하기 위해 대기하는 한계 시간 <span class="math math-inline">T_{RTO}</span>는, 평균 지연 시간에 지연 분산차(Variation)의 약 4배 가량을 덧붙여 타당성 있는 안전 마진(Safety Margin)을 이끌어낸다.</p>
-<p><span class="math math-display"> T_{RTO} = SRTT_{i} + \max(G, 4 \cdot RTTVAR_{i}) </span><br />
-(단, <span class="math math-inline">G</span>는 OS 타이머 스케줄러의 최소 클럭 분해능(Granularity)이다.)</p>
-<p>이때 드론 전원이 아예 꺼지거나 통신망 권역을 심각하게 이탈하여 계산된 <span class="math math-inline">T_{RTO}</span>가 무한정 커지는 예기치 않은 오류를 막기 위해, 상한치(Upper Bound, 예: 3000ms)와 하한치(Lower Bound, 예: 200ms) 클리핑(Clipping) 가드 코드를 필수로 덧붙여라.</p>
-<h2>3. PX4 및 관제 데스크톱 백엔드 연동 흐름 아키텍처</h2>
-<p>적응형 타임아웃 메커니즘이 완성되었을 때의 MAVLink 지시 제어 핑퐁 흐름은 다음 다이어그램과 같이 도출된다.</p>
+<h2>2.  시계열(Time-Series) 필터링 모델 적용</h2>
+<p>적응형 타임아웃을 추정하기 위해서 가장 널리 쓰이는 시계열 제어 이론은 지수 가중 이동 평균(EWMA: Exponentially Weighted Moving Average)과 분산 추정을 혼합한 방식이다. 이는 TCP의 패킷 재전송 타임아웃 산정에 사용되는 Jacobson/Karels 알고리즘과 수학적으로 동일한 궤를 가진다.</p>
+<h3>2.1  RTT(Round-Trip Time) 평활화 (Smoothed RTT)</h3>
+<p>이전 RTT 샘플 <span class="math math-inline">R</span>이 새로 측정되었을 때, 평활화된 통신 지연시간 <span class="math math-inline">SRTT</span>는 이전의 <span class="math math-inline">SRTT</span>와 현재 <span class="math math-inline">R</span>의 가중합으로 계산한다.<br />
+<span class="math math-display"> SRTT_{new} = (1 - \alpha) \cdot SRTT_{old} + \alpha \cdot R </span><br />
+여기서 <span class="math math-inline">\alpha</span>는 평활화 인자(Smoothing Factor)로 보통 0.125를 사용한다.</p>
+<h3>2.2. 편차 추정 (RTT Variation)</h3>
+<p>네트워크의 지터(Jitter) 혹은 불안정성을 나타내는 편차 <span class="math math-inline">RTTVAR</span>은 다음과 같이 갱신된다.<br />
+<span class="math math-display"> RTTVAR_{new} = (1 - \beta) \cdot RTTVAR_{old} + \beta \cdot \vert SRTT_{old} - R \vert </span><br />
+여기서 <span class="math math-inline">\beta</span>는 분산 평활화 인자로 보통 0.25를 사용하여 변동성에 보다 민감하게 반응하도록 설계한다.</p>
+<h3>2.2  적응형 재전송 타임아웃(RTO: Retransmission Timeout) 산정</h3>
+<p>최종적으로 다음 MAVLink 트랜잭션의 타임아웃 <span class="math math-inline">RTO</span>는 다음과 같이 설정된다.<br />
+<span class="math math-display"> RTO = SRTT_{new} + \max(G, 4 \cdot RTTVAR_{new}) </span></p>
+<ul>
+<li><span class="math math-inline">G</span>: 시스템 타이머의 최소 분해능(Granularity)</li>
+<li>분산(<span class="math math-inline">RTTVAR</span>)에 4배의 가중치를 두어 급격한 네트워크 변화에도 안전 마진을 확보한다.</li>
+</ul>
+<h2>3. QGroundControl 및 PX4 시스템 적용 아키텍처</h2>
+<p>QGroundControl에서의 동적 파라미터 백업(Parameter Protocol)이나 FTP 전송 로직, 혹은 무리 비행(Swarm) 제어 시, 이러한 적응형 타임아웃을 활용할 수 있다.</p>
 <pre><code class="language-mermaid">sequenceDiagram
-    participant GCS as QGroundControl (GCS)
-    participant RF as Telemetry Link
-    participant PX4 as PX4 Commander
+    participant GCS as QGroundControl
+    participant Timer as Time-Series RTO Estimator
+    participant UAV as PX4-Autopilot
     
-    rect rgb(240, 248, 255)
-    Note over GCS: 실시간 RTT 시계열 측정 및 추적
-    GCS-&gt;&gt;PX4: MAVLink TIMESYNC / PING
-    PX4--&gt;&gt;GCS: MAVLink TIMESYNC_REPLY 등 응답
-    Note over GCS: SRTT &amp; RTTVAR 상태 업데이트&lt;br/&gt;Calculate Adaptive T_RTO = 850점 (예시)
-    end
-
-    GCS-&gt;&gt;RF: COMMAND_LONG 전송 (예: ARM 지시)
-    RF-&gt;&gt;PX4: Payload 전달
-    Note over GCS: 도출된 T_RTO (850ms) 만큼 Non-blocking 대기
-    
-    alt T_RTO 이내에 ACK 정상 수신 시
-        PX4--&gt;&gt;RF: COMMAND_ACK (Result: MAV_RESULT_ACCEPTED)
-        RF--&gt;&gt;GCS: GCS 내부 큐 진입
-        Note over GCS: 트랜잭션 정상 소멸 및 성공 처리!
-    else T_RTO 한계치 만료(Timeout Exceeded) 시
-        Note over GCS: T_RTO Expired 이벤트 발생
-        GCS-&gt;&gt;GCS: 새로운 T_RTO = T_RTO * 2 (Exponential Backoff 적용)
-        GCS-&gt;&gt;RF: COMMAND_LONG 재도전 (Retransmit)
-    end
+    Note over GCS, UAV: RTO = 1.0 sec (초기값)
+    GCS-&gt;&gt;UAV: COMMAND_LONG 전송 (Send 시간 기록)
+    UAV--&gt;&gt;GCS: COMMAND_ACK 응답
+    GCS-&gt;&gt;Timer: RTT 측정치 (R) 전달
+    Timer-&gt;&gt;Timer: SRTT 및 RTTVAR 갱신
+    Timer--&gt;&gt;GCS: 적응된 New RTO 반환 (예: 1.2 sec)
+    Note over GCS, UAV: 네트워크 혼잡 상황 발생
+    GCS-&gt;&gt;UAV: 다음 COMMAND 전송
+    Note over GCS: New RTO(1.2초) 타임아웃 타이머 시작
+    UAV--&gt;&gt;GCS: COMMAND_ACK 지연 응답
+    GCS-&gt;&gt;Timer: RTT 측정치 (R) 전달 (1.1초 소요)
+    Note over GCS: 불필요한 재전송 방지 성공
 </code></pre>
-<h2>4. 실무 구현 가이드 및 코딩 주의사항</h2>
-<p>QGroundControl 프레임워크나 커스텀 C++ MAVSDK 애플리케이션에 본 적응형 타임아웃 제어 공학을 이식할 실무 개발자는 다음의 사안을 엄격히 준수하라.</p>
-<ol>
-<li><strong>지수적 백오프(Exponential Backoff) 혼합 적용:</strong> 타임아웃 변수 <span class="math math-inline">T_{RTO}</span>가 만료되어 패킷을 불가피하게 다시 쏠 때마다, 다음 틱의 억제 대기 시간은 이전 지연의 <code>2배</code>로 할당하여, 통신 채널의 전파 혼잡도를 의도적으로 완화시켜라.</li>
-<li><strong>QGC 커스텀 <code>Vehicle</code> 클래스 및 링크 오버라이딩:</strong> QGroundControl 내부 코어에 위치한 <code>Vehicle.cc</code> 및 프로토콜 매니저 소스에서 재전송을 관장하고 있는 고정 상수형 <code>QTimer</code> 변수 체계를, 실시간 산출되는 SRTT 수식에 의해 업데이트가 허용되는 <code>동적 타이머(Dynamic Timer)</code> 클래스로 재설계(Refactoring)하라.</li>
-<li><strong>텔레메트리 하드웨어 모듈 특수성 반영:</strong> 마이크로하드(Microhard), 실리콘 랩(SiK) 계열 라디오, 또는 이리듐 위성 통신 모듈은 각각 고유의 TDMA 타임슬롯 지연 특성과 징크(Jitter) 패턴을 소유하므로, 최초 필드 테스트 과정을 통해 <span class="math math-inline">\alpha</span>와 <span class="math math-inline">\beta</span> 필터 가중치를 하드웨어 규격에 맞게 치밀하게 튜닝하라.</li>
-</ol>
-<hr />
-<p><strong>출처 및 참고 문헌 (References):</strong></p>
+<h2>4. 실무 적용 및 주의사항</h2>
 <ul>
-<li>Jacobson, Van. “Congestion avoidance and control”, ACM SIGCOMM Computer Communication Review, 1988.</li>
-<li>MAVLink Developer Guide: Transmission and Retransmission Sequence Protocols.</li>
-<li>QGroundControl Developer Guide: Comm Links and QGC Source Code (<code>src/comm/</code> Subsystems).</li>
+<li><strong>Karn’s Algorithm 적용:</strong> 재전송된 패킷에 대한 ACK는 원래 데이터와 매핑될 수 없고 RTT를 왜곡시키므로, 재전송된 패킷의 RTT 측정값은 EWMA 필터에 입력으로 포함하지 마라.</li>
+<li><strong>비정상적인 스파이크 필터링:</strong> 일시적으로 통신이 끊어지거나 노이즈로 인해 극단적으로 큰 <span class="math math-inline">R</span> 값이 산출되었을 때, 이를 그대로 시계열 필터에 적용하면 타임아웃이 과도하게 커지는 문제가 발생한다. 따라서 <span class="math math-inline">SRTT</span> 상한선(Max Cap)을 하드코딩된 값(예: 3초)으로 제한하라.</li>
+<li>QGroundControl의 <code>Vehicle</code> 커맨드 매니저 모듈을 재작성하여 고정값 기반의 타이머(<code>QTimer</code>) 대신, 상기 공식을 동적으로 계산하여 타임아웃 주기를 설정하도록 오버라이딩(Overriding)하라.</li>
 </ul>
+<p>적응형 타임아웃은 단순한 MAVLink 송수신 관리를 넘어서, 자율 회피 기동이나 드론 군집 통신의 안정성을 확보하기 위한 핵심 시계열 제어 기반 인프라이다.</p>
+<blockquote>
+<p>참고 문헌:</p>
+<ul>
+<li>Jacobson, V. (1988). “Congestion Avoidance and Control”. ACM SIGCOMM Computer Communication Review.</li>
+<li>Paxson, V., &amp; Allman, M. (2000). “Computing TCP’s Retransmission Timer”. RFC 2988.</li>
+</ul>
+</blockquote>
 
             </article>
             <footer>

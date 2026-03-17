@@ -115,6 +115,65 @@
             </header>
             <article>
                 <h1>44.5.3.3 추력 제어 입력값 대비 실제 수직 속도의 잔차(Residual) 분석 및 능동 외란 관측기(Active Disturbance Observer) 기반 접지 상태 추정</h1>
+<p>무인항공기(UAV)의 Land Detector 로직은 단순 가속도 측정만으로는 한계가 있다. 무거운 페이로드(Payload)를 탑재하거나 지면 효과(Ground Effect)로 인해 센서에 난류 노이즈가 강하게 섞이는 경우, 단순 임계치 비교 방식은 치명적인 오판을 야기할 수 있다. 이에 최신 PX4-Autopilot(Firmware v1.14 기준)은 제어 입력값(Control Input)과 기체의 실제 측정 출력(Measurement Output) 간의 물리적 괴리인 잔차(Residual)를 분석하고, 능동 외란 관측기(Active Disturbance Observer) 계념을 도입하여 보다 강건하게 접지 상태(Landed State)를 추정한다. 본 장에서는 잔차 분석의 수학적/제어 공학적 원리와 PX4 내 구현 아키텍처를 상세히 기술한다.</p>
+<h2>1.  잔차(Residual) 기반 상태 추정의 기본 개념</h2>
+<p>제어 공학에서 추력 명령(이론상 기체를 밀어올리는 힘)과 IMU/기압계를 융합해 얻어낸 수직 속도(실제로 기체가 움직인 속도)는 제어 대상(Plant)의 수학적 모델을 통해 서로 일치해야 한다. 이 두 값 사이의 오차를 잔차(Residual)라고 정의한다.</p>
+<h3>1.1  자유 공간(In-air)의 동역학 모델과 잔차</h3>
+<p>기체가 공중(In-air)에 떠 있을 때, Z축 가속도는 인가된 추력(Thrust)과 기체 질량, 그리고 공기역학적 항력(Drag)에 의해 지배된다.<br />
+<span class="math math-display"> \ddot{Z} = \frac{T_{cmd} - W - D}{m} </span></p>
+<p>이 경우 제어기가 목표 추력(<span class="math math-inline">T_{cmd}</span>)을 위로 발생시키면 기체는 그에 비례하여 상승 수직 속도(<span class="math math-inline">V_z</span>)를 증가시킨다. 즉, 예측된 모델과 실제 센서 관측값이 유사하므로 잔차 <span class="math math-inline">R \approx 0</span> 에 수렴한다.</p>
+<h3>1.2 접지 상태(Landed State)의 동역학 모델 붕괴</h3>
+<p>기체가 땅에 닿아(Grounded) 구속되어 있다면, 조종사나 자율 제어기가 Z축 스로틀 명령을 올려도(단, 중력 기저 추력인 Hover Thrust 미만으로), 기체는 바닥에 고정되어 있으므로 수직 속도(<span class="math math-inline">V_z</span>)나 가속도(<span class="math math-inline">\ddot{Z}</span>)는 0 근처에서 진동할 뿐 상승하지 않는다.</p>
+<ul>
+<li>이때 시스템의 예측 모델은 “기체가 위로 가속되어야 한다“고 판단하지만, 측정된 <span class="math math-inline">V_z</span>는 <span class="math math-inline">0</span>이다.</li>
+<li>즉, 예측과 실제 측정치 간에 대규모의 추종 오차, 즉 <strong>잔차(Residual) <span class="math math-inline">R \gg 0</span></strong> 가 발생한다.</li>
+</ul>
+<p>PX4 Land Detector는 이 “명령(Input)이 들어갔음에도 기체가 움직이지 않음(No Output)“을 기구학적 구속(자유도 상실), 즉 ’지면에 닿아 있음(Ground Contact)’으로 해석하는 논리를 적극 채용한다.</p>
+<h2>2. 능동 외란 관측기(Active Disturbance Observer) 기반 필터링</h2>
+<p>단순히 잔차가 발생했다고 무조건 땅에 닿았다고 판별할 수는 없다. 강풍이나 센서의 일시적 드리프트(Drift)로 인해 공중에서도 잔차가 크게 발생할 수 있기 때문이다. 이를 필터링하기 위해 상태 관측기(State Observer) 성격의 외란 추정 로직이 필요하다.</p>
+<h3>2.1 EKF2 외란 추정치(Innovations) 활용</h3>
+<p>PX4의 메인 상태 추정기인 EKF2 (Extended Kalman Filter)는 기압계, IMU, GPS 데이터를 융합하며 내부적으로 Innovation(칼만 필터의 잔차) 값을 실시간으로 계산한다.<br />
+Land Detector는 이 EKF2의 Vz(수직 속도) Innovation 값이나, 위치 제어기(Position Controller) I-항(Integral Term)의 비정상적 누적 트렌드를 암묵적인 **외란 관측기(Disturbance Observer)**의 지표로 활용한다.</p>
+<ul>
+<li>만약 Z축 위치 제어기의 I-항이 한계치(Limit)에 도달할 정도로 맹렬하게 추력을 요구함에도 Z축 고도가 변화하지 않는다면, 이는 공기역학적 외란(Down-draft)으로 보기보다는 바닥과 같은 엄청난 물리적 저항체(Physical Constraint)에 기체가 결박되어 있다고 판단한다.</li>
+<li>이를 통해 Land Detector는 <code>ground_contact</code> 상태로 전이할 정당성을 얻게 된다.</li>
+</ul>
+<h2>3. PX4 소스 코드 내 제어 잔차 반영 아키텍처</h2>
+<p><code>src/modules/land_detector/MulticopterLandDetector.cpp</code> 내의 검증 로직은 아래와 같은 흐름으로 모터 추력 입력과 출력 상태 간의 부조화를 감지한다.</p>
+<pre><code class="language-cpp">bool MulticopterLandDetector::_get_ground_contact_state()
+{
+    // 1. Z축 스로틀 목표치 (Input)
+    float thrust_setpoint = _vehicle_local_position_setpoint.thrust[2];
+    
+    // 2. 실제 관측된 수직 속도 (Output)
+    float vz_actual = _vehicle_local_position.vz;
+    
+    // 3. 잔차 기반 검증 로직 (논리적 의사코드)
+    // 기체가 상승하지 못하고 (vz_actual이 0 근처) &amp;&amp; 추력은 낮지만 인가되는 경우
+    bool no_vertical_movement = (fabsf(vz_actual) &lt; _param_lndmc_z_vel_max.get());
+    bool thrust_is_low = (thrust_setpoint &lt; _param_lndmc_thr_range.get()); // Hover thrust 대비 임계 여유치
+    
+    // 4. Roll/Pitch 자세 제어의 추종 잔차 검증
+    bool attitude_tracking_failed = check_attitude_tracking_error();
+
+    return no_vertical_movement &amp;&amp; thrust_is_low &amp;&amp; attitude_tracking_failed;
+}
+</code></pre>
+<p>추가적으로, 기체가 완전히 수평이 아닌 지형에 반쯤 걸쳐 착륙할 때, 롤/피치 자세 제어기(Attitude Controller) 역시 “명령한 자세가 달성되지 않는 잔차(Tracking Error)“를 크게 배출한다. 이 역시 접지 상태를 확인하는 훌륭한 교차 검증(Cross-validation) 지표로 사용된다.</p>
+<h2>4. Ardupilot 대비 아키텍처 철학 비교</h2>
+<ul>
+<li><strong>Ardupilot (Firmware v4.4):</strong> Ardupilot 모드 중 랜딩 점검 로직은 주로 모터 스로틀의 하한(Low Limit) 도달 여부와 <span class="math math-inline">V_z</span> 제한치를 직접 카운터로 타이밍한다. PID 제어기의 I-방지(Anti-windup) 트리거를 보조 참조하여 지면에 구속된 상태를 확인한다.</li>
+<li><strong>PX4-Autopilot:</strong> PX4는 위치/자세 제어기 세트포인트(<code>vehicle_local_position_setpoint</code>) 통계와 실제 EKF 관측치(<code>vehicle_local_position</code>) 간의 논리적 디커플링(Decoupling)을 바탕으로, uORB 파이프라이닝 내에서 두 토픽을 비동기적으로 비교/관측하여 기체 상태 머신을 유도하는 ‘관측자(Observer)’ 모델 지향성이 조금 더 강하게 드러난다.</li>
+</ul>
+<h2>5. 결론 및 관제 기술 응용</h2>
+<p>추력 제어 입력값과 실제 수직 측위 값 간의 잔차(Residual) 분석은 기계적 외력을 추정하기 위해 별도의 접촉식 압력 센서(Tactile Sensor)나 랜딩 기어 스위치를 추가 장착하지 않고도 비행 제어기 자체가 강력한 능동 외란 관측기 역할을 수행하게 만드는 고급 공학 기법이다.</p>
+<p>개발자는 오프로드 등 특수 조건에 자율 이착륙 에이전트를 배치할 때, 센서 잡음 임계치 파라미터뿐만 아니라 <code>MPC_THR_HOVER</code> (호버 추력 기저값) 파라미터를 정확히 에스티메이션(Estimation)하여 제어기 내 수학적 모델의 기준축을 올바르게 잡아주어야만, Land Detector가 잔차를 정확히 감산하여 기체의 성공적 착륙 여부를 QGroundControl로 송신할 수 있음에 유의해야 한다.</p>
+<p><strong>참고 문헌 및 출처:</strong></p>
+<ul>
+<li>PX4 Autopilot 개발 가이드 - <a href="https://docs.px4.io/main/en/concept/architecture.html">Land Detector Module Analysis</a></li>
+<li><em>Disturbance Observer-Based Control, S. E. Li</em> (능동 외란 관측기 기반 제어 이론)</li>
+<li>PX4 Github Source Code (<code>MulticopterLandDetector.cpp</code>)</li>
+</ul>
 
             </article>
             <footer>

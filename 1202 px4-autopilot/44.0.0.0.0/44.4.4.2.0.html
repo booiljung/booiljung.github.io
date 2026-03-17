@@ -115,6 +115,101 @@
             </header>
             <article>
                 <h1>44.4.4.2 초기 상승 가속도 응답 지연(Delay) 극복을 위한 스로틀 역동역학(Inverse Dynamics) 모델 기반 피드포워드(Feedforward) 루프 제어</h1>
+<p>멀티로터 무인항공기(UAV)의 이륙(Takeoff) 과정에서 기체가 지면을 이탈하여 초기 상승 가속을 수행할 때, 입력된 제어 명령과 실제 로터의 기계적 반응 사이에는 필연적으로 응답 지연(Delay)이 발생한다. 이러한 문제를 해결하기 위해 최신 PX4-Autopilot(Firmware v1.14 이상 기준)은 스로틀 역동역학(Inverse Dynamics) 모델을 도입하여 피드포워드(Feedforward) 제어 루프를 구성한다. 본 장에서는 응답 지연의 원인을 수학적으로 분석하고, 이를 극복하기 위한 PX4의 제어 아키텍처 및 Ardupilot과의 차이점을 심도 있게 다룬다.</p>
+<h2>1.  상승 가속도 응답 지연의 원인 분석</h2>
+<p>기체가 처음 양력(Lift)을 발생시켜 상승 가속을 하려면 모터의 회전수(RPM)가 급격하게 증가해야 한다. 그러나 전자 변속기(ESC, Electronic Speed Controller)로 스로틀(Throttle) 신호가 전달된 후 실제 추력(Thrust)이 발생하기까지는 다음과 같은 물리적 지연 요소가 존재한다.</p>
+<ol>
+<li><strong>로터의 기계적 관성(Rotor Mechanical Inertia):</strong> 프로펠러의 질량과 반경에 의해 결정되는 관성 모멘트(Moment of Inertia)로 인해, 목표 RPM에 도달하기 위한 가속 시간이 요구된다.</li>
+<li><strong>모터의 전기적 시상수(Electrical Time Constant):</strong> 브러시리스 직류(BLDC) 모터 인덕턴스(Inductance)와 권선 저항(Resistance)에 의해 전류가 상승하는 데 필요한 시간이다.</li>
+<li><strong>추력-스로틀 비선형성(Thrust-Throttle Non-linearity):</strong> 공기역학적 특성상 프로펠러의 추력은 회전수의 제곱에 비례하므로 스로틀 입력 대비 추력 발생량은 비선형성을 지닌다.</li>
+</ol>
+<p>순수 피드백(Feedback) 제어만으로 이륙을 시도할 경우, 오차(Error)가 누적된 후에야 제어기 출력이 증가하므로 기체의 이륙이 늦어지며 돌풍에 노출 시 불안정한 자세가 유발될 수 있다.</p>
+<h2>2.  역동역학(Inverse Dynamics) 모델을 통한 비선형성 보상</h2>
+<p>목표 추력(Target Thrust)을 지연 없이 정확하게 발생시키려면 스로틀과 추력 간의 비선형적인 관계를 수학적으로 모델링하여 역전파(Inverse)하는 기법이 필수적이다.</p>
+<h3>2.1  추력 모델링 방정식</h3>
+<p>로터에서 발생하는 추력 <span class="math math-inline">T</span>와 적용되는 스로틀 명령어 <span class="math math-inline">\tau</span> (0.0 ~ 1.0 범위)의 일반적인 관계는 다음과 같이 2차 다항식으로 근사할 수 있다.</p>
+<p><span class="math math-display"> T = c_1 \tau^2 + c_2 \tau + c_3 </span></p>
+<p>여기서 <span class="math math-inline">c_1, c_2, c_3</span>는 모터와 프로펠러 조합에 따른 공기역학적 상수이다. 이를 선형적인 피드포워드 명령으로 사용하기 위해서는 위 식의 역함수 모델을 생성하여 목표 추력 <span class="math math-inline">T_{target}</span>가 주어졌을 때 필요한 스로틀 입력 <span class="math math-inline">\tau_{cmd}</span>를 산출하는 역동역학(Inverse Dynamics) 모델이 요구된다.</p>
+<h3>2.2 PX4의 스로틀 곡선(Throttle Curve) 파라미터 적용</h3>
+<p>PX4-Autopilot 내에서는 이차 함수 형태의 역모델을 단순화하여 선형성 보상을 위한 파라미터 <code>THR_MDL_FAC</code> (Throttle Model Factor)를 제공한다.<br />
+목표 추력을 <span class="math math-inline">T_{sp}</span> (Setpoint)라고 할 때, 모터에 인가되는 최종 스로틀 보상값 <span class="math math-inline">\tau_{comp}</span>은 대략 다음과 같은 2차 다항식 곡선 근사법으로 도출된다.</p>
+<p><span class="math math-display"> \tau_{comp} = (-b + \sqrt{b^2 - 4ac}) / 2a </span><br />
+<em>(단, <span class="math math-inline">a, b, c</span>는 각 시스템의 <code>THR_MDL_FAC</code> 파라미터 값에 의해 내부적으로 스케일링됨)</em></p>
+<p>이 모델을 통과한 피드포워드 신호는 목표 추력에 비례하는 정확한 기준 RPM을 예측 생산하며, 결과적으로 이륙 시 응답 지연을 획기적으로 낮춘다.</p>
+<h2>3.  피드포워드(Feedforward) 제어 루프 아키텍처</h2>
+<p>위치 제어기(Position Controller) 내부에서 Z축의 가속도 및 속도 제어 루프를 통과한 결과값은 역동역학 식을 거치는 피드포워드(Feedforward) 루프와 비례-적분-미분(PID) 피드백(Feedback) 루프의 합으로 결합된다.</p>
+<p>다음은 스로틀 역동역학 기반의 이륙 제어 루프를 설명하는 구조 다이어그램이다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[목표 이륙 속도/고도&lt;br/&gt;(Target Velocity &amp; Altitude)] --&gt; B[PID 위치/속도 제어기&lt;br/&gt;(Position/Velocity Controller)]
+    A --&gt; C[가속도 피드포워드 계산기&lt;br/&gt;(Acceleration Feedforward)]
+    
+    C --&gt; D[역동역학 스로틀 모델&lt;br/&gt;(Inverse Dynamics Model)]
+    B --&gt; E[피드백 스로틀 명령&lt;br/&gt;(Feedback Command)]
+    
+    D --&gt; F[선형화된 스로틀 피드포워드&lt;br/&gt;(Linearized Feedforward Throttle)]
+    
+    E --&gt; SUM((+))
+    F --&gt; SUM
+    
+    SUM --&gt; G[모터 믹서 계층&lt;br/&gt;(Mixer / Actuation Logic)]
+    G --&gt; H[ESC 및 BLDC 모터]
+    
+    H -- 지연 보상된 빠른 상승 역학 --&gt; I[실제 기체 고도 / 추력]
+    I -. IMU / 기압계 피드백 .-&gt; B
+</code></pre>
+<h3>3.1 아키텍처의 동작 원리</h3>
+<ol>
+<li><strong>가속도 피드포워드 계산부:</strong> 이륙 명령이 떨어지면, 설정된 고도 상승 프로파일에 맞추어 즉각적으로 필요한 목표 가속도를 도출한다.</li>
+<li><strong>역동역학 스로틀 모델 (<code>Inverse Dynamics Model</code>):</strong> 목표 가속도를 구현하기 위해 공력 해석 기반의 모델(<code>THR_MDL_FAC</code> 참조)을 통과시켜 선형화된 스로틀 출력값(Feedforward Throttle)을 직접 ESC로 전송한다.</li>
+<li><strong>피드백 보상:</strong> 잔여 오차(외란이나 바람 등)는 기존 PID 제어기(Feedback) 루프를 통해 미세 조정된다.</li>
+</ol>
+<p>이러한 병렬 구조는 “초기 응답 전개는 피드포워드가 즉시 담당하고, 점진적인 상승 오차는 PID가 보정한다“는 정밀 제어 공학의 원칙을 잘 구현하고 있다.</p>
+<h2>4.  파라미터 설정 및 Ardupilot과의 비교</h2>
+<h3>4.1  PX4-Autopilot 설정 파라미터</h3>
+<ul>
+<li><strong><code>THR_MDL_FAC</code></strong>: 추력 곡선의 비선형성을 보정하기 위한 파라미터이다. 범위는 보통 0.0부터 1.0(완전한 2차 곡선)이다. 적절히 조절하면 스로틀 증가 시의 급격한 상승 지연 또는 과도 예측 오차를 막을 수 초래할 수 있다.</li>
+<li><strong><code>MPC_THR_HOVER</code></strong>: 기체가 공중에서 평형을 이루는 베이스라인 스로틀 값이다. 이 값을 기준점으로 삼아 스로틀 역동역학 모델의 인덱스 편향(bias)을 보상한다.</li>
+</ul>
+<p><em>(참고: 기체 셋업 및 테스트 시 QGroundControl v4.3 이상의 환경에서 Power/Motor 항목 구성을 통해 이를 실시간 관측할 수 있다.)</em></p>
+<h3>4.2  Ardupilot 대비 제어 관제 차이점</h3>
+<p>Ardupilot(Firmware v4.4 기준)은 모터 스핀 응답을 보상하기 위해 <code>MOT_THST_EXPO</code> (Thrust Expo) 파라미터를 사용한다. 이는 PX4의 <code>THR_MDL_FAC</code>와 유사한 기능을 하나, 스풀 업 시간 지연을 보상하는 접근 방식에 시스템적 차이가 있다.</p>
+<ul>
+<li><strong>Ardupilot:</strong> <code>MOT_SPIN_ARM</code> 파라미터를 두어 아이들(Idle) 회전에서 상승 회전으로 넘어가는 지연(Spool up delay)을 타이머(Timer) 기반(ex. <code>MOT_SPOOL_TIME</code>)으로 관리하며, <code>MOT_THST_EXPO</code>로 제어 출력 자체를 단순 곡선화(Curve mapping)한다.</li>
+<li><strong>PX4-Autopilot:</strong> 엄밀하게 수학적인 역동역학 기반의 피드포워드 루프를 위치 제어 모듈에 직접 결합하여 모터 개별 믹서(Mixer)단에 진입하기 무섭게 선형적인 가속 명령을 요구한다. 이로 인해 임무(Mission) 자동 이륙 시 모델 예측 기반의 응답 특성이 더욱 부각된다.</li>
+</ul>
+<h2>5.  소스 코드 구현체 분석 (Source Code Analysis)</h2>
+<p>PX4의 주요 소스 트리에서 역동역학(Inverse Dynamics) 모델 및 피드포워드 루프가 적용된 핵심 C++ 파일은 위치 제어 아키텍처 부근에 존재한다. 핵심 알고리즘은 <code>src/modules/mc_pos_control/</code> 및 <code>src/lib/mixer_module/</code> 디렉토리에 걸쳐 분포한다.</p>
+<p>특히 역추력 변환(Inverse Thrust Conversion) 로직은 아래와 유사한 비선형 커브 함수 내부에서 처리된다 (예제 코드 스크래치).</p>
+<pre><code class="language-cpp">// PX4-Autopilot : 스로틀 모델 팩터를 통한 역가속 계산 코드 예시
+float run_inverse_throttle_dynamics(float target_thrust, float thr_mdl_fac) {
+    // thr_mdl_fac 이 0 인 경우 완전 선형으로 간주
+    if (thr_mdl_fac &lt;= FLT_EPSILON) {
+        return target_thrust;
+    }
+    
+    // 이차 함수 해의 공식을 이용한 역함수 도출
+    // T = (1 - f) * t + f * t^2   -&gt;  t_comp 산출
+    float a = thr_mdl_fac;
+    float b = 1.0f - thr_mdl_fac;
+    float c = -target_thrust;
+    
+    float discriminant = b * b - 4.0f * a * c;
+    if (discriminant &lt; 0.0f) {
+        return 0.0f; 
+    }
+    
+    return (-b + sqrtf(discriminant)) / (2.0f * a);
+}
+</code></pre>
+<p>제어 루프(Z축 속도/가속도 제어기)는 위 계산된 스로틀 출력(<code>feedforward_throttle</code>)을 현재 PID 루프 결과값(<code>feedback_throttle</code>)과 더해 총 스로틀 입력(<code>total_throttle_setpoint</code>)을 도출하며, 최종적으로 uORB 메시지 시스템을 통해 액추에이터 활성(Actuator Setpoint) 토픽으로 발행(Publish)된다.</p>
+<h2>6.  결론</h2>
+<p>초기 상승 가속도 응답 지연을 해결하기 위한 PX4-Autopilot의 스로틀 역동역학 기반의 피드포워드 루프 설계는 복잡한 모터 물리량(회전 관성 및 전기 지연)을 수학적 선형화 기법으로 보정한 대표적인 공학 구현 사례이다. 이 기능은 단순히 <code>THR_MDL_FAC</code> 상수를 대입하는 것을 넘어, Z축 위치 제어기의 피드포워드 시스템과 직결되어 이륙 궤적의 추종성(Tracking capability)과 시스템 안정성을 대폭 향상한다. 이와 연계하여 QGroundControl을 활용한 정밀 튜닝은 고급 자율 비행(Autonomous Flight)의 선제 조건이라 할 수 있다.</p>
+<p><strong>참고 문헌 및 출처:</strong></p>
+<ul>
+<li>PX4 Autopilot Official Documentation - <a href="https://docs.px4.io/">Hover Thrust &amp; Actuator Configurations</a></li>
+<li><em>A Comprehensive Model of Quadrotor Dynamics, Bresciani, T.</em> (로터 동역학 및 스풀 지연 관련 논문)</li>
+<li>Ardupilot Development Guide - Copter Tuning (Ardupilot Expo 매핑 원리 참조)</li>
+</ul>
 
             </article>
             <footer>

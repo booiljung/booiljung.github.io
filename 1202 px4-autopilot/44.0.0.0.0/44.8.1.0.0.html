@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:44.8.1 `MAV_CMD_NAV_TAKEOFF` 처리 시 Ardupilot(Copter/Plane)과 PX4의 내부 파서(Parser) 구문 트리(Syntax Tree) 및 메시지 라우팅 토폴로지(Routing Topology) 차이</title>
+    <title>BIJUNG:44.8.1. \`MAV_CMD_NAV_TAKEOFF\` 처리 시 Ardupilot(Copter/Plane)과 PX4의 내부 파서(Parser) 구문 트리(Syntax Tree) 및 메시지 라우팅 토폴로지(Routing Topology) 차이</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,86 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>44.8.1 `MAV_CMD_NAV_TAKEOFF` 처리 시 Ardupilot(Copter/Plane)과 PX4의 내부 파서(Parser) 구문 트리(Syntax Tree) 및 메시지 라우팅 토폴로지(Routing Topology) 차이</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.8.1 `MAV_CMD_NAV_TAKEOFF` 처리 시 Ardupilot(Copter/Plane)과 PX4의 내부 파서(Parser) 구문 트리(Syntax Tree) 및 메시지 라우팅 토폴로지(Routing Topology) 차이</span></nav>
+                    <h1>44.8.1. \`MAV_CMD_NAV_TAKEOFF\` 처리 시 Ardupilot(Copter/Plane)과 PX4의 내부 파서(Parser) 구문 트리(Syntax Tree) 및 메시지 라우팅 토폴로지(Routing Topology) 차이</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 44. 이륙(Takeoff) 명령 제어: 고도 설정 및 이륙 완료 상태 판별</a> / <span>44.8.1. \`MAV_CMD_NAV_TAKEOFF\` 처리 시 Ardupilot(Copter/Plane)과 PX4의 내부 파서(Parser) 구문 트리(Syntax Tree) 및 메시지 라우팅 토폴로지(Routing Topology) 차이</span></nav>
                 </div>
             </header>
             <article>
-                <h1>44.8.1 <code>MAV_CMD_NAV_TAKEOFF</code> 처리 시 Ardupilot(Copter/Plane)과 PX4의 내부 파서(Parser) 구문 트리(Syntax Tree) 및 메시지 라우팅 토폴로지(Routing Topology) 차이</h1>
+                <h1>44.8.1. `MAV_CMD_NAV_TAKEOFF` 처리 시 Ardupilot(Copter/Plane)과 PX4의 내부 파서(Parser) 구문 트리(Syntax Tree) 및 메시지 라우팅 토폴로지(Routing Topology) 차이</h1>
+<p>GCS(지상 관제 시스템)에서 송신된 <code>MAV_CMD_NAV_TAKEOFF</code>(MAVLink 명령 번호 22) 패킷이 물리적인 비행 제어기(FC) 하드웨어의 통신 포트(UART, USB 등)에 수신된 이후, 이를 파싱(Parsing)하고 실제 비행 동력학 제어 로직에 전달하는 라우팅 토폴로지(Routing Topology)는 PX4와 Ardupilot 간에 뚜렷한 아키텍처적 차이를 보인다.</p>
+<p>본 절에서는 두 프레임워크가 MAVLink 바이트 스트림을 해석하여 내부 구문 트리(Syntax Tree)를 구성하는 방법론, 그리고 이륙 로직을 기체 형태(멀티콥터, 고정익 등)에 맞게 배분하는 메시지 라우팅 과정을 소스 코드 레벨에서 비교 분석한다.</p>
+<h2>1.  PX4-Autopilot의 메시지 라우팅 토폴로지: 구조체 기반 uORB 퍼블리싱</h2>
+<p>PX4 프레임워크는 MAVLink 메시지를 처리할 때 특정 모듈들 간의 강한 결합(Tight Coupling)을 피하고, 철저히 uORB(Micro Object Request Broker) 메시징 버스를 위주로 한 비동기 이벤트 릴레이(Relay) 방식을 취한다.</p>
+<h3>1.1  내부 파서(Parser) 구문 트리: <code>mavlink_receiver.cpp</code></h3>
+<p>PX4의 시작점은 <code>mavlink</code> 모듈 내부의 <code>MavlinkReceiver::handle_message_command_long</code> 함수이다.</p>
+<ol>
+<li><strong>디코딩(Decoding) 및 역직렬화:</strong> MAVLink 패킷이 들어오면 <code>mavlink_msg_command_long_decode()</code> 함수를 통해 바이트 스트림이 C 구조체로 역직렬화(Deserialization)된다.</li>
+<li><strong>명령어 치환(Command Translation):</strong> 추출된 <code>command</code>(예: 22번 <code>MAV_CMD_NAV_TAKEOFF</code>)와 7개의 <code>param</code> 배열은 PX4의 내부 추상화 구조체인 <code>vehicle_command_s</code>로 1:1 매핑(Mapping)된다.</li>
+<li><strong>uORB 퍼블리싱 (Routing 시작):</strong> <code>mavlink_receiver</code>는 이 명령이 누구에 의해 수행될지(Copter인지, Plane인지) 판단하지 않는다. 단순히 구문 분석된 <code>vehicle_command_s</code> 인스턴스를 uORB 버스에 퍼블리시(Publish)한다. 이를 <strong>퍼블리시-서브스크라이브 토폴로지(Pub-Sub Topology)</strong> 라 한다.</li>
+</ol>
+<h3>1.2  메시지 라우팅과 <code>Commander</code>의 역할</h3>
+<p>uORB 버스에 올라온 <code>vehicle_command</code> 구조체는 이 시스템의 전역 유한 상태 관리 모듈인 <code>Commander</code>가 서브스크라이브(Subscribe)한다.</p>
+<ul>
+<li><code>Commander</code> 내부의 <code>command_handler.cpp</code>에서 거대한 <code>switch-case</code> 구문 트리가 전개된다.</li>
+<li><code>case vehicle_command_s::VEHICLE_CMD_NAV_TAKEOFF:</code> 분기점에서 기체의 현재 Armed 상태와 비행 모드(Nav State)를 검증한다.</li>
+<li>검증에 성공하면 <code>Commander</code>는 다시 내부 플래그를 변경하고, 최종적으로 이륙 이벤트를 관장하는 <code>Navigator</code> 모듈이 이를 인지하여, 고정익(Plane) 위치 제어 모듈(<code>fw_pos_control_l1</code>) 또는 멀티콥터 위치 제어 모듈(<code>mc_pos_control</code>)에 목표 궤적(<code>Setpoint</code>) 구성을 지시한다.</li>
+</ul>
+<h2>2.  Ardupilot의 메시지 라우팅 토폴로지: 객체 지향적 메소드 디스패치(Method Dispatch)</h2>
+<p>반면, Ardupilot은 C++의 다형성(Polymorphism)과 상속(Inheritance) 메커니즘을 적극 활용하여 메시지를 라우팅한다. MAVLink 패킷은 거대한 싱글톤 방식의 <code>GCS</code> 클래스에서 파싱된 즉시, 현재 활성화된 비행 역학(Vehicle Dynamics) 객체로 직접 하향 전파(Top-down Dispatch)된다.</p>
+<h3>2.1  내부 파서(Parser) 구문 트리: <code>GCS_MAVLink</code>의 거대 분기문</h3>
+<p>Ardupilot 메인 코드베이스의 <code>GCS_MAVLink::handle_command_long()</code> 함수는 MAVLink 패킷을 받아 파싱 트리를 전개한다.</p>
+<ul>
+<li>패킷은 역직렬화된 이후, 프레임워크 전반에 공유되는 거대한 <code>switch(packet.command)</code> 구문 트리를 통과한다.</li>
+<li><code>case MAV_CMD_NAV_TAKEOFF:</code> 블록에 도달하면, Ardupilot은 uORB와 같이 버스에 데이터를 던지는 것이 아니라, 현재 제어 주도권을 가진 기체 최상위 인터페이스(<code>vehicle</code> 포인터) 또는 비행 모드 객체 멤버 함수를 즉시 호출한다.</li>
+</ul>
+<h3>2.2  메세지 라우팅: Copter와 Plane의 다형성(Polymorphism)</h3>
+<p>Ardupilot은 이륙 명령어 처리를 <code>Copter</code>와 <code>Plane</code> (그리고 <code>Rover</code> 등) 서브클래스에서 재정의(Override)한 가상 함수(Virtual Function)로 라우팅한다.</p>
+<ul>
+<li><strong>Copter (멀티콥터):</strong> GCS 파서는 Copter의 <code>Mode_Guided</code> 또는 <code>Mode_Auto</code> 객체에 존재하는 <code>do_user_takeoff(altitude)</code>를 직접 서브루틴 호출(Synchronous Call)한다. 이 함수는 Z축(수직) 제어기인 <code>AC_POSCONTROL</code> 인터페이스에 목표 이륙 고도를 넘겨줌으로써 수직 상승 절차를 개시한다.</li>
+<li><strong>Plane (고정익):</strong> 고정익은 수직 이륙이 불가능하므로 이륙 런(Takeoff Run)이 필요하다. GCS 파서가 Plane 로직을 가리키고 있을 경우, Plane의 <code>Mode_Auto</code>는 활주로 이륙을 위한 스로틀 개방(Throttle Max) 및 일정 피치각(Pitch Angle) 유지를 위한 <code>AP_TECS</code> (Total Energy Control System) 라이브러리로 제어 벡터를 전달한다. 활주로 조향 제어를 위해 이륙 명령 하나가 스로틀(Throttle), 피치(Pitch), 러더(Rudder) 제어 레이어에 동시에 분산 라우팅되는 방사형(Radial) 라우팅 형태를 띤다.</li>
+</ul>
+<h2>3.  라우팅 토폴로지 차이 비교 (Architecture Comparison)</h2>
+<p>두 시스템이 이륙 파라미터(고도, 피치 등)를 구문 분석하여 실제 액추에이터 신호 발생 레이어까지 이동시키는 토폴로지는 다음과 같은 트레이드오프(Trade-off)를 가진다.</p>
+<table><thead><tr><th style="text-align: left">구분</th><th style="text-align: left">PX4-Autopilot 토폴로지 (<code>uORB</code> Publish-Subscribe)</th><th style="text-align: left">Ardupilot 토폴로지 (객체 지향 Method Dispatch)</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>메시지 전파 방식</strong></td><td style="text-align: left">비동기 버스(Asynchronous Bus) 기반 데이터 릴레이</td><td style="text-align: left">동기식 가상 함수(Synchronous Virtual Function) 직접 호출</td></tr>
+<tr><td style="text-align: left"><strong>구문 트리 위치</strong></td><td style="text-align: left"><code>mavlink_receiver</code> (1차 파싱) <span class="math math-inline">\rightarrow</span> <code>Commander</code> (상태 평가)</td><td style="text-align: left"><code>GCS_MAVLink</code> 모듈 내 거대 <code>switch/case</code> (일괄 파싱 및 호출)</td></tr>
+<tr><td style="text-align: left"><strong>모듈 간 결합도</strong></td><td style="text-align: left">낮음 (Decoupled). 통신 파트와 비행 제어 파트가 uORB로 격리됨.</td><td style="text-align: left">높음 (Coupled). GCS 모듈이 파싱 후 직통으로 제어 모드 코드 호출.</td></tr>
+<tr><td style="text-align: left"><strong>기체 의존성 처리</strong></td><td style="text-align: left">추상화된 논리(<code>Navigator</code>의 Mission Item)를 제어기(<code>mc</code>, <code>fw</code>)가 구독</td><td style="text-align: left">파서 자체에서 기체 클래스(<code>AP_Vehicle</code>) 내 속성에 의존적으로 호출</td></tr>
+<tr><td style="text-align: left"><strong>GCS 피드백 타이밍</strong></td><td style="text-align: left">uORB 지연(Latency) 후 평가 완료 시 독립된 Ack 전송 스레드가 응답</td><td style="text-align: left">파싱과 동시에 조건 검사 후 즉시(Immediate) 함수 반환값으로 Ack 전송</td></tr>
+</tbody></table>
+<h2>4.  토폴로지 다이어그램 모델링</h2>
+<pre><code class="language-mermaid">graph TD
+    subgraph GCS
+        A[MAV_CMD_NAV_TAKEOFF]
+    end
+
+    subgraph PX4 Routing Topology (uORB Pub-Sub)
+        A --&gt; B1[mavlink_receiver.cpp\n(Deserialize)]
+        B1 --&gt; |Translate to \n vehicle_command_s| C1[(uORB Message Bus)]
+        C1 --&gt; |Subscribe| D1[Commander\n(Global State Check)]
+        D1 --&gt; E1[Navigator\n(Flight Task Setup)]
+        E1 --&gt; F1_MC[mc_pos_control]
+        E1 --&gt; F1_FW[fw_pos_control_l1]
+    end
+
+    subgraph Ardupilot Routing Topology (Method Dispatch)
+        A --&gt; B2[GCS_MAVLink\n(switch-case parser)]
+        B2 --&gt; |Direct Call: \n vehicle_do_takeoff()| C2{Vehicle Type / Mode Pointer}
+        C2 --&gt; |Mode_Guided::do_user_takeoff| D2_Copter[Copter: AC_PosControl\n(Vertical Thrust)]
+        C2 --&gt; |Mode_Auto::do_takeoff| D2_Plane[Plane: AP_TECS\n(Takeoff Run / Pitch Up)]
+    end
+
+    style C1 fill:#f9f,stroke:#333,stroke-width:2px;
+    style C2 fill:#bbf,stroke:#333,stroke-width:2px;
+</code></pre>
+<h2>5.  결론</h2>
+<p>PX4와 Ardupilot 모두 <code>MAV_CMD_NAV_TAKEOFF</code>라는 동일한 ID(22번)를 통해 이륙 명령을 받는다. 하지만 PX4는 파서에서 읽어들인 바이트 스트림을 <code>vehicle_command</code> 구조체로 추상화하여 미들웨어(uORB)에 뿌리는 ’상위-지향형 느슨한 결합(Loose Coupling)’을 채택하고 있다. 이 구조는 안정성과 모듈 독립성은 뛰어나지만 분산 구조 특유의 상태 롤백(Rollback) 추적 난이도가 높다.<br />
+반면 Ardupilot은 GCS 수신부 파서가 C++ 다형성 객체인 Copter/Plane 모드 클래스 메소드를 직접 찔러주는(Dispatching) 방식을 채택하여, 실행 흐름(Execution Flow)의 직관성과 디버깅 편의성을 극대화하였다. GCS 관제 프로그램 개발자는 이와 같이 두 프레임워크가 응답 ACK를 생성하기까지 거치는 구문 트리 탐색과 메모리 릴레이 횟수 차이를 인지하고 명령 전송 지연시간(Latency)을 설계해야 한다.</p>
+<p><strong>참고문헌 및 링크:</strong></p>
+<ul>
+<li><a href="https://docs.px4.io/main/en/middleware/uorb.html">PX4 Messaging Architecture (uORB)</a></li>
+<li><a href="https://ardupilot.org/dev/docs/code-overview-gcs-mavlink.html">Ardupilot Codebase: GCS_MAVLink Routing Overview</a></li>
+</ul>
 
             </article>
             <footer>

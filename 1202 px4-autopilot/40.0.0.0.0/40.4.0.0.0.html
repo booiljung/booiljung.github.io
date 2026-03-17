@@ -115,52 +115,33 @@
             </header>
             <article>
                 <h1>40.4 피드백 제어 시스템(Feedback Control System) 관점의 재전송 알고리즘</h1>
-<p>이 절에서는 지상 관제 시스템(GCS, QGroundControl v4.3 기준)과 드론(PX4-Autopilot v1.14 기준) 간의 통신 재전송(Retransmission) 메커니즘을 단순한 IT 네트워크 프로토콜이 아닌 피드백 제어 시스템(Feedback Control System) 관점에서 수학적, 공학적으로 재해석하여 기술한다. 통신 오류 및 패킷 유실 상황에서 기체의 상태를 안전하고 결정적으로(Deterministically) 천이시키기 위한 폐루프 제어(Closed-loop Control) 아키텍처를 상세히 확인하라.</p>
-<h2>1.  MAVLink 명령어 전송을 위한 폐루프(Closed-loop) 제어 모델링</h2>
-<p>QGroundControl에서 특정한 제어 명령(예: <code>COMMAND_LONG</code>을 통한 비행 모드 변경 또는 이륙 지시)을 송출하고, 기체로부터 <code>COMMAND_ACK</code> 응답을 수신하는 과정은 본질적으로 클래식한 피드백 제어 루프와 완벽히 동일한 위상을 갖는다.</p>
-<p>이를 제어공학의 블록 다이어그램 요소로 치환하여 모델링하라.</p>
-<ul>
-<li><strong>참조 입력(Reference Input, <span class="math math-inline">r(t)</span>):</strong> GCS가 달성하고자 하는 목표 기체 상태 (Target State, 예: ‘임무 비행 모드 진입’).</li>
-<li><strong>플랜트(Plant, <span class="math math-inline">G(s)</span>):</strong> MAVLink 송수신 채널과 PX4-Autopilot의 내부 상태 공간 모델(State Space Model).</li>
-<li><strong>제어 입력(Control Input, <span class="math math-inline">u(t)</span>):</strong> GCS에서 발송하는 제어 패킷(예: <code>COMMAND_LONG</code>).</li>
-<li><strong>출력(Output, <span class="math math-inline">y(t)</span>):</strong> PX4 기체의 실제 제어 상태(Actual State).</li>
-<li><strong>피드백(Feedback, <span class="math math-inline">h(t)</span>):</strong> 기체가 GCS로 회신하는 응답 패킷(<code>COMMAND_ACK</code>) 및 <code>HEARTBEAT</code> 기반 시스템 상태 텔레메트리.</li>
-<li><strong>제어기(Controller, <span class="math math-inline">K(s)</span>):</strong> QGroundControl 내부에 구현된 상태 감시 타이머 및 재전송 제어 로직(Retry Logic).</li>
-</ul>
-<p>이 제어 루프에서 제어 오차 <span class="math math-inline">e(t) = r(t) - h(t)</span> 가 완벽한 <span class="math math-inline">0</span>(오차 없음)으로 수렴할 때까지 제어기(QGroundControl)는 적절한 제어 입력(MAVLink 커맨드 재전송)을 지속적으로 생성하는 알고리즘 루틴을 보장해야 한다.</p>
-<h2>2.  재전송 제어기(Retransmission Controller)의 수학적 거동 특성</h2>
-<p>재전송이라는 행위는 제어 공학의 임펄스 함수(Impulse Function, <span class="math math-inline">\delta(t)</span>) 응답 제어로 도식화될 수 있다. 오차 <span class="math math-inline">e(t) \neq 0</span> 인 상태에서 특정 타임아웃 주기 <span class="math math-inline">T_{retry}</span>마다 제어 입력을 재인가하는 펄스 진폭 변조(PAM)와 유사한 형태를 띤다. 제어기 출력 <span class="math math-inline">u(t)</span>는 단위 계단 함수의 지연 결합 수식으로 근사하여 표현할 수 있다.</p>
-<p><span class="math math-display"> u(t) = \sum_{n=0}^{N_{max}} u_0 \cdot \delta(t - n \cdot T_{retry}) \cdot \begin{cases} 1, &amp; \text{if } e(t-n \cdot T_{retry}) \neq 0 \\ 0, &amp; \text{otherwise} \end{cases} </span></p>
-<p>여기서 <span class="math math-inline">N_{max}</span>는 재전송 상한 횟수(Max Retries) 매개변수이다. 간섭이 심한 RF 채널 등 통신이 극도로 불안정한 환경에서 맹목적으로 무한 재전송 루프를 반복할 경우, 채널 포화(Channel Saturation) 및 제어 발산(Control Divergence) 현상을 유발할 수 있으므로 <span class="math math-inline">N_{max}</span> 설정과 <span class="math math-inline">T_{retry}</span>의 지수 백오프(Exponential Backoff) 채택 여부가 전체 관제 시스템의 안정도(Stability)를 좌우한다.</p>
-<h2>3. 명령의 멱등성(Idempotency)과 상태 발산 방지</h2>
-<p>피드백 제어 시스템에서 동일한 제어 입력(<span class="math math-inline">u(t)</span>)이 플랜트 단에 중복으로 투입될 때, 플랜트가 예측 불가능한 비선형 응답을 보이거나 토글형 거동을 보이면 제어 시스템은 통제 불능에 빠진다. 따라서 재전송 기반 제어에서는 플랜트(PX4-Autopilot)의 커맨드 수용 처리 계층이 반드시 수학적 **멱등성(Idempotency)**을 보장하도록 설계되어야 한다.</p>
-<ul>
-<li><strong>PX4 (멱등성 보장 설계):</strong> PX4 내부의 Commander 모듈은 이미 달성된 상태 공간에 대해 동일한 식별자의 모드 변경 커맨드가 중복 수신될 경우, 시스템의 물리적 비행 궤적에 악영향을 주지 않고 즉시 <code>MAV_RESULT_ACCEPTED</code> ACK 만을 재생산하여 안전하게 반환한다. 이는 제어 루프를 안정적으로 닫는(Close) 훌륭한 신뢰성 플랜트 설계이다.</li>
-<li><strong>Ardupilot 대비 차이점:</strong> Ardupilot 또한 비행 모드 변경 등의 하이레벨 제어에서 상당 부분 멱등성을 지니나, 일부 구형 하위 하드웨어 릴레이 제어 명령(페이로드 도어 개폐, 카메라 트리거 루프 등)에서는 연속 수신 시 상태 토글(Toggle)이나 중복 액션 실행이 일어날 가능성이 존재한다. 따라서 Ardupilot 관제 통합 시에는 GCS에서 MAVLink 시퀀스 번호 추적을 매우 엄격하게 수행해야 한다. 반면 PX4는 Commander 상태 머신 레벨에서 강력한 필터링 및 방어를 수행하므로 GCS 측 제어기 구현의 복잡성 부담이 다소 경감된다.</li>
-</ul>
-<h2>4. QGroundControl (v4.3) 기반 피드백 모니터링 아키텍처 구조</h2>
-<p>GCS 애플리케이션 개발 시 피드백 루프를 구현할 때, 단순히 MAVLink <code>COMMAND_ACK</code> 수신에만 전적으로 의존해서는 안 된다. 패킷 채널 유실은 상향 링크(Uplink)뿐만 아니라 하향 링크(Downlink)에서도 빈번하므로, 통신 구조 특성상 기체가 명령을 성공적으로 수신하여 상태를 이행했음에도 불구하고 GCS로 반환되는 ACK 패킷만이 단독 유실될 수 있다.</p>
-<p>이러한 사각지대를 극복하기 위해 QGroundControl 내부에 적용해야 할 강건한 관제 아키텍처 다이어그램을 다음과 같이 구성하라.</p>
-<pre><code class="language-mermaid">graph TD
-    subgraph "QGroundControl (Controller)"
-        A[Command Manager: 송신 대기열] --&gt;|u(t) 전송| B(Tx RF Module)
-        E[Timeout Timer &amp; Retry Logic] -.-&gt;|T_retry 만료 감지| A
-        C(Rx RF Module) --&gt;|ACK h_1(t)| D{Feedback Verifier}
-        C(Rx RF Module) --&gt;|Telemetry h_2(t)| D
-        D --&gt;|상태 비동기 속행 (e ≠ 0)| E
-        D --&gt;|상태 동기화 성공 (e = 0)| F[명령 대기 큐 해제 및 완료]
-    end
-
-    subgraph "PX4-Autopilot (Plant)"
-        B == Uplink ==&gt; G[MAVLink Receiver]
-        G --&gt; H{Commander State Machine}
-        H --&gt;|상태 천이 및 물리적 수행| I(Vehicle State / Heartbeat)
-        H --&gt;|ACK 즉시 발송| J(MAVLink Transmitter)
-        I == Downlink Phase ==&gt; C
-        J == Downlink Phase ==&gt; C
-    end
+<p>무인항공기(UAV) 지상 관제 시스템(GCS)에서 기체(Vehicle)로 MAVLink 제어 명령어(<code>COMMAND_LONG</code> 등)를 송신하고 패킷 유실에 대비하여 타임아웃(Timeout) 및 재전송(Retransmission)을 처리하는 로직은 표면적으로는 단순한 IT 네트워크 프로토콜처럼 보인다. 그러나 제어 공학(Control Engineering)과 자동화 서적의 설계 철학을 적용하면, GCS와 PX4-Autopilot 간의 신뢰성 통신 구조는 본질적으로 ’네트워크로 연결된 닫힌 루프 피드백 제어 시스템(Networked Closed-Loop Feedback Control System, NCS)’으로 치환하여 해석할 수 있다. 본 절에서는 이러한 거시적 제어 관점에서 재전송 알고리즘이 어떻게 안정성(Stability)을 유지하는지 분석한다.</p>
+<h2>1.  MAVLink 재전송 메커니즘의 피드백 루프 모델링</h2>
+<p>지상 통제소에서 자율 에이전트(기체)의 비행 모드(Flight Mode)를 ’Return(복귀)’으로 변경하는 명령을 하달했다고 가정해 보자. 이 행위는 피드백 제어기의 기준 입력(Reference Input, <span class="math math-inline">r(t)</span>)을 변경하는 것과 같다. 기체 내부의 Commander 모듈(플랜트, Plant)은 명령을 수신한 후 상태(State)를 변경하고 결과 출력(Output, <span class="math math-inline">y(t)</span>)을 생성한다. 그리고 MAVLink의 <code>COMMAND_ACK</code> 메시지는 GCS 측 센서 피드백(Sensor Feedback) 역할을 수행하여 제어기(Controller)로 전달된다.</p>
+<p>무선 환경의 간섭이나 대역폭 제한으로 인한 패킷 증발은 제어기 관점에서는 통신 라인 상의 강력한 외란(Disturbance, <span class="math math-inline">d(t)</span>) 혹은 데드 타임(Dead Time, <span class="math math-inline">e^{-s\tau}</span>)으로 작용한다. GCS 내부에 캡슐화된 ’타임아웃 감지 및 재전송 알고리즘’은 사실상 이 외란 <span class="math math-inline">d(t)</span>로 인해 피드백 <span class="math math-inline">y(t)</span>가 갱신되지 않는 에러 상태(Error, <span class="math math-inline">e(t) = r(t) - y(t) \ne 0</span>)를 인지하고, 제어 입력(Control Input, <span class="math math-inline">u(t)</span>)을 다시 플랜트에 주입하는 이벤트 기반 비례 제어(Event-based P-Control) 루프라 할 수 있다.</p>
+<h2>2.  피드백 제어 루프 블록 다이어그램 (Mermaid)</h2>
+<p>아래의 다이어그램은 GCS의 MAVLink 재전송 알고리즘 체계를 전형적인 제어 공학의 피드백 루프 블록도로 투영한 모델이다.</p>
+<pre><code class="language-mermaid">graph LR
+    R[기준 입력 $r(t)$&lt;br&gt;사용자 명령] --&gt; Sum((+))
+    Sum --&gt;|오차 $e(t)$| C[재전송 제어기&lt;br&gt;QGC Command Queue]
+    C --&gt;|제어 입력 $u(t)$&lt;br&gt;MAVLink Transmit| Delay1[네트워크 지연/유실 $\tau_{tx}$]
+    Delay1 --&gt; P[PX4-Autopilot&lt;br&gt;Commander Plant]
+    P --&gt; |무선 외란 $d(t)$| P
+    P --&gt;|상태 출력 $y(t)$| Delay2[네트워크 지연/유실 $\tau_{rx}$]
+    Delay2 --&gt;|피드백 $y_m(t)$&lt;br&gt;COMMAND_ACK| Sum
 </code></pre>
-<p>QGroundControl C++ 소스 코드 레벨의 <code>Vehicle::sendMavCommand</code> 연관 컴포넌트 구현 시, 단순히 직접 피드백인 <code>COMMAND_ACK</code> 수신만 대기할 것이 아니라, <code>HEARTBEAT</code> 메시지의 <code>custom_mode</code> 필드 또는 <code>EXTENDED_SYS_STATE</code> 메시지를 동시 모니터링(간접 피드백)하라. 이를 통해 기체의 실제 비행 상태가 시스템 목표 상태 <span class="math math-inline">r(t)</span> 로 정상 도달했는지를 이중(Dual)으로 검증 판단하는 ‘다중 루프 제어(Multi-loop Feedback Control)’ 기법을 필수적으로 반영해야 한다.</p>
+<p>타임아웃은 위 루프에서 <span class="math math-inline">y_m(t)</span>가 제한된 시간 안에 도달하지 못해 오차 <span class="math math-inline">e(t)</span>가 양(Positive)의 값으로 유지될 때 <span class="math math-inline">u(t)</span>를 다시 펄스 스파이크(Pulse Spike) 형태로 인가하는 비선형 스위칭 메커니즘을 띤다.</p>
+<h2>3.  QGroundControl(GCS) 및 PX4의 관제 로직 해석</h2>
+<p>QGroundControl(v4.3 기준) 소스 코드 내부의 <code>Vehicle</code> 객체와 Command 관리 매니저는 이러한 피드백 관점에서 고도로 최적화되어 있다.</p>
+<ul>
+<li><strong>Anti-Windup 메커니즘 차원의 최대 재전송 횟수 제한:</strong><br />
+서보 모터나 PID 제어기에서 누적 오차에 의한 적분 와인드업(Integral Windup) 발산을 막기 위해 한계값(Saturation)을 설정하듯, QGC의 재전송 제어기 역시 최대 3~5회의 재시도 상한선을 둔다. 이는 네트워크 단절 상황에서 무한히 패킷을 쏘아 대역폭을 소진시키는 통신 발산(Communication Oscillation)을 방지하기 위한 안티-와인드업 기법이다.</li>
+<li><strong>PX4 생태계와 Ardupilot 간의 상태 피드백 철학 비교:</strong><br />
+GCS 관제 양상에서 Ardupilot은 MAVLink 명령 전송과 응답(ACK)이라는 이벤트(Event) 중심의 선형적 트랜잭션 성공 여부에 큰 책임을 부여한다. 반면, PX4 생태계는 GCS 내부의 상태 머신 모델(State Machine Model)을 주기적 스트리밍 텔레메트리(예: 고주파수 <code>HEARTBEAT</code> 및 시스템 상태 메시지)를 통해 전역적으로 갱신(Global State Observation)하는 것에 중점을 둔다. 즉, PX4 구조에서는 특정 명령어 단위의 국소적(Local) 피드백 루프가 타임아웃으로 모조리 실패하더라도, MAVLink 시스템 전체의 상태 관측 주기 위에서 백그라운드 모델이 동기화되도록 설계된 강건함(Resilience)을 특징으로 한다.</li>
+</ul>
+<h2>4.  자율 에이전트 비행 개발 시의 기술적 시사점</h2>
+<p>학술적인 시스템 엔지니어링에서는 ROS2(이하 uXRCE-DDS 미들웨어 브리지 기반)로 복수 기체(Swarm) 관제 에디터(Director)를 구축할 시 이 피드백 루프의 안정성 보장을 최우선으로 해야 한다.</p>
+<p>송신 주기 <span class="math math-inline">T_s</span>와 통신 채널의 전송 데드 타임 <span class="math math-inline">\tau</span>, 그리고 패킷 분실 확률에 의한 지연 성분이 제어 루프의 위상 여유(Phase Margin)를 갉아먹는다. 따라서 네트워크 제어 시스템(NCS) 이론에 입각하여, 재전송 간격을 고정된 타임아웃 값이 아니라 채널의 트래픽 상태를 반영하는 시변(Time-varying) 피드백 이득(Feedback Gain) 형태로 스케줄링하는 로직을 GCS 백엔드 통신 아키텍처나 ROS2 퍼블리싱 매니저에 구현해야 한다. 이를 통해 극심한 RF 혼잡(RF Congestion) 환경에서도 PX4-Autopilot 기반 에이전트들이 예외 상황에 추락하거나 비이상적인 진동 모드로 빠지지 않도록 높은 제어 품질을 이끌어낼 수 있다.</p>
 
             </article>
             <footer>
