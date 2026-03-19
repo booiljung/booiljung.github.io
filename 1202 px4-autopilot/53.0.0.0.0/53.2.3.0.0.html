@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:53.2.3 패킷 시퀀스 누락 기반의 확률적 패킷 손실률(Packet Loss Rate) 추정 메커니즘</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>53.2.3 패킷 시퀀스 누락 기반의 확률적 패킷 손실률(Packet Loss Rate) 추정 메커니즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 53. 통신 단절(Data Link Loss) 감지 및 GCS 측의 예외 처리 로직</a> / <span>53.2.3 패킷 시퀀스 누락 기반의 확률적 패킷 손실률(Packet Loss Rate) 추정 메커니즘</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>53.2.3 패킷 시퀀스 누락 기반의 확률적 패킷 손실률(Packet Loss Rate) 추정 메커니즘</h1>
+<h2>1.  개요 및 MAVLink 시퀀스 번호의 이해</h2>
+<p>무인항공기 제어에서 통신 단절(Data Link Loss)에 대응하기 위해서는 수신 지연 시간(Latency)의 단순 측정뿐만 아니라 패킷 손실률(PLR, Packet Loss Rate)의 상태를 수학적으로 산출하는 메커니즘이 필수적이다. QGroundControl(GCS)과 PX4-Autopilot 사이의 프로토콜인 MAVLink(v1 및 v2) 생태계는 프레임의 헤더 구조 안에 0에서 255 사이에서 순환하는 1바이트 크기의 시퀀스 번호(Sequence Number, <code>seq</code>)를 포함하고 있다.</p>
+<p>이 시퀀스 번호 속성은 패킷이 GCS 혹은 탑재된 비행 제어기(FC)에 도달할 때마다 프로토콜 파문(Parsing) 단계에서 가장 먼저 검사된다. 직전에 정상 수신된 프레임의 시퀀스 정보와 현재 프레임의 시퀀스 숫자를 비교 대조함으로써, 물리적 전송 구간(RF 채널 또는 IP 망)에서 소실된 패킷의 정확한 개수를 가늠할 수 있는 근간이 된다.</p>
+<h2>2.  시퀀스 누락에 기반한 패킷 손실 계산 역학</h2>
+<p>수신기가 예상하고 있는 다음 번호의 시퀀스를 <span class="math math-inline">S_{expected}</span> 이라 정의하고, 네트워크로부터 실제 파싱된 패킷의 번호를 <span class="math math-inline">S_{current}</span> 라 할 때 누락된 패킷의 총량 <span class="math math-inline">L_{pkt}</span> 는 8비트 부호 없는 정수(Unsigned 8-bit Integer)의 오버플로우(Overflow) 특성을 반영하여 아래와 같은 모듈로(Modulo) 연산으로 명확히 도출된다.</p>
+<p><span class="math math-display"> L_{pkt} = (S_{current} - S_{expected}) \pmod{256} </span></p>
+<p>수식 연산 결과 <span class="math math-inline">L_{pkt} &gt; 0</span> 인 상태가 감지되면, 그 차이값만큼의 MAVLink 패킷이 대기 중 증발했거나 간섭에 의해 파괴되었음을 물리적으로 시사한다. 이 누락 판별 직후 모델은 <span class="math math-inline">S_{expected}</span> 를 <span class="math math-inline">(S_{current} + 1) \pmod{256}</span> 로 전진 스위칭시켜 다음 패킷의 수신 검을 대비한다.</p>
+<p>하지만 이렇게 산정된 국소적인 추정치 <span class="math math-inline">L_{pkt}</span> 자체만으로는 GCS의 Failsafe 상태 머신(State Machine)을 즉각 트리거(Trigger)하기에 다소 위험성이 따른다. 텔레메트리의 제한적 대역폭이나 LTE 셀룰러 망에서는 대기 큐 지연(Queueing Delay)에 의한 패킷 시퀀스의 뒤바뀜(Out-of-order) 현상이 나타날 수 있으며, 극히 미미한 수준의 패킷 훼손을 ’통신 불가’로 결정해버리면 전체 시스템 운용의 가용성(Availability)이 처참하게 훼손되기 때문이다.</p>
+<h2>3. 확률론적 패킷 손실률(Probabilistic PLR) 융합 추정 모델</h2>
+<p>간헐적인 패킷의 유실을 실제 채널의 심각한 열화 단계와 차별화하기 위해, 시스템 설계 측면에서는 특정 시간 윈도우(Time Window)나 슬라이딩 큐(Sliding Queue) 기반의 확률론적 접근을 채택한다. 무인기 관제 아키텍처에서는 이를 위해 기저 트래픽과 통신 상태를 분별하는 이중 이동 평균(Dual Moving Average) 추정 모델이 각광받는다.</p>
+<ol>
+<li><strong>단기 손실률 추정 모델 (<span class="math math-inline">P_{short}</span>):</strong> 최근 수신된 <span class="math math-inline">N</span> 개의 패킷(예: 30~50 패킷 단위 슬라이딩 윈도우) 내에서 시퀀스 누락 비율을 즉각 반영한다. 도심 비행 관제에서 흔히 마주하는 일시적인 RF 간섭, 혹은 안테나 음영 지역(Blind Spot) 통과 등의 순간적인 네트워크 임피던스(Impedance) 스파이크를 판독하는 지표이다.</li>
+<li><strong>장기 손실률 추정 모델 (<span class="math math-inline">P_{long}</span>):</strong> 비교적 긴 시간 범위의 지수 가중 이동 평균(EMA)을 기반으로 누적 손실 확률을 추출한다. 데이터 링크 하드웨어 자체의 안테나 체결 불량 수신, IP 릴레이 서버의 고질적 라우팅 포화 등 매체 기저 상태의 영구적 열화를 진단한다.</li>
+</ol>
+<p>상기 제시된 두 가지 계수를 통계적으로 혼합한 확률 변수를 통해 QGC 백엔드(Backend)는 데이터 링크 무효화(Invalidation) 경계를 지능적으로 조절할 수 있다.</p>
+<h2>4. QGroundControl 중심의 소프트웨어 구현 아키텍처 접근</h2>
+<p>PX4 생태계를 주도하는 QGroundControl의 통신 큐(Data Link Queue) 처리 모듈은 수신 채널에서 들어오는 <code>mavlink_message_t</code> 구조체를 해부한다. 이때 단순한 전체 시퀀스 뿐만 아니라, 메타데이터인 시스템 ID(<code>sysid</code>) 및 컴포넌트 ID(<code>compid</code>)를 다중 키 집합(Composite Key-set)으로 매핑(Mapping)함으로써 군집 비행(Swarm) 중인 여러 기체별로 독립적인 시퀀스 점프 에러(Sequence Jump Error)를 분리 추적한다.</p>
+<p><strong>C++ 관제 백엔드 코드의 논리적 뼈대:</strong></p>
+<pre><code class="language-cpp">// 수신 패킷과 예측 패킷 변수 정의
+uint8_t current_seq = rx_msg.seq;
+uint8_t expected_seq = link_state[rx_msg.sysid][rx_msg.compid].expected_seq;
+
+if (current_seq != expected_seq) {
+    // 순환 오버플로우 한계를 고려하여 차이 분량 산출
+    int lost_count = (current_seq - expected_seq + 256) % 256;
+    link_state.total_lost_packets += lost_count;
+    
+    // 확률적 관측 윈도우에 진입 내역 업데이트 (PLR 갱신)
+    probabilistic_plr_model.update_plr_window(lost_count);
+}
+
+// 다음 예상을 캘리브레이션
+link_state[rx_msg.sysid][rx_msg.compid].expected_seq = (current_seq + 1) % 256;
+</code></pre>
+<p>이렇게 모니터링된 실시간 손실 확률 밀도는 단절 타임아웃이 확정되기 이전에도 지상 통제 요원(Operator)에게 “Link Degradation Warning” 상태로 QGC UI의 헤더에 출력되어 적극적인 예방(Proactive) 조종 개입의 기회를 부여한다.</p>
+<h2>5. Ardupilot의 하드웨어 메트릭 의존성과 대비되는 한계 타개</h2>
+<p>과거 Ardupilot 기반 운용 체계나 Mission Planner 플랫폼은 패킷 유실의 위험도를 잴 때, 900MHz/433MHz 계열의 전용 송수신 모뎀(SiK Radio 등)이 자체적으로 GCS에 보고하는 <code>RADIO_STATUS</code> 메시지 속 무선 신호 강도(<code>RSSI</code>)나 내부 버퍼 오류 지표에 강력하게 편식(Bias)하는 경향이 농후했다. 이러한 아키텍처는 전용 모뎀을 취급할 때는 직관적이었으나, 하드웨어 투명성(Hardware Transparency)이 극명한 상용 Wi-Fi, 혹은 5G 통신 라우터를 비행체에 연동하게 될 경우 모뎀이 특수 MAVLink 메트릭 기능을 지원하지 않아 링크 품질 저하 사실을 GCS가 전혀 인지조차 하지 못하는 맹점(Blind Spot)을 배태했다.</p>
+<p>비교건대, 최신의 PX4-Autopilot 및 QGroundControl이 적용해 나가는 독립적인 메커니즘은 MAVLink 패킷 시퀀스 성질 그 자체를 어플리케이션 계층(Application Layer) 수준에서 완전하게 추상화하여 모델링한다. 하부 네트워크 계층(Physical / Data Link Layer)의 하드웨어 종속성으로부터 완벽하게 탈피했으므로, 어떠한 비표준적 IP 매체를 장착하더라도 확률적 PLR 추정 파이프라인은 흔들림 없이 동일한 제어 역학을 바탕으로 페일세이프의 기준점을 실시간 제조(Manufacture)해 내는 특장점을 보유한다.</p>
+<h2>6. 결론</h2>
+<p>응용 소프트웨어 계층에서의 시퀀스 누락 기반 확률적 PLR 산출은, 원시적인 타임아웃 감지의 패러다임을 넘어 통신 품질 구간의 파멸적 붕괴(Degradation) 징후를 조기에 포착하고 경보하는 강력한 무기이다. 이 추정 메커니즘이 QGroundControl 라우팅 엔진에 긴밀하게 녹아듦으로써, PX4 기반 자율 비행 객체는 극한의 잡음과 예측 불가능한 무선 환경에 맞서 한 차원 승격된 연결 모니터링 체계를 확보할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

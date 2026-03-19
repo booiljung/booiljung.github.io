@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:63.2 ROS2-PX4 Offboard 미들웨어 통신 아키텍처 및 메시지 직렬화 체계</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>63.2 ROS2-PX4 Offboard 미들웨어 통신 아키텍처 및 메시지 직렬화 체계</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.2 ROS2-PX4 Offboard 미들웨어 통신 아키텍처 및 메시지 직렬화 체계</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>63.2 ROS2-PX4 Offboard 미들웨어 통신 아키텍처 및 메시지 직렬화 체계</h1>
+<h2>1.  개요</h2>
+<p>최신 자율 비행 시스템에서 임무 컴퓨터(Companion Computer)와 비행 제어기(FC, Flight Controller) 간의 실시간 고대역폭 데이터 교환은 필수적이다. PX4-Autopilot(v1.14 이상)은 기존 MAVLink 환경의 병목을 해소하고, ROS 2 환경과 네이티브(Native)하게 융합하기 위해 uXRCE-DDS 미들웨어(Middleware) 아키텍처를 전면 도입하였다. 본 장에서는 ROS 2와 PX4 간의 미들웨어 통신 구조를 분석하고, 비행 제어기의 데이터가 미들웨어 위에서 어떻게 바이트 스트림으로 압축되고 해제되는지 직렬화(Serialization) 체계의 원리를 상술한다.</p>
+<h2>2.  uXRCE-DDS 미들웨어 기반 통신 아키텍처</h2>
+<p>ROS 2의 근간을 이루는 데이터 분배 서비스(DDS, Data Distribution Service) 공간에, 리소스가 제약된 NuttX RTOS 기반의 비행 제어기를 편입시키기 위해 <strong>Micro-XRCE-DDS</strong> 규격이 사용된다. 전체 아키텍처의 핵심 구성 요소는 다음과 같다.</p>
+<ol>
+<li><strong>PX4 uXRCE-DDS Client</strong>:</li>
+</ol>
+<ul>
+<li>비행 제어기 내부 단에서 동작하는 PX4의 모듈이다.</li>
+<li>PX4의 내부 비동기 메시징 버스인 uORB(Micro Object Request Broker)와 직접 맞닿아 있으며, 특정 uORB 토픽을 구독(Subscribe)하거나 ROS 2로부터 들어온 명령을 uORB에 발행한다.</li>
+</ul>
+<ol start="2">
+<li><strong>Micro-XRCE-DDS Agent</strong>:</li>
+</ol>
+<ul>
+<li>임무 컴퓨터(Ubuntu 리눅스 기반 ROS 2 생태계) 내에서 구동되는 데몬 기반 브릿지이다.</li>
+<li>Client로부터 수신한 경량화 패킷의 프로토콜을 해독하고, 이를 완전한 형태의 ROS 2 DDS 메시지로 변환하여 글로벌 DDS 도메인에 흩뿌리거나 그 반대의 역할을 수행한다.</li>
+</ul>
+<ol start="3">
+<li><strong>통신 인터페이스 (Transport Layer)</strong>:</li>
+</ol>
+<ul>
+<li>두 모듈 사이의 물리적/논리적 연결망으로 주로 직렬 포트(UART/Serial) 또는 이더넷 기반의 UDP/TCP 프로토콜이 사용된다.</li>
+</ul>
+<h3>2.1  아키텍처 데이터 흐름도</h3>
+<pre><code class="language-mermaid">graph LR
+    subgraph PX4-Autopilot [비행 제어기 기판 - PX4]
+        uORB[(uORB Topics)] &lt;--&gt; Client[uXRCE-DDS Client]
+    end
+    
+    subgraph Companion [임무 컴퓨터 - ROS 2]
+        Agent[Micro-XRCE-DDS Agent] &lt;--&gt; DDS[(ROS 2 DDS Domain)]
+        DDS &lt;--&gt; Node[Offboard 제어 노드 (C++/Python)]
+    end
+    
+    Client &lt;-- "직렬 통신(UART) 또는 UDP" --&gt; Agent
+</code></pre>
+<h2>3.  메시지 직렬화 및 역직렬화 (Serialization &amp; Deserialization) 체계</h2>
+<p>미들웨어를 거쳐 기종이 다른 하드웨어(비행 제어기의 마이크로컨트롤러와 임무 컴퓨터의 일반 프로세서) 간에 메모리 객체를 전달하려면, 데이터 구조체를 평면적인 바이트 스트림(Byte Stream) 배열로 변환하는 직렬화 기술이 필수적이다.</p>
+<ul>
+<li><strong>CDR (Common Data Representation)</strong>:<br />
+OMG(Object Management Group)에서 정의한 네트워크 전송을 위한 데이터 직렬화 표준 포맷이다. PX4의 uXRCE-DDS 환경에서는 이를 극도로 경량화시킨 <strong>Micro CDR</strong> 라이브러리를 채집하여 활용한다.</li>
+<li><strong>직렬화 메커니즘 구동 방식</strong>:</li>
+</ul>
+<ol>
+<li>PX4 내에서 궤적 제어, 센서 파라미터 등과 연관된 uORB C++ 구조체(예: <code>VehicleLocalPosition</code>)가 갱신된다.</li>
+<li>Client 모듈은 이 메모리 블록을 가져와 Micro CDR 규격에 따라 직렬화한다.</li>
+<li>이 과정에서 두 시스템 간의 바이트 배열 순서(Endianness, 대개 Little-Endian으로 통일)의 불일치를 포맷팅 플래그로 조율하며, 데이터 타임스탬프와 타입 길이를 헤더에 정렬(Padding)하여 삽입한다.</li>
+<li>패키징 된 직렬화 데이터 페이로드(Payload)는 XRCE 하위 프레이밍 규칙(Framing Rule)으로 감싸져 물리 계층을 통해 전송되고, 수신 측(Agent)에서는 역순으로 역직렬화(Deserialization)되어 ROS 2 IDL(Interface Definition Language) 구조체로 복원된다.</li>
+</ol>
+<h2>4.  Ardupilot 대비 아키텍처 설계 차이 및 Offboard 제어의 장점</h2>
+<p>전통적인 자율 에이전트 관점에서 Ardupilot은 MAVLink 프로토콜과 MAVROS 브리지 노드를 주축으로 ROS 1/2 환경과 소통해왔다.<br />
+MAVLink는 드론 원격 관제(Telemetry)에 있어 매우 우수한 네트워크 효율성을 지니고 있지만, ROS 본연의 복잡한 메시지 데이터타입(예: 대용량 포인트 클라우드, 다차원 행렬)을 매핑하는 과정에서 프로토콜 변환 오버헤드와 정보의 불일치가 발생한다.</p>
+<p>반대로 현재의 PX4-Autopilot이 채택한 uXRCE-DDS 구조는 MAVLink 변환 계층을 생략하고, <code>px4_msgs</code> 저장소를 통해 uORB 구조체를 ROS 2 IDL 규격으로 1:1 정적 매핑한다.</p>
+<ol>
+<li><strong>지연 시간(Latency) 절감</strong>: 직접 변환 방식이므로 End-to-End 제어 딜레이가 최소화된다. 이는 시속 100km 이상 비행하는 고속 기체나 기민한 장애물 회피 제어루프에서 핵심적이다.</li>
+<li><strong>동질적(Homogeneous) 생태계 통합</strong>: Offboard 제어 노드 개발자는 분리된 드론용 통신 패러다임을 따로 학습할 필요 없이 순수한 ROS 2 DDS 메커니즘에 준거하여 소프트웨어를 디자인할 수 있다.</li>
+</ol>
+<h2>5.  결론</h2>
+<p>ROS2-PX4 Offboard 미들웨어 통신 아키텍처는 uXRCE-DDS 기술과 Micro CDR 직렬화 체계를 통해 분리된 이기종 무인기 하드웨어 보드망을 하나의 논리적인 ROS 2 DDS 클러스터 공간으로 확장한다. 이러한 설계는 지연시간 단축 및 데이터 추상화 관점에서 탁월한 효율성을 보여주며, 복잡한 군집 제어 및 AI 딥러닝 비전 연동과 같은 차세대 오프보드 제어 애플리케이션에 매우 강력한 통신 기틀을 제공해 준다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

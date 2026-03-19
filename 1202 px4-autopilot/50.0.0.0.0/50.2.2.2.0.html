@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:50.2.2.2. 현재 실행 중인 비행 모드의 우선순위와 착륙 명령의 인터럽트 우선순위 간의 선점(Preemption) 스케줄링 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>50.2.2.2. 현재 실행 중인 비행 모드의 우선순위와 착륙 명령의 인터럽트 우선순위 간의 선점(Preemption) 스케줄링 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 50. 착륙(Land) 명령 전달 및 지면 접촉(Landed) 상태 감지 로직</a> / <span>50.2.2.2. 현재 실행 중인 비행 모드의 우선순위와 착륙 명령의 인터럽트 우선순위 간의 선점(Preemption) 스케줄링 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>50.2.2.2. 현재 실행 중인 비행 모드의 우선순위와 착륙 명령의 인터럽트 우선순위 간의 선점(Preemption) 스케줄링 로직</h1>
+<p>PX4-Autopilot의 비행 제어 아키텍처는 다수의 비행 모드(Flight Mode)와 페일세이프(Failsafe) 로직이 동시에 시스템 제어권을 확보하기 위해 경쟁하는 다중 상태(Multi-state) 환경이다. 따라서 지상 관제 시스템(GCS)으로부터 착륙(Land) 명령이 유입되었을 때, 이 명령이 현재 실행 중인 비행 모드를 즉각적으로 선점(Preemption)할 수 있는지 판단하는 엄격한 우선순위(Priority) 스케줄링 로직이 <code>Commander</code> 모듈 내부에 구현되어 있다. 본 절에서는 착륙 명령의 인터럽트 우선순위가 다른 비행 모드들과 어떻게 상호작용하는지 심도 있게 다룬다.</p>
+<h2>1.  PX4 비행 모드의 우선순위 계층 구조(Priority Hierarchy)</h2>
+<p>비행 제어 소프트웨어는 예기치 못한 충돌이나 명령 엇갈림을 방지하기 위해 각 모드에 절대적인 계층적 우선순위를 부여한다. 우선순위는 크게 사용자 편의성 모드(User Assist), 자율 비행 모드(Autonomous), 그리고 생존을 위한 비상 모드(Failsafe/Emergency)로 분류된다.</p>
+<ul>
+<li><strong>최상위 (비상/생존 모드)</strong>: Flight Termination, Kill Switch, Critical Battery Failsafe, Sensor Failure</li>
+<li><strong>상위 (명령형 자율 모드)</strong>: Auto Land, Return To Launch (RTL), Mission (Auto)</li>
+<li><strong>중위 (보조형 수동/반자동 모드)</strong>: Position Control, Altitude Control, Offboard</li>
+<li><strong>하위 (수동 모드)</strong>: Manual, Stabilized, Acro</li>
+</ul>
+<p>GCS를 통한 <code>VEHICLE_CMD_NAV_LAND</code> 커맨드는 “상위 (명령형 자율 모드)” 계층에 속하는 <code>Auto Land</code>를 트리거한다.</p>
+<h2>2.  선점(Preemption) 평가 메커니즘</h2>
+<p><code>Commander</code> 스레드가 착륙 명령을 수신하면, 내부적으로 <code>set_nav_state()</code> 함수를 호출하기 전 현재 유지 중인 <code>nav_state</code>의 우선순위와 새로 요청된 <code>Auto Land</code>의 우선순위를 비교하는 선점 평가 메커니즘을 가동한다.</p>
+<ol>
+<li><strong>상향 선점 (Upward Preemption - 허용)</strong>: 현재 기체가 Position Control(중위) 혹은 Mission(상위-일반) 상태에서 비행 중일 때 착륙(Land) 명령이 들어오면, 이는 조종사나 관제사의 명시적이고 긴급도 높은 개입으로 간주되어 기존 모드를 즉각 선점하고 착륙 유도 제어로 전환된다.</li>
+<li><strong>하향 혹은 동위에 의한 거부 (Downward Preemption - 거부)</strong>: 만약 기체가 이미 Low Battery Failsafe에 의해 자동 복귀(RTL) 후 강제 하강(Land) 중이거나, 통신 두절(Data Link Loss) 페일세이프 상태라면, GCS의 일반적인 착륙 명령은 시스템 생존 모드보다 설계상 우선순위가 낮으므로 수용되지 않고(명시적 <code>MAV_RESULT_TEMPORARILY_REJECTED</code> 또는 <code>DENIED</code> 응답) 기존 비상 시퀀스를 계속 유지한다.</li>
+</ol>
+<h2>3.  커맨드 인터럽트와 스케줄링 로직의 상태 전이도</h2>
+<p>다음은 현재 비행 모드 상황에 따라 착륙 명령의 선점 여부가 결정되는 스케줄링 논리의 흐름을 보여주는 상태 전이도이다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    state "현재 실행 중인 비행 모드 (Current Mode)" as Current_Mode
+    Current_Mode --&gt; Preemption_Check : GCS 착륙 명령 유입 (LAND CMD)
+    
+    state "선점 평가 스케줄러 (Preemption Scheduler)" as Preemption_Check {
+        state "우선순위 비교 (Compare Priorities)" as Compare
+        Compare --&gt; Is_Failsafe_Active : Yes
+        Compare --&gt; Normal_Flight : No
+    }
+    
+    Is_Failsafe_Active --&gt; Deny_Command : 페일세이프 로직 유지 \n(명령 거부)
+    Normal_Flight --&gt; Override_Mode : 기존 모드 중단 및 선점
+    
+    Override_Mode --&gt; Auto_Land_State : 내비게이션 상태 전이 \n(Auto Land)
+    Deny_Command --&gt; Return_Ack : MAV_RESULT_DENIED 송출
+    Auto_Land_State --&gt; Return_Ack : MAV_RESULT_ACCEPTED 송출
+</code></pre>
+<h2>4.  Ardupilot 대비 아키텍처적 차이점</h2>
+<ul>
+<li><strong>모드 전환의 유연성과 위계</strong>: Ardupilot의 비행 제어기(예: <code>Copter</code>)는 사용자 명령이나 GCS 커맨드에 의해 <code>set_mode()</code>가 호출될 때 대부분의 경우 사용자의 의도를 최우선으로 존중하여 강제로 모드를 덮어쓰는(Overwrite) 경향이 강하다. 반면, PX4-Autopilot은 <code>vehicle_status</code>의 내부 상태 머신이 다중 트리 기반(Hierarchical State Machine)으로 정교하게 짜여 있어, 시스템 스스로 판단한 비상 우선순위(Failsafe Priority)가 사용자 개입(Manual Command)보다 우위에 있는 경우가 더 많다. 이는 자율 주행의 시스템적 안전성(Autonomy Safety)을 인간의 오판으로부터 보호하려는 PX4의 설계 철학을 반영한다.</li>
+</ul>
+<h2>5.  요약 및 실무 적용 시 고려사항</h2>
+<p>착륙 명령이 하위 모드를 선점하여 실행되는 과정은 단순한 <code>switch-case</code> 구문이 아니라, 기체의 안위를 보장하기 위한 철저한 우선순위 스케줄링 결과이다. 관제 응용 프로그램(Custom GCS)을 개발하는 실무자는 착륙 명령 송출 시 무조건 기체가 반응할 것이라 가정(Assumption)해서는 안 된다. 항상 반환되는 <code>COMMAND_ACK</code> 결과 코드를 비동기 콜백으로 대기(Awaiting) 처리하고, 만약 명령이 선점당하지 못하고 거부되었다면 기체가 현재 더 높은 계층의 페일세이프 상태에 빠져 있는지 원격 원격도구(Telemetry) 측면에서 사용자 인터페이스(UI)로 경고해야만 온전한 관제 루프를 달성할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

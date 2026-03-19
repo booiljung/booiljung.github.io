@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:53.4.4.1. 지수적 백오프(Exponential Backoff) 및 무작위 지연(Randomized Jitter)을 혼합한 브로드캐스트 스톰(Broadcast Storm) 회피 알고리즘</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>53.4.4.1. 지수적 백오프(Exponential Backoff) 및 무작위 지연(Randomized Jitter)을 혼합한 브로드캐스트 스톰(Broadcast Storm) 회피 알고리즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 53. 통신 단절(Data Link Loss) 감지 및 GCS 측의 예외 처리 로직</a> / <span>53.4.4.1. 지수적 백오프(Exponential Backoff) 및 무작위 지연(Randomized Jitter)을 혼합한 브로드캐스트 스톰(Broadcast Storm) 회피 알고리즘</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>53.4.4.1. 지수적 백오프(Exponential Backoff) 및 무작위 지연(Randomized Jitter)을 혼합한 브로드캐스트 스톰(Broadcast Storm) 회피 알고리즘</h1>
+<p>군집 비행(Swarm Flight) 환경이나 다수의 지상 관제 시스템(GCS)이 동일한 네트워크 인프라 레이어를 공유하는 멀티 에이전트(Multi-agent) 시스템에서, 일시적인 네트워크 마비나 중계 안테나의 초기화가 발생하면 전체 노드가 동시에 통신 단절 상태에 빠진다. 이후 인프라가 복구되는 시점에 무인기들과 GCS 노드들이 일제히 동일한 타이머 주기로 재연결을 시도하게 되면, 전송망의 대역폭 한계를 초과하는 브로드캐스트 스톰(Broadcast Storm) 현상 또는 다중 프로토콜 충돌이 일어난다.</p>
+<p>네트워크 장비의 포화(Congestion)로 인해 다시 연결 확립이 실패하고, 타임아웃이 발생한 노드들이 또다시 동시에 재접속을 시도하는 악순환, 즉 ‘동기화된 진동(Synchronized Oscillation)’ 상태에 빠져 영원히 복구되지 못하는 병목 아키텍처를 해결하기 위해서는, 분산 시스템 제어 이론에 입각한 지수적 백오프(Exponential Backoff)와 무작위 지연(Randomized Jitter) 혼합 알고리즘의 도입이 요구된다.</p>
+<h2>1. 지수적 백오프(Exponential Backoff) 함수 모델링</h2>
+<p>지수적 백오프는 재연결이 연속으로 실패할 때마다 다음 시도까지의 대기 시간(Waiting Interval)을 지수 함수적으로 증가시키는 네트워크 혼잡 제어(Congestion Control) 방식이다. GCS의 재시도 타이머 간격 <span class="math math-inline">T_n</span>은 대략적으로 다음과 같은 수학적 수열 모델을 따른다.</p>
+<p><span class="math math-display"> T_n = \text{MIN}( T_{max}, T_{base} \times 2^n ) </span></p>
+<p>여기서 <span class="math math-inline">T_{base}</span>는 초기 기본 대기 시간(예: 0.5초), <span class="math math-inline">n</span>은 연속된 재연결 실패 횟수, <span class="math math-inline">T_{max}</span>는 무한정 지연시간이 길어지는 것을 방지하기 위한 최대 상한 시간(예: 10초)을 의미한다. 만약 단일 기체와의 연결이라면 이 알고리즘만으로도 GCS 측의 CPU 자원 낭비와 하드웨어 트랜시버(Transceiver) 부하를 탁월하게 낮출 수 있다. 에일리어싱(Aliasing) 효과를 줄이고 제어 대역폭을 보존함으로써 PX4-Autopilot의 통신 인터페이스가 과열되거나 예외 처리 사이클에 과도하게 매몰되는 것을 방지한다.</p>
+<h2>무작위 지연(Randomized Jitter)을 통한 대수적 동기화 파괴</h2>
+<p>그러나 여러 대의 GCS나 여분(Redundant)의 관제소가 동일한 타이밍에 단절을 겪었을 경우, 각 애플리케이션에 코딩된 <span class="math math-inline">T_{base}</span>와 <span class="math math-inline">T_{max}</span> 파라미터가 동일하기 때문에 지수적으로 증가하는 백오프 곡선마저도 정확히 동일한 시점에 적중하게 된다. 이는 결국 ‘주기가 늘어났을 뿐 충돌은 지속되는’ 분산 네트워크의 함정에 빠지게 만든다.</p>
+<p>이를 수학적 위상 공간에서 흩어뜨리기 위해 무작위성을 부여하는 무작위 지연(Jitter) 기법이 결합된다. 타이머 만료 시간에 난수 발생기(Random Number Generator)를 결합하여 일정한 폭 내에서 대기 시간을 교란(Perturbation)시키는 원리다.</p>
+<p><span class="math math-display"> T_{n, jitter} = T_n \pm \text{rand}(0, J_{max}) </span></p>
+<p>(<span class="math math-inline">J_{max}</span>는 지터 폭의 최댓값)</p>
+<p>이를 코드 단에 적용하면, 한 노드가 4초 뒤에 연결을 시도할 때 다른 노드는 3.8초, 또 다른 노드는 4.3초 뒤에 시도하게 되어, 통신망의 일관된 트래픽 충돌(Collision Domain)이 물리적 시간축 위에서 완만하게 분산(Spread)된다. 특정 포트 점유를 위한 레이스 컨디션(Race Condition)이 통계적으로 최소화되는 것이다.</p>
+<h2>2. ROS2 미들웨어 환경과 군집 제어 관제 차이</h2>
+<p>전통적인 직렬 텔레메트리를 사용하는 Ardupilot 환경의 1:1 관제에서는 이러한 수학적 트래픽 분산 모델링까지는 요구되지 않는 경우가 많았다. 그러나 PX4-Autopilot이 주도하는 완전 분산 형태의 ROS2 uXRCE-DDS 공간이나 다중 MAVLink 라우팅 환경 하에서는 노드 간 피어-투-피어(Peer-to-Peer) 트래픽이 기하급수적으로 폭증할 수 있다.</p>
+<p>특정한 군집 비행 제어 GCS 애플리케이션을 자체 개발할 때는 DDS 미들웨어의 QoS(Quality of Service) Discovery 프로파일 내부, 혹은 GCS 사용자 애플리케이션의 세션 초기화 계층에 이 지터 포함 지수 백오프 로직을 반드시 하드코딩해야 한다. UDP 멀티캐스트 방식을 활용해 시스템을 탐지(Discovery)하는 미들웨어의 성향상, 단절 후 복구 과정에서 발생할 수 있는 데이터 링크 계층의 폭우 현상을 제어 공학적 차원에서 차단하고, PX4 시스템 클럭 주기에 맞춰 질서 있게 복원시키는 구조화된 네트워크 매니지먼트는 필수불가결하다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

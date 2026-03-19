@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:63.3. Offboard 모드 상태 머신(State Machine) 전환 제어 및 비동기 동기화 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>63.3. Offboard 모드 상태 머신(State Machine) 전환 제어 및 비동기 동기화 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.3. Offboard 모드 상태 머신(State Machine) 전환 제어 및 비동기 동기화 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>63.3. Offboard 모드 상태 머신(State Machine) 전환 제어 및 비동기 동기화 로직</h1>
+<p>무인항공기의 자율 비행 제어 아키텍처에서 오프보드(Offboard) 모드는 지상 관제 시스템(GCS) 또는 기체에 탑재된 동반 컴퓨터(Companion Computer)가 비행 제어기(FC: Flight Controller)의 궤적 제어 루프를 완전히 장악하는 최고 수준의 자동화 권한을 의미한다. PX4-Autopilot(v1.14 이상)은 이 막강한 제어 권한이 예기치 못한 통신 단절이나 논리적 교착 상태(Deadlock)에 빠지는 것을 방지하기 위해 엄격한 유한 상태 기계(FSM: Finite State Machine) 전환 모델과 비동기 동기화 로직을 채택하고 있다. 본 장에서는 오프보드 모드 진입의 전제 조건과 핑퐁(Ping-pong) 동기화, 그리고 Ardupilot 체계와의 구조적 차별성을 제어 소프트웨어 공학의 관점에서 분석한다.</p>
+<h2>1.  Offboard 모드의 상태 천이(State Transition) 아키텍처</h2>
+<p>Ardupilot은 MAVLink 외부 제어 모드로 <code>GUIDED</code> 모드를 활용하며, 외부 궤적 명령(<code>SET_POSITION_TARGET_LOCAL_NED</code> 등)이 유입되는 즉시 모드 전환과 타겟 갱신을 동시에 수용하는 상대적으로 관대한(Permissive) 정책을 취한다. 반면에 PX4는 커맨더(Commander) 모듈 내부의 독립적인 유한 상태 기계(FSM)가 오프보드 모드 접근 권한을 철저히 심사하는 하드(Hard)한 상태 천이 구조를 갖는다.</p>
+<h3>1.1  진입 전제 조건(Preconditions for Transition)</h3>
+<p>동반 컴퓨터가 ROS2 uXRCE-DDS 브릿지나 MAVLink를 통해 오프보드 모드(<code>VEHICLE_CMD_DO_SET_MODE</code>)로의 천이를 요청할 때, 커맨더 로직은 다음의 필수 조건들이 충족되지 않으면 즉각적으로 거부 응답(<code>MAV_RESULT_TEMPORARILY_REJECTED</code>)을 반환한다.</p>
+<ol>
+<li><strong>지속적인 제어 토픽 스트리밍 보장</strong>: 모드 전환 명령이 도달하기 최소 수십 밀리초(ms) 이전부터 오프보드 타겟 토픽(예: <code>TrajectorySetpoint</code> 및 <code>OffboardControlMode</code>)이 <span class="math math-inline">2\text{Hz}</span> 이상의 주기로 이미 발행(Publish)되고 있어야 한다.</li>
+<li><strong>상태 관측기(EKF2)의 수렴 보장</strong>: 위치 제어(Position Control) 기반의 오프보드 궤적을 수행하려면 глобаль(Global) 또는 로컬(Local) 위치 추정치의 오차 공분산이 충분히 낮게 수렴해 있어야 한다.</li>
+</ol>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; HOLD : Ground Boot
+    HOLD --&gt; OFFBOARD : Receive CMD_SET_MODE\nAND Target Stream Active
+    OFFBOARD --&gt; HOLD : Target Stream Timeout\n(&gt; 0.5s)
+    OFFBOARD --&gt; RETURN : Data Link Loss / Low Battery
+    OFFBOARD --&gt; OFFBOARD : Update TrajectorySetpoint
+    RETURN --&gt; [*] : Landed
+</code></pre>
+<h2>2.  비동기 동기화(Asynchronous Synchronization) 및 생존 확인(Heartbeat) 로직</h2>
+<p>분산 제어 환경(NCS: Networked Control System)에서 동반 컴퓨터의 궤적 생성 노드(Trajectory Generator Node)와 비행 제어기의 궤적 추종 루프(Trajectory Tracking Loop)는 본질적으로 서로 다른 클럭 도메인(Clock Domain)에서 비동기적으로 실행된다.</p>
+<h3>2.1  폴링(Polling)과 워치독(Watchdog) 타이머 체계</h3>
+<p>PX4 커맨더는 오프보드 모드 진입 직후부터 내부 틱(Tick) 기반의 워치독 타이머(<code>COM_OF_LOSS_T</code>, 기본값 0.5초)를 가동한다.<br />
+동반 컴퓨터가 발송하는 제어 토픽(<code>TrajectorySetpoint</code> 등) 콜백(Callback)이 수신될 때마다 이 타이머는 0으로 초기화(Reset)된다.</p>
+<p>만약 동반 컴퓨터의 OS 스케줄러 지연(Linux 커널의 스레드 병목 현상 등)이나 ROS2 미들웨어의 QoS 패킷 드롭으로 인해 0.5초 이상 새로운 타겟이 비행 제어기에 도착하지 않으면, 커맨더는 즉각적으로 오프보드 제어권을 박탈하여 기체를 <code>Hold</code>(정지 호버링) 또는 <code>Return</code>(복귀) 모드로 강제로 끌어내리는 Failsafe 트리거를 발동시킨다.</p>
+<h3>2.2  제어 공학적 의미: 경쟁 상태(Race Condition)의 거부</h3>
+<p>이러한 설계 아키텍처는 제어 공학에서 ’지연된 제어 입력(Delayed Control Input)’이 가져오는 치명적 결과(폐루프 위상 여유의 고갈을 통한 발산)를 미연에 방지하기 위한 소프트웨어 공학적 하드 리미트(Hard Limit)이다. 따라서 오프보드 에이전트 개발자는 단순히 경로 연산 알고리즘 최적화에 그칠 것이 아니라, 궤적 발행 노드(Publisher Node)가 멀티스레딩(Multi-threading) 환경 속에서도 절대적인 마이크로초 단위의 정주기(Periodic) 실행을 보장받을 수 있도록 리눅스 RT-PREEMPT 커널 패치 적용 및 스레드 우선순위 격상(Elevated Priority)을 필수적으로 고려해야 한다.</p>
+<p>요약하자면, PX4의 Offboard 상태 기계 전환 로직은 외부 에이전트의 제어 스트림(Stream) 존재 유무에 따라 살아 숨 쉬는 생명체처럼 반응하는 동적 게이트웨이(Dynamic Gateway) 프로토콜이며, 결코 고정된 스위치(Switch)로 치부되어서는 안 된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:50.2.1. `mavlink_receiver` 백그라운드 스레드의 직렬 통신 버퍼 처리 로직</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>50.2.1. `mavlink_receiver` 백그라운드 스레드의 직렬 통신 버퍼 처리 로직</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 50. 착륙(Land) 명령 전달 및 지면 접촉(Landed) 상태 감지 로직</a> / <span>50.2.1. `mavlink_receiver` 백그라운드 스레드의 직렬 통신 버퍼 처리 로직</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>50.2.1. <code>mavlink_receiver</code> 백그라운드 스레드의 직렬 통신 버퍼 처리 로직</h1>
+<h2>1.  개요 (Introduction)</h2>
+<p>무인항공기(UAV) 운영 체제의 최하단 계층에서 물리적 직렬(Serial) 버스로 유입되는 원시 데이터(Raw Data) 스트림을 논리적 비행 제어 명령으로 격상시키는 첫 번째 관문이 바로 <code>mavlink_receiver</code> 모듈이다. PX4-Autopilot(v1.14 기준) 구조상 이 모듈은 백그라운드 스레드(Background Thread)로 구동되며, 텔레메트리나 컴패니언 컴퓨터(Companion Computer) 등 외부 요인으로부터 수신된 수많은 잡음 섞인 MAVLink 프레임들을 실시간으로 걸러내고 해독하는 중추적인 임무를 맡고 있다.<br />
+본 장에서는 QGroundControl(GCS)에서 점화된 착륙 트랜잭션 등 중요 통신 패킷이, PX4 기체 내부의 NuttX RTOS 직렬 하드웨어 버퍼를 거쳐 어떻게 안전하게 파싱(Parsing)되고 내부 미들웨어(uORB) 인스턴스로 브릿징(Bridging)되는지 하향식(Top-down)으로 분석한다.</p>
+<h2>2.  NuttX RTOS의 직렬 데이터 수신과 링 버퍼(Ring Buffer) 구조</h2>
+<p>무선 모뎀이나 UART 인터페이스를 통해 패킷이 기체 하드웨어 단에 착륙하면, PX4의 기반 운영체제인 NuttX RTOS 하드웨어 인터럽트 계층 또는 DMA(Direct Memory Access) 컨트롤러가 이를 가로채어 직렬 드라이버 내부의 링 버퍼(Ring Buffer) 메모리에 적재한다. 이 계층에서는 아직 MAVLink의 메시지 구조나 페이로드 속성을 인식하지 못하는 단순 1차원 바이트 배열(Byte Array) 상태이다.</p>
+<p><code>mavlink_receiver</code> 스레드는 이 커널(Kernel) 단계의 통신 버퍼에 대하여 POSIX 표준인 <code>read()</code> 시스템 콜이나 <code>poll()</code> 함수를 호출함으로써, 새로운 데이터가 유입될 때마다 병목 없이 바이트 스트림을 응용(Application) 계층 메모리로 퍼 올린다. 이는 폴링(Polling) 대기 상태 점유에 따른 CPU 오버헤드를 극소화하는 효과적인 실시간 운영체제(RTOS) 설계의 정수이다.</p>
+<h2>3.  <code>mavlink_receiver</code> 스레드의 데이터 통역 모듈: <code>mavlink_parse_char</code></h2>
+<p>수집된 N바이트의 원시 스트림 블록은 즉각 MAVLink C 라이브러리의 핵심 파서(Parser)인 <code>mavlink_parse_char()</code> 함수를 관통한다. 백그라운드 스레드는 루프(Loop)를 순회하며 1바이트씩 차례대로 이 파서에 투입시킨다.</p>
+<ul>
+<li><strong>Magic Byte 동기화</strong>: <code>mavlink_parse_char</code>는 MAVLink 프레임의 고유 시동 바이트(<code>v1: 0xFE</code>, <code>v2: 0xFD</code>)를 추적하여 패킷 블록의 시작점을 동기화(Sync)한다.</li>
+<li><strong>길이 및 페이로드 누적</strong>: 동기화 성공 시 헤더에 정의된 길이(Length) 정보만큼 연속된 바이트들을 임시 패킷 구조체 버퍼에 축적한다.</li>
+<li><strong>CRC 무결성 검증 (Failsafe)</strong>: 지정된 길이가 모두 수신되면 말미의 CRC(Cyclic Redundancy Check) 검사합을 연산하여 전파 간섭으로 데이터가 오염되지 않았는지 증명한다. CRC가 유효하면 파서는 <code>1</code>을 리턴하여 하나의 온전한 패킷 디코딩이 완료되었음을 <code>mavlink_receiver</code> 스레드에 보고하게 된다.</li>
+</ul>
+<h2>4.  <code>COMMAND_LONG</code> 패킷의 디스패칭(Dispatching) 및 uORB 전환</h2>
+<p>패킷이 완전한 형태로 해독되면, <code>mavlink_receiver</code>는 <code>mavlink_message_t</code> 구조체를 보유하게 된다. 모듈 내부의 방대한 Switch/Case 트리 구조 상주처인 <code>handle_message()</code> 계열 함수군으로 해당 구조체를 디스패치(Dispatch)한다.</p>
+<p>특히 가장 중대한 관제 조작인 <code>MAV_CMD_NAV_LAND</code>와 같은 정보는 주로 <code>MAVLINK_MSG_ID_COMMAND_LONG</code> (혹은 <code>COMMAND_INT</code>) 식별자를 기반으로 통신망을 건너오므로, 이는 <code>handle_message_command_long()</code> 전용 인터페이스로 릴레이(Relay)된다.</p>
+<ul>
+<li>이 전용 블록 안에서, MAVLink 통신 페이로드의 모호한 <code>param1</code> ~ <code>param7</code> 필드들이 PX4 고유 자료형인 <code>vehicle_command_s</code> C/C++ 구조체의 멤버 변수로 플로팅 캐스트 비트 복사(Floating-cast Bit-copy) 과정을 치른다.</li>
+<li>생성된 객체 인스턴스에 고유 전송자 타임스탬프(Timestamp)가 각인되고 나면, 마침내 PX4의 비동기 미들웨어인 uORB의 <code>vehicle_command</code> 토픽망 내부로 <code>orb_publish()</code> 오퍼레이션을 통해 출판(Publish)됨으로써 쾌속 직렬 통신 파싱 작업의 마침표를 찍게 된다.</li>
+</ul>
+<h2>5.  버퍼 파싱 및 uORB 변환 시퀀스 다이어그램</h2>
+<p>이하의 흐름도는 물리적 하드웨어 계층인 UART 포트에서부터 <code>mavlink_receiver</code> 소프트웨어 스레드를 통과해 uORB 미들웨어로 인계되기까지의 논리망을 도해한 시퀀스 다이어그램이다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant HW as UART/Serial H/W (DMA)
+    participant RTOS as NuttX (Ring Buffer)
+    participant Rx as mavlink_receiver 백그라운드 스레드
+    participant Parser as mavlink_parse_char()
+    participant Dispatcher as handle_message_command()
+    participant uORB as uORB (vehicle_command)
+
+    HW-&gt;&gt;RTOS: 바이트 스트림 하드웨어 적재
+    RTOS--&gt;&gt;Rx: poll() Wake-up 이벤트 (Data Ready)
+    activate Rx
+    Rx-&gt;&gt;RTOS: read() 블록 호출 및 원시 바이트 획득
+    
+    loop Every Single Byte in Stream
+        Rx-&gt;&gt;Parser: 1바이트씩 투입
+        Parser--&gt;&gt;Parser: Magic Byte, Length 탐색 및 페이로드 조립
+        Parser--&gt;&gt;Parser: CRC 무결성 체크
+        alt 패킷 완성 (CRC Pass)
+            Parser-&gt;&gt;Rx: 완료 플래그 (1) 리턴 &amp; Message 반환
+        end
+    end
+
+    Rx-&gt;&gt;Dispatcher: 패킷 아이디 분류 (MSG_ID_COMMAND_LONG)
+    Dispatcher--&gt;&gt;Dispatcher: MAVLink 구조체 -&gt; vehicle_command_s 파라미터 캐스팅
+    Dispatcher-&gt;&gt;uORB: orb_publish(vehicle_command)
+    deactivate Rx
+</code></pre>
+<h2>6.  결론</h2>
+<p>PX4의 <code>mavlink_receiver</code> 스레드가 주도하는 직렬 통신 버퍼 처리 로직은 임베디드 통신 소프트웨어 공학의 결정체로 꼽혀도 손색이 없다. 운영체제 레벨의 효율적인 이벤트 폴링과 바이트 단위의 실시간 파싱, 그리고 즉각적인 uORB 미들웨어로의 도약 과정은 비행체 제어의 최우선 가치인 극단적 지연 시간 최소화(Ultra-low Latency)를 기저에서부터 보장한다. 이와 같이 다중화된 계층으로 분리된 정밀 버퍼 처리 및 직렬화/역직렬화(Serialization/Deserialization) 기술은 “Real-Time Embedded Architectures for UAVs“와 같은 다수의 관련 학술 저작에서도 그 견고함(Robustness)과 범용 확장성 면에서 현대 항공 로보틱스 프레임워크의 표본으로 일컬어지고 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

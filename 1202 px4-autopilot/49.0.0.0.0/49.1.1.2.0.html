@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:49.1.1.2 MAVLink 페이로드(Payload) 직렬화(Serialization) 및 역직렬화(Deserialization) 과정의 컴퓨팅 오버헤드 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>49.1.1.2 MAVLink 페이로드(Payload) 직렬화(Serialization) 및 역직렬화(Deserialization) 과정의 컴퓨팅 오버헤드 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 49. 실시간 위치 및 속도 제어 명령(Offboard/Guided)의 주기적 전송 로직</a> / <span>49.1.1.2 MAVLink 페이로드(Payload) 직렬화(Serialization) 및 역직렬화(Deserialization) 과정의 컴퓨팅 오버헤드 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>49.1.1.2 MAVLink 페이로드(Payload) 직렬화(Serialization) 및 역직렬화(Deserialization) 과정의 컴퓨팅 오버헤드 분석</h1>
+<h2>1.  개요</h2>
+<p>비행 제어기(PX4-Autopilot)와 임무 컴퓨터(Mission Computer), 그리고 QGroundControl(QGC)과 같은 관제 소프트웨어가 소통하는 핵심 규격은 <strong>MAVLink(Micro Air Vehicle Link)</strong> 프로토콜이다. 고주파수(High frequency)로 오프보드(Offboard) 위치 및 속도 명령을 전송할 때, C/C++ 프로그램 내부에 존재하는 구조체(Struct) 데이터는 반드시 네트워크 통신에 적합한 “바이트 스트림(Byte Stream)” 형태로 변환되어야 하며, 이를 <strong>직렬화(Serialization)</strong> 라고 한다. 반대로 수신 측에서 바이트 스트림을 해석하여 다시 메모리의 구조체로 재구성하는 과정을 <strong>역직렬화(Deserialization)</strong> 라 부른다.<br />
+MAVLink는 극도로 경량화되도록 설계되었지만, 고속으로 다량의 제어 메시지를 송수신하는 오프보드 제어 환경에서는 이 직렬화 및 역직렬화 파이프라인에서 발생하는 <strong>컴퓨팅 오버헤드(Computational Overhead)</strong> 가 전체 레이턴시(Latency)와 CPU 점유율에 유의미한 영향을 미친다.</p>
+<h2>2.  MAVLink 페이로드 직렬화 메커니즘</h2>
+<p>MAVLink 2.0 프로토콜은 데이터 전송의 효율성을 높이기 위해 독특한 패킹(Packing) 아키텍처를 취하고 있다.</p>
+<ol>
+<li><strong>타입 정렬과 패딩 제거(Type Alignment &amp; Zero Padding)</strong>: C 구조체는 컴파일러에 의해 메모리 접근 속도 향상을 위해 패딩 빈공간(Padding bits)이 삽입되는데 반해, MAVLink는 네트워크 대역폭 낭비를 막기 위해 이를 모두 제거한다. 또한 크기가 가장 큰 데이터 타입(<code>uint64_t</code>, <code>double</code> 등)부터 가장 작은 데이터 타입(<code>uint8_t</code>) 순서대로 페이로드 필드를 재배열하여 직렬화한다.</li>
+<li><strong>리틀 엔디안(Little Endian) 규칙</strong>: 데이터는 철저하게 리틀 엔디안 포맷으로 직렬화된다. 따라서 수신하는 프로세서(예: 외부 임무 컴퓨터가 빅 엔디안 기반일 경우) 아키텍처에 따라 바이트 스와핑(Byte Swapping) 연산이 동반되어야 한다.</li>
+<li><strong>가변 길이 최적화(Empty Byte Truncation)</strong>: MAVLink 2.0은 페이로드의 끝부분에 <code>0(Zero)</code> 값만 존재하는 필드들이 모여 있을 경우, 이를 직렬화 단계에서 잘라내어(Truncating) 패킷 크기를 동적으로 줄이는 기능이 포함되어 있다.</li>
+</ol>
+<h2>3.  제어 명령 메시지의 오버헤드 분석</h2>
+<p>오프보드 제어에 가장 빈번히 쓰이는 위치 제어 타겟 메시지 <code>SET_POSITION_TARGET_LOCAL_NED</code> (Message ID: 84)를 기준으로 오버헤드를 분석해보자.</p>
+<table><thead><tr><th style="text-align: left">필드 분석</th><th style="text-align: left">크기</th><th style="text-align: left">설명</th></tr></thead><tbody>
+<tr><td style="text-align: left">MAVLink 2.0 Header</td><td style="text-align: left">10 <span class="math math-inline">\sim</span> 14 bytes</td><td style="text-align: left">매직 넘버, 시퀀스, 시스템 ID, 컴포넌트 ID 등</td></tr>
+<tr><td style="text-align: left">Payload (Position Target)</td><td style="text-align: left">최대 53 bytes</td><td style="text-align: left">타임스탬프, 좌표 마스크, X/Y/Z 위치, 속도, 가속도, 요(Yaw) 등</td></tr>
+<tr><td style="text-align: left">CRC Checksum</td><td style="text-align: left">2 bytes</td><td style="text-align: left">통신 무결성 검증 (X.25 프로토콜 기반 알고리즘)</td></tr>
+<tr><td style="text-align: left">Signature (선택 사양)</td><td style="text-align: left">13 bytes</td><td style="text-align: left">암호화된 메시지 무결성 보호</td></tr>
+</tbody></table>
+<ul>
+<li><strong>오버헤드 1: 메모리 복사 및 스와핑 (Memory Copy &amp; Swapping)</strong><br />
+비행 제어기 내부의 <code>uORB</code> 토픽은 <code>MAVLink</code> 모듈로 넘어오는 과정에서 한 번의 메모리 복사(memcpy)가 발생하며, 다시 직렬화 라이브러리(<code>mavlink_msg_xxx_pack</code>)를 호출할 때 바이트 단위로 시리얼 버퍼에 기록하는 연산이 들어간다.</li>
+<li><strong>오버헤드 2: CRC Checksum 연산</strong><br />
+직렬화된 모든 바이트 패킷에 대하여 CPU는 누적된 X.25 CRC 다항식 연산을 수행해야 한다. 하드웨어 가속이 없는 저성능 임베디드 보드에서는 50~100바이트 길이의 패킷을 초당 수백 번 연산할 때 수 퍼센트(%) 단위의 CPU 점유율을 차지할 수 있다.</li>
+<li><strong>오버헤드 3: 문맥 교환(Context Switch) 및 인터럽트(Interrupt)</strong><br />
+데이터가 통신 칩(UART/Ethernet PHY) 버퍼로 내려가면서 인터럽트를 트래거(Trigger)한다. 직렬화 과정 자체가 동기식(Synchronous)으로 작성되어 있다면, 제어 스레드는 통신 버퍼가 비워지기를 블로킹(Blocking)된 채 기다려야 할 수 있다.</li>
+</ul>
+<h2>4.  시스템 설계 및 최적화 고려사항</h2>
+<p>PX4-Autopilot과 임무 컴퓨터를 연결하는 데이터 통신의 레이턴시를 1밀리초(ms) 이하로 보장하기 위해서는 다음의 최적화 전략이 필요하다.</p>
+<h3>4.1 통신 프로토콜 변경 가능성 (uXRCE-DDS)</h3>
+<p>MAVLink는 다루기 쉬우나 C 구조체 기반의 엄격한 직렬화를 거쳐야 한다. 최신 오프보드 환경에서는 이런 직렬화 파이프라인조차 부담을 줄이기 위해 원시 메모리 덤프나 제로 카피(Zero-copy) 전송 기술에 좀 더 가까운 프로토콜을 모색하기도 한다. 앞선 내용에서 언급한 <strong>Micro XRCE-DDS</strong> 브릿지는 객체 직렬화 오버헤드는 존재하나, ROS 2 환경의 텔레메트리 미들웨어 단에서 통신망의 QoS(Quality of Service) 처리 효율을 높여줄 수 있다.</p>
+<h3>4.2 대역폭과 주사율(Bandwidth vs Update Rate) 타협</h3>
+<p>오프보드 명령어의 주사율(예: 50Hz)을 높일수록 직렬화/역직렬화 인터럽트 비용이 통신 채널에 선형적으로 증가한다. 따라서 위치 명령(Position Target)은 제어 대역폭이 상대적으로 낮으므로 <span class="math math-inline">10\sim20\text{Hz}</span> 수준으로 낮춰 MAVLink 처리기(Handler)의 점유율 오버헤드를 줄이고, 임무 컴퓨터가 직접 드론의 모터 수치를 만져야 하는 각속도/추력 제어(Attitude/Thrust Target) 시에만 제한적으로 높은 주파수로 스트리밍 하도록 분리 설계하는 것이 좋다.</p>
+<h2>5.  결론</h2>
+<p>기반 기술 없이 MAVLink 제어 코드를 작성하면 “임무 컴퓨터에서 53바이트를 보내는 것 뿐“이라고 착각하기 쉽지만, 이 53바이트의 페이로드가 파싱, 엔디안 스와핑, CRC 검증을 거쳐 비행 제어기의 버퍼로 역직렬화되는 과정에서 수백~수천 개의 CPU 클록 사이클이 소비된다. 무인항공기를 관제하는 QGroundControl이나 ROS 2 오프보드 노드를 개발할 때에는 이러한 통신 계층의 컴퓨팅 오버헤드가 제어 모듈 스케줄링에 가하는 부하를 반드시 여유(Margin) 있게 산정하여 하드웨어를 설계해야 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

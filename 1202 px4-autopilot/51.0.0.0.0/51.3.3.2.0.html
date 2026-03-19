@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:51.3.3.2 GCS 프론트엔드 상태 머신과 Autopilot 내부 상태 간의 유한 지연(Finite Delay) 동기화를 위한 지터 버퍼(Jitter Buffer) 처리 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>51.3.3.2 GCS 프론트엔드 상태 머신과 Autopilot 내부 상태 간의 유한 지연(Finite Delay) 동기화를 위한 지터 버퍼(Jitter Buffer) 처리 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 51. 복귀(RTL/Return) 명령과 경로 이탈 및 복귀 완료 상태 모니터링</a> / <span>51.3.3.2 GCS 프론트엔드 상태 머신과 Autopilot 내부 상태 간의 유한 지연(Finite Delay) 동기화를 위한 지터 버퍼(Jitter Buffer) 처리 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>51.3.3.2 GCS 프론트엔드 상태 머신과 Autopilot 내부 상태 간의 유한 지연(Finite Delay) 동기화를 위한 지터 버퍼(Jitter Buffer) 처리 기법</h1>
+<h2>1.  개요</h2>
+<p>무인항공기를 제어하는 지상 관제 시스템(GCS, 예: QGroundControl)과 원격에 위치한 PX4-Autopilot 간에는 무선 데이터 링크를 통한 원격 측정(Telemetry) 통신 지연과 지터(Jitter) 현상이 필연적으로 발생한다. 이로 인해 GCS 프론트엔드에 표시되는 논리적 비행 상태와 기체(Vehicle) 내부 커맨더(Commander) 모듈의 실제 비행 상태 머신(State Machine) 간에 일시적인 불일치(State Mismatch)가 유발된다. 본 절에서는 이러한 유한 지연(Finite Delay) 환경에서 양단의 상태를 동기화하고, 사용자 정보 표시에 혼선을 주는 요소들을 방지하기 위해 소프트웨어 공학적으로 적용된 지터 버퍼(Jitter Buffer) 처리 역학 및 프론트엔드 모델링 기법을 상세히 서술한다. (적용 대상: PX4-Autopilot v1.14 이상, QGroundControl v4.3 이상)</p>
+<h2>2.  유한 지연(Finite Delay) 및 지터(Jitter)를 유발하는 기술적 원인</h2>
+<p>공중 무인항공 시스템에서 데이터 상태 동기화를 방해하는 핵심 원인은 다음과 같다.</p>
+<ul>
+<li><strong>무선 링크 물리 계층의 대기 시간</strong>: 송수신 모듈의 하드웨어 버퍼, 변복조 시간 확장이 지터를 야기한다.</li>
+<li><strong>패킷 손실 및 재전송 메커니즘</strong>: <code>COMMAND_LONG</code>과 같은 중요 제어 패킷의 드롭(Drop) 후 재전송은 예측 불가능한 추가 지연(Variable Delay)을 발생시켜 지터를 최대로 증폭시킨다.</li>
+<li><strong>MAVLink 데이터 스케줄링</strong>: PX4 내부 MAVLink 모듈은 대역폭 제약을 고려하여 상태 메시지(<code>HEARTBEAT</code> 등)를 일정한 주기로만 내보내게 되며(예: 1Hz), 모드 전이가 이루어진 후 다음 주기까지 상태 통보가 지연된다.</li>
+</ul>
+<h2>3.  상태 불일치(State Mismatch)로 인한 프론트엔드 및 사용자의 문제점</h2>
+<p>지연 동기화 처리가 적용되지 않은 GCS의 화면에서는 심각한 사용자 경험(UX) 저하와 인지 오류 현상이 발생한다. 가장 대표적인 현상은 UI의 플리커링(Flickering, 깜빡임)이다.</p>
+<p>예를 들어, 현재 비행 모드가 **‘Position’**인 상태에서 운용자가 GCS 인터페이스의 <strong>‘Return(RTL)’</strong> 변경 버튼을 누른다. 버튼이 눌린 직후 GCS는 상태를 ’Return’으로 변경하지만, 네트워크 지연으로 인해 0.5초 뒤 수신된 구형(Old) <code>HEARTBEAT</code> 메시지는 여전히 이전 상태인 ’Position’으로 표기되어 있어 GCS 상태가 다시 ’Position’으로 돌아가게 된다. 수 초 뒤명령이 수용된 후의 최신 데이터가 도착해야 비로소 ’Return’으로 안정화된다. 이러한 단기적 상태 변동은 혼란을 가중시킨다.</p>
+<h2>4.  지터 버퍼(Jitter Buffer) 및 상태 필터링 전략</h2>
+<p>오디오/비디오 스트리밍 시스템에서 네트워크 지연 변동폭을 매끄럽게 흡수하기 위해 사용하는 지터 버퍼 영역의 원리를 GCS 내부의 팩트 시스템(Fact System) 및 텔레메트리 파싱 과정에 차용한다. 핵심 기법은 다음과 같다.</p>
+<h3>4.1  예상 상태(Expected State) 모델 기법</h3>
+<p>GCS 상태 머신은 제어 명령이 사용자에 의해 발동되는 즉시 대상 비행체의 섀도우 모델(Shadow Model)을 구성한다. 단순히 상태 값을 덮어쓰거나 수신 값만 바라보는 것이 아니라, 모드 전이에 대해 가상의 <strong>‘전환 대기 중(Transitioning)’</strong> 또는 **‘예상되는 미래 상태(Expected State)’**라는 임시(Pending) 상태 벡터를 구성한다.</p>
+<h3>4.2  유예 기간(Grace Period) 및 타임아웃 윈도우(Timeout Window) 적용</h3>
+<p>지터 버퍼 메커니즘에서 가장 중요한 척도이다. 프론트엔드는 명령을 전송한 시점부터 네트워크 편차의 최대 한계치를 고려하여 수백 밀리초에서 수 초에 이르는 **유예 기간(Grace Period)**이라는 가상의 버퍼 윈도우(Window)를 설정한다.<br />
+이 타임 윈도우 내부에서는 기체로부터 이전(Old) 상태를 포함하는 구형 메시지(<code>HEARTBEAT</code> 포함)가 들어오더라도 이를 UI 상태 프로퍼티 갱신 로직에서 **의도적으로 필터링(무시)**한다. 오직 상태 전환이 확정된 <code>COMMAND_ACK</code> 결과나 타임아웃 경과(Expiration)만이 이 필터를 해제할 수 있다.</p>
+<h3>4.3  조건부 융합 및 복원(Conditional Rollback)</h3>
+<p>부여된 지터 버퍼 유예 기간이 타임아웃으로 만료되거나 <code>MAV_RESULT_DENIED</code> 등 거부 메시지를 받았을 경우, 프론트엔드 모델은 즉시 예상 상태를 파기하고 수신되는 실제 텔레메트리 상태 라인으로 시각화를 롤백(Rollback)시켜 데이터 동기화를 회복한다.</p>
+<h2>5.  QGroundControl 소스 코드 내 동기화 처리 구조 분석</h2>
+<p>QGroundControl 프론트엔드(Qt C++) 아키텍처 내에서 <code>Vehicle</code> 상의 특정 팩트(Fact) 정보가 갱신될 때는 시그널-슬롯(Signal-Slot) 이벤트가 구동된다.</p>
+<p>QGC는 내부적으로 <code>expectedMode</code> 변수와 이에 결부된 <code>QTimer</code> 타이머 객체를 운용하여 지터 버퍼를 구현한다. 사용자가 모드를 변경할 때 QGC는 비행체의 <code>custom_mode</code> 파라미터 업데이트를 내부적으로 유예한다. <code>setFlightMode()</code> 메서드 호출 시 MAVLink 직렬화 후 명령이 송출되고, <code>_flightModeChangedTimer</code>를 트리거하여 일반 상태 폴링을 억제(Block)한다. <code>COMMAND_ACK</code> 이벤트나 타이머 소진 시그널이 도달하는 순간 비로소 락(Lock)을 해제하고 QML 기반의 프론트엔드 프라퍼티 바인딩(Property Binding)을 동기화한다.</p>
+<h2>6.  PX4-Autopilot과 Ardupilot 간 관제 대역 인터페이스 튜닝 차이</h2>
+<p>PX4는 uORB 기반 데이터 퍼블리셔 시스템 구조를 갖추고 있어 이벤트 트리거링 빈도 및 MAVLink 스트림 주기가 상당히 균일하다. 따라서 GCS 단에서 지터 윈도우(Jitter Window) 구간폭을 수학적으로 비교적 타이트하고(안정적) 정밀하게 설계할 수 있다. 반면 Ardupilot은 루프 내 스케줄링 구조에 의해 높은 부하율 상태에서 텔레메트리 전송 페이스의 등락 폭이 발생할 가능성이 높아, GCS가 좀 더 긴 유예 버퍼를 주거나 이중 필터링을 구성해야 깜빡임을 잡을 수 있는 등 프론트엔드 통신 최적화 측면에서 미세한 차이를 보여준다.</p>
+<h2>7.  시스템 상태 동기화 타이밍 시퀀스</h2>
+<p>다음 다이어그램(Mermaid)을 통하여 지터 버퍼 기간 중에 불일치 상태가 발생했을 때 필터링되는 논리 구조를 추적하라.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant User as 운용자 (QGC UI)
+    participant QGC as GCS 비행 상태 머신
+    participant Buffer as 지터 버퍼(Blocker Timer)
+    participant Network as 무선 텔레메트리
+    participant PX4 as PX4 Autopilot
+
+    Note over User, PX4: 현재 상태: Stabilized Mode
+
+    User-&gt;&gt;QGC: Return 모드 전환 명령 실행
+    QGC-&gt;&gt;Buffer: 버퍼 유예 타이머 시작 (예: 2초) &amp; 예상 상태 지정
+    QGC-&gt;&gt;Network: MAV_CMD_DO_SET_MODE (Return)
+    Note over QGC, User: 예상 상태: Return (UI 애니메이션 지속)
+    
+    PX4-&gt;&gt;Network: 주기적 HEARTBEAT (여전히 Stabilized 상태)
+    Network-&gt;&gt;QGC: 수신: Stabilized 모드
+    QGC-&gt;&gt;Buffer: 상태 검사
+    Note over Buffer: 유예 타이머 활성화 중 -&gt; 상태 무시(Filter Out)
+    QGC--&gt;&gt;User: (UI 변경 안 됨, 플리커링 억제)
+    
+    Network-&gt;&gt;PX4: MAV_CMD_DO_SET_MODE 전달 도착
+    Note over PX4: 모드 승인 및 Return 상태로 전이
+    PX4-&gt;&gt;Network: COMMAND_ACK (MAV_RESULT_ACCEPTED) 전송
+    Network-&gt;&gt;QGC: 수신: ACK 확인
+    
+    QGC-&gt;&gt;Buffer: 유예 타이머 즉시 해제 &amp; 예상 상태를 확정 상태로 동기화
+    PX4-&gt;&gt;Network: 갱신된 HEARTBEAT (Return 상태)
+    Network-&gt;&gt;QGC: 수신: Return 모드
+    QGC-&gt;&gt;User: 상태 안정적으로 렌더링 확정
+</code></pre>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

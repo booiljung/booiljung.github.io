@@ -115,6 +115,101 @@
             </header>
             <article>
                 <h1>Chapter 42. 비행 전 점검(Pre-flight Check) 상태 확인 및 승인 제어</h1>
+<p>본 장에서는 무인항공기(UAV)의 신뢰성과 안전성을 보장하기 위한 가장 핵심적인 절차 중 하나인 비행 전 점검(Pre-flight Check)의 아키텍처 및 제어 메커니즘을 심도 있게 분석한다. 본 내용은 <strong>PX4-Autopilot 펌웨어 v1.14 및 이후 버전</strong>, 그리고 <strong>QGroundControl(QGC) v4.3 기준</strong>으로 작성되었으며, 공학적 관점에서 시스템이 어떻게 상태를 검증하고 비행 승인을 제어하는지 상세히 기술한다.</p>
+<hr />
+<h2>1.  비행 전 점검(Pre-flight Check)의 시스템적 의의</h2>
+<p>자율 비행 로봇에서 비행 전 점검(Pre-flight Check)은 단순한 하드웨어 상태 확인을 넘어서는 중요한 의미를 갖는다. 제어 시스템이 요구하는 최소한의 상태 추정(State Estimation) 품질과 센서의 무결성(Integrity)이 확보되었는지를 판별하는 시스템 검증(System Validation) 과정이다. PX4-Autopilot 내부에서는 <code>commander</code> 모듈이 이 역할을 총괄하며, 각종 센서 인터페이스와 상태 추정기(Estimator, EKF2)로부터 수집된 데이터를 바탕으로 현재 기체가 시동(Arming)을 걸고 이륙할 수 있는 안전한 상태인지 지속적으로 평가한다.</p>
+<hr />
+<h2>2.  PX4-Autopilot과 Ardupilot의 비행 전 점검 구조 비교</h2>
+<p>PX4-Autopilot과 Ardupilot은 둘 다 견고한 비행 전 점검 로직을 가지고 있으나, 운영 철학 및 내부 아키텍처의 설계 패턴에서 뚜렷한 차이를 보인다.</p>
+<ul>
+<li><strong>PX4-Autopilot (Commander 기반 중앙집중형 구조):</strong><br />
+PX4는 시스템 상태를 통합 관리하는 <code>commander</code> 모듈 내부에 <code>PreflightCheck</code> 클래스를 두어 관장한다. uORB(Micro Object Request Broker) 통신을 통해 비동기적으로 <code>sensor_combined</code>, <code>estimator_status</code> 등의 토픽(Topic)을 구독하여 검증한다. 상태 검증이 엄격하며, 실패 시 <code>vehicle_status</code>의 속성 변경으로 즉각적으로 반영되어 시스템 전반에 공유된다.</li>
+<li><strong>Ardupilot (AP_Arming 기반 분산 지향적 구조):</strong><br />
+Ardupilot은 <code>AP_Arming</code> 라이브러리를 통해 각 비행 모드 및 하드웨어별 검증 로직을 계층적으로 수행한다. 즉, 특정 모드나 센서 드라이버 블록 자체가 스스로 점검 로직을 수반하여 폴링(Polling) 방식으로 검사하는 경향이 있으며, 필요에 따라 점검 항목을 매크로 및 비트마스크 파라미터(<code>ARMING_CHECK</code>)로 비활성화하는 데 유연하다.</li>
+</ul>
+<hr />
+<h2>3.  비행 전 점검(Pre-flight Check) 아키텍처 및 내부 검증 항목</h2>
+<p>PX4의 비행 전 점검은 크게 하드웨어 레벨의 센서 검증과 소프트웨어 레벨의 추정기 검증으로 나뉜다. 아래 도표는 <code>commander</code> 모듈이 비행 전 점검을 수행하는 정보 흐름을 나타낸다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[Sensors (Gyro, Accel, Mag, Baro)] --&gt;|uORB: sensor_combined| B(Preflight Check Logic)
+    C[Estimator ECL/EKF2] --&gt;|uORB: estimator_status| B
+    D[RC/Datalink &amp; Battery] --&gt;|uORB: telemetry/battery_status| B
+    
+    B --&gt;|Check Result| E{All Checks Passed?}
+    E -- Yes --&gt; F[vehicle_status update: Preflight OK]
+    E -- No --&gt; G[vehicle_status update: Preflight FAIL]
+    
+    F --&gt;|MAVLink: SYS_STATUS / HEARTBEAT| H[GCS QGroundControl]
+    G --&gt;|MAVLink: STATUSTEXT (Error Msg)| H
+</code></pre>
+<h3>3.1  센서 검증 (Sensor Checks)</h3>
+<p>각 필수 센서는 캘리브레이션 유무, 데이터 출력의 정상성, 다중 센서 간의 일관성 확인을 거친다.</p>
+<ul>
+<li><strong>관성 측정 장치(IMU: Gyroscope &amp; Accelerometer):</strong> 기준 편차를 초과하는 노이즈나 오프셋(Offset)이 없는지 내부의 노이즈 평가 모델을 통해 검사한다.</li>
+<li><strong>나침반(Magnetometer):</strong> 자기장 세기(Magnetic field strength)가 지구 자기장 표준 범주 내에 있는지 점검하고, 듀얼 모델인 경우 센서 간의 정합성(Inconsistency) 비율을 확인한다.</li>
+<li><strong>기압계(Barometer):</strong> 온도와 고도 변화에 따른 압력 데이터의 스파이크(Spike)가 없는지 확인한다.</li>
+</ul>
+<h3>3.2  상태 추정기 검증 (Estimator / EKF2 Checks)</h3>
+<p>비행 제어에 가장 직접적인 영향을 미치는 상태 추정기(ECL: Estimation and Control Library)의 이노베이션(Innovation, 추정 오차)를 검증한다.</p>
+<ul>
+<li>EKF(Extended Kalman Filter)의 자기장, 속도, 위치 추정치의 변화량이 설정된 허용 임계값을 넘지 않아야 한다. <code>estimator_status</code>의 플래그(Flag)가 <code>true</code>로 설정되어야 비행 승인이 떨어진다.</li>
+<li>GPS/GNSS 수신기의 경우 수신 위성 수(Number of Satellites), HDOP/VDOP(위치 정밀도 저하율), 위치 속도 오차 분산(Position/Velocity Variance)이 설정값(예: <code>COM_ARM_EKF_POS</code>)을 만족해야 한다.</li>
+</ul>
+<h3>3.3  시스템 설정 및 기타 검증 항목</h3>
+<ul>
+<li><strong>파라미터(Parameter) 검증:</strong> 기체 형상(Airframe) 설정 누락이나 모터 할당 오류 등 치명적인 초기화 과정의 결함이 없는지 점검한다.</li>
+<li><strong>전원 및 배터리(Power &amp; Battery):</strong> 배터리 셀 컷오프 전압(Cell Cut-off Voltage)과 현재 부하 전압 비교 로직을 통해 최소 비행 가능 전력이 있는지 확인한다 (<code>COM_ARM_BAT_MIN</code> 설정).</li>
+</ul>
+<hr />
+<h2>4.  QGroundControl 연동 및 MAVLink 승인 제어(Approval Control)</h2>
+<p>PX4-Autopilot은 검증 결과를 MAVLink 프로토콜을 이용해 QGroundControl(GCS)로 실시간 보고한다. 이때 주로 사용되는 메커니즘은 다음과 같다.</p>
+<ol>
+<li><strong>상태 보고 (SYS_STATUS 및 STATUSTEXT):</strong><br />
+GCS는 정기적으로 수신하는 <code>SYS_STATUS</code> 메시지의 비트마스크(Bitmask) 필드(<code>onboard_control_sensors_health</code>)를 파싱하여 센서들의 건강 상태(Health)를 그래픽 형태의 UI로 렌더링한다. 만약 점검에 실패할 경우, PX4는 MAVLink <code>STATUSTEXT</code> 메시지로 구체적인 사유(예: “Preflight Fail: Compass inconsistencies”)를 브로드캐스트하여 조종자에게 알린다.</li>
+<li><strong>QGC UI/UX 로직:</strong><br />
+QGroundControl은 백엔드의 Vehicle 객체를 통해 Pre-flight 상태를 감시하고, 이 상태가 충족되지 않으면 UI의 ‘이륙(Takeoff)’ 밎 ‘시동(Arming)’ 버튼을 비활성화(Disable) 또는 경고 상태로 유지한다.</li>
+<li><strong>사용자 승인(User Authorization) 및 강제 제어:</strong><br />
+연구 목적 또는 하드웨어 테스트를 위해 고시된 절차를 강제로 건너뛰어야 할 경우가 존재한다. PX4는 <code>CBRK_</code> (Circuit Breaker) 파라미터 그룹을 제공하며(예: <code>CBRK_SUPPLY_CHK</code>), 이를 수정하면 특정 검증 단계를 회피할 수 있다. 그러나 이와 같은 조치는 제어의 불안정(Instability)을 야기할 수 있으므로 극도로 제한적으로 수행해야 한다.</li>
+</ol>
+<hr />
+<h2>5.  예시: 코드 레벨에서의 검증 로직 이해</h2>
+<p>실제 PX4 <code>commander</code> 모듈의 내부 구현을 단순화한 C++ 의사 코드(Pseudo-code)는 다음과 같은 흐름을 지닌다.</p>
+<pre><code class="language-cpp">// PX4 Commander Module - preflight check evaluation pseudo code
+bool PreflightCheck::preflightCheck(int &amp;status_flags, const bool report_fail)
+{
+    bool is_ok = true;
+
+    // 1. 센서 캘리브레이션 및 건강 상태 점검
+    if (!checkIMU(report_fail)) {
+        is_ok = false;
+        if (report_fail) mavlink_log_critical("Preflight Fail: IMU uncalibrated.");
+    }
+    
+    // 2. EKF 이노베이션 통과 여부 검사
+    if (!checkEstimator(report_fail)) {
+        is_ok = false;
+        if (report_fail) mavlink_log_critical("Preflight Fail: EKF high innovation.");
+    }
+    
+    // 3. 글로벌 포지션 잠금 유무 확인 
+    if (!hasGlobalPositionLock()) {
+        is_ok = false;
+        if (report_fail) mavlink_log_critical("Preflight Fail: No GPS lock.");
+    }
+
+    return is_ok;
+}
+</code></pre>
+<p>이 로직은 GCS로부터 <code>MAV_CMD_RUN_PREARM_CHECKS</code> 명령을 직접 받았을 때, 혹은 사용자가 시동(Arming)을 시도하는 순간 백그라운드에서 동기적으로 호출되어 시스템 결함이 존재할 경우 시동 절차를 기각(Reject)한다.</p>
+<hr />
+<h2>6.  요약 및 주의 사항</h2>
+<p>공학적 시스템 엔지니어링 관점에서 비행 전 점검(Pre-flight Check)은 무인항공기를 보호하는 첫 번째 보루(First Line of Defense)이다. GCS 개발자는 QGroundControl 시스템을 수정하거나 자율 비행(Autonomous Agent) 관제 애플리케이션을 구축할 때, MAVLink로 전송되는 프리플라이트 상태 메커니즘을 정확히 추적하여 소프트웨어의 비동기적 상태 천이 로직을 엄격하게 수립해야 생명을 위협하는 사고를 방지할 수 있다.</p>
+<h2>7. 참고 문헌 및 링크</h2>
+<ul>
+<li>PX4 Autopilot User Guide: <a href="https://docs.px4.io/main/en/flying/pre_flight_checks.html">Pre-flight Checks</a></li>
+<li>MAVLink Developer Guide: <a href="https://mavlink.io/en/messages/common.html#MAV_CMD_RUN_PREARM_CHECKS">MAV_CMD_RUN_PREARM_CHECKS</a></li>
+</ul>
 
             </article>
             <footer>

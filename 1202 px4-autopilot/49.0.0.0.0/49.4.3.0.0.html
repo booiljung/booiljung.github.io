@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:49.4.3 지연 시간(Latency) 보상 및 위상 지연(Phase Lag) 극복 알고리즘</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>49.4.3 지연 시간(Latency) 보상 및 위상 지연(Phase Lag) 극복 알고리즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 49. 실시간 위치 및 속도 제어 명령(Offboard/Guided)의 주기적 전송 로직</a> / <span>49.4.3 지연 시간(Latency) 보상 및 위상 지연(Phase Lag) 극복 알고리즘</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>49.4.3 지연 시간(Latency) 보상 및 위상 지연(Phase Lag) 극복 알고리즘</h1>
+<h2>1.  개요(Introduction)</h2>
+<p>지상 관제 시스템(GCS) 또는 임무 수행용 보조 컴퓨터에서 다중 로터 드론 및 고정익으로 실시간 궤적 제어 지령(Offboard Setpoints)을 전송할 때, 통신망 파이프라인(MAVLink 무선 모뎀, 시리얼 브리지 브로드캐스트, O/S 커널 스케줄링 대기)을 물리적으로 거치며 필연적으로 송수신 지연 시간(Latency, <span class="math math-inline">T_d</span>)이 발생하게 된다.<br />
+이러한 물리적 무효 시간(Dead Time) 혹은 수송 지연(Transport Delay)은 제어 공학적 주파수 관점에서 시스템 폐루프에 순수한 위상 지연(Phase Lag)의 페널티를 추가한다. 보상 방직 기제 없이 피드백(Feedback) 제어를 순진하게 수행하면, 대상 기체는 이미 지나가버려 무효해진 과거의 제어 오차를 무마하기 위해 뒤늦은 롤/피치 기동 스퍼트를 가하게 되어 결국 비행 궤적의 진동(Oscillation) 현상을 유발하거나 최악의 경우 시스템 발산(Divergence) 추락으로 이어지게 된다.</p>
+<h2>2.  제어 관점의 위상 지연(Phase Lag)이 비행 모델에 미치는 악영향</h2>
+<p>비행 통제 시스템의 이산화 샘플링 주기가 <span class="math math-inline">T_s</span>이고 발생한 네트워크망의 총 지연 시간이 <span class="math math-inline">T_d</span>일 때, 선형화된 제어 루프 전달 함수에는 <span class="math math-inline">e^{-s \cdot T_d}</span> 만큼의 주파수 대역별 위상 깎임 현상이 필연적으로 나타난다.</p>
+<ul>
+<li>이는 안정성 마진(Phase Margin) 여유를 대폭 감소시켜 외란에 대한 자체 루프의 제어 안정성을 크게 제약하게 된다.</li>
+<li>특히 고속 전진 비행(Forward Flight) 상황에서 GCS가 목적지를 하달하더라도, 기체는 응답 지연 시간인 <span class="math math-inline">T_d</span> 시간 동안 기존 직진 벡터 에너지를 그대로 유지하므로, 변위 목표 궤적에 대한 제어 오버슈트(Overshoot)가 증폭된다.</li>
+</ul>
+<h2>3.  PX4 및 Offboard 제어 환경에서의 3대 핵심 지연 보상 알고리즘</h2>
+<h3>3.1  궤적 피드포워드(Feed-forward) 제어와 차원적 미분항 포함 기술</h3>
+<p>가장 직관적이고 널리 쓰이는 지연 극복 기법은 GCS 궤적 생성기에서 단순히 목표 공간 ‘위치(Position)’ 1차원만 MAVLink로 단일 전송하는 관행을 버리는 것이다. 대신, 해당 시점(t)의 목표 대상체 ‘속도(Velocity)’, ‘가속도(Acceleration)’ 항까지 전부 미분 산출하여 하나의 MAVLink 페이로드에 다중화(Multiplexing)하여 압축 전송한다.</p>
+<ul>
+<li>통신망 관측 지연 <span class="math math-inline">T_d</span>가 존재하더라도, 수신측인 PX4 내부의 위치 제어기 모듈(Flight Task) 다중 루프가 해당 미분항(Feed-forward Target)의 에너지를 적극 활용하여 타겟의 미래 궤적 운동학을 시스템이 단기적으로 강건하게 추종(Tracking)할 수 있게 하므로, 위상의 끌림 효과를 대폭 상쇄시킬 수 있다.</li>
+</ul>
+<h3>3.2  스미스 예측기(Smith Predictor) 및 궤적 상태 외삽(State Extrapolation)</h3>
+<p>수학적 동력학 모델 기반 지연 보상 필터의 대표격인 ‘스미스 예측기’ 제어 사상을 실무적으로 응용한 외삽(Extrapolation) 보상 방식이다.</p>
+<ul>
+<li>PX4 내부 프로세스의 정밀한 동력학 수학 모델과 EKF2 추정기를 통해, 제어 지령이 생성되어 무선망을 도달하기까지 걸린 명백한 지연 시간(<span class="math math-inline">T_d</span>)을 오프셋 보정 프로토콜(<code>TIMESYNC</code>, 참조: 49.4.2)을 기반으로 파악한다.</li>
+<li>GCS 측이 지시했던 목표 궤적의 원시 타임스탬프와 기체의 패킷 수신 현재 시간의 오차(<span class="math math-inline">\Delta t = T_d</span>)를 바탕으로, 기체 제어기는 속도와 가속도 미분 벡터를 토대로 <span class="math math-inline">\Delta t</span> 만큼 선행 계산(Forward Prediction) 유도된 가상 위치와 제어 오차를 산출하여 물리적인 액추에이터 믹서 장치에 인가한다.</li>
+</ul>
+<h3>3.3  관측치 자체 지연 보상 (EKF2 Observation Delay Compensation)</h3>
+<p>제어 지령 전송 역방향인 GCS로 향하는 센서 피드백 전송 측면에서도 보상 스레드가 필수적이다. 비전 카메라 기반 VIO 모캡 데이터의 컴퓨팅 영상 처리 딜레이(예: 평균 50~150ms)의 악영향을 소프트웨어적으로 무력화하기 위해, 개발자는 PX4의 기체 내부 파라미터 <code>EKF2_EV_DELAY</code> 등을 반드시 설정해야만 한다. 전 단계에서 분석한 바와 같이, EKF 필터링 아키텍처는 과거 발생 시점 융합 이후 현재 틱(Tick)까지의 IMU 적분 데이터를 메모리 링 버퍼에서 리플레이 재적분하여 출력 위상의 지연을 완전한 0(Zero-phase Lag) 상태에 가깝게 강제 복구해 낸다.</p>
+<h2>4.  모델 지연 예측 보상 제어 알고리즘 구조 (Mermaid)</h2>
+<pre><code class="language-mermaid">graph TD
+    A[GCS: 비동기 궤적 생성기] --&gt;|위치 + 속도 + 가속도 세트 지령| B(무선 물리 통신 지연 T_d 발생)
+    B --&gt; C[PX4: MAVLink / DDS 버퍼 수신]
+    C --&gt;|TIMESYNC 타임스탬프 기반 지연량 산출| D{운동학적 Extrapolation / 예측 보상 연산}
+    
+    E[PX4 EKF2: 정밀 상태 추정기] --&gt;|Zero-delay 보상된 현재 관측 상태| D
+    
+    D --&gt;|수학적으로 매칭 보상된 미래 궤적 지령 세트| F[PID 피드포워드 다중 피드백 제어기]
+    F --&gt; G[Actuators Mix Output]
+
+    style D fill:#d4f1f9,stroke:#333,stroke-width:2px
+    style E fill:#ececff,stroke:#333
+    style F fill:#e2e2e2,stroke:#333
+</code></pre>
+<h2>5.  펌웨어 간 아키텍처 비교 철학 고찰 (Ardupilot 대비)</h2>
+<ul>
+<li><strong>Ardupilot (Copter Core)</strong>: 철학적으로 기본 관점에서는 <code>SET_POSITION_TARGET_LOCAL_NED</code> 수신 시 유연하게 조율된 스무딩 곡선 커널(WPNav) 필터를 통해 거친 스텝 지령과 변동하는 딜레이를 부드럽게 흡수 방어하는 관제 위치 제어(Position Control)의 방어 생존 역량이 우수하나, 시스템 지연 텐션을 제어 이론적으로 깊게 통달하여 능동적 동력학 예측 보상까지 추상화해내는 구조적 파이프라인은 상대적으로 얕다.</li>
+<li><strong>PX4-Autopilot</strong>: 다부진 학술 공학 배경이 모듈 설계 전체를 관통하는 파이프라인 구조를 지니어, uORB 내 <code>trajectory_setpoint</code> 핵심 토픽 구독 포트 자체가 타임스탬프 기반의 피드포워드 항(위치, 속도, 가속도 및 저크 배열)의 풀세트 명시적 충족을 요구하는 코딩 문법을 취한다. 센서 관측 파이프라인에서부터 액추에이터 제어 명령 파이프라인 전반을 관통하는 모델 예측 강건 제어(Model Predictive / Kinematic Delay Compensation) 철학 사상이 코드 베이스와 파라미터 디자인 근간 깊숙이 스며들어 있다.</li>
+</ul>
+<h2>6.  결론</h2>
+<p>실시간 관제 시스템(GCS) 통신 링크의 물리 매체에서 잉태되는 위상 지연은 불가피한 하드웨어적인 한계이나, 제어 공학의 이론이 접목된 지연 보상 소프트웨어 알고리즘 설계 도입을 통해 그 기계적 악영향을 획기적으로 억제 필터링할 수 있다.<br />
+PX4 생태계를 주름잡으며 무인 자율 성능을 극대화하려면 GCS 개발자는 이제 단일 위치 좌표계의 편향적 송신 관행에서 철저히 벗어나, 속도 및 가속도를 모두 포함한 완전한 강체 역학 미분 궤적 모델을 <code>TIMESYNC</code> 보정 타임스탬프와 함께 다중 조립하여 전송하는 구조적 프로토콜 설계 철학을 임무 서버에 반드시 도입 연마해야 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

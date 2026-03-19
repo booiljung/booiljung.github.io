@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:52.6.4.1. 아두파일럿의 모터 인터록(Motor Interlock) 구현 철학과 PX4의 비상 정지(Kill Switch) 간의 제어 루프 진입점(Entry Point) 차이 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>52.6.4.1. 아두파일럿의 모터 인터록(Motor Interlock) 구현 철학과 PX4의 비상 정지(Kill Switch) 간의 제어 루프 진입점(Entry Point) 차이 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 52. 비상 제어 명령: 비상 정지(Kill Switch) 및 비행 종료(Flight Termination) 안전 로직</a> / <span>52.6.4.1. 아두파일럿의 모터 인터록(Motor Interlock) 구현 철학과 PX4의 비상 정지(Kill Switch) 간의 제어 루프 진입점(Entry Point) 차이 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>52.6.4.1. 아두파일럿의 모터 인터록(Motor Interlock) 구현 철학과 PX4의 비상 정지(Kill Switch) 간의 제어 루프 진입점(Entry Point) 차이 분석</h1>
+<p>무인항공기(UAV) 시스템에 치명적인 오작동이 발생하거나 지상 조작원에게 물리적인 위협이 가해지는 순간, 구동부(Actuator)의 동력을 즉각적으로 차단하는 기술은 가장 원초적이고 확실한 안전 장치(Safety Mechanism)다. 세계적으로 널리 쓰이는 오픈소스 비행 제어 소프트웨어인 아두파일럿(Ardupilot)과 PX4-Autopilot은 이 필수적인 기능을 구현함에 있어 상이한 소프트웨어 철학을 바탕으로 <strong>제어 루프(Control Loop)</strong> 내의 서로 다른 위치를 <strong>진입점(Entry Point)</strong> 으로 삼고 있다. 본 섹션에서는 아두파일럿의 모터 인터록(Motor Interlock)과 PX4의 비상 정지(Kill Switch) 아키텍처의 근본적인 차이를 소스 코드와 제어 흐름 관점에서 심층 분석한다.</p>
+<h2>1.  아두파일럿의 모터 인터록(Motor Interlock) 구현 철학</h2>
+<p>아두파일럿의 모터 인터록 로직은 구동부 라이브러리인 <code>AP_Motors</code> 클래스 최상단에서 처리되는 <strong>논리적 상태 전이(Logical State Transition)</strong> 의 형태를 띤다.</p>
+<p>전통적으로 전통 헬리콥터(Traditional Helicopter)의 가스 터빈이나 엔진 제어에서 유래한 모터 인터록 개념은 아두파일럿 시스템 전반으로 확장되었다. 사용자가 RC 조종기 스위치나 GCS 명령을 통해 인터록을 비활성화(Disable)하면, 시스템은 시동(Armed) 상태를 유지한 채로 모터의 출력을 대기 최소값(예: <code>MOT_SPIN_ARMED</code> 파라미터 기반) 또는 0으로 강제 하향한다.</p>
+<p>이러한 접근의 핵심은 <strong>PID 제어 루프와 비행 모드(Flight Mode) 로직이 여전히 활성화</strong>되어 있다는 점이다. 기체의 자세 제어 계산은 계속 연산되고 있으며, 고정익기(Fixed-wing)나 헬리콥터의 경우 메인 스로틀(Throttle)만 차단된 채 자동 회전(Autorotation) 활공이나 타면(Control Surface) 제어를 통한 불시착(Crash Landing)을 시도할 수 있는 엄청난 유연성을 제공한다. 즉, 아두파일럿의 제어 루프 진입점은 ‘동력의 논리적인 억제’ 단계에 있다.</p>
+<h2>2.  PX4의 비상 정지(Kill Switch) 제어 루프 진입점</h2>
+<p>반면, PX4-Autopilot(v1.14 기준)의 비상 정지(Kill Switch) 매커니즘은 매우 급진적이고 파괴적인 <strong>물리적 추상화 단절(Physical Abstraction Severance)</strong> 을 채택하고 있다.</p>
+<p>PX4 운영체제(NuttX RTOS) 내의 <code>Commander</code> 상태 머신이 비상 정지 명령을 uORB 토픽(예: <code>vehicle_status</code>)을 통해 수신하거나 RC 트랜스미터의 하드웨어 스위치 차단을 감지하면, 제어 루프의 가장 마지막 단계인 <strong>제어 할당기(Control Allocator, 기존의 믹서(Mixer) 시스템)</strong> 와 <strong>하드웨어 출력 드라이버(PWM/DShot Driver)</strong> 사이의 연결 고리를 즉시 끊어버린다.</p>
+<p>이 진입점에서는 상단의 EKF2(상태 추정기)가 파악한 기체 자세 정보나, 위치 제어기(Position Controller) 및 속도 제어기(Velocity Controller)에서 산출한 PID 요구(Demand) 값이 완벽하게 무효화(Bypassing)된다. PX4 드라이버 단말 계층은 비상 정지 플래그(Flag)가 ’True’가 되는 순간 모든 액추에이터 출력을 안전 최소값(Disarmed PWM)으로 물리적인 클램핑(Clamping) 처리를 하여 강제 추락(Free Fall)시킨다. 소프트웨어 버그나 제어기 발산 현상(Controller Divergence)으로부터 기체 구동부를 원천 차단하는 가장 극단적이고 확실한 방법이다.</p>
+<h2>3.  제어 루프 진입점(Entry Point)의 구조적 차이 비교</h2>
+<p>다음 메머드(Mermaid) 다이어그램은 두 시스템 간의 비상 제어 명령 진입점 위치를 명확히 보여준다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Ardupilot_Control_Loop
+        A1[Attitude/Position Controllers] --&gt; A2{Motor Interlock Switch}
+        A2 --&gt;|Interlock ON (Enabled)| A3[AP_Motors Library]
+        A2 --&gt;|Interlock OFF (Disabled)| A4[스로틀 강제 0, 롤/피치 연산 유지 가능]
+        A3 --&gt; A5[RC Output Driver]
+        A4 --&gt; A5
+    end
+
+    subgraph PX4_Control_Loop
+        P1[Attitude/Position Controllers] --&gt; P2[Control Allocator / Mixer]
+        P2 --&gt; P3{Kill Switch}
+        P3 --&gt;|Kill Switch OFF (Normal)| P4[PWM/DShot Output Driver]
+        P3 --&gt;|Kill Switch ON (Engaged)| P5[제어 신호 완벽 차단 및 PWM=0 클램핑]
+        P5 --&gt; P4
+    end
+</code></pre>
+<h2>4.  아키텍처 차이에 따른 예외 상황 처리 및 응용</h2>
+<p>설계 아키텍처가 제어 루프의 다른 계층에 진입점을 두기 때문에 발생하는 응용의 차이는 다음과 같다.</p>
+<ol>
+<li><strong>상태 머신 전이 및 복구력(Recovery):</strong></li>
+</ol>
+<ul>
+<li>아두파일럿 환경에서는 일시적인 인터록 차단 후, 안전이 확보되었다고 판단 시 공중에서 즉시 인터록을 해제하여 비행을 재개하는 로직이 매우 부드럽고 자연스럽다.</li>
+<li>PX4의 비상 정지는 근원적으로 전원 차단에 가까운 행위이므로, 공중에서 Kill Switch를 풀고 강제 복구(Mid-air Recovery)를 시도할 수는 있으나, 클램핑된 적분기(Integrator) 값의 급격한 와인드업(Windup) 초기화 튀어오름(Spike)에 각별히 대비해야 한다.</li>
+</ul>
+<ol start="2">
+<li><strong>시스템 치명도 대응 수준:</strong></li>
+</ol>
+<ul>
+<li>개발 중인 자율 에이전트 환경(ROS2/uXRCE-DDS)에서 컴퓨터 비전 및 외부 경로 계획 알고리즘의 심각한 오작동으로 기체가 폭주 상태(Flyaway)가 된 경우, PX4의 저수준(Low-level) I/O 클램핑 방식은 소프트웨어 스택 붕괴와 무관하게 즉시 물리적 정지를 이끌어 내는 데 철저한 신뢰성을 제공한다.</li>
+<li>아두파일럿의 방식은 <code>AP_Motors</code> 클래스와 제어기 스택 간의 밀접한 연산 공유가 있어, 치명적인 메모리 손상(Memory Corruption)이나 커널 패닉 발생 시 인터록 자체의 신뢰성이 하드웨어 드라이버 수준보다는 논리 수준에 머무른다는 아키텍처적 한계도 지니고 있다.</li>
+</ul>
+<p>결론적으로, 두 시스템 공학적 설계는 무인항공기의 ’통제불능’에 대처하고자 하나, 아두파일럿은 비행 동역학적 억제와 조종성 잔류(Controllability Retention)에 방점을 두었고, PX4는 하드웨어 추상화 계층에서의 완벽한 분리 및 시스템 보호(System Immunity)에 철학적 방점을 두고 있다. 무인항공시스템 엔지니어는 GCS 기반 관제 기능을 개발할 때, 이러한 제어 루프 진입점의 차이를 명확하게 인지하고 각 시스템에 맞는 알맞은 비상 복구 시퀀스를 QGroundControl 등의 사용자 인터페이스에 할당해야 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

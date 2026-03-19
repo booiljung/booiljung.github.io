@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:52.5.1.2. `actuator_armed` 토픽의 안전 상태 변수 갱신 시 경쟁 조건(Race Condition)을 원천 차단하는 스핀락(Spinlock) 및 뮤텍스(Mutex) 동기화 기법</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>52.5.1.2. `actuator_armed` 토픽의 안전 상태 변수 갱신 시 경쟁 조건(Race Condition)을 원천 차단하는 스핀락(Spinlock) 및 뮤텍스(Mutex) 동기화 기법</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 52. 비상 제어 명령: 비상 정지(Kill Switch) 및 비행 종료(Flight Termination) 안전 로직</a> / <span>52.5.1.2. `actuator_armed` 토픽의 안전 상태 변수 갱신 시 경쟁 조건(Race Condition)을 원천 차단하는 스핀락(Spinlock) 및 뮤텍스(Mutex) 동기화 기법</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>52.5.1.2. <code>actuator_armed</code> 토픽의 안전 상태 변수 갱신 시 경쟁 조건(Race Condition)을 원천 차단하는 스핀락(Spinlock) 및 뮤텍스(Mutex) 동기화 기법</h1>
+<h2>1.  개요 및 <code>actuator_armed</code>의 위상</h2>
+<p>PX4-Autopilot 아키텍처 내에서 기체의 전반적인 위험 상태와 프로펠러 구동 여부를 결정짓는 단일 진실 공급원(Single Source of Truth)은 바로 <code>actuator_armed</code> uORB 토픽이다. 이 토픽 내부에는 단순히 모터가 구동 중인지를 나타내는 <code>armed</code> 플래그 외에도 <code>prearmed</code>, <code>ready_to_arm</code>, <code>lockdown</code>, <code>manual_lockdown</code>, <code>force_failsafe</code> 등 수많은 파생 안전 상태 변수(Safety State Variables)가 밀집되어 있다.</p>
+<p>비행 중 비상 상황이 발생할 경우, 자율 주행을 통제하는 네비게이터(Navigator) 스레드, 외부 조종기의 MAVLink 커맨더(Commander) 스레드, 그리고 하드웨어의 안전 버튼(Safety Button) 인터럽트 루틴 등이 거의 동시간에 이 변수들의 값을 변경하려 시도할 수 있다. 본 절에서는 이러한 다중 접근이 유발할 수 있는 치명적인 경쟁 조건(Race Condition)을 원천적으로 차단하기 위해 PX4 커널 레벨(NuttX)에서 활용하는 스핀락(Spinlock)과 뮤텍스(Mutex) 동기화 통제 기법을 분석한다.</p>
+<h2>2.  상태 갱신 시 발생하는 경쟁 조건(Race Condition)의 위험성</h2>
+<p>기본적으로 C/C++ 레벨에서 구조체의 플래그를 변경하는 작업은 **“읽기-수정-쓰기(Read-Modify-Write)”**라는 세 단계의 어셈블리 명령어로 나뉜다.</p>
+<p>만약 커맨더 스레드가 <code>actuator_armed</code> 토픽을 메모리에 올려 비상 잠금(<code>manual_lockdown = true</code>)을 시도하는 바로 그 순간(Modify와 Write 사이), 스케줄러에 의해 선점 당해 안전 버튼 스레드가 토픽을 읽어 <code>armed = true</code>로 덮어써 버린다면, 결과적으로 먼저 실행된 비상 잠금 플래그 변경이 무시되는 데이터 무결성 파괴 현상이 발발한다. 드론의 모터 통제권에서 이러한 찰나의 데이터 오염은 대형 인명 및 대물 사고로 직결된다.</p>
+<h2>3.  원자적(Atomic) 연산과 스핀락(Spinlock) 동기화 아키텍처</h2>
+<p>PX4는 비상 제어 명령어 처리와 같은 극단적으로 짧고 임계성 높은 코드 블록(Critical Section)을 보호하기 위해, 무거운 스레드 슬립(Sleep) 연산을 동반하는 뮤텍스 대신 <strong>스핀락(Spinlock)</strong> 메커니즘을 핵심적으로 차용한다.</p>
+<p>스핀락은 원하는 자원(Lock)을 획득할 때까지 스레드를 일시정지(Block)시키지 않고, CPU의 루프를 반복하며(Spin) 자원의 해제를 끊임없이 묻는 방식이다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[Commander Thread: Update actuator_armed] --&gt; B{Try Spinlock}
+    B -- Lock Acquired --&gt; C[Enter Critical Section]
+    B -- Lock Busy --&gt; D[Spinning (Wait in tight loop)]
+    D --&gt; B
+    
+    C --&gt; E[IRQ Disable (irqsave)]
+    E --&gt; F[Read, Modify, Write data]
+    F --&gt; G[IRQ Enable (irqrestore)]
+    G --&gt; H[Release Spinlock]
+    H --&gt; I[orb_publish(actuator_armed)]
+</code></pre>
+<h3>3.1  하드웨어 인터럽트 마스킹(<code>irqsave</code> / <code>irqrestore</code>) 결합</h3>
+<p>스핀락만으로는 단일 프로세서(Single-Core) 환경의 선점형 스케줄러나 하드웨어 인터럽트로 인한 컨텍스트 스위치를 완전히 막기 어렵다. 따라서 PX4 커널 로직 내 <code>orb_publish</code>나 커맨더 내부 상태값 복사 구역에서는 <code>irqsave()</code>를 호출하여 타이머를 포함한 모든 외부 하드웨어 인터럽트를 강제로 마스킹(Masking)해버린다.<br />
+수십 개의 인스트럭션만 실행하고 즉시 <code>irqrestore()</code>로 복원하는 이 방식은 지연(Latency)이 1~2 마이크로초 단위에 불과하므로 시스템의 실시간성을 훼손하지 않으면서도 완벽한 원자적 갱신(Atomic Update)을 이뤄낸다.</p>
+<h2>4.  뮤텍스(Mutex)와의 하이브리드 동기화 전략</h2>
+<p>모든 동기화에 스핀락과 인터럽트 차단 방식을 사용할 수는 없다. 예를 들어, 기체의 전체 비행 모드를 설정하기 위해 로그 파일을 새로 열거나, 긴 연산을 요구하는 자원 획득 시에는 인터럽트를 차단하면 치명적인 시스템 반응성 저하(System Freeze)를 초래한다.</p>
+<p>따라서 PX4 내 커맨더 모듈 아키텍처는 이원화된 동기화 기법을 적용한다.</p>
+<ol>
+<li><strong>뮤텍스(Mutex) 사용 구간:</strong> 비행 전 준비 상태(Pre-arm Check)나, 파라미터(Parameter) 값 업데이트 및 로딩과 같이 락(Lock) 소유 시간이 길어질 수 있는 구역에서는 <code>pthread_mutex_lock</code> 연산을 활용하여 스레드가 안전하게 슬립 후 깨어나는 방식을 취한다.</li>
+<li><strong>스핀락/원자성(Spinlock/Atomic) 사용 구간:</strong> 반면 비행 중 비상 잠금(Lockdown), 킬 스위치(Kill Switch), Failsafe 발동 등 <code>actuator_armed</code>에 직접적인 플래그 조작을 가할 때는 반드시 뮤텍스를 회피하고, 스핀락이나 <code>atomic&lt;bool&gt;</code> 기반의 가장 가벼운 동기화 도구를 사용한다.</li>
+</ol>
+<h2>5.  소스 코드 구현체 예시 극복 (v1.14 기준)</h2>
+<p>NuttX와 상호작용하는 커맨더 스레드의 플래그 처리부(예: <code>src/modules/commander/Commander.cpp</code>)에서는 <code>actuator_armed_s</code> 객체를 다룰 때 로컬 복사본을 활용하는 패턴이 자주 관찰된다.</p>
+<pre><code class="language-cpp">// Race Condition 방지를 위한 안전한 상태 갱신 흐름 모의 코드
+actuator_armed_s armed{};
+
+// 1. 현재 최신 상태를 uORB에서 즉시 카피 (Read)
+orb_copy(ORB_ID(actuator_armed), _armed_sub, &amp;armed);
+
+// 2. Critical 데이터 변경 준비
+armed.manual_lockdown = true;
+armed.force_failsafe = true;
+armed.timestamp = hrt_absolute_time(); 
+
+// 3. uORB에 변경안 배포 (Publish) - 이 내부에서 Spinlock/IRQ 제어가 원자성을 유지시킴
+orb_publish(ORB_ID(actuator_armed), _armed_pub, &amp;armed);
+</code></pre>
+<p>uORB 통신 매커니즘 자체가 토픽 매니저 내부에서 락프리/스핀락 기반으로 업데이트 트랜잭션을 관리해주기 때문에, 각 응용 스레드 코드(Commander 등)가 직접 전역 뮤텍스 객체를 생성하고 들고다니는 아키텍처(Ardupilot 스타일의 AP_HAL 객체 공유 방식)의 결함을 피하면서도 경쟁 조건을 우아하게 회피할 수 있다.</p>
+<h2>6.  결론</h2>
+<p>무인항공기의 제어권은 데이터베이스 소프트웨어의 동시성 제어(Concurrency Control) 메커니즘만큼이나 엄격한 동기화 표준을 요구한다. PX4-Autopilot은 <code>actuator_armed</code>와 같이 목숨을 담보하는 핵심 변수 갱신 시, 무거운 스레드 슬립 오버헤드가 발생하는 뮤텍스 사용을 최적화하고 대신 마이크로 단위의 스핀락 및 하드웨어 인터럽트 마스킹을 결합하는 고도화된 커널 프로그래밍 방법론을 통해 어떠한 경합 환경에서도 로직이 오염되지 않는 무결점 다중 스레드 환경(Thread-Safe Environment)을 구현해냈다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

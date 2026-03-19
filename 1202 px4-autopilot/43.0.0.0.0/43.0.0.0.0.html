@@ -115,6 +115,107 @@
             </header>
             <article>
                 <h1>Chapter 43. 시동(Arming) 및 시동 해제(Disarming) 명령의 전제 조건과 검증 로직</h1>
+<p>본 장에서는 무인항공기(UAV)의 구동계가 활성화되어 본격적인 비행 가능 상태로 진입하는 시동(Arming) 절차와 그 반대의 시동 해제(Disarming) 절차에 대한 제어 로직을 심층적으로 다룬다. 본 내용은 <strong>PX4-Autopilot v1.14 최신 펌웨어</strong> 구조를 기반으로 작성되었으며, 지상 관제 시스템(GCS) 단에서의 제어 안정성을 보장하기 위한 아키텍처적 검증 메커니즘을 상세히 분석한다.</p>
+<hr />
+<h2>1.  시동(Arming) 상태의 시스템적 의미</h2>
+<p>시동(Arming) 상태는 비행 제어기(Flight Controller)의 액추에이터 출력이 완전히 개방(Enabled)되어 모터가 회전할 수 있는 매우 위험한 단계를 의미한다. PX4-Autopilot 아키텍처에서 Arming 상태 천이(State Transition)는 단순한 플래그(Flag) 변경이 아니며, 지상 시스템(Ground Station) 또는 조종기(RC)로부터 명시적인 의도가 전달되고 내부의 안전 조건(Safety Conditions)이 모두 충족되었을 때만 수행되는 고도의 조건부 트랜잭션이다.</p>
+<hr />
+<h2>2.  PX4-Autopilot과 Ardupilot의 Arming/Disarming 철학 차이</h2>
+<p>PX4와 Ardupilot 모두 철저한 시동 로직을 준수하지만, 소프트웨어 컴포넌트 간의 결합도 및 관제 측면에서 설계 철학의 차이를 보인다.</p>
+<ul>
+<li><strong>PX4-Autopilot:</strong> 상태 머신(State Machine) 지향적인 검증 구조를 가진다. <code>commander</code> 모듈이 현재의 <code>nav_state</code>(항법 모드)와 <code>vehicle_status</code>(기체 상태)를 중앙에서 평가하여 Arming 시도를 승인하거나 거부한다. 또한 uORB (Micro Object Request Broker) 통신 기반으로 제어기 간 결합도가 낮아(Decoupled), GCS나 외부 Companion Computer (ROS2 노드 등)가 오프보드(Offboard) 모드 상에서 개입하기에 명확한 계층 분리를 제공한다.</li>
+<li><strong>Ardupilot:</strong> Ardupilot은 특정 비행 모드 단위의 <code>AP_Arming</code> 클래스 상속 구조를 갖춘다. 각 모드가 자체적으로 Arming 전제 조건을 오버라이딩(Overriding)할 가능성이 높으며, 이는 코드의 추적이 복잡할 수 있으나 유연한 모드별 커스텀이 용이하다는 특징이 있다.</li>
+</ul>
+<hr />
+<h2>3.  시동(Arming)의 전제 조건 및 상태 검증 알고리즘</h2>
+<p>PX4에서 Arming 명령이 유효한 시동 상태로 천이하기 위해서는 다중 계층의 엄격한 전제 조건을 통과해야 한다.</p>
+<ol>
+<li><strong>비행 전 점검 통과 (Pre-flight Checks Passed):</strong> 앞서 평가한 센서 헬스(Health), EKF 혁신율(Innovation), 배터리 레벨 등의 <code>PreflightCheck</code> 검증이 통과(<code>true</code>)되어야 한다.</li>
+<li><strong>비행 모드 종속 계층 (Mode-Dependent Conditions):</strong></li>
+</ol>
+<ul>
+<li>위치 제어 모드(Position Control) 및 임무 모드(Mission)일 경우: 글로벌 포지션 잠금(GPS 3D Fix 등)이 필수적이다.</li>
+<li>수동 모드(Manual)일 경우: GPS 없이도 자세 제어(Attitude) 추정만 유효하다면 Arming이 승인될 수 있다.</li>
+</ul>
+<ol start="3">
+<li><strong>사용자 의도 확인 (Intent Verification):</strong> MAVLink를 통한 원격 GCS 제어이거나 조종기(RC)의 스틱 암(Stick Arm - 스틱을 특정 방향으로 1초 이상 고정) 명령 시, 타이머 인터럽트를 통해 의도치 않은 조작(Accidental Arming)을 방지한다.</li>
+<li><strong>안전 스위치 (Safety Switch):</strong> 물리적 하드웨어 안전 버튼이 해제(Un-pressed) 상태여야만 PWM 출력을 개방한다. (파라미터 <code>CBRK_IO_SAFETY</code>를 통해 우회 가능)</li>
+</ol>
+<hr />
+<h2>4.  시동 해제(Disarming) 검증 로직 및 지면 접촉 감지 (Landed Detector)</h2>
+<p>비행 중 돌발적인 시동 해제(Mid-air Disarming)는 기체 추락으로 이어지므로, 시동 해제 로직은 시동 로직만큼이나 보수적(Conservative)으로 동작해야 한다.</p>
+<ul>
+<li><strong>비행 중 해제 거부 로직:</strong> PX4는 백그라운드에서 <code>land_detector</code> 모듈을 가동하여 현재 기체가 착륙 상태인지(Landed), 혹은 비행 중 상태인지(In-air) 추정한다. 스로틀이 최하단에 떨어져 있어도, 가속도계 센서의 정지 마찰(Jerk/Acceleration Variance)이 영(0)에 수렴하지 않거나 GPS 속도가 존재하면 Disarming 요청을 거부(Deny)한다 (강제 비상 정지 제외).</li>
+<li><strong>자동 시동 해제 (Auto Disarm):</strong> 착륙 완료 상태(<code>Landed</code>)로 판별된 직후 파라미터 <code>COM_DISARM_LAND</code>에 정의된 시간(예: 기본 2초)이 경과하면 시스템이 모터를 보호하기 위해 스스로 Disarming 상태로 전환된다.</li>
+</ul>
+<h3>4.1 상태 천이 다이어그램 (Mermaid)</h3>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; Standby
+    Standby --&gt; PreFlightChecks : Arming Request
+    
+    state PreFlightChecks {
+        [*] --&gt; CheckSensors
+        CheckSensors --&gt; CheckGPS : Pass
+        CheckSensors --&gt; Reject : Fail
+        CheckGPS --&gt; CheckSafetyButton : Pass
+        CheckGPS --&gt; Reject : Fail
+        CheckSafetyButton --&gt; Passed : Pressed=False
+    }
+    
+    PreFlightChecks --&gt; Armed : Passed
+    PreFlightChecks --&gt; Standby : Reject (NACK)
+    
+    Armed --&gt; WaitLand : Flight
+    WaitLand --&gt; Landed : Land Detector Triggers
+    Landed --&gt; Standby : Disarm Request / Auto Timer
+    Armed --&gt; [*] : Kill Switch (Emergency)
+</code></pre>
+<hr />
+<h2>5.  MAVLink 명령을 이용한 GCS 관제</h2>
+<p>QGroundControl(QGC) 또는 맞춤형 관제 애플리케이션은 원격 시스템에서 기체를 제어할 때 <code>MAV_CMD_COMPONENT_ARM_DISARM</code> (명령 ID 400) 프로토콜을 사용한다.</p>
+<ul>
+<li><strong>명령 전송 (Command Packet):</strong></li>
+<li><code>Param 1</code> 필드가 <code>1</code>이면 Arming 요청, <code>0</code>이면 Disarming 요청이다.</li>
+<li>강제 제어가 필요할 경우 <code>Param 2</code> 매직 넘버(Magic Number, <code>21196</code>)를 할당하여 지면 판별 로직(Landed Check) 등을 덮어쓸(Override) 수 있으나, 이는 사고로 직결될 수 있으므로 극도로 조심해야 한다.</li>
+<li><strong>ACK/NACK 검증 (Acknowledgement):</strong></li>
+<li>GCS는 명령 전송 직후 로컬 타임아웃 타이머를 활성화해야 한다. COMMAND_ACK 메시지의 결과(Result) 필드가 <code>MAV_RESULT_ACCEPTED</code>일 때만 UI의 상태를 전이해야 하며, <code>MAV_RESULT_TEMPORARILY_REJECTED</code> 수신 시에는 시스템이 아직 전제 조건을 충족하지 못했음을 사용자에게 통지해야 한다.</li>
+</ul>
+<hr />
+<h2>6.  소스 코드 아키텍처 예시 (의사 코드)</h2>
+<p>다음은 C++ 기반의 <code>commander</code> 모듈 내에서 MAVLink Arming 커맨드를 처리하는 내부 구조의 추상화된 의사 코드(Pseudo-code)이다.</p>
+<pre><code class="language-cpp">// Handling MAVLink Arm/Disarm command in the Commander Module
+bool Commander::handle_command_arm_disarm(const vehicle_command_s &amp;cmd)
+{
+    bool request_arm = (cmd.param1 == 1.0f);
+    bool force_action = (cmd.param2 == 21196.0f); // Emergency / Force
+
+    if (request_arm) {
+        if (!force_action &amp;&amp; !preflight_check_passed) {
+            send_mavlink_ack(MAV_CMD_COMPONENT_ARM_DISARM, MAV_RESULT_DENIED);
+            return false;
+        }
+        transition_to(ARMING_STATE_ARMED);
+        send_mavlink_ack(MAV_CMD_COMPONENT_ARM_DISARM, MAV_RESULT_ACCEPTED);
+        return true;
+    } else { // Request Disarm
+        if (!force_action &amp;&amp; land_detector.isInAir()) {
+            mavlink_log_critical("Mid-air disarm rejected.");
+            send_mavlink_ack(MAV_CMD_COMPONENT_ARM_DISARM, MAV_RESULT_DENIED);
+            return false;
+        }
+        transition_to(ARMING_STATE_STANDBY);
+        send_mavlink_ack(MAV_CMD_COMPONENT_ARM_DISARM, MAV_RESULT_ACCEPTED);
+        return true;
+    }
+}
+</code></pre>
+<h2>7.  결론</h2>
+<p>무인항공기의 시동 및 시동 해제 메커니즘은 항공 생태계(Aviation Ecosystem)의 근간을 지탱하는 절차이다. GCS 개발자는 <code>MAV_CMD_COMPONENT_ARM_DISARM</code> 프로토콜을 구현할 시, 기체 내의 추정기(Estimator) 상태를 uORB 토픽 변화에 기반하여 수신하고 이를 비동기적으로 처리해야 한다. 맹목적으로 UI를 전환하는 대신, PX4의 보수적인 ACK 시그널에 강하게 결합된 프로그래밍 패턴을 구축하는 것이 자율 시스템 엔지니어링의 핵심이다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>PX4 Architectural Overview: <a href="https://docs.px4.io/main/en/flight_stack/commander.html">Arming State Machine</a></li>
+<li>MAVLink Developer Guide: <a href="https://mavlink.io/en/messages/common.html#MAV_CMD_COMPONENT_ARM_DISARM">MAV_CMD_COMPONENT_ARM_DISARM</a></li>
+</ul>
 
             </article>
             <footer>

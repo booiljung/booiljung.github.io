@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:45.9.2.2. 퓨처/프로미스(Future/Promise) 디자인 패턴 기반 상태 천이 완료 대기 및 비동기 완료 큐(Completion Queue) 폴링 원리</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>45.9.2.2. 퓨처/프로미스(Future/Promise) 디자인 패턴 기반 상태 천이 완료 대기 및 비동기 완료 큐(Completion Queue) 폴링 원리</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 45. 비행 모드(Flight Mode) 전환 명령과 모드 변경 검증 알고리즘</a> / <span>45.9.2.2. 퓨처/프로미스(Future/Promise) 디자인 패턴 기반 상태 천이 완료 대기 및 비동기 완료 큐(Completion Queue) 폴링 원리</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>45.9.2.2. 퓨처/프로미스(Future/Promise) 디자인 패턴 기반 상태 천이 완료 대기 및 비동기 완료 큐(Completion Queue) 폴링 원리</h1>
+<p>PX4-Autopilot과 상호작용하는 지상 관제 시스템(GCS) 또는 자율 에이전트는 본질적으로 비동기 통신 시스템이다. 비행체로 하달되는 모드 변경, 임무 업로드, 이착륙 등의 명령은 MAVLink/gRPC 네트워크를 거쳐 비행 제어기(Flight Controller)에서 처리되며, 완료되기까지 예측할 수 없는 지연 시간(Latency)이 발생한다. 이러한 비동기적 통신 환경에서 상태 천이(State Transition) 완료 여부를 안전하고 구조적으로 대기하기 위해 MAVSDK(버전 2.x 기준)를 위시한 현대적인 C++ 관제 미들웨어는 <strong>퓨처/프로미스(Future/Promise) 디자인 패턴</strong>을 핵심 구조로 채택하고 있다.</p>
+<p>본 절에서는 해당 패턴이 gRPC 비동기 완료 큐(Completion Queue) 폴링 매커니즘과 어떻게 결합하여 GCS의 상태 대기 및 동기화 파이프라인을 구축하는지 상세히 분석한다.</p>
+<h2>1.  퓨처/프로미스(Future/Promise) 디자인 패턴의 개념적 아키텍처</h2>
+<p>퓨처/프로미스 패턴은 병렬 프로그래밍 및 비동기 프로그래밍에서 결괏값을 생성하는 연산(Producer)과 결과를 소비하는 연산(Consumer)을 분리하는 디자인 패턴이다.</p>
+<ul>
+<li><strong>프로미스(Promise)</strong>: 비동기 작업(예: GCS로부터 이륙 명령 전송)을 내부적으로 담당하는 워커 스레드나 콜백 핸들러 측에서 보유한다. 작업이 완료되거나 실패했을 때, 그 상태나 결괏값을 ’미래에 제공하겠다’는 일종의 약속 객체이며, 작업 완료 시점에 <code>set_value()</code> 또는 <code>set_exception()</code>을 호출하여 약속을 이행한다.</li>
+<li><strong>퓨처(Future)</strong>: 결과를 요청하고 기다리는 메인 제어 루프나 호출자 스레드 측에서 보유한다. 아직 처리되지 않은 연산 결과를 나타내는 대리자(Proxy) 객체로 작동하며, <code>get()</code> 메서드를 호출하면 프로미스에 값이 세팅될 때까지 해당 스레드만 안전하게 블로킹(Blocking) 상태로 대기한다.</li>
+</ul>
+<h2>2.  PX4 MAVSDK에서의 상태 천이 완료 대기 구현 원리</h2>
+<p>MAVSDK C++ 코어의 비동기 API들(예: 이륙을 수행하는 <code>takeoff_async</code>)은 호출 즉시 메인 제어 스레드로 제어권을 반환한다. 그러나 만약 GCS 애플리케이션의 특정 상태 머신(State Machine)이 드론이 이륙을 완수할 때까지 다음 행동을 보류해야 한다면(상태 천이 완료 대기), 비동기 콜백 내부에서 복잡한 전역 플래그(Global Flag)나 뮤텍스(Mutex), 조건 변수(Condition Variable)를 직접 남용하기보다 프로미스와 퓨처를 활용하는 것이 유지보수성과 메모리 안전성 면에서 우수하다.</p>
+<p>실제 MAVSDK에서 제공되는 동기식 API(예: <code>takeoff()</code>)는 내부적으로 비동기 API를 호출함과 동시에 <code>std::promise</code>와 <code>std::future</code>를 활용한 래퍼(Wrapper)로 구현되어 있다.</p>
+<h3>2.1  MAVSDK 내부 비동기-동기 브리지 구현 패턴</h3>
+<pre><code class="language-cpp">// MAVSDK 내부에서 동기식 API가 비동기 API와 Future/Promise 패턴을 결합하는 논리적 패턴화 예시
+Action::Result ActionImpl::takeoff_sync() {
+    // 1. 프로미스와 퓨처 객체 생성
+    auto prom = std::make_shared&lt;std::promise&lt;Action::Result&gt;&gt;();
+    auto fut = prom-&gt;get_future();
+
+    // 2. 비동기 콜백 호출
+    takeoff_async([prom](Action::Result%20result) {
+        // gRPC 워커 스레드 큐에서 실행되는 콜백
+        prom-&gt;set_value(result); // 프로미스 이행
+    });
+
+    // 3. 메인 스레드 또는 호출 스레드의 대기 동작
+    // 결과가 gRPC 완료 큐를 통해 반환되고 워커 스레드가 콜백을 호출할 때까지 스레드 정지
+    return fut.get(); 
+}
+</code></pre>
+<p>이 패턴의 핵심은, 네트워크 I/O를 기다리는 동안 메인 루프를 블로킹하는 것이 아니라 메인 스레드 자체는 대기 지점(Wait Point)에 진입하지만 시스템 콜백 스레드는 지속적으로 다른 이벤트를 수신하고 대응할 수 있도록 비동기 계층을 보존한다는 점에 있다.</p>
+<h2>3.  gRPC 비동기 완료 큐(Completion Queue) 폴링 및 데이터 처리 파이프라인</h2>
+<p>그렇다면 프로미스(Promise)의 <code>set_value()</code>를 트리거하는 기반 시스템은 어떠한 과정을 거치는지 살펴보자. PX4 관제 백엔드 측은 비동기 완료 큐(Completion Queue)를 폴링(Polling)하는 백그라운드 스레드 풀(Thread Pool) 관리 워커 구조를 채택한다.</p>
+<p>아래 Mermaid 시스템 다이어그램은 퓨처/프로미스 기반으로 MAVSDK와 gRPC 인프라가 어떻게 맞물려 동작하는지 나타낸다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant MainLoop as GCS Main Thread
+    participant ApiCaller as MAVSDK Wrapper (Promise/Future)
+    participant CQueue as gRPC Completion Queue
+    participant Worker as gRPC Worker Thread
+    participant PX4 as PX4-Autopilot (Mavlink)
+
+    MainLoop-&gt;&gt;ApiCaller: takeoff() (Synchronous Wrapper)
+    activate ApiCaller
+    ApiCaller-&gt;&gt;CQueue: takeoff_async() Request Delivery
+    ApiCaller-&gt;&gt;MainLoop: block at future.get()
+    
+    CQueue-&gt;&gt;PX4: MA_CMD_NAV_TAKEOFF (gRPC -&gt; MAVLink)
+    PX4--&gt;&gt;CQueue: COMMAND_ACK (Result/Status)
+    
+    rect rgb(50, 50, 50)
+    note right of Worker: Continuous Polling / Event Loop
+    Worker-&gt;&gt;CQueue: Check for completed events (epoll/poll)
+    CQueue--&gt;&gt;Worker: Pop Event (Command Completed)
+    end
+    
+    Worker-&gt;&gt;ApiCaller: Callback execution: promise.set_value(Result)
+    ApiCaller--&gt;&gt;MainLoop: future.get() unblocks &amp; returns Result
+    deactivate ApiCaller
+    MainLoop-&gt;&gt;MainLoop: Change State (GCS -&gt; FLYING)
+</code></pre>
+<p>이 다이어그램에서 보듯이, GCS의 워커 스레드(Worker Thread)는 gRPC 의 Completion Queue에서 <code>Next()</code>와 같은 인터페이스를 주기적으로 폴링(Polling)하고 있다. PX4-Autopilot으로부터 <code>COMMAND_ACK</code> MAVLink 메시지가 도착하여 완료 큐에 이벤트 태그가 푸시되면, 블로킹되어 있던 워커 스레드가 즉시 활성화된다. 이후 워커가 콜백 함수를 실행하고 그 콜백 안에서 프로미스를 이행하게 되면, <code>future.get()</code>에 대기 중이던 메인 스레드의 블로킹이 해제되면서 제어 흐름이 동기적으로 이어진다.</p>
+<h2>4.  ArduPilot 관제(DroneKit / Pymavlink) 구조와의 설계 패러다임 차이</h2>
+<p>ArduPilot 관제 소프트웨어 개발 시 널리 쓰이는 <code>DroneKit-Python</code>이나 순수 <code>pymavlink</code>의 경우, 언어적 한계 및 라이브러리 구조상 멀티스레드 기반 비동기 설계보다 이벤트 핸들러(Event Handler) 등록 혹은 <code>while</code> 루프 내 차단적 읽기(Blocking Read)를 선호한다.</p>
+<p>ArduPilot 체계에서는 보통 특정 메시지(<code>COMMAND_ACK</code> 등)가 수신될 때까지 메시지 파서 스레드를 폴링 방식으로 돌리게 되며, 콜백 모델을 사용하더라도 전역 변수나 사용자 람다를 통해 제어를 위임하므로 퓨처/프로미스와 같이 로직을 우아하게 선형으로 유지시킬 수 있는 컨테이너 매커니즘이 부재한 경우가 많다. 반면에 PX4 진영의 MAVSDK(C++)는 C++11 표준 라이브러리인 <code>&lt;future&gt;</code>와 <code>&lt;promise&gt;</code>를 코어 단계에서 프레임워크와 결합해 두었으므로, 개발자는 멀티스레딩 데이터 무결성 검증이나 세마포어(Semaphore) 설계의 복잡도 없이 직관적인 타임아웃 처리와 예외 던지기(Exception Throwing)를 구현할 수 있다.</p>
+<h2>5.  퓨처 타임아웃 지연 제어 및 예외 처리 가이드</h2>
+<p>퓨처를 호출할 때는 무한정 <code>get()</code>을 대기해서는 안 된다. 통신 단절(Data Link Loss)이나 비행 제어기 미응답 상황에 대비하여, 임무 전환 명령과 같은 크리티컬 상태 전이를 시도할 때는 반드시 <code>wait_for</code> 방식의 타임아웃 처리가 결합되어야 한다.</p>
+<pre><code class="language-cpp">// 타임아웃이 적용된 퓨처/프로미스 대기 기법 예시
+auto fut = prom-&gt;get_future();
+std::future_status status = fut.wait_for(std::chrono::seconds(5)); // 5초 타임아웃 제한
+
+if (status == std::future_status::timeout) {
+    // 5초 내에 완료 큐에서 프로미스가 세팅되지 않음 -&gt; 타임아웃 예외 처리
+    handle_timeout_exception();
+} else if (status == std::future_status::ready) {
+    // 성공적 이행 시 결과 회수 및 정상 상태 천이
+    Action::Result res = fut.get();
+    if (res == Action::Result::Success) {
+        state_machine.transition(State::FLYING);
+    }
+}
+</code></pre>
+<h2>6.  결론</h2>
+<p>퓨처/프로미스 패턴은 gRPC 비동기 완료 큐의 복잡한 폴링, 다중 스레드 콜백 및 메모리 동기화 과정을 캡슐화시켜 GCS 애플리케이션 개발자에게 깨끗한 선형적(Synchronous-like) API 사용 환경을 제공한다. 이를 통해 개발자는 PX4의 비동기적 명령 수행 지연이나 불안정한 무선 통신망 제어 상황 하에서도, 타임아웃 보호 및 강건한 스레드 대기 메커니즘을 적용한 고신뢰성의 비행체 관제 소프트웨어를 구축할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

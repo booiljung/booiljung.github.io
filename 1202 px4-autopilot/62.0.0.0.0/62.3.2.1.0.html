@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:62.3.2.1. 상호 배제 락(Mutex Lock) 및 조건 변수(Condition Variable)를 활용한 경쟁 상태(Race Condition) 방지 회로</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>62.3.2.1. 상호 배제 락(Mutex Lock) 및 조건 변수(Condition Variable)를 활용한 경쟁 상태(Race Condition) 방지 회로</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 62. PX4-ROS2 메시지 퍼블리싱 및 서브스크라이빙 구현</a> / <span>62.3.2.1. 상호 배제 락(Mutex Lock) 및 조건 변수(Condition Variable)를 활용한 경쟁 상태(Race Condition) 방지 회로</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>62.3.2.1. 상호 배제 락(Mutex Lock) 및 조건 변수(Condition Variable)를 활용한 경쟁 상태(Race Condition) 방지 회로</h1>
+<p>현대의 무인항공기 비행 제어 및 관제 애플리케이션에서는 PX4-Autopilot과 ROS 2(Robot Operating System 2)를 연동할 때, <code>MultiThreadedExecutor</code>를 통해 여러 콜백(Callback)이 동시 다발적으로 실행된다. 수백 헤르츠(Hz) 주기로 갱신되는 <code>VehicleOdometry</code>, <code>SensorCombined</code> 등의 센서 데이터와, 상태를 갱신하고 임무(Mission)를 연산하는 스레드 간의 메모리 접근이 중첩될 수 있다. 이때 여러 스레드가 동시에 공유 자원(Shared Resource)을 읽고 쓰려 할 때 데이터 무결성이 훼손되는 경쟁 상태(Race Condition)가 발생한다.</p>
+<p>본 섹션에서는 이를 원천적으로 차단하고 효율적으로 스레드를 제어하기 위해 상호 배제 락(Mutex Lock)과 조건 변수(Condition Variable)를 결합한 스레드 동기화(Synchronization) 방지 회로 설계 기법을 다룬다.</p>
+<h2>1.  상호 배제 락(Mutex Lock)을 통한 임계 구역(Critical Section) 보호</h2>
+<p>상호 배제 락은 다중 스레드 환경에서 한 번에 단 하나의 스레드만이 공유 데이터에 접근하도록 보장하는 가장 기본적인 메커니즘이다. C++ 환경(예: ROS 2 C++ 노드)에서는 <code>std::mutex</code> 모듈과 RAII(Resource Acquisition Is Initialization) 패턴 기반의 락 스코프 관리자(<code>std::lock_guard</code>, <code>std::unique_lock</code>)를 활용한다.</p>
+<p>콜백 함수가 실행되는 도중, 전역 상태 변수나 공유 버퍼 구조체에 접근해야 하는 구간을 임계 구역(Critical Section)으로 정의한다. 임계 구역에 진입하기 전에 락을 획득하고, 처리가 끝난 후에는 반드시 락을 해제해야 데드락(Deadlock)을 예방할 수 있다.</p>
+<ul>
+<li><code>std::lock_guard</code>: 단순히 임계 구역이 시작되는 시점에 락을 선점하고, 스코프(<code>{ }</code>)를 벗어날 때 자동으로 락을 해제한다. 가장 가볍고 직관적인 보호 수단이다.</li>
+<li><code>std::unique_lock</code>: <code>std::lock_guard</code>와 유사하지만 필요에 따라 수동으로 락을 해제(<code>unlock()</code>)하거나 재획득(<code>lock()</code>)할 수 있어 조건 변수와의 결합에 필수적으로 사용된다.</li>
+</ul>
+<h2>2.  조건 변수(Condition Variable)를 활용한 지연 없는 동기화 회로 설계</h2>
+<p>상호 배제 락 단독으로는 “특정 조건이 충족될 때까지 대기“하는 동작을 효율적으로 구현할 수 없다. 락을 반복해서 확인하는 폴링(Polling) 방식 또는 스핀락(Spinlock) 구조는 CPU 자원을 낭비하여, 드론 제어 컴퓨터의 배터리 소모를 극대화하고 다른 주요 프로세스의 실시간 성능을 저하시킨다.</p>
+<p>따라서 PX4로부터 새로운 오도메트리 데이터가 퍼블리싱(Publishing) 되거나 특정 상태로 전이되었을 때만 제어 연산 스레드를 깨우기(Wake-up) 위해 <strong>조건 변수(Condition Variable)</strong> 기반의 대기 상태 전이 회로를 설계한다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant PX4 as PX4-Autopilot
+    participant Producer as Sensor Callback (Producer)
+    participant CondVar as Condition Variable
+    participant Consumer as Mission/Control Thread
+    
+    Consumer-&gt;&gt;CondVar: wait() 호출 (블로킹 상태 진입)
+    Note over Consumer: CPU 점유 없이 대기
+    PX4-&gt;&gt;Producer: uORB 메시지 수신 (ROS 2)
+    Note over Producer: std::lock_guard 획득
+    Producer-&gt;&gt;Producer: 공유 버퍼 갱신 및 플래그 변경
+    Producer-&gt;&gt;CondVar: notify_one() 송신
+    CondVar--&gt;&gt;Consumer: 블로킹 해제 및 락 반환
+    Note over Consumer: 임무 연산 및 제어 명령 송신
+</code></pre>
+<p>이 패턴은 생산자-소비자(Producer-Consumer) 모델의 전형적인 구현이며, 데이터 수신 시의 지연 속도를 획기적으로 낮출 수 있다.</p>
+<h2>3.  경쟁 상태 방지 회로의 ROS 2 C++ 구현 예제</h2>
+<p>새로운 IMU 센서 데이터가 수신될 때마다 별도의 연산 스레드에서 복잡한 비전-관성 오도메트리(VIO, Visual Inertial Odometry) 퓨전(Fusion) 연산을 수행하는 구조의 예제 코드이다.</p>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;px4_msgs/msg/sensor_combined.hpp&gt;
+#include &lt;mutex&gt;
+#include &lt;condition_variable&gt;
+#include &lt;thread&gt;
+
+class ThreadSafeSynchronizerNode : public rclcpp::Node {
+public:
+    ThreadSafeSynchronizerNode() : Node("sync_node"), new_data_available_(false) {
+        // 데이터 수신 콜백 (Producer) 설정
+        sensor_sub_ = this-&gt;create_subscription&lt;px4_msgs::msg::SensorCombined&gt;(
+            "/fmu/out/sensor_combined", 10,
+            std::bind(&amp;ThreadSafeSynchronizerNode::sensor_callback, this, std::placeholders::_1));
+
+        // 데이터 처리 스레드 (Consumer) 시작
+        processing_thread_ = std::thread(&amp;ThreadSafeSynchronizerNode::processing_loop, this);
+    }
+
+    ~ThreadSafeSynchronizerNode() {
+        if (processing_thread_.joinable()) {
+            processing_thread_.join();
+        }
+    }
+
+private:
+    void sensor_callback(const px4_msgs::msg::SensorCombined::SharedPtr msg) {
+        {
+            // 상호 배제 락 획득을 통한 데이터 경합 방지
+            std::lock_guard&lt;std::mutex&gt; lock(data_mutex_);
+            latest_sensor_data_ = *msg;
+            new_data_available_ = true;
+        } // 스코프 종료 시 자동으로 락 해제
+        
+        // 조건 변수에 대기 중인 스레드를 깨움
+        data_cond_var_.notify_one();
+    }
+
+    void processing_loop() {
+        while (rclcpp::ok()) {
+            px4_msgs::msg::SensorCombined local_data;
+            {
+                // unique_lock을 통해 조건 대기(wait) 상태 시작
+                std::unique_lock&lt;std::mutex&gt; lock(data_mutex_);
+                
+                // Spurious Wakeup(가짜 깨어남) 현상을 방지하기 위해 람다 함수로 조건 판별
+                data_cond_var_.wait(lock, [this] { return new_data_available_; });
+                
+                // 데이터 안전 복사 본 획득
+                local_data = latest_sensor_data_;
+                new_data_available_ = false;
+            } // 복사 후 즉시 공유 락 해제
+
+            // 이후 local_data 기반 독립적인 연산 수행 (락에 구애받지 않음)
+            compute_heavy_processing(local_data);
+        }
+    }
+
+    void compute_heavy_processing(const px4_msgs::msg::SensorCombined&amp; data) {
+        // 복잡한 비행 제어 또는 VIO 퓨전 연산 시뮬레이션
+    }
+
+    rclcpp::Subscription&lt;px4_msgs::msg::SensorCombined&gt;::SharedPtr sensor_sub_;
+    
+    // 동기화 관련 자원
+    std::mutex data_mutex_;
+    std::condition_variable data_cond_var_;
+    std::thread processing_thread_;
+    
+    // 공유 상태 변수
+    px4_msgs::msg::SensorCombined latest_sensor_data_;
+    bool new_data_available_;
+};
+</code></pre>
+<p>위의 예제에서는 락이 유지되는 구간을 <code>std::unique_lock</code> 스코프 내부의 단순 구조체 복사 시점으로 극도로 최소화하였다. 이는 <code>sensor_callback</code>의 병목 현상을 제거하고 데이터 유실 문제를 초래할 수 있는 로스(Loss)를 최소화한다. 특히 멀티코어 환경을 갖춘 컴패니언 컴퓨터(Companion Computer) 내부 프로세스 아키텍처에서 시스템 전체의 페이로드(Payload) 연산 효율을 높이기 위한 필수적인 구조적 패턴이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

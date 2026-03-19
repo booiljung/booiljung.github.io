@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:45.2 MAVLink 프로토콜 메모리 구조 및 PX4 사용자 정의 모드(Custom Mode) 인코딩 아키텍처</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>45.2 MAVLink 프로토콜 메모리 구조 및 PX4 사용자 정의 모드(Custom Mode) 인코딩 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 45. 비행 모드(Flight Mode) 전환 명령과 모드 변경 검증 알고리즘</a> / <span>45.2 MAVLink 프로토콜 메모리 구조 및 PX4 사용자 정의 모드(Custom Mode) 인코딩 아키텍처</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>45.2 MAVLink 프로토콜 메모리 구조 및 PX4 사용자 정의 모드(Custom Mode) 인코딩 아키텍처</h1>
+<p>본 절에서는 마이크로 에어 비히클 링크(Micro Air Vehicle Link, MAVLink) 프로토콜의 데이터 메모리 직렬화(Serialization) 구조를 체계적으로 분석한다. 나아가, 표준 규격 내에서 PX4-Autopilot(v1.14)이 독자적인 비행 모드(Flight Mode)를 식별하기 위해 채택한 사용자 정의 모드(Custom Mode) 인코딩 아키텍처와 지상 관제 시스템(QGroundControl v4.3 기준)의 디코딩 파이프라인을 다룬다.</p>
+<h2>1.  MAVLink v2.0 프로토콜 메모리 캡슐화 체계</h2>
+<p>MAVLink v2.0은 임베디드 시스템의 메모리 단편화(Fragmentation)를 방지하고 대역폭 효율을 높이기 위해, 고정된 헤더와 가변 길이의 페이로드(Payload), 그리고 보안 해시(Signature) 영역으로 구성된다.</p>
+<ul>
+<li><strong>비트 직렬화(Bit Serialization):</strong> 송신 측에서는 C 구조체(C-Struct) 메모리 블록을 리틀 엔디안(Little Endian) 규칙에 따라 단일 바이트 배열로 직렬화 연산한다.</li>
+<li><strong>패킷 헤더(Header):</strong> 10바이트로 확장된 v2.0 헤더는 매직 바이트(STX: <code>0xFD</code>), 페이로드 길이(LEN), 비호환성/호환성 플래그(INC/CMP FLAGS), 시퀀스 번호(SEQ), 시스템 및 컴포넌트 식별자(SYSID, COMPID), 그리고 24비트의 메시지 식별자(MSGID)를 포함한다.</li>
+<li><strong>페이로드 제로 트리밍(Zero Trimming):</strong> 대역폭 점유율 최소화를 위해 메시지 페이로드 후단의 0(Null) 값 바이트들을 송신 직전 제거(Truncation)하는 최적화를 기본 수행한다. 패킷 수신부는 수신 길이를 바탕으로 원본 메모리 공간 크기를 복원한다.</li>
+</ul>
+<h2>2.  PX4 사용자 정의 모드(Custom Mode) 인코딩 아키텍처</h2>
+<p>무인기 기체의 비행 제어기(FC)는 수십~수백 헤르츠(Hz) 주기로 자신의 비행 상태를 브로드캐스팅하는 <code>HEARTBEAT</code> 메시지(Message ID: 0)를 발행한다. 이 메시지는 32비트 무부호 정수 타입의 <code>custom_mode</code> 전용 필드를 제공하며, PX4-Autopilot은 이 하나의 정수형 공간을 비트 마스터링하여 계층적 모드 표현을 정교하게 구현한다.</p>
+<h3>2.1 PX4 <code>custom_mode</code> 32-bit 비트 분할(Bit Splitting)</h3>
+<p>PX4 내부에서 <code>custom_mode</code> 메모리 공간은 다음과 같이 크게 3개의 논리적 파티션으로 분해된다.</p>
+<ol>
+<li><strong>Main Mode (8 bits):</strong> <code>custom_mode &gt;&gt; 16 &amp; 0xFF</code></li>
+</ol>
+<ul>
+<li>기본적인 제어 철학(Manual, Altitude, Position, Auto 등)을 지시한다.</li>
+</ul>
+<ol start="2">
+<li><strong>Sub Mode (8 bits):</strong> <code>custom_mode &gt;&gt; 24 &amp; 0xFF</code></li>
+</ol>
+<ul>
+<li>Auto 모드 계열 등 메인 모드에 종속되는 세부 비행 상태(RTL, Mission, Loiter, Takeoff 등)를 매우 구체적으로 특정한다.</li>
+</ul>
+<ol start="3">
+<li><strong>예비 공간 (16 bits):</strong> 나머지 하위 16비트는 차후 프로토콜 확장 및 디버깅을 위해 설계상 예약(Reserved)된 영역이다.</li>
+</ol>
+<h3>2.2 모드 인코딩 수학적 수식 (Encoding Matrix Model)</h3>
+<p>지상 관제국이나 보조 컴퓨터(Companion Computer) 노드에서 PX4 기체에 모드 변경 명령(<code>MAV_CMD_DO_SET_MODE</code>)을 트리거할 때, 네트워크로 전파될 32비트 값 식 <span class="math math-inline">M_{custom}</span> 은 베이스 시스템 변수 조합에 의거해 비트 시프트 연산으로 조립된다.</p>
+<p><span class="math math-display"> M_{custom} = ( (\text{Sub Mode}) \ll 24 ) \cup ( (\text{Main Mode}) \ll 16 ) </span></p>
+<pre><code class="language-mermaid">classDiagram
+    class HEARTBEAT {
+        +uint32_t custom_mode
+        +uint8_t type
+        +uint8_t autopilot
+        +uint8_t base_mode
+        +uint8_t system_status
+        +uint8_t mavlink_version
+    }
+    class PX4_Custom_Mode {
+        +uint8 sub_mode (8 bit)
+        +uint8 main_mode (8 bit)
+        +uint16 reserved (16 bit)
+        +encode()
+        +decode()
+    }
+    HEARTBEAT *-- PX4_Custom_Mode : bitwise division / alias
+</code></pre>
+<h2>3. PX4-Autopilot과 Ardupilot의 비행 모드 매핑 차이점</h2>
+<p>두 오픈소스 자동비행 시스템의 헤게모니는 동일한 MAVLink <code>HEARTBEAT</code> 구조체를 계승하지만, <code>custom_mode</code> 커스텀 공간을 해석하고 실제 FC 상태 모델 메모리에 이식하는 패러다임은 극명하게 대조된다.</p>
+<table><thead><tr><th style="text-align: left">관점</th><th style="text-align: left">PX4-Autopilot 아키텍처</th><th style="text-align: left">Ardupilot 아키텍처</th><th style="text-align: left">비고 비교</th></tr></thead><tbody>
+<tr><td style="text-align: left"><strong>모드 메모리 맵 매핑</strong></td><td style="text-align: left">32비트 <code>custom_mode</code>를 Main/Sub의 계층적 하위 비트 필드(Hierarchical Bitfield) 구조로 세분화.</td><td style="text-align: left">베히클 타입별(Copter, Plane, Rover)로 독립 부여된 1차원적 단순 열거형(Enum, 예: <code>COPTER_MODE_LOITER</code>) 스칼라 값으로 단일 매핑.</td><td style="text-align: left">PX4는 모드 분류의 직교성(Orthogonality)이 뛰어나 확장에 극히 유리하다.</td></tr>
+<tr><td style="text-align: left"><strong>베이스 모드 참조 가중치</strong></td><td style="text-align: left"><code>MAV_MODE_FLAG_CUSTOM_MODE_ENABLED</code> 플래그 활성화를 필수 전제로 두되, 이후 로직은 Base Mode보다 Custom Mode 우선순위를 따른다.</td><td style="text-align: left">하위 호환성을 위해 <code>base_mode</code> 플래그 및 아밍(Arming) 상태와의 강결합 논리적 검증 절차 비중이 여전히 높다.</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><strong>수학적 서브셋 표기 적용</strong></td><td style="text-align: left">인코딩 타겟 하위 집합 관측 모델: <span class="math math-inline">\hat{S}_{mode} = \lbrace x \mid \vert x - M_{sub} \vert = 0 \rbrace</span></td><td style="text-align: left">플래그 논리 비트곱 필터: <span class="math math-inline">F_{eval} = M \wedge F_{mask}</span></td><td style="text-align: left">표의 연산 속 절댓값은 <span class="math math-inline">\vert</span> 기호 사용.</td></tr>
+</tbody></table>
+<h2>4. 파이프라인 연계 및 결론</h2>
+<p>QGroundControl 내부의 <code>FirmwarePlugin</code> 팩토리 패턴 아키텍처에서 PX4 전용 플러그인은 상기 서술된 비트 마스크에 근거해 <code>custom_mode</code>를 해석(<code>decode</code>)하고 GUI 프론트엔드 단에 개발자 및 조종사가 직관적으로 읽을 수 있는(Human-Readable) 스트링 명명 규칙(예: “Position”, “Return”, “Mission”) 등으로 매끄럽게 변환 출력한다.</p>
+<p>MAVLink 프로토콜의 C/C++ 오토 제너레이트(Auto-generated) 헤더 구조는 본질적으로 저수준 인터페이스만을 정의하고 규정하므로, 응용 계층의 유한 상태 기계(FSM) 모형 설계 시 이와 같은 32비트 제어 레지스터 분할 계측 기법은 관제 소프트웨어 구조를 단단한 객체 지향 형태로 다듬는 토대가 된다. 결론적으로, 시스템 개발자는 기체 고유의 커스텀 서브 모드를 증설하고자 할 때 MAVLink 마스터 레포지토리의 프로토콜 명세 자체에 간섭을 최소화하면서도, PX4 코어의 매크로 분할 규칙만을 차용하여 전체 네트워크 간 메모리 캡슐화 및 직렬화 무결성을 온전히 유지할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

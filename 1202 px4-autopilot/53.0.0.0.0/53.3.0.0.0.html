@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:53.3. PX4-Autopilot의 통신 단절 감지 및 유한 상태 기계(FSM) 기반 페일세이프 아키텍처</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>53.3. PX4-Autopilot의 통신 단절 감지 및 유한 상태 기계(FSM) 기반 페일세이프 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 53. 통신 단절(Data Link Loss) 감지 및 GCS 측의 예외 처리 로직</a> / <span>53.3. PX4-Autopilot의 통신 단절 감지 및 유한 상태 기계(FSM) 기반 페일세이프 아키텍처</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>53.3. PX4-Autopilot의 통신 단절 감지 및 유한 상태 기계(FSM) 기반 페일세이프 아키텍처</h1>
+<p>무인항공기 시스템(UAS) 운용 중 지상 관제 시스템(Ground Control Station, GCS)과의 무선 데이터 링크 소실(Data Link Loss)은 기체의 통제력을 상실하게 만드는 가장 치명적인 위험 요소 중 하나이다. PX4-Autopilot은 단순한 통신 시간 지연(Timeout) 로직을 넘어서, 시스템의 현재 비행 상태와 임무 모드를 종합적으로 판단하여 가장 안전한 복구 수단을 동적으로 결정하는 유한 상태 기계(Finite State Machine, FSM) 기반의 고도화된 페일세이프(Failsafe) 아키텍처를 내장하고 있다. 본 절에서는 통신 단절의 감지부터 상태 기계의 알고리즘 천이(Transition)와 안전 장치 발동에 이르는 PX4-Autopilot 내부 시스템 메커니즘을 상세히 분석한다.</p>
+<h2>1.  통신 단절(Data Link Loss) 감지 메커니즘 구조</h2>
+<p>PX4 시스템은 GCS와의 MAVLink 통신 연결 상태를 지속적으로 모니터링하여 가용성 유무를 판단한다. 시스템에서 연결 유효성을 가늠하는 주된 감지 기준은 MAVLink 프로토콜의 하트비트(HEARTBEAT) 메시지와 텔레메트리(Telemetry) 무선 송수신 상태 인덱스이다.</p>
+<ol>
+<li><strong>하트비트 타임아웃 감지(Heartbeat Timeout)</strong>: GCS 등 MAVLink 호스트로부터 일정한 주기(통상 1Hz)로 수신되어야 하는 하트비트 메시지가 사전에 설정된 일정 시간(예: 시스템 파라미터 <code>COM_DL_LOSS_T</code>, 보통 10초 내외) 동안 내부 버퍼에 전혀 도달하지 않으면 마이크로 컨트롤러 이벤트 루틴은 1차적인 데이터 링크 상실(Data Link Loss) 플래그를 비동기적으로 발생시킨다.</li>
+<li><strong>텔레메트리 이산 상태 모니터링(Telemetry Status Monitoring)</strong>: 단순한 하트비트 누락 외에도, 안테나 단의 수신 신호 강도 지시자(RSSI) 및 온보드 컴패니언 컴퓨터(Companion Computer)와의 엣지 통신 링크 상태(<code>COM_OBL_LOSS_T</code> 파라미터 등)를 포괄적으로 평가 지표로 둔다. 시스템 내부 <code>telemetry_status</code> uORB 토픽(Topic) 폴링을 통해 일시적 물리적 수신 불량 및 시리얼 단위계 버퍼 오버플로우 등의 상태가 이벤트 스택(Event Stack)에 치밀하게 기록된다.</li>
+</ol>
+<h2>2.  유한 상태 기계(FSM) 기반 아키텍처 설계 원리와 구조</h2>
+<p>제어 공학 설계의 관점에서 통신이 단절되었다고 해서 무조건적으로 특정 동작(예: 기체 모터 암 해제 후 즉시 착륙)을 일률적으로 매핑해 수행하는 것은 기체 운용 환경 상황(예: 인구 밀집 도심 지역 비행 중, 산악지대 비행 등)에 따라 역으로 심각한 2차 추락 사고를 유발할 수 있다. PX4-Autopilot은 이 문제에 대응하고자 메인 커맨더(Commander) 모듈 내부에 독립된 객체지향 기반 유한 상태 기계(FSM) 아키텍처 인스턴스를 격리 생성해 두어, 기체의 “현재 내부 비행 모드(Navigational State)“와 “통신 단절 지속 누적 시간“을 항시 교차하여 확률적으로 평가한다.</p>
+<p>FSM 기반 의사결정 트리는 다음과 같은 상태 노드(State Node)들의 유기적인 전이로 구성된다:</p>
+<ul>
+<li><code>FAILSAFE_NORMAL</code>: 통신 신호와 시스템 구동 센서가 아무런 이슈 없이 정상 작동하는 기본 운항 루프 상태이다.</li>
+<li><code>FAILSAFE_WARN</code>: 일시적인 통신 메시지 지연 혹은 하트비트 누락으로 인해 경고(Warning) 플래그를 발생시키지만 아직 물리적인 강제 비행 개입 보정은 가하지 않는 펜딩 대기(Pending) 상태. FSM 내부의 저항 지연(Delay Threshold) 필터 평가를 거친다.</li>
+<li><code>FAILSAFE_RTL</code>: 복귀(Return To Launch / RTL) 기준 파라미터 조건을 만족하여 GCS 관리의 도움 없이 기체 통합 보드 스스로 최초 이륙 지점(Home Position) 또는 비상 랠리 포인트(Rally Point) 궤적으로 돌아오는 안전 보장 모드.</li>
+<li><code>FAILSAFE_LAND</code>: RTL 항로 보장이 불가능한 시스템적 상태(예: 외부 GPS 신호 소실 병발, 이륙 직후 안정 고도 미확보 등)에 직면했을 때, 측정된 기압 고도 및 VIO 현재 고도 데이터를 기반으로 현 위치로 수직 긴급 착륙을 수행 강제하는 모드.</li>
+<li><code>FAILSAFE_TERMINATE</code>: 시스템 텔레메트리 복구가 영구적으로 불가능한 치명적 센서/통신 결함 복합 상태 시 FSM이 발동하여, 즉각적으로 비행 제어를 극단 종료(Flight Termination)시키고 최후 안전 장치 보루(예: 낙하산 전개)를 유도 가동하는 상태(State)이다.</li>
+</ul>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; FAILSAFE_NORMAL
+    
+    FAILSAFE_NORMAL --&gt; FAILSAFE_WARN: 통신 메시지 지연 일시 감지 (Heartbeat Missed)
+    FAILSAFE_WARN --&gt; FAILSAFE_NORMAL: 제한 타이머 만료 전 통신 극적 복구
+    FAILSAFE_WARN --&gt; FAILSAFE_RTL: 타임아웃 지연 초과 누적 (Data Link Loss 확정 상태 진입)
+    
+    FAILSAFE_RTL --&gt; FAILSAFE_LAND: 글로벌 포지션 에러(GPS) 이중 병발 또는 RTL 환경 불가 계산
+    FAILSAFE_RTL --&gt; FAILSAFE_NORMAL: 수동 조종 파일럿 기기 개입 및 텔레메트리 통신 상태 복구 승인 완료
+    
+    FAILSAFE_LAND --&gt; FAILSAFE_TERMINATE: 융합 고도 센서치 소실 또는 비상 극한 페일 로직 트리거 강제 발동
+    FAILSAFE_TERMINATE --&gt; [*]: PWM 모터 비행 제어 강제 종료(Kill Switch) 유도
+</code></pre>
+<h2>3.  PX4-Autopilot 소스 코드 아키텍처 및 내부 구현 방식</h2>
+<p>펌웨어 핵심 소스 코드(v1.14.x 안정 버전 기준) 아키텍처에서 이러한 FSM 페일세이프 시스템 처리 설계는 주로 시스템 데몬 <code>src/modules/commander/failsafe/</code> 내에 집적된 C++ 클래스 군과 <code>Commander.cpp</code> 내부 무한 루프 워커 스레드(Worker Thread)에서 중앙 집중식으로 작동한다.</p>
+<ul>
+<li><code>FailsafeStateMachine</code> 클래스: 페일세이프 상태 머신의 논리적 골격을 견고하게 제공하며, 내부 사용자 설정 파라미터(<code>NAV_DLL_ACT</code>) 레지스트리 값을 기반으로 통신 단절 시 어떤 물리적 액션 체인을 작동 취할지를 최종 심판 결정(Action Evaluation)한다.</li>
+<li><code>telemetry_status</code> 토픽 구독 이벤트 로직: Commander 내부 루프에서 uORB 폴링(Polling) 방식을 통하여 주기적 스케줄링으로 텔레메트리 상태 구조체를 점검 호출하고, 통신이 임계값 이상 끊어지면 큐 이벤트 큐(Event Queue)를 통해 비동기 스레드 방식으로 FSM에 상승 에지(Edge Pattern) 폴링 이벤트를 전달한다. 이를 통하여 FSM 인스턴스는 각 스케줄 틱(Tick)마다 동적 트리 전이를 민첩하게 수행한다.</li>
+</ul>
+<h2>4.  Ardupilot과 PX4-Autopilot 간 시스템 페일세이프 철학 비교</h2>
+<p>오픈소스 기반 관제 시스템 생태계를 주도하는 두 소프트웨어의 시스템 페일세이프 아키텍처 통신 상실 복구 철학의 차이를 비교하자면 다음과 같다.</p>
+<ul>
+<li><strong>Ardupilot(아두파일럿)</strong>: Ardupilot 시스템 내부의 <code>FS_GCS_ENAB</code> 파라미터 트리거 구성은 비교적 단순 명쾌하며 직관적인 절차지향 IF-THEN 조건 분기문 기반의 트리거 중심적(Trigger-Centric) 처리를 띤다. GCS 통신 상실 조건 타이머가 발동 지점에 다다르면, 사전 지정된 글로벌 모드(RTL 이벤트 또는 Land 명령 등)로 하드 코드 단위의 즉각적인 모드 분기가 발생한다. 이는 시스템 코드의 흐름 파악하기에는 극히 수월하지만 여러 센서 상실 변수 환경의 복합 연쇄 반응 예외 처리에는 제약 유연성이 부족할 수 있다.</li>
+<li><strong>PX4-Autopilot</strong>: 구조 역학적인(Structural Pattern Approach) 유한 상태 대입 모델인 FSM을 도입 구현하고 시스템 아키텍처 차원에서 객체지향적 컴포넌트 요소로 이를 정밀 세분화하였다. 즉 시스템 운영 도중 배터리 전압 감소, 텔레메트리 통신 단절, IMU 센서 노이즈 등의 개별 하위 에러 브랜치들을 각각 고립하여 처리하는 데 급급한 것이 아니라, 오류의 합산 벡터(Error Vector Array)를 최상위 FSM 트리 모델의 병합 입력 모델로 인가하여 “가장 제어 공학적으로 합리적이고 생존율이 높은 안전 시스템 상태 트랜지션“으로 결과값을 수렴시키는 아키텍처적 구조적 탄탄함과 유연성을 훌륭히 유지하고 있다.</li>
+</ul>
+<h2>5.  QGroundControl 및 MAVLink 설정 인터페이스 적용</h2>
+<p>미션 자율 비행 제어 및 장거리 운용의 신뢰성 지수를 극대화하기 위해, 관제 UI 소프트웨어인 QGroundControl(QGC) 상에서 GCS 통신 단절 FSM 로직 트리거를 조율 제어하는 핵심 파라미터는 다음과 같이 맵핑된다.</p>
+<ul>
+<li><code>NAV_DLL_ACT</code>: 주 데이터 통신 링크 손실 시 FSM이 발동 지시할 최종 기본 동작을 규정한다. (0: Disabled 비활성, 1: 현재 위치 고수 Hold 모드 진입, 2: 복귀 Return 모드 트리거, 3: 착륙 Land 모드 실행, 4: 추락 비행 종료 Flight Termination 트리거, 5: 범용 Failsafe 모드로 진입).</li>
+<li><code>COM_DL_LOSS_T</code>: FSM 아키텍처 루프 내에서 상태 노드가 인지형 <code>FAILSAFE_WARN</code> 상태로부터 물리적 강제 행동을 개시하는 극단적 실제 동작으로 천이 전까지 평가를 보류하며 기다리는 대기 여유 시간(초 단계)이다. 드론 기체가 거대한 빌딩 장애물 뒤 후면을 짧게 잠시 통과해 가는 순간적인 상황들과, 실제적인 영구 반송파 단절 상황을 유의미하게 구별하기 위한 저역 통과 블러링 필터(Blurring Filter Temporal) 지연 역할을 한다.</li>
+<li><code>COM_OBL_LOSS_T</code>: 일반적인 무선 GCS 텔레메트리가 아닌 ROS2 모듈 등 강력한 오프보드 제어 링크(Offboard Target Link) 데이터 상실 시 전용으로 적용 계수되는 페일세이프 발동 딜레이 한계치이다.</li>
+</ul>
+<h2>6.  ROS2 연동 및 분산 통신 환경 미들웨어 고려사항</h2>
+<p>현대 및 미래화된 고성능 무인 로봇 아키텍처 환경에서는 기체 메인보드에 독립 장착된 고성능 컴패니언 컴퓨터 상의 ROS2 시스템 노드(Node) 생태계가 초저지연 실시간으로 비전 인식 및 기체 제어 개입(Offboard Control Action)을 광범위하게 수행하는 아키텍처 구성이 지배적이다.<br />
+이때 적용되는 uXRCE-DDS 통신 미들웨어 기반 브리지(Bridge)를 통한 상호 메시지 통신 구조 역시 결국 백엔드 PX4 FSM 페일세이프 처리 아키텍처 트리망에 직접적으로 강하게 종속된다.</p>
+<p>외장 장착된 ROS2 노드가 메인 연결 케이블 물리적인 단절뿐 아니라, 운영체제 응용 소프트웨어적인 세그멘테이션 폴트 크래시(Crash)나 복잡한 알고리즘 기인 데드락(Deadlock Timeout) 교착 상태에 빈번하게 직면할 경우, PX4의 메인 Commander 백그라운드 시스템은 이를 예의주시하며 주기적인 오프보드 제어 토픽 업데이트 스케줄 누락을 초 민감하게 감지하고 앞서 언급한 특화된 Offboard Loss Failsafe 시간 파라미터 매트릭스에 강력히 의거하여 FSM의 초기 펜딩 상태를 트리거시켜 버린다.<br />
+이는 단순 외부 GCS 일반 텔레메트리 단절 오류 이벤트와 컴패니언 컴퓨터 코어 애플리케이션 통신 연산 단절을 구조적으로 분리 대응하여 계층별 페일세이프 상태 머신의 복구 브랜치(Branch Tree)를 넓게 전개하고, 완전 자율 에이전트의 자기 방어(Self-Preservation AI) 안전망을 소프트웨어 기반으로 구축하는 최중요 핵심 아키텍처 기제가 된다.</p>
+<h2>7.  결론 완성 조망</h2>
+<p>PX4-Autopilot 코어의 전방위 통신 단절 감지 및 내부 FSM(유한 상태 기계) 백엔드 아키텍처는 단순한 신호 유무 단편 이진 결정(Binary Single Threshold Decision) 절차 모델을 벗어나, 동적 기체의 현재 고도망 분석 결과, 위성 위치 센서(GPS) 고장 상태 유무, 비행 모드 스펙트럼(Flight Mode Spectrum) 등을 광범위하고 포괄적으로 교차 융합 처리하여 분석하는 고도화 차별화된 시스템 컴포넌트 소프트웨어 디자인 패턴을 표방 구현하고 있다.<br />
+이러한 복합 FSM 코어 전이 구조 설계는 통신 링크 장애 시 제어 미비로 인하여 우발적으로 발생할 수 있는 잠재적 대형 2차 사고 연쇄를 선제적 원천 차단 방지하며, 정교하게 다변화된 QGroundControl 설정 프로파일 파라미터 디자인 그리고 ROS2 컴포넌트 통신 아키텍처 스택 등과의 빈틈없는 연계 설계 대응을 통해 미래 진보된 인공지능 군집 자율 에이전트 다기종 대규모 비행을 위한 가장 이상적이고 신뢰성 높은 제어 모델 공학 기반(Resilient Control Model Foundation)을 훌륭하게 제시 활용한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

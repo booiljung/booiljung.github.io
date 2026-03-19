@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:59.9.3. MAVLink 원격 측정 로그(.tlog)의 바이너리 직렬화(Binary Serialization) 효율성 및 메모리 매핑 파일(Memory-Mapped File)을 활용한 대용량 로그 고속 역직렬화 메커니즘</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>59.9.3. MAVLink 원격 측정 로그(.tlog)의 바이너리 직렬화(Binary Serialization) 효율성 및 메모리 매핑 파일(Memory-Mapped File)을 활용한 대용량 로그 고속 역직렬화 메커니즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 59. 독자적인 GCS 애플리케이션 개발 기술 개요 및 설계</a> / <span>59.9.3. MAVLink 원격 측정 로그(.tlog)의 바이너리 직렬화(Binary Serialization) 효율성 및 메모리 매핑 파일(Memory-Mapped File)을 활용한 대용량 로그 고속 역직렬화 메커니즘</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>59.9.3. MAVLink 원격 측정 로그(.tlog)의 바이너리 직렬화(Binary Serialization) 효율성 및 메모리 매핑 파일(Memory-Mapped File)을 활용한 대용량 로그 고속 역직렬화 메커니즘</h1>
+<h2>1.  개요</h2>
+<p>지상 관제 시스템(Ground Control Station, GCS)은 무인항공기(UAV)와의 MAVLink 통신을 통해 실시간으로 원격 측정 데이터(Telemetry Data)를 수신하며, 이를 기반으로 비행 상태를 모니터링하고 제어한다. 이 과정에서 발생하는 모든 패킷은 보통 <code>.tlog</code>(Telemetry Log)라는 확장자를 가진 파일에 순차적으로 기록된다.<br />
+드론의 센서 단위가 고도화되고, MAVLink 통신 빈도(Hz)가 증가함에 따라 시간당 생성되는 <code>.tlog</code> 파일의 크기는 수백 메가바이트(MB)에서 기가바이트(GB) 규모로 증가할 수 있다. 대용량 로그를 GCS 등 애플리케이션에서 사후 분석 단계나 비행 검토(Flight Review) 시 빠르게 로딩하기 위해서는 데이터의 입출력(I/O) 병목 현상을 해결하는 것이 필수적이다.<br />
+본 장에서는 MAVLink 메시지의 본질적인 바이너리 직렬화(Binary Serialization) 구조를 분석하고, 대용량 데이터를 고속으로 역직렬화(Deserialization)하기 위해 메모리 매핑 파일(Memory-Mapped File) 기술을 도입하는 시스템 공학적 최적화 메커니즘을 상세히 다룬다.</p>
+<blockquote>
+<p><strong>기준 시스템 버전 정보</strong></p>
+<ul>
+<li><strong>PX4-Autopilot</strong>: v1.14.x</li>
+<li><strong>QGroundControl</strong>: v4.3.x 이상</li>
+</ul>
+</blockquote>
+<h2>2.  MAVLink 원격 측정 로그(.tlog) 구조와 바이너리 직렬화 효율성</h2>
+<h3>2.1  MAVLink 2.0 프레임의 바이너리 직렬화 원리</h3>
+<p>MAVLink(Micro Air Vehicle Link)는 제한된 대역폭(Bandwidth) 내에서 최고의 효율을 내기 위해 설계된 경량 바이너리 프로토콜(Lightweight Binary Protocol)이다. MAVLink 2.0의 경우 패킷 직렬화 과정에서 불필요한 바이트(Zero Bytes)를 제거하고 페이로드 자르기(Payload Truncation) 기능을 통해 바이트 오버헤드를 극단적으로 줄인다.</p>
+<p>아래는 MAVLink 2.0 패킷의 직렬화 구조이다:</p>
+<ol>
+<li><strong>Magic Byte</strong>: <code>0xFD</code> (MAVLink 2.0 식별자)</li>
+<li><strong>Payload Length (LEN)</strong>: 가변 길이 (0~255바이트)</li>
+<li><strong>Incompatibility / Compatibility Flags (INC/CMP)</strong>: 새로운 기능 확장을 위한 깃발</li>
+<li><strong>Sequence Number (SEQ)</strong>: 패킷 유실 감지를 위한 일련번호</li>
+<li><strong>System ID / Component ID (SYS/COMP)</strong>: 목적지 식별자</li>
+<li><strong>Message ID (MSG)</strong>: 최대 24비트, 전송하고자 하는 특정 데이터 모델 식별</li>
+<li><strong>Payload (PAYLOAD)</strong>: 실제 직렬화된 데이터 블록</li>
+<li><strong>Checksum (CKA, CKB)</strong>: 무결성 검증을 위한 X25 기준 CRC-16 값</li>
+<li><strong>Signature (선택)</strong>: 암호화 인증을 위한 바이트</li>
+</ol>
+<h3>2.2  Ardupilot DataFlash 로그 및 PX4 ULog와의 차이점 비교</h3>
+<p>GCS에 기록되는 <code>.tlog</code> 파일은 기체(Vehicle) 내부 저장소에 기록되는 로그 파일과 목적이 다르다.</p>
+<ul>
+<li><strong>Ardupilot DataFlash(<code>.bin</code>) / PX4 ULog(<code>.ulg</code>)</strong>: 기체의 내부 마이크로컨트롤러(MCU)에서 각 센서 및 상태 머신의 수치를 고속(보통 100Hz 이상)으로 SD 카드에 저장하는 하이파이(High-Fidelity) 시스템 로그이다.</li>
+<li><strong>MAVLink <code>.tlog</code></strong>: GCS에 전달된 MAVLink 메시지를 기록하며, 텔레메트리 연결 대역폭에 따라 샘플링 주파수(예: 1~50Hz)가 제한된다. 단, GCS에서 내린 제어 명령 및 이벤트가 양방향으로 고스란히 저장되는 장점을 지닌다. <code>.tlog</code>의 직렬화는 MAVLink 표준 파서를 통해서만 풀플렉스(Full-plex) 분석이 가능하므로, 이를 로드하는 GCS의 역직렬화(Deserialization) 엔진 성능이 중요하다.</li>
+</ul>
+<h2>3.  메모리 매핑 파일(Memory-Mapped File) 기반 대용량 로그 고속 역직렬화 메커니즘</h2>
+<h3>3.1  기존 스트림 기반(Stream-based) 디스크 I/O의 한계</h3>
+<p>일반적으로 <code>fread()</code>, <code>read()</code>, 혹은 파일 스트림(File Stream) API를 이용한 전통적 입출력 방식은 대용량 로그 처리 시 성능 저하(Performance Degradation)를 겪는다.<br />
+이 방식은 **사용자 공간(User Space)**과 <strong>커널 공간(Kernel Space)</strong> 간의 잦은 문맥 교환(Context Switching)을 야기하고, 디스크에 위치한 데이터를 내부 커널 버퍼에 읽은 다음 다시 사용자 버퍼로 메모리 복사(Memory Copy)를 수행한다. 즉, **이중 복사 오버헤드(Double Copy Overhead)**가 발생한다.</p>
+<h3>3.2  메모리 매핑 파일(mmap)을 통한 Zero-Copy 최적화</h3>
+<p>대용량 파일 로그의 고속 열람 및 MAVLink 패킷 디코딩을 위한 최선책은 운영체제(OS)가 제공하는 가상 메모리 관리 기법인 메모리 매핑 파일(Memory-Mapped File, UNIX의 <code>mmap()</code>, Windows의 <code>CreateFileMapping()</code>)을 활용하는 것이다.</p>
+<p>이는 디스크 상의 <code>.tlog</code> 파일 영역을 해당 애플리케이션 프로세스의 가상 주소 공간(Virtual Address Space)에 직접 사상(Mapping)시켜, 포인터(Pointer) 연산만으로 파일 데이터에 접근하게 해준다. 데이터를 RAM처럼 읽을 수 있으므로 위상 복사비용이 발생하지 않는 영 복사(Zero-Copy) 기법의 핵심 요소이다.</p>
+<h4>3.2.1 역직렬화 시스템 공학적 최적화 아키텍처</h4>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant OS as Operating System (Kernel)
+    participant MMAP as Memory-Mapped Area
+    participant GCS as GCS Parser Thread
+    participant DB as Time-Series DB (In-memory)
+    
+    rect rgb(240, 240, 255)
+    Note over OS,DB: 메모리 매핑 기반 고속 역직렬화 파이프라인
+    OS-&gt;&gt;MMAP: map .tlog to Virtual Memory (mmap)
+    MMAP--&gt;&gt;GCS: Returns Byte Pointer (*ptr)
+    
+    loop Parsing MAVLink Packet
+        GCS-&gt;&gt;GCS: Check Magic Byte (0xFD)
+        GCS-&gt;&gt;GCS: Determine Packet Length
+        GCS-&gt;&gt;MMAP: Direct Access Payload without Copy
+        GCS-&gt;&gt;GCS: Memory-struct casting (Zero-Copy Deserialization)
+        GCS-&gt;&gt;DB: Index Time-series Data
+    end
+    end
+</code></pre>
+<h3>3.3  Zero-Copy 역직렬화(Deserialization) 예시 및 적용</h3>
+<p>메모리 매핑을 통해 획득한 바이트(Byte) 배열은 이미 직렬화되어 있는 MAVLink 패킷 구조체(C/C++ Struct)와 메모리 레이아웃이 동일한 경우가 많다(Packed Struct 사용 조건하에).<br />
+따라서 <code>memcpy()</code>를 통해 데이터를 이동시키는 과정 없이, 획득한 메모리 주소를 해당 MAVLink 구조체 포인터로 단순 캐스팅(Type Casting)하는 작업만으로 즉각적인 역직렬화가 완료된다.</p>
+<p><strong>C++ 예시 슈도 코드 (Pseudo-code)</strong>:</p>
+<pre><code class="language-cpp">// 1. 메모리 매핑으로 포인터 획득(POSIX mmap 예시)
+int fd = open("flight_log.tlog", O_RDONLY);
+size_t filesize = get_filesize(fd);
+uint8_t* file_memory = (uint8_t*)mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
+
+// 2. MAVLink 데이터 파싱 및 캐스팅루프
+size_t offset = 0;
+while(offset &lt; filesize) {
+    if (file_memory[offset] == 0xFD) { // MAVLink 2.0 Magic Byte
+        uint8_t payload_len = file_memory[offset + 1];
+        uint32_t msg_id = parse_msg_id(&amp;file_memory[offset + 7]); // 24-bit Msg ID 추출
+        
+        // C/C++ 포인터 캐스팅을 통한 Zero-Copy 역직렬화
+        if (msg_id == MAVLINK_MSG_ID_ATTITUDE) {
+            mavlink_attitude_t* attitude = (mavlink_attitude_t*)&amp;file_memory[offset + 10];
+            // attitude-&gt;roll, attitude-&gt;pitch 등으로 즉각 접근 가능
+        }
+        
+        offset += (MAVLINK_NUM_NON_PAYLOAD_BYTES + payload_len);
+    } else {
+        offset++; // Sync 상실 처리
+    }
+}
+</code></pre>
+<p>이 접근법은 <code>페이지 단위 지연 적재(Demand Paging)</code> 덕분에 기가바이트(GB) 단위 로그 파일을 로딩해도 초기 시작 속도가 수 밀리초(ms)에 불과하며, 페이지 부재(Page Fault) 발생 시 OS 커널 수준의 블록 입출력 최적화를 동시에 누릴 수 있다. 이는 QGroundControl 및 향상된 임무 관제 소프트웨어가 광범위한 통계 분석, 사후 비행 모니터링을 실시간 렌더링하도록 돕는 강력한 소프트웨어 공학 기법이다.</p>
+<h2>4.  QGroundControl 아키텍처와의 연관성 및 개선 포인트</h2>
+<p>QGroundControl 소스 코드(<code>src/AnalyzeView/LogDownloadController.h</code> / <code>.cpp</code> 및 <code>src/CommInfo/MAVLinkProtocol.cc</code>) 관점에서는, 네트워크에서 바로 수신된 바이트 스트림은 <code>QIODevice</code> 및 <code>QByteArray</code> 기반으로 버퍼링된다.<br />
+하지만 다운로드 된 로컬 로그를 플레이백(Replay) 하거나 거대한 비행 기록을 분석할 때에는 <code>QFile::map()</code> 과 같은 Qt 프레임워크 내장 메모리 매핑 객체를 활용함으로서 파트별 데이터 청크 관리가 가능해진다.</p>
+<p>Ardupilot용 Mission Planner의 경우 C# 기반의 <code>FileStream</code>을 다수 사용하고 있어 극초대형 로그의 로드 시간에 물리적 한계점을 갖는 반면, PX4-Autopilot 환경에 주로 맞물리는 QGroundControl 빌드 환경에서는 C++ 기반의 네이티브 포인터 메모리 제어(mmap) 기능에 더욱 유리한 접근성을 나타낸다.</p>
+<h2>5.  결론</h2>
+<p>MAVLink 표준의 철저한 바이너리 직렬화 구조와 운영체제의 메모리 매핑 파일(mmap) 기술을 결합하면, 자원 제약 하(Resource-constrained)의 환경에서도 대규모 무인기 데이터를 최적으로 보관, 독출 및 처리할 수 있다. 이는 독자적이고 고급화된 GCS 소프트웨어를 구축하는 시스템 지향 관점(System-Oriented Perspective)에서 매우 중요한 아키텍처이다.</p>
+<hr />
+<h2>6.  출처 및 참고문헌</h2>
+<ol>
+<li>Meier, L., Honegger, D., &amp; Pollefeys, M. (2015). “PX4: A Node-Based Multithreaded Open Source Robotics Framework for Drone Applications.” <em>IEEE International Conference on Robotics and Automation (ICRA)</em>.</li>
+<li>MAVLink Developer Guide: Serialization and Packet Structure, MAVLink Documentation.</li>
+<li>Silberschatz, A., Galvin, P. B., &amp; Gagne, G. (2018). <em>Operating System Concepts</em> (10th ed.).</li>
+<li>QGroundControl Source Code Repository: <a href="https://github.com/mavlink/qgroundcontrol">https://github.com/mavlink/qgroundcontrol</a></li>
+</ol>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

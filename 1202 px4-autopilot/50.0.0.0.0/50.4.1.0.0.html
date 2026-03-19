@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:50.4.1. `land_detector` 독립 데몬(Daemon)의 다중 스레드 논블로킹(Non-blocking) 동작 및 상태 플래그 브로드캐스팅 주기</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>50.4.1. `land_detector` 독립 데몬(Daemon)의 다중 스레드 논블로킹(Non-blocking) 동작 및 상태 플래그 브로드캐스팅 주기</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 50. 착륙(Land) 명령 전달 및 지면 접촉(Landed) 상태 감지 로직</a> / <span>50.4.1. `land_detector` 독립 데몬(Daemon)의 다중 스레드 논블로킹(Non-blocking) 동작 및 상태 플래그 브로드캐스팅 주기</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>50.4.1. <code>land_detector</code> 독립 데몬(Daemon)의 다중 스레드 논블로킹(Non-blocking) 동작 및 상태 플래그 브로드캐스팅 주기</h1>
+<h2>1.  개요</h2>
+<p>비행 중지 및 지면 접촉 여부를 판독하는 <code>land_detector</code> 프로세스는 PX4-Autopilot(펌웨어 버전 1.14 기준) 시스템에서 코어 비행 제어기(Core Flight Controller) 루프와 독립적으로 동작하는 데몬(Daemon) 형태의 백그라운드 태스크(Task) 혹은 작업 큐(Work Queue)로 초기화된다. 착륙 감지 알고리즘은 여러 센서 데이터와 추정기(Estimator)의 결과를 종합하여 휴리스틱 연산을 수행해야 하므로, 높은 샘플링 퍼포먼스를 요구하는 내부 자세 제어(Attitude Control) 루프와 동기화될 경우 제어기의 실시간성(Real-time Constraints)을 저해할 위험이 있다. 이에 따라 PX4 시스템은 이 모듈을 비동기(Asynchronous) 스레드에서 논블로킹(Non-blocking) 방식으로 운용하며, uORB(Micro Object Request Broker) 브로드캐스팅을 통하여 메인 제어 블록(Commander 등)으로 판단 결과를 비동기 통보한다.</p>
+<h2>2.  NuttX RTOS 기반 독립 스레드 및 논블로킹(Non-blocking) 아키텍처</h2>
+<p>로우 레벨의 NuttX 실시간 운영체제(RTOS) 환경에서 구동되는 PX4는 과거 버전에서는 백그라운드 데몬(Daemon Task)을 명시적으로 생성하여 무한 루프 블록을 생성하였으나, 최신 아키텍처(버전 1.13 이후)에서는 작업 큐(Work Queue, 주로 <code>wq:nav_and_controllers</code> 또는 <code>wq:hp_default</code>) 인스턴스에 모듈 자체를 스케줄링하는 방식을 채택한다. 이는 다중 스레드 콘텍스트 스위칭(Context Switching) 비용을 최적화하기 위함이다.</p>
+<p><code>land_detector</code> 모듈이 수행하는 메인 업데이트 함수(<code>Run()</code> 메커니즘)는 철저한 논블로킹 폴링(Non-blocking Polling) 기법으로 설계되어 있다. 센서 데이터 또는 제어 지령을 가져오는 uORB 읽기 함수(<code>orb_copy</code> 혹은 <code>uORB::Subscription</code>)가 대기 상태에 빠지지 않도록 구성되며, 새로운 데이터가 없는 경우 연산을 스킵하고 CPU 점유를 즉시 반환(Yield)한다.</p>
+<pre><code class="language-mermaid">graph TD
+    A[NuttX RTOS Scheduler] --&gt;|Dispatch| B(Work Queue Thread)
+    B --&gt;|Schedule| C{land_detector::Run()}
+    
+    C --&gt;|Sub| D[vehicle_local_position uORB]
+    C --&gt;|Sub| E[vehicle_attitude uORB]
+    C --&gt;|Sub| F[actuator_controls uORB]
+    
+    D -.-&gt;|Non-blocking 읽기| C
+    E -.-&gt;|Non-blocking 읽기| C
+    F -.-&gt;|Non-blocking 읽기| C
+    
+    C --&gt; G[휴리스틱 로직 연산 (Update)]
+    G --&gt; H{상태 변화 감지?}
+    H --&gt;|Yes| I[vehicle_land_detected 발행 브로드캐스팅]
+    H --&gt;|No| J[Yield &amp; Reschedule]
+</code></pre>
+<h2>3.  내부 스케줄링 및 모듈 갱신 주기 (Update Rate)</h2>
+<p><code>land_detector</code> 태스크의 실행 구동 주기는 해당 기체의 물리적 반응성과 직결된다. 일반적으로 이 모듈의 기본 갱신 주기(Base Update Rate)는 약 <code>50Hz</code>(20ms 간격)로 설정되어 있다. 그러나 이 주기는 하드 코딩된 절대 타이머가 아니라 데이터 기반 스케줄링(Data-driven Scheduling) 기법을 일부 사용한다. <code>vehicle_local_position</code> 토픽이나 <code>actuator_controls</code> 토픽의 업데이트 빈도에 동기화되는 경우가 많으며, 해당 데이터가 퍼블리싱될 때 <code>SubscriptionCallback</code> 메커니즘을 통해 스레드 제어권을 깨운다(Wake-up). 상기 주기 <code>50Hz</code>는 과도한 프로세서 점유율을 소모하지 않으면서도, 기체의 랜딩 튀어 오름(Bouncing)을 20ms의 고해상도로 검침(Detection)하기에 적절한 공학적 균형점이다.</p>
+<h2>4.  상태 플래그 브로드캐스팅 주기와 이벤트 주도(Event-Driven) 전파</h2>
+<p><code>land_detector</code>는 감지된 상태를 <code>vehicle_land_detected</code>라는 uORB 토픽에 담아 브로드캐스트한다. 해당 구조체는 다음과 같은 핵심 불린(Boolean) 플래그를 포함한다.</p>
+<ul>
+<li><code>freefall</code>: 자유 낙하 여부 감지</li>
+<li><code>ground_contact</code>: 조작이나 지면 마찰 등으로 인해 지면에 접촉한 상태이나 완전 정지상태는 아님</li>
+<li><code>maybe_landed</code>: Ground Contact 후 제한적 시간(LNDMC_TRIG_TIME 등)이 경과 중인 과도 상태</li>
+<li><code>landed</code>: 완전한 착륙 판정 확정 인가 (Disarm 조건 충족 대기열 진입)</li>
+</ul>
+<p>이러한 메시지의 <strong>브로드캐스팅 주기</strong>는 PX4의 중앙 uORB 대역폭 통제 정책에 영향을 받는다.</p>
+<ol>
+<li><strong>타임 기반 주기적 발송</strong>: 통신 무결성 모니터링을 위해 모듈의 기본 구동 루프에 맞춰 브로드캐스팅되거나, 제한된 백그라운드 주파수(예: 1~5Hz)로 상태를 지속해 알린다.</li>
+<li><strong>상태 변화 발생(이벤트 주도, On-Change) 브로드캐스트</strong>: <code>landed</code> 플래그 값이 False에서 True로 바뀌는 등의 중요한 비트 토글링이 발생했을 경우에는 즉시(Immediately) 인터럽트 성격의 uORB 발행이 이루어진다. 이때 <code>Commander</code> 데몬은 이벤트를 즉각 인지하여 시동 해제 대기 타이머(Auto-Disarm Timer)를 구동한다.</li>
+</ol>
+<h2>5.  설계 철학적 의의 및 공학적 시사점</h2>
+<p>다중 스레드 환경에서 <code>land_detector</code>가 완전히 독립적인 객체 및 비동기 워커(Asynchronous Worker)로 격리된 설계 철학은, 최악의 경우 센서 융합 시스템(EKF2)이나 비행 제어기가 물리적 충돌(Crash) 시점에 예외(Exception) 부하 현상을 일으키더라도 착륙 감지 프로세스는 별도의 논리 루프에서 독자 생존할 수 있음을 의미한다.<br />
+이는 지상 관제 시스템(QGroundControl) 입장에서도 <code>EXTENDED_SYS_STATE</code> MAVLink 메시지로 기체의 Landed State를 고속 수신하여 즉각적인 사후 구호 조치나 모터 셧다운 파이프라인을 작동시킬 수 있는 근거를 마련한다. 결과적으로 논블로킹 통신 방식과 독립 스케줄링의 결합은 고신뢰성 임베디드 오토파일럿 아키텍처의 필수 불가결한 안전망을 제공한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

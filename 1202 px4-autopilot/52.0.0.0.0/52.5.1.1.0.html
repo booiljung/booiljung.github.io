@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:52.5.1.1. `vehicle_command` 구조체 내 명령 식별자 파싱 메커니즘 및 큐(Queue) 지연을 최소화하는 인터럽트 서비스 루틴(ISR) 연동 콜백(Callback) 트리거</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>52.5.1.1. `vehicle_command` 구조체 내 명령 식별자 파싱 메커니즘 및 큐(Queue) 지연을 최소화하는 인터럽트 서비스 루틴(ISR) 연동 콜백(Callback) 트리거</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 52. 비상 제어 명령: 비상 정지(Kill Switch) 및 비행 종료(Flight Termination) 안전 로직</a> / <span>52.5.1.1. `vehicle_command` 구조체 내 명령 식별자 파싱 메커니즘 및 큐(Queue) 지연을 최소화하는 인터럽트 서비스 루틴(ISR) 연동 콜백(Callback) 트리거</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>52.5.1.1. <code>vehicle_command</code> 구조체 내 명령 식별자 파싱 메커니즘 및 큐(Queue) 지연을 최소화하는 인터럽트 서비스 루틴(ISR) 연동 콜백(Callback) 트리거</h1>
+<h2>1.  개요 및 <code>vehicle_command</code>의 위상</h2>
+<p>PX4-Autopilot의 아키텍처 내에서 지상 관제 시스템(GCS) 또는 내부 컴패니언 컴퓨터(Companion Computer)로부터 전달되는 모든 명시적 행위 지시는 uORB의 <code>vehicle_command</code> 토픽으로 일원화되어 처리된다. 이 메시지는 MAVLink의 <code>COMMAND_LONG</code> 또는 <code>COMMAND_INT</code> 메시지에서 변환 생성되며, 커맨더(Commander) 모듈이 이를 수신하여 기체의 전역 상태(Global State)를 변경한다.</p>
+<p>그러나 비상 정지(Kill Switch)나 비행 종료(Flight Termination)와 같은 안전 임계 명령(Safety-Critical Command)은 일반적인 임무(Mission) 수행 명령과 섞여 동일한 큐(Queue)에서 순차적으로 처리되어서는 안 된다. 일반 명령의 큐잉 지연(Queueing Delay)에 갇히게 되면 기체는 치명적인 타이밍 손실을 입을 수 있기 때문이다. 본 장에서는 PX4 소스 코드(v1.14 기준) 레벨에서 <code>vehicle_command</code>의 특수 파싱 메커니즘과 지연 시간을 제거하기 위한 인터럽트 서비스 루틴(ISR) 기반 콜백 트리거 메커니즘을 분석한다.</p>
+<h2>2.  <code>vehicle_command</code> 구조체 설계 및 명령 식별자(Command ID) 파싱 분석</h2>
+<p><code>vehicle_command.msg</code> 구조체는 MAVLink 표준 속성을 반영하여 설계되었다. 가장 핵심이 되는 필드는 <code>command</code>(명령어 식별자)와 7개의 <code>param</code> 인자 배열이다.</p>
+<h3>2.1  고속 파싱 트리(Parsing Tree)</h3>
+<p>커맨더 모듈 내 루프는 <code>vehicle_command_poll()</code> 함수를 주기적으로 호출하여 uORB에서 새로운 명령 데이터 구조체를 가져온다. 이때 명령어 식별자인 <code>command</code> 번호(예: <code>VEHICLE_CMD_DO_FLIGHTTERMINATION</code> = 185)를 수신하면 C++ <code>switch-case</code> 문을 통한 고속 분기 처리를 진행한다.</p>
+<pre><code class="language-cpp">// Commander 모듈의 명령 파싱 로직 가상 예시
+void Commander::handle_command(const vehicle_command_s &amp;cmd)
+{
+    // 1. 타겟 시스템 식별
+    if (cmd.target_system != _sys_id &amp;&amp; cmd.target_system != 0) {
+        return; // 나를 향한 명령이 아님
+    }
+
+    // 2. 명령어 식별자(Command ID) 파싱
+    switch (cmd.command) {
+        case vehicle_command_s::VEHICLE_CMD_DO_FLIGHTTERMINATION:
+            // 비상 종료 
+            if (cmd.param1 &gt; 0.5f) {
+                execute_flight_termination(); // 즉각 실행
+            }
+            break;
+            
+        case vehicle_command_s::VEHICLE_CMD_COMPONENT_ARM_DISARM:
+            // 무장/시동 해제 처리
+            break;
+            
+        // ... 일반 명령어들
+        default:
+            break;
+    }
+}
+</code></pre>
+<p>여기서 주목할 점은 비상 명령어의 경우 하위 제어기(예: 네비게이터)로 상태를 위임하지 않고, 최상위 커맨더 스레드에서 직접 <code>actuator_armed</code>의 <code>force_failsafe</code> 플래그를 수정해버린다는 점이다. 이는 제어 경로를 최단화하는 아키텍처 설계의 묘미이다.</p>
+<h2>3.  큐 지연(Queueing Delay) 억제 및 OOB(Out-of-Band) 처리</h2>
+<p>만약 비행 중 임무 파일(Waypoint List)의 대량 업로드가 발생하여 내부 버퍼 큐가 포화 상태라고 가정해보라. 이때 전송된 비행 종료 명령이 큐의 맨 마지막에 위치한다면, 큐를 다 비울 때까지 비상 로직은 블로킹(Blocking)을 겪게 된다.</p>
+<p>이를 방지하기 위해 PX4는 <strong>우선순위 역전 방지</strong> 및 <strong>데이터 큐 우회(Out-of-Band)</strong> 메커니즘을 복합적으로 운용한다. 특정 채널(RC 인터럽트 등)로 수신된 물리적 킬 스위치(Kill Switch) 시그널은 커맨더의 메인 FIFO 버퍼를 거치지 않는다. 대신 <code>manual_control_setpoint</code> 토픽 내부의 독립된 상태 비트(State Bit)로 전달되며, 커맨더는 매 루프의 최상단에서 이 비상 비트를 우선적으로 검사한다(Preemptive Polling).</p>
+<h2>4.  인터럽트 서비스 루틴(ISR) 연동 콜백(Callback) 트리거 메커니즘</h2>
+<p>직접적인 하드웨어 신호(예: 핀 인터럽트 방식의 외장형 비상 스위치)가 발생할 경우, 시스템은 마이크로-초 단위의 반응성을 얻기 위해 커널 레벨의 ISR 연동 콜백을 사용한다.</p>
+<h3>4.1  Work Queue 델리게이션(Delegation)</h3>
+<p>인터럽트 서비스 루틴(ISR) 내부에서는 uORB 퍼블리싱과 같은 복잡한 메모리 락(Lock) 및 선점형 스케줄링 로직을 수행할 수 없다. 커널 패닉을 유발할 수 있기 때문이다. 따라서 ISR 내부에서는 가장 단순한 형태의 비트 플래그 설정 후, NuttX의 하이 우선순위 워크 큐(High-Priority Work Queue)에 태스크 실행을 예약(Schedule)한다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant HW as Hardware Pin
+    participant ISR as NuttX Kernel ISR
+    participant WQ as High-Priority Work Queue
+    participant uORB as uORB Bus
+    
+    HW-&gt;&gt;ISR: 1. Rising Edge Interrupt (Kill Switch)
+    Note over ISR: Minimal logic,&lt;br&gt;flags highly unsafe context
+    ISR-&gt;&gt;WQ: 2. work_queue(HPWORK, &amp;callback_work)
+    ISR--&gt;&gt;HW: Return (Fast Return)
+    
+    Note over WQ: Immediately Preempts Normal Threads
+    WQ-&gt;&gt;WQ: 3. Execute callback()
+    WQ-&gt;&gt;uORB: 4. orb_publish(actuator_armed, kill_flag)
+</code></pre>
+<p>이와 같은 구조는 C++의 <code>uORB::SubscriptionCallbackWorkItem</code> 아키텍처와 결합하여 환상적인 지연 최소화를 이룬다. uORB 메시지가 발행되면 큐 대기 목록이 아닌 해당 구독자에 묶인 콜백 워크 아이템이 직접적으로 워크 큐에 적재되어 낡은 데이터를 우회해 버린다.</p>
+<h2>5.  결론</h2>
+<p>멀티 로터 혹은 고정익 드론이 비행 중 제어력을 상실한 찰나의 순간, 비상 명령이 운영체제 깊숙한 곳의 데이터 큐에서 10ms 지연되는 것은 치명적인 물리적 관성 누적으로 이어진다. PX4-Autopilot은 <code>vehicle_command</code> 구조체의 경량화 및 직관적 파싱 트리 설계와 더불어, 큐 대기를 원천 우회하는 하이 우선순위 워크 큐(HPWORK)와 ISR 레벨의 유기적 콜백 트리거 메커니즘을 결합함으로써, 상업 항공기 수준의 무결점 반응성을 달성하고 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:45.5.3. 커맨더 모듈의 이벤트 기반 비동기 다중화(Asynchronous Multiplexing, poll/epoll) 구조 및 세마포어(Semaphore) 기반 임계 구역(Critical Section) 보호</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>45.5.3. 커맨더 모듈의 이벤트 기반 비동기 다중화(Asynchronous Multiplexing, poll/epoll) 구조 및 세마포어(Semaphore) 기반 임계 구역(Critical Section) 보호</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 45. 비행 모드(Flight Mode) 전환 명령과 모드 변경 검증 알고리즘</a> / <span>45.5.3. 커맨더 모듈의 이벤트 기반 비동기 다중화(Asynchronous Multiplexing, poll/epoll) 구조 및 세마포어(Semaphore) 기반 임계 구역(Critical Section) 보호</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>45.5.3. 커맨더 모듈의 이벤트 기반 비동기 다중화(Asynchronous Multiplexing, poll/epoll) 구조 및 세마포어(Semaphore) 기반 임계 구역(Critical Section) 보호</h1>
+<p>PX4-Autopilot(펌웨어 v1.14.0 이상 기준)의 커맨더(Commander) 모듈은 전체 무인항공기 하드웨어 및 소프트웨어 생태계의 비행 상태 머신(Flight State Machine)을 통제하는 중추적 역할을 수행한다. 시동 인가(Arming), 비행 모드(Flight Mode) 천이 검증, 비상 복구 시스템(Failsafe) 가동 등 치명적인 제어 패러다임이 모두 이 단일 모듈의 런타임 루프(Runtime Loop) 내에서 결단된다.</p>
+<p>다수의 센서 드라이버와 MAVLink 통신 데몬 등 시스템 각처에서 동시 다발적으로 쏟아지는 상태 변화 요청(uORB 토픽 업데이트)을 지연 없이 수용하기 위해, 커맨더 모듈은 NuttX RTOS 기반의 진보된 이벤트 기반 비동기 다중화(Asynchronous Multiplexing) 접근법을 이용한다. 아울러 상호 배타적인 비동기 스레드 개입 환경에서 상태 변수의 원자적(Atomic) 데이터 무결성(Data Integrity)을 보장하기 위해 제한되나 필수적인 세마포어(Semaphore) 기반 임계 구역(Critical Section) 보호 기법을 병행한다. 본 절에서는 이러한 다중화 감시 기법과 동기화 전략을 학술적으로 분석한다.</p>
+<h2>1. 비동기 다중화 구조와 <code>poll/epoll</code> 메커니즘</h2>
+<p>무인 시스템(Unmanned System)의 비행 제어기 코어에서는 전통적인 방식의 주기적 폴링 루프(Busy-waiting Loop)가 엄격히 지양된다. 이는 마이크로컨트롤러(MCU)의 유한한 CPU 틱(Tick) 자원을 낭비하는 주원인이며, 전력 소비와 발열을 증대시킨다. 대신 POSIX 표준 운영 체제에서 차용해 온 <code>poll()</code> 기반의 이벤트 다중화 통지 모델을 변형한 <code>px4_poll()</code> (또는 uORB 이벤트 대기 인터페이스) 아키텍처가 채택되어 있다.</p>
+<p>비동기 다중화란 하나의 스레드가 복수의 입출력(I/O, PX4에서는 uORB 메시징 토픽 대기 지점) 채널 상태 변화를 동시에 관측하고 있다가, 어느 하나의 채널에 활성 이벤트가 도착했을 때 해당 이벤트를 분기하여 처리하는 기술이다.</p>
+<pre><code class="language-cpp">// 커맨더 루프 내 비동기 다중화 관측 구조 간략화 예시
+px4_pollfd_struct_t fds[3];
+
+// 1. 센서 통합 상태(Sensor Combined) 변경 토픽 구독 핸들러 연동
+fds[0].fd = sensor_combined_sub_fd;
+fds[0].events = POLLIN;
+
+// 2. 외부 MAVLink 비행 명령(Vehicle Command) 토픽 구독 핸들러 연동
+fds[1].fd = vehicle_command_sub_fd;
+fds[1].events = POLLIN;
+
+// 3. 배터리 상태(Battery Status) 토픽
+fds[2].fd = battery_status_sub_fd;
+fds[2].events = POLLIN;
+
+while (!should_exit()) {
+    // 50ms 최대 타임아웃을 가지고 대기 모드로 돌입 (블로킹)
+    int poll_ret = px4_poll(fds, 3, 50);
+
+    if (poll_ret &gt; 0) {
+        // 이벤트가 발생한 토픽을 동시다발적으로 검사 후 논리 처리
+        if (fds[0].revents &amp; POLLIN) {
+            handle_sensor_update();
+        }
+        if (fds[1].revents &amp; POLLIN) {
+            handle_vehicle_command();
+        }
+        if (fds[2].revents &amp; POLLIN) {
+            check_battery_failsafe();
+        }
+    } else if (poll_ret == 0) {
+        // 지정된 타임아웃 내 토픽 변경 없음; 주기적 유지보수 로직 수행
+        run_periodic_tasks();
+    }
+}
+</code></pre>
+<p>이 방식은 수신할 데이터가 도착하기 전까지 해당 스레드의 실행을 정지(Suspend)시키고 NuttX 운영 체제의 스케줄러가 다른 긴급한 제어 스레드(예: 자세 제어기 <code>mc_att_control</code>)에 CPU를 양도하게 함으로써, 시스템의 통합 처리율(Throughput)과 컨텍스트 응답성(Responsiveness)을 극대화한다. ArduPilot의 AP_HAL 스케줄러가 주로 고정된 주파수의 이벤트 콜백(Timer-driven Callbacks)에 의존하는 경향이 있는 반면, PX4-Autopilot은 데이터 순수 도착에 의존하는 이벤트 기반(Event-driven) 상태 머신의 전형을 보여준다고 볼 수 있다. (이와 관련된 OS 레벨의 다중화 기술 논의는 논문 “Design and Implementation of the epoll Facility in Linux”, 2004 등을 참조할 수 있다.)</p>
+<h2>2. 세마포어(Semaphore) 기법에 따른 임계 구역(Critical Section) 통제</h2>
+<p>커맨더 모듈 내부의 <code>vehicle_status_s</code> 나 <code>vehicle_control_mode_s</code> 와 같은 상태 보관 데이터 구조체들은, 본연적으로 메인 <code>poll()</code> 루프 스레드뿐 아니라 간헐적으로 호출되는 비동기적 콜백(예: 워치독 타이머, 드라이버 인터럽트 호출부 등)에 의해 동시에 읽고 쓰여질 위험성에 노출되어 있다. 이는 컴퓨터 공학에서 정의하는 명백한 경쟁 조건(Race Condition)으로, 임계 구역(Critical Section)의 데이터 훼손이 비행 중 모드 오작동이나 추락으로 이어질 수 있다.</p>
+<p>PX4에서는 이러한 전역 파라미터나 상태 병합을 안전하게 통제하기 위해 NuttX 기반 세마포어 기법을 도입하여 상태 레지스터에 대한 안전 보루(Safety Guard)를 마련한다.</p>
+<ol>
+<li><strong>상호 배제(Mutual Exclusion) 보장:</strong> 바이너리 세마포어(<code>sem_t</code>)를 사용하여, 하나의 스레드 또는 핸들러가 <code>vehicle_status</code> 트리를 수정하는 동안 다른 개입 주체는 세마포어 대기 큐(Wait Queue)에 블로킹된다.</li>
+<li><strong>이벤트 동기화 릴레이(Synchronization Relay):</strong> 생산자 스레드가 백그라운드 연산을 끝내고 특정 임무 완수 신호(Signal)를 커맨더 메인 스레드로 넘겨줄 때, 특정 카운팅 세마포어를 활용하여 이벤트를 위임한다.</li>
+</ol>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant OS as NuttX 스케줄러
+    participant CMD_Main as 커맨더 메인 (poll 루프)
+    participant Data as 임계 구역 데이터 (State Variables)
+    participant EXT_Interrupt as 타이머 콜백/비상 개입
+    
+    CMD_Main-&gt;&gt;CMD_Main: poll() 타임아웃 대기 복귀
+    CMD_Main-&gt;&gt;Data: 1. 세마포어 획득 요청 (nxsem_wait)
+    activate Data
+    Note right of Data: Lock Acquired
+    CMD_Main-&gt;&gt;Data: 2. 비행 제어 모드 변환 적용
+    
+    EXT_Interrupt-&gt;&gt;OS: 3. 배터리 하강 비상 트리거
+    OS-&gt;&gt;EXT_Interrupt: 우선권 할당
+    EXT_Interrupt-&gt;&gt;Data: 4. 세마포어 획득 시도 (nxsem_wait)
+    Note right of EXT_Interrupt: 블로킹 (Blocking)
+    
+    CMD_Main-&gt;&gt;Data: 5. 세마포어 반환 (nxsem_post)
+    deactivate Data
+    
+    Data--&gt;&gt;EXT_Interrupt: 대기 해제 승인
+    activate Data
+    Note right of Data: Lock Acquired by Interrupt
+    EXT_Interrupt-&gt;&gt;Data: 6. 하강 모드 상태 강제 적용
+    EXT_Interrupt-&gt;&gt;Data: 7. 세마포어 반환 (nxsem_post)
+    deactivate Data
+</code></pre>
+<p>다만 임베디드 실시간 OS 환경에서 과도한 세마포어 동기화는 우선순위 역전(Priority Inversion)이라는 치명적 결함을 동반할 수 있으므로, PX4 개발 가이드라인은 상태 트리에 직접 락을 거는 방식보다도 uORB 이벤트 발송 메커니즘을 통한 간접 알림 방식(이후 메인 루프에서 순서대로 수신하여 처리)을 우선적으로 권장한다. 임계 구역 보호를 위해 불가피하게 <code>nxsem_wait</code> 등이 쓰이는 구간은 시스템 시동 시나리오 또는 전역 파라미터 로딩 단계 등 극도로 짧은 시간에 국한하여 사용되도록 세심하게 설계되어 있다.</p>
+<h2>3. 결론</h2>
+<p>커맨더 모듈의 논리적 무결성은, 백본이 되는 무한 사이클 내에서 POSIX 스타일의 <strong><code>poll</code> 다중화</strong> 구조를 취하여 MPU 자원을 극도로 아끼면서도 즉각적인 데이터 도착에 반응하도록 만든 아키텍처적 선택에 깊게 뿌리내려 있다. 아울러 이 다중화가 야기할 수 있는 상태 변수 데이터 경합을 정교한 <strong>세마포어 관리 규칙</strong>을 통해 통제함으로써, 고도로 복잡해진 최신 센서 퓨전 환경과 로보틱스 OS(ROS 2) 연동에 기인하는 고부하(High-load) GCS 명령어 홍수 하에서도 비행체의 견고함(Robustness)을 유지할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:46.6.1 비행 모드 추상화(Flight Mode Abstraction) 계층 및 태스크 스케줄링(Task Scheduling) 비교: Ardupilot Guided 모드의 제어 루프 주기와 PX4 Reposition 모드의 RTOS 스레드 독립성 차이</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>46.6.1 비행 모드 추상화(Flight Mode Abstraction) 계층 및 태스크 스케줄링(Task Scheduling) 비교: Ardupilot Guided 모드의 제어 루프 주기와 PX4 Reposition 모드의 RTOS 스레드 독립성 차이</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 46. 단일 목적지 이동(Goto/Reposition) 명령과 도달 판별 알고리즘</a> / <span>46.6.1 비행 모드 추상화(Flight Mode Abstraction) 계층 및 태스크 스케줄링(Task Scheduling) 비교: Ardupilot Guided 모드의 제어 루프 주기와 PX4 Reposition 모드의 RTOS 스레드 독립성 차이</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>46.6.1 비행 모드 추상화(Flight Mode Abstraction) 계층 및 태스크 스케줄링(Task Scheduling) 비교: Ardupilot Guided 모드의 제어 루프 주기와 PX4 Reposition 모드의 RTOS 스레드 독립성 차이</h1>
+<p>기체를 특정 지점으로 자율 이동(Goto)시키려 할 때, 자동비행장치 내부에서는 비행 상태를 명시적으로 전환하고 목표 궤적을 연산하기 위해 비행 모드 추상화(Flight Mode Abstraction) 및 태스크 스케줄링(Task Scheduling) 메커니즘을 가동한다. 동일한 실시간 운영체제(RTOS) 기반(Ardupilot은 ChibiOS, PX4는 NuttX 중심)을 채택하고 있음에도 불구하고, Ardupilot의 Guided 모드와 PX4의 Reposition 모드는 궤적 제어 루틴을 운영체제 스레드 위에서 어떻게 스케줄링하고 추상화하는가에 대하여 매우 대조적인 아키텍처를 취하고 있다. 본 절에서는 두 펌웨어의 제어 루프 주기 동기화 방식과 스레드 독립성(Thread Isolation) 철학의 차이를 중심적으로 분석한다.</p>
+<hr />
+<h2>1.  Ardupilot의 Guided 모드: 모놀리식 메인 루프 기반 제어 동기화</h2>
+<h3>1.1  제어 루프 타이밍(Control Loop Timing)과 동기적 스케줄링</h3>
+<p>Ardupilot의 스케줄러 아키텍처는 강력한 중앙 집중형 제어를 지향한다. 비행에 핵심적인 제어기와 추정기는 이른바 “Fast Loop”(일반적으로 400Hz 주기로 설정됨)라 불리는 단일 스레드 메커니즘 내에서 구동되며, 덜 중요한 시스템 체크나 센서 로깅 등은 잉여 클록 타임에 “Slow Tasks“로 스케줄링된다.<br />
+기체가 GCS로부터 목적지를 할당받아 <code>Guided</code> 모드로 전이되면, 내비게이션 연산을 담당하는 <code>AC_WPNav</code> 객체의 업데이트 메소드가 Fast Loop 루틴 내부에서 매 주기마다 절차적(Procedural)으로 폴링(Polling)된다. 즉, 400Hz 사이클마다 정확히 정해진 타임 슬롯 안에서 위치 제어 오차 계산, 궤적 산출, 자세 제어기(Attitude Controller)로의 목표치 전달이 일괄적이고 동기적으로 처리된다.</p>
+<ul>
+<li><strong>장점</strong>: 문맥 전환(Context Switching) 연산 오버헤드가 최소화되고, 제어 체인 간 지연(Control Latency)과 지터(Jitter)가 매우 낮아 신속하고 예측 가능한 시스템 응답성을 제공한다.</li>
+<li><strong>제약사항</strong>: 사용자 코드를 삽입하거나 과도한 제어 로직을 추가할 경우, Fast Loop 내의 연산 시간이 허용된 주기를 초과하는 이른바 “Loop Overrun” 현상을 유발할 위험이 존재한다.</li>
+</ul>
+<h3>1.2  비행 모드 추상화 계층</h3>
+<p>Ardupilot은 객체지향 프로그래밍(OOP) 패러다임에 입각하여 C++ 클래스 다형성(Polymorphism)으로 비행 모드를 추상화한다. 멀티로터의 경우 C++ 기반의 베이스 클래스인 <code>Copter::Mode</code>를 정의하고 이를 상속받아 <code>ModeGuided</code>, <code>ModeAuto</code>, <code>ModePosHold</code> 형태로 파생 객체를 구현한다. 그러나 여기서 구현되는 다형성은 오직 컴파일러 및 설계 구조 수준의 추상화일 뿐이며, 실행 주체는 오로지 앞서 언급한 단일 메인 루프 인스턴스에 종속된다.</p>
+<h2>2.  PX4의 Reposition 모드: 모듈형 비동기 스레드 아키텍처</h2>
+<h3>2.1  비동기식 이벤트 기반 태스크 스케줄링 (Event-Driven Task Scheduling)</h3>
+<p>반면 PX4-Autopilot의 아키텍처는 마이크로서비스 지향의 분산 스레드 구조를 가진다. 센서 필터링, 궤적 생성, 위치 제어 등 핵심 서브시스템들이 내부 워크큐(Work Queue) 혹은 별도의 POSIX 스레드 상에서 완전히 비동기적으로(Asynchronously) 병렬 동작한다.<br />
+GCS 명령으로 Reposition(단일 목적지 이동) 임무가 시달되면 <code>Navigator</code> 앱이 이를 인지하고 웨이포인트를 생성하여 uORB(메시지 브로커) 파이프라인에 퍼블리싱(Publish)한다. 목적지 궤적 관련 메시지(예: <code>vehicle_local_position_setpoint</code>)가 업데이트되면, 이벤트 주도 방식(Event-Driven)에 의해 위치 제어(Position Controller)를 담당하는 스레드가 깨어나(Wake-up) 즉각적으로 연산을 수행한다.<br />
+루프 주기 역시 정적이기보다는, 특정 센서 데이터 도착이나 제어 토픽 업데이트 이벤트에 연동(synchronized to IMU publish 등)되어 가변적인 주기로 구동될 수 있다.</p>
+<h3>2.2  Flight Task 기반 추상화 (Flight Mode Abstraction Layer)</h3>
+<p>PX4는 비행 모드의 상태 관리(State Transition)와 실질적 제어 로직 구조를 완전히 구분하였다. 이는 <code>Commander</code>라는 전역 상태 머신과 <code>FlightTask</code>라는 구체적 제어 행위 구조체로 이원화되어 모델링된다.</p>
+<ul>
+<li>Reposition 임무는 내장 라이브러리인 <code>FlightTaskAutoMapper</code>를 상속한 하나의 Task 객체로 실행된다.</li>
+<li>중요한 점은 이러한 <code>FlightTask</code> 컴포넌트는 추정기(EKF2)나 다른 주변 장치 제어 루프와 메모리적으로, 그리고 스케줄러 스레드 측면에서 완벽에 가깝게 분리(Isolation)되어 있다는 것이다.</li>
+<li>즉, PX4는 태스크 간에 독립적인 RTOS 스레드 주소 공간을 가짐으로써 하나의 서브 태스크 내에서 시스템 교착 상태(Deadlock)나 처리 병목 현상이 발생하여도, 그것이 곧장 메인 자세 제어기를 멈추게 하지 않도록 시스템 붕괴 확산을 막아주는 강건한 스레드 독립성을 취한다.</li>
+</ul>
+<h2>3.  구조적 아키텍처 시각 비교 (Mermaid 도표)</h2>
+<p>다음은 두 시스템에서 비행 모드에 따른 Goto 태스크가 RTOS 스레드 및 제어 파이프라인과 어떻게 결합되는지를 나타낸 도표이다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph "Ardupilot: Synchronous Main Loop (절차적 및 동기적 실행)"
+        direction TB
+        A[하드웨어 인터럽트 / 스케줄러] --&gt; B[메인 Fast Loop 시작 / 400Hz]
+        B --&gt; C[ModeGuided 클래스: AC_WPNav 로직 연산]
+        C --&gt; D[Attitude Controller 연산]
+        D --&gt; E[모터 PWM / Mixer 연산 및 구동부 출력]
+    end
+
+    subgraph "PX4: Asynchronous Multi-Threaded Task (uORB 이벤트 구독 기반)"
+        direction TB
+        J[Navigator 스레드] -. "uORB: position_setpoint" .-&gt; K[FlightTask: Reposition 태스크]
+        K --&gt; L["Position Controller 스레드 (이벤트 깨어남)"]
+        M[EKF Observer 스레드] -. "uORB: vehicle_local_position" .-&gt; L
+        L -. "uORB: actuator_controls" .-&gt; N[Mixer / Output 스레드]
+    end
+</code></pre>
+<h2>4.  실무 애플리케이션 개발 시사점</h2>
+<p>제어 시스템 스캐줄링 아키텍처의 차이는 GCS 애플리케이션 개발이나 실시간 자율 개입 에이전트(ROS2, uXRCE-DDS 등)를 구축할 때 직접적인 지침이 된다.<br />
+만일 Ardupilot(Guided 모드)을 베이스로 사용할 경우, 외부 연산 유닛에서 오토파일럿 보드로 넘겨주는 MAVLink 명령 주기는 오프로드 통신의 지연시간 특성만 관리하면 펌웨어가 즉각적으로 동기형 루프 안으로 스며들게 보장한다. 반면, 새로운 제어 로직을 펌웨어 소스에 이식해 넣고자 할 때는 Fast Loop 타이밍 예산(Timing Budget)을 엄격하게 모니터링해야 한다.<br />
+반대로 PX4-Autopilot을 타겟으로 한 오프보드 연산(Offboard/Reposition 등)과 커스텀 개발을 병행할 때는, 복잡한 기능을 새로운 uORB 모듈과 RTOS 스레드로 온전히 쪼개어 추가하는(Add-on) 것이 수월하다. 그러나 각 스레드 간 데이터 파이프라인의 이벤트 동기화 타이밍 및 uORB 메시지 유실/지연 현상에 의한 간접적 레이턴시 제어에 높은 소프트웨어 공학적 숙련도가 요구된다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

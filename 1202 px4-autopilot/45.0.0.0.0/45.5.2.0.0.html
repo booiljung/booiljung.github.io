@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:45.5.2 비행체 명령어(`vehicle_command`) uORB 토픽의 병렬 처리 아키텍처</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>45.5.2 비행체 명령어(`vehicle_command`) uORB 토픽의 병렬 처리 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 45. 비행 모드(Flight Mode) 전환 명령과 모드 변경 검증 알고리즘</a> / <span>45.5.2 비행체 명령어(`vehicle_command`) uORB 토픽의 병렬 처리 아키텍처</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>45.5.2 비행체 명령어(<code>vehicle_command</code>) uORB 토픽의 병렬 처리 아키텍처</h1>
+<h2>1.  개요</h2>
+<p>엔터프라이즈급 무인항공기나 최신 드론 시스템(버전 PX4 v1.14 기준)에서 기체의 행위를 통제하는 핵심 명령 전달자는 <strong>비행체 명령어(<code>vehicle_command</code>)</strong> uORB 토픽이다. 지상 관제 시스템(QGroundControl)이나 ROS2 기반의 자율 에이전트(Autonomous Agent)가 MAVLink의 <code>COMMAND_LONG</code> 혹은 <code>COMMAND_INT</code> 메시지를 전송하면, 수신 데몬은 이를 즉각 <code>vehicle_command</code> 구조체로 역직렬화(Deserialization)하여 미들웨어 버스(Bus)에 태워 보낸다.</p>
+<p>이 토픽은 기체의 시동(Arm/Disarm), 비행 모드 전환(Mode Switch), 짐벌/카메라 제어, 자동 복귀(RTL) 명령 등 시스템의 중대한 상태 머신(State Machine) 전이를 유발하므로, 수많은 모듈들이 이 데이터에 민감하게 반응해야 한다. 본 절에서는 이 단일 토픽이 어떻게 다수의 백그라운드 모듈들에 의해 병렬적으로 구독되고, 지연 없이 처리되는지 아키텍처적 관점에서 분석한다.</p>
+<h2>2.  <code>vehicle_command</code> 구조체의 메타데이터 모델링</h2>
+<p><code>vehicle_command.msg</code> 정의 파일 내부를 살펴보면, MAVLink 프로토콜 표준을 1:1로 매핑하기 위해 다음과 같은 형태를 띤다.</p>
+<ul>
+<li><strong>명령 식별자(<code>command</code>):</strong> <code>MAV_CMD</code> 열거형 상수에 해당하는 16비트 정수(예: <code>MAV_CMD_DO_SET_MODE</code>, <code>MAV_CMD_COMPONENT_ARM_DISARM</code>).</li>
+<li><strong>파라미터 체인(<code>param1</code> ~ <code>param7</code>):</strong> 각 명령에 종속적인 세부 인자들(Float 배열).</li>
+<li><strong>라우팅 타겟(<code>target_system</code>, <code>target_component</code>):</strong> 이 명령이 7번 기체의 1번 컴포넌트(Autopilot)를 향한 것인지, 아니면 100번 컴포넌트(Gimbal)를 향한 것인지 나타내는 주소 체계.</li>
+</ul>
+<p>이러한 범용적인(Generic) 포맷 덕분에 PX4 펌웨어는 외부에서 새롭게 정의되는 임의의 명령 규칙도 펌웨어 핵심 코어를 건드리지 않고 그대로 흘려보낼 수 있다.</p>
+<h2>3.  분산형 병렬 구독(Parallel Subscription) 메커니즘</h2>
+<p>전통적인 Ardupilot이나 초창기 비행 제어기들은 커다란 루프(Main Loop) 안에서 전역 명령어 큐(Command Queue)를 하나 두고 <code>switch-case</code> 문으로 명령을 분기(Dispatch)하는 <strong>모놀리식(Monolithic)</strong> 구조를 띠었다.</p>
+<p>하지만 PX4-Autopilot은 독립된 스레드/태스크 형태의 <strong>마이크로서비스(Microservices)</strong> 설계를 택하였다. 따라서 여러 제어기 데몬들이 하나의 <code>vehicle_command</code> 토픽 브로드캐스트(Broadcast)에 동시에 귀를 기울이는 병렬 구독 모델을 갖는다.</p>
+<ol>
+<li><strong>커맨더 모듈(Commander):</strong> 비행 모드, 시동 명령 수신 대기</li>
+<li><strong>네비게이터 모듈(Navigator):</strong> 웨이포인트(Waypoint), 이륙/착륙 명령 수신 대기</li>
+<li><strong>페이로드 데몬(Camera Manager 등):</strong> 카메라 트리거, 짐벌 피치 세팅 수신 대기</li>
+</ol>
+<h3>3.1 토픽 타겟팅 및 분산 필터링(Distributed Filtering) 규칙</h3>
+<p>명령 충돌을 피하기 위해 분배기(Dispatcher) 모듈을 따로 두지 않는다. 대신 메시지를 수신한 구독자(Subscriber) 본인들이 직접 <code>command</code> ID 필드와 <code>target_component</code> 필드를 확인한 뒤, **“내가 처리해야 할 명령이 아니면 즉각 무시(Silent Ignore)”**하는 규칙(Rule)을 철저하게 따른다. 이를 통해 병목 현상(Bottleneck)이 없는 분산 처리가 완성된다.</p>
+<h2>4.  처리 및 강건한 확인(ACK) 아키텍처</h2>
+<p>GCS(QGroundControl 등)와의 통신 신뢰성을 위해 닫힌 루프(Closed-loop) 확인이 요구된다.<br />
+자신의 담당 명령임을 인식한 특정 모듈은 작업을 마친(혹은 거부한) 후, 반드시 <strong><code>vehicle_command_ack</code></strong> uORB 토픽을 응답으로 발행해야 한다. 여기에는 성공(ACCEPTED), 임시 거부(DENIED), 진행 중(IN_PROGRESS) 등의 상태 데이터가 담기며, 이는 다시 MAVLink 송신 데몬을 통해 GCS로 전달된다.</p>
+<p>여러 모듈이 동일한 명령에 반응하여 ACK를 중복 발행하면 GCS 측 관제 소프트웨어에 혼란(Race Condition)을 야기하므로, PX4 개발 가이드라인은 하나의 명령 ID(<code>MAV_CMD</code>)에 대해 오직 단 하나의 대응 모듈만이 ACK를 발생시키도록 아키텍처링되어 있다.</p>
+<h2>5.  아키텍처 통신 시퀀스 (Mermaid 다이어그램)</h2>
+<p>명령의 인입부터 각 서브 모듈별 병렬 파싱, 그리고 결과보고에 이르는 전체 데이터 파이프라인은 다음과 같다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant MAV_Rx as MAVLink 수신 데몬
+    participant uORB_Cmd as uORB 버스 (vehicle_command)
+    participant Commander as 커맨더 (모드 제어)
+    participant Navigator as 네비게이터 (임무 제어)
+    participant Payload as 페이로드 모듈 (짐벌/카메라)
+    participant uORB_Ack as uORB 버스 (vehicle_command_ack)
+    
+    note over MAV_Rx: QGroundControl에서 MAV_CMD_DO_REPOSITION 명령 수신
+    MAV_Rx-&gt;&gt;uORB_Cmd: vehicle_command 메시지 일괄 발행(Broadcast)
+    
+    par 병렬 수신 대기 (Parallel Poll)
+        uORB_Cmd-&gt;&gt;Commander: 메시지 도달 (Wake up)
+        uORB_Cmd-&gt;&gt;Navigator: 메시지 도달 (Wake up)
+        uORB_Cmd-&gt;&gt;Payload: 메시지 도달 (Wake up)
+    end
+    
+    Commander-&gt;&gt;Commander: Command 필터링 체 (자신 소관 아님 -&gt; 무시)
+    Payload-&gt;&gt;Payload: Command 필터링 (자신 소관 아님 -&gt; 무시)
+    
+    Navigator-&gt;&gt;Navigator: 위치 이동 명령 인식 완료 -&gt; 목표 위치 파서 실행
+    Navigator-&gt;&gt;uORB_Ack: 처리 성공 응답(ACCEPTED) 발행
+</code></pre>
+<h2>6.  결론</h2>
+<p>PX4 비행 제어 스택에서 <code>vehicle_command</code> 토픽 처리 체계는 중앙집권적인 라우터(Router) 없이도, uORB의 이벤트 중심성(Event-driven)과 각 데몬 독립적 필터링을 통해 놀라우리만치 견고한 병렬 처리 아키텍처를 자랑한다.</p>
+<p>이러한 설계는 GCS 명령 인프라에서 지연(Latency)을 단축시킬 뿐 아니라, 커스텀 하드웨어나 독자적인 센서 제어 모듈(Custom Application)을 추가할 때 기존 메인 루프 코드를 한 줄도 수정하지 않고 단지 uORB를 병렬로 구독하기만 하면 되는 고도의 플러그인(Plug-in) 개방성을 제공한다. 이는 Ardupilot 대비 PX4-Autopilot이 연구 개발 및 산업용 드론 도메인에서 폭넓게 채택되는 핵심 아키텍처적 우수성 중 하나이다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
