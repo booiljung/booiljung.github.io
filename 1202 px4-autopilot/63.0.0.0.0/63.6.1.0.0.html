@@ -115,6 +115,113 @@
             </header>
             <article>
                 <h1>63.6.1 <code>VehicleAttitudeSetpoint</code> 및 <code>VehicleRatesSetpoint</code> 메시지의 다자유도(Multi-DOF) 각운동학(Angular Kinematics) 및 각동역학(Angular Dynamics) 제어 구조 분석</h1>
+<p>PX4-Autopilot(기준 펌웨어 버전: v1.14.0)의 비행 제어 스택(Flight Control Stack)은 고도의 모듈화(Modularization)를 통해 각운동학(Angular Kinematics)과 각동역학(Angular Dynamics)을 엄격히 분리하여 처리하는 계층적 제어 아키텍처(Hierarchical Control Architecture)를 채택하고 있다. 특히 수동, 반자동 및 오프보드(Offboard) 모드에서 기체의 3차원 회전 운동을 정밀하게 제어하기 위한 핵심 매개체로 <code>VehicleAttitudeSetpoint</code> 및 <code>VehicleRatesSetpoint</code> uORB(Micro Object Request Broker) 메시지가 사용된다. 본 절에서는 해당 메시지들의 구조를 다자유도(Multi-DOF) 동역학적 관점에서 철저히 분석하고, ROS2 환경과 MAVLink를 통한 제어 통신 워크플로우, 그리고 ArduPilot 대비 관제 및 소스 코드 상의 차이점을 상세히 조망하라.</p>
+<h2>1.  다자유도(Multi-DOF) 각운동학 및 각동역학 제어의 이론적 배경</h2>
+<p>무인항공기의 3차원 공간 내 회전 제어는 유체역학적 교란(Aerodynamic Disturbance)과 자이로스코픽 효과(Gyroscopic Effect)가 복합적으로 작용하는 비선형 동역학 시스템(Nonlinear Dynamical System)이다. PX4 제어 루프는 이를 두 개의 독립적인 캐스케이드 루프(Cascade Loop)로 분리하여 해석 및 제어한다.</p>
+<h3>1.1 각운동학(Angular Kinematics) 제어 루프</h3>
+<p>각운동학은 물체에 작용하는 힘(Force)이나 토크(Torque)를 고려하지 않고, 시간에 따른 기하학적 회전 궤적(Trajectory), 자세(Attitude), 속도(Velocity) 및 가속도(Acceleration)의 관계성에만 초점을 맞춘다. <code>VehicleAttitudeSetpoint</code>는 기준 관성 좌표계(Inertial Frame)에 대한 기압 좌표계(Body Frame)의 지향성(Orientation) 목표치를 정의하며, 짐벌 락(Gimbal Lock) 특이점 파훼를 위해 오일러 각(Euler Angles) 대신 사원수(Quaternion) 대수학(Algebra)을 기본으로 활용한다.</p>
+<h3>1.2 각동역학(Angular Dynamics) 제어 루프</h3>
+<p>각동역학은 질량 관성 모멘트(Moment of Inertia) 텐서(Tensor)와 외부에서 가해지는 회전력(Torque) 간의 물리적 상호작용인 뉴턴-오일러 방정식(Newton-Euler Equation)을 근간으로 한다. 기체가 목표 자세에 도달하기 위해 필요한 각가속도를 생성해내는 과정이며, PX4에서는 이를 <code>VehicleRatesSetpoint</code>에 명시된 롤(Roll), 피치(Pitch), 요(Yaw) 축의 각속도(Angular Velocity) 추상화 지표로 제어한다.</p>
+<h2>2.  메시지 구조 및 소스 코드 분석</h2>
+<h3>2.1  <code>VehicleAttitudeSetpoint</code> 메시지 구조 (각운동학의 관점)</h3>
+<p><code>px4_msgs/msg/VehicleAttitudeSetpoint</code> 미들웨어 메시지는 비행 제어기의 최상위 경로 계획(Path Planning) 및 위치 제어 루프에서 산출되어, 멀티로터 자세 제어 모듈(<code>mc_att_control</code>)로 인가되는 입력값이다.</p>
+<pre><code class="language-c"># VehicleAttitudeSetpoint.msg 소스 코드 구조 분석
+uint64 timestamp        # 시스템 부팅 이후 경과 시간 (마이크로초)
+float32[4] q_d          # 목표 자세 사원수(Target quaternion) [w, x, y, z] 역학 모델
+float32[3] thrust_body  # Body Frame [X, Y, Z] 축 기준 정규화된 목표 추력 벡터 (-1.0 ~ 1.0)
+float32 yaw_sp_move_rate # 목표 요(Yaw) 회전 각속도 (rad/s)
+bool reset_integral     # 적분기(Integral) 와인드업 방지용 초기화 플래그
+</code></pre>
+<ul>
+<li><strong>사원수(Quaternion) 기반 지향성 제어:</strong> <code>q_d</code> 배열은 3차원 특수 직교군(Special Orthogonal Group, <span class="math math-inline">SO(3)</span>)에서의 회전을 <span class="math math-inline">S^3</span> 공간인 매니폴드(Manifold) 상에 매핑한다. 이는 MAVLink의 <code>SET_ATTITUDE_TARGET</code> 메시지 내 <code>q</code> 필드로부터 직접 맵핑되거나 통신 지연 보상을 거친 상태 데이터이다.</li>
+<li><strong>추력 체계:</strong> <code>thrust_body</code>는 각운동학적 요소와 결합되는 병진 운동의 크기(Magnitude) 벡터이다. 멀티로터의 경우 Z축 추력(<code>thrust_body[2]</code>)이 주로 활용된다.</li>
+</ul>
+<h3>2.2  <code>VehicleRatesSetpoint</code> 메시지 구조 (각동역학의 관점)</h3>
+<p><code>px4_msgs/msg/VehicleRatesSetpoint</code> 메시지는 자세 제어기(<code>mc_att_control</code>)에서 P(비례) 제어 알고리즘을 거쳐 생성되며, 최종적으로 모터 구동 지령을 내보내는 각속도 제어기(<code>mc_rate_control</code>)로 유입된다.</p>
+<pre><code class="language-c"># VehicleRatesSetpoint.msg 소스 코드 구조 분석
+uint64 timestamp        # 시스템 타임스탬프 (마이크로초)
+float32 roll            # X축(Roll) 목표 각속도 (rad/s)
+float32 pitch           # Y축(Pitch) 목표 각속도 (rad/s)
+float32 yaw             # Z축(Yaw) 목표 각속도 (rad/s)
+float32[3] thrust_body  # 자세 제어기를 그대로 통과한 정규화 목표 추력
+</code></pre>
+<ul>
+<li><strong>각속도 타겟팅:</strong> 해당 값들은 외부의 물리적 공기 저항(Drag Matrix) 및 모터 구동 관성 지연(Inertia Lag)을 극복하고, 설정된 시간 상수(Time Constant) 내에 목표 자세에 수렴하기 위해 동적으로 계산된 제어 역학 출력이다. PID 루프 중 보통 D(미분) 및 I(적분) 항의 연산이 이곳 모듈에서 수행된다.</li>
+</ul>
+<h2>3.  PX4-Autopilot 제어 아키텍처 및 데이터 흐름</h2>
+<p>아래 표는 기체 외부의 자율 에이전트 시스템(예: ROS2 노드)에서부터 기계적 구동기에 이르는 PX4 내부의 상태 머신과 메시지 전달 아키텍처를 Mermaid 다이어그램으로 체계화한 것이다.</p>
+<pre><code class="language-mermaid">graph TD
+    classDef C++ fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef MSG fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef HW fill:#ff9,stroke:#333,stroke-width:2px;
+
+    A[ROS2 Offboard Node / GCS MAVLink]:::C++ --&gt;|uXRCE-DDS / UART| B(VehicleAttitudeSetpoint):::MSG
+    B --&gt; C{mc_att_control &lt;br/&gt; Attitude Controller}:::C++
+    C --&gt;|Quaternion Error to Rate| D(VehicleRatesSetpoint):::MSG
+    D --&gt; E{mc_rate_control &lt;br/&gt; Rate Controller}:::C++
+    E --&gt;|PID &amp; Control Allocation| F(ActuatorMotors):::MSG
+    F --&gt; G[PWM/DShot Mixer]:::HW
+    G --&gt; H[ESC &amp; Brushless Motors]:::HW
+</code></pre>
+<h3>3.1  <code>mc_att_control</code> 로직 (자세 <span class="math math-inline">\rightarrow</span> 각속도 변환)</h3>
+<p>해당 C++ 클래스는 현재 추정된 기체 자세(<code>VehicleAttitude</code>)와 입력된 <code>VehicleAttitudeSetpoint</code> 간의 사원수 오차 역학(Quaternion Error Dynamics)을 계산한다.<br />
+<span class="math math-display">\mathbf{q}_{error} = \mathbf{q}_{d} \otimes \mathbf{q}_{est}^{-1}</span><br />
+산출된 자세 오차는 비례 게인 행렬(<code>MC_ROLL_P</code>, <code>MC_PITCH_P</code>, <code>MC_YAW_P</code> 파라미터 적용) 등과 승산 처리되어 <code>VehicleRatesSetpoint</code>에 할당할 최적의 목표 각속도를 도출해 낸다.</p>
+<h3>3.2 <code>mc_rate_control</code> 로직 (각속도 <span class="math math-inline">\rightarrow</span> 토크 변환)</h3>
+<p>여기서는 정밀 각동역학 제어를 위해 PID 튜닝이 핵심 역량을 발휘한다. 예측 가능한 대수적 지연 보상을 포함한 미분기(D-term)와 적분기(I-term)를 사용하여 바람과 같은 외부 외란(Disturbance) 개입 상황에서도 강건 제어(Robust Control)를 달성한다. 이 과정은 QGroundControl (v4.3.0 이상)의 <code>Actuator Testing</code> 및 <code>PID Tuning</code> 탭을 통해 파라미터를 면밀히 조정할 수 있다.</p>
+<h2>4. ArduPilot과의 아키텍처 및 관제 철학 차이</h2>
+<p>PX4와 ArduPilot은 모두 동역학적 PID 구조를 채택하고 있으나, 소프트웨어 계층화 및 미들웨어 통신 방식에서 상당한 패러다임 차이를 지닌다.</p>
+<ol>
+<li>
+<p><strong>내부 통신 및 관제 아키텍처:</strong></p>
+<ul>
+<li><strong>PX4-Autopilot:</strong> 모든 제어 루프 간 데이터 송수신은 순수하게 Publish/Subscribe 기반의 비동기식 <code>uORB</code> 메시지(앞서 살펴본 <code>VehicleAttitudeSetpoint</code> 등) 브로커에 의존한다. 이는 ROS2 철학과 일맥상통하며, 새로운 제어 알고리즘 모듈을 작성하여 기존 모듈을 대체(Replace)하기 매우 용이하다.</li>
+<li><strong>ArduPilot:</strong> <code>AC_AttitudeControl</code>과 같은 강력한 대형 클래스가 중앙 집중 객체 지향 형태로 제어 루프를 내부적으로 직접 함수 호출(Call-by-Reference) 방식을 통해 제어한다. 이는 메모리 관리 측면에서는 직접적이나 모듈 유연성 면에서 PX4보다 경직되어 있다.</li>
+</ul>
+</li>
+<li>
+<p><strong>GCS 관제 데이터 연동:</strong></p>
+<ul>
+<li>QGroundControl은 PX4의 Native GCS로서 uORB의 계층 구조와 1:1 대응되는 파라미터 관리 매니저 패턴을 제공한다. 반면 ArduPilot의 Mission Planner는 APM 고유의 MAVLink 마이크로 서비스 스트림에 의존도가 높다. 자율 비행 관점에서 QGroundControl 빌드 환경(Qt/C++)을 직접 수정하여 <code>VehicleAttitudeSetpoint</code> 입력 UI 믹서를 별도 탭에 개발할 수 있는 구조적 개방성을 PX4가 우월하게 제공한다.</li>
+</ul>
+</li>
+</ol>
+<h2>5. ROS2 연동 기반 Offboard 모드 제어 실습</h2>
+<p>최신 자율 자율 에이전트 비행 제어 통신 기술인 Micro XRCE-DDS (uXRCE-DDS) 브리지를 사용하면 ROS2의 DDS 미들웨어를 통해 PX4 기체 내부 uORB 네트워크와 <code>VehicleAttitudeSetpoint</code> 메시지를 네이티브 환경처럼 연동할 수 있다.</p>
+<h3>5.1 ROS2 C++ 노드(Node) 구현 예시</h3>
+<p>아래는 ROS2 기반에서 PX4에 <code>VehicleAttitudeSetpoint</code> 구조체를 지속적으로 Publish하여, 멀티로터의 피치 각(Pitch Angle)을 15도로 유지시키는 고전적인 각운동학 제어기의 Offboard 타이머 콜백 워크플로우 예시이다.</p>
+<pre><code class="language-cpp">#include &lt;px4_msgs/msg/vehicle_attitude_setpoint.hpp&gt;
+#include &lt;px4_msgs/msg/offboard_control_mode.hpp&gt;
+
+// 타이머 내부 콜백 함수 워크플로우
+void offboard_control_timer_callback() {
+    // 1. Offboard 모드 활성화 요구를 나타내는 플래그 퍼블리시
+    px4_msgs::msg::OffboardControlMode msg_mode{};
+    msg_mode.attitude = true;
+    msg_mode.body_rate = false;
+    msg_mode.timestamp = this-&gt;get_clock()-&gt;now().nanoseconds() / 1000;
+    offboard_mode_publisher_-&gt;publish(msg_mode);
+
+    // 2. 다자유도 회전을 위한 목표 자세(VehicleAttitudeSetpoint) 설정
+    px4_msgs::msg::VehicleAttitudeSetpoint msg_att{};
+    msg_att.timestamp = this-&gt;get_clock()-&gt;now().nanoseconds() / 1000;
+    
+    // Euler Angle (Roll=0, Pitch=15도=0.261rad, Yaw=0) -&gt; Quaternion 맵핑 공학 알고리즘 적용
+    // (이 예시는 q_d 생성을 단순화하여 기재함)
+    msg_att.q_d[0] = 0.991; // w
+    msg_att.q_d[1] = 0.0;   // x
+    msg_att.q_d[2] = 0.131; // y
+    msg_att.q_d[3] = 0.0;   // z
+    
+    // 이와 반드시 수반되어야 하는 정규화된 추력 (Hovering Trust 수준)
+    msg_att.thrust_body[0] = 0.0;
+    msg_att.thrust_body[1] = 0.0;
+    msg_att.thrust_body[2] = -0.55; // Z축 상단 방향 추진 (NED 좌표계)
+
+    attitude_setpoint_publisher_-&gt;publish(msg_att);
+}
+</code></pre>
+<p>이러한 오프보드 연동 기법은 단순 MAVLink 제어를 뛰어넘어, 컴퓨터 비전 기반 객체 인식 카메라나 다중 에이전트 통신망에 의해 산출된 마이크로초 단위의 회전 명령을 거의 실시간(Near Real-time) 무지연(Zero-Latency)에 가깝게 하드웨어 계층 제어기에 주입할 수 있어 로봇공학적 안정성 설계 및 VIO(Visual Inertial Odometry) 융합 분야에서 필수적인 관제 기술로 자리 잡고 있다.</p>
 
             </article>
             <footer>

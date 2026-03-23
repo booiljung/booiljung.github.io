@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:63.7 전기 기계적 구동기(Actuator) 모터 및 서보의 피드포워드 직접 제어 원리 및 실습</title>
+    <title>BIJUNG:63.7. 전기 기계적 구동기(Actuator) 모터 및 서보의 피드포워드 직접 제어 원리 및 실습</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,148 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>63.7 전기 기계적 구동기(Actuator) 모터 및 서보의 피드포워드 직접 제어 원리 및 실습</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.7 전기 기계적 구동기(Actuator) 모터 및 서보의 피드포워드 직접 제어 원리 및 실습</span></nav>
+                    <h1>63.7. 전기 기계적 구동기(Actuator) 모터 및 서보의 피드포워드 직접 제어 원리 및 실습</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.7. 전기 기계적 구동기(Actuator) 모터 및 서보의 피드포워드 직접 제어 원리 및 실습</span></nav>
                 </div>
             </header>
             <article>
-                <h1>63.7 전기 기계적 구동기(Actuator) 모터 및 서보의 피드포워드 직접 제어 원리 및 실습</h1>
+                <h1>63.7. 전기 기계적 구동기(Actuator) 모터 및 서보의 피드포워드 직접 제어 원리 및 실습</h1>
+<h2>1.  개요: 오프보드 구동기 직접 제어의 필요성</h2>
+<p>전통적인 무인기(UAV) 제어 시스템에서는 오프보드(Offboard) 노드가 목표 위치(Position)나 목표 자세(Attitude)를 전송하고, 비행 제어기(Flight Controller)의 내부 폐루프(Inner Closed-loop) 알고리즘이 이를 추종하는 방식을 취한다. 그러나 학술적 목적의 틸트로터(Tilt-rotor) 시제기 제어, 독자적인 추력 편향(Thrust Vectoring) 수직 이착륙기(VTOL) 제어 알고리즘 검증, 혹은 특수 페이로드(Payload) 및 짐벌(Gimbal) 통제를 위해서는 기존의 믹서(Mixer)와 제어 할당(Control Allocation) 체계를 우회하여 개별 모터의 RPM이나 서보 모터의 각도를 직접적으로 지시해야 할 필요성이 대두된다.</p>
+<p>본 장에서는 PX4-Autopilot v1.13 이상에서 확립된 <code>ActuatorMotors</code> 및 <code>ActuatorServos</code> 제어 체계를 활용하여, 에러 피드백에 의존하지 않고 사용자의 수학적 모델 자체를 추력 및 각도 변위 로 전개하는 피드포워드(Feed-forward) 직접 제어의 원리를 분석하고 ROS 2를 통한 실습을 진행한다.</p>
+<h2>2.  제어 흐름 및 피드포워드(Feed-forward) 제어 원리</h2>
+<p>직접 구동(Direct Actuation)에서의 피드포워드 제어 모델은, 시스템의 동적 특성을 동반 컴퓨터(Companion Computer)에 사전에 모델링하여 비행 제어기 내부의 PID 등 피드백 루프 개입 없이 목표 출력을 확정적으로 결정하는 개루프(Open-loop) 제어 기법을 지칭한다.</p>
+<p>동반 컴퓨터에서 구동기에 이르는 신호의 흐름은 다음과 같다.</p>
+<pre><code class="language-mermaid">graph TD
+    subgraph Companion Computer (ROS 2)
+        A[Control Algorithm / Dynamic Model] --&gt; B[ActuatorMotors Node]
+        A --&gt; C[ActuatorServos Node]
+    end
+
+    subgraph PX4-Autopilot
+        B --&gt;|uXRCE-DDS| D[uORB: actuator_motors]
+        C --&gt;|uXRCE-DDS| E[uORB: actuator_servos]
+        
+        F[Offboard Control Mode] -.-&gt;|Direct Actuator Flag| G[Control Allocator]
+        D --&gt; H[Output Module: PWM/Dshot]
+        E --&gt; H
+    end
+
+    H --&gt; I[Physical Motor ESC]
+    H --&gt; J[Physical Servo Motor]
+</code></pre>
+<h2>3.  <code>ActuatorMotors</code> 및 <code>ActuatorServos</code> uORB 아키텍처</h2>
+<p>PX4 내부적으로 모터와 서보는 명확히 구분된 자료 구조와 정규화(Normalization) 기준을 갖는다.</p>
+<ul>
+<li><code>ActuatorMotors</code> 메시지: 개별 브러시리스 DC(BLDC) 모터로 전달될 쓰로틀(Throttle) 신호이다. 배열 내 각 인덱스는 <code>[-1.0, 1.0]</code> 범위의 실수(Float) 혹은 정지 상태를 의미하는 <code>NaN</code> 값을 지닌다. (일반적으로 단방향 회전 로터의 경우 <code>[0.0, 1.0]</code>)</li>
+<li><code>ActuatorServos</code> 메시지: 서보 모터의 각도를 제어하기 위한 신호이며, <code>[-1.0, 1.0]</code>의 값을 지닌다. 이는 하드웨어 파라미터인 <code>PWM_MAIN_MIN</code>, <code>PWM_MAIN_MAX</code> 등의 매핑(Mapping) 범위를 통해 실제 펄스폭(PWM 폭)으로 선형 보간(Linear Interpolation)된다.</li>
+</ul>
+<h3>3.1  제어 권한 탈취 메커니즘</h3>
+<p>개별 모터에 대한 제어 명령이 PX4의 내부 비행 제어에 의해 덮어씌워지지(Overwritten) 않기 위해, <code>OffboardControlMode</code> 메시지에서 <code>direct_actuator</code> 필드를 <code>true</code>로 설정하여 시스템의 주도권을 구동기 직접 지시권으로 이양받아야 한다.</p>
+<h2>4.  기체 파라미터(Parameter) 연동 및 페일세이프(Failsafe) 설정</h2>
+<p>오프보드 제어를 통한 직접 모터 제어는 본질적으로 매우 위험도가 높은 작업이다. 이에 대비한 PX4 내의 안전망 설정은 다음과 같다.</p>
+<ol>
+<li><strong>구동기 할당(Actuator Configuration)</strong>: 제어할 구동기 핀이 비행 제어 체계와 충돌하지 않게 하려면, QGroundControl의 Actuator 메뉴에서 제어하고자 하는 모터를 “Offboard Actuator Set 1” 등으로 독립적으로 매핑해야 한다.</li>
+<li><strong>COM_OBL_ACT 설정</strong>: 오프보드 신호 지연 또는 단절(Data Link Loss) 감지 시 자동으로 시동이 해제(Disarming)되거나 안정 모드로 롤백(Rollback)되도록 통신 시간초과 페일세이프 구조를 엄격하게 시험해야 한다.</li>
+</ol>
+<h2>5.  ROS 2(C++) 기반 구동기 직접 제어 노드 구현 실습</h2>
+<p>직접 모델링한 피드포워드 이득(Gain)을 개별 구동기에 지속적으로(<code>~50Hz</code>) 명령하는 노드의 핵심 구조이다.</p>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;px4_msgs/msg/offboard_control_mode.hpp&gt;
+#include &lt;px4_msgs/msg/actuator_motors.hpp&gt;
+#include &lt;px4_msgs/msg/actuator_servos.hpp&gt;
+#include &lt;cmath&gt;
+
+using namespace std::chrono_literals;
+
+class DirectActuatorNode : public rclcpp::Node
+{
+public:
+    DirectActuatorNode() : Node("direct_actuator_node")
+    {
+        offboard_control_publisher_ = this-&gt;create_publisher&lt;px4_msgs::msg::OffboardControlMode&gt;(
+            "/fmu/in/offboard_control_mode", 10);
+        actuator_motors_publisher_ = this-&gt;create_publisher&lt;px4_msgs::msg::ActuatorMotors&gt;(
+            "/fmu/in/actuator_motors", 10);
+        actuator_servos_publisher_ = this-&gt;create_publisher&lt;px4_msgs::msg::ActuatorServos&gt;(
+            "/fmu/in/actuator_servos", 10);
+
+        timer_ = this-&gt;create_wall_timer(20ms, std::bind(&amp;DirectActuatorNode::timer_callback, this));
+        start_time_ = this-&gt;now();
+    }
+
+private:
+    void timer_callback()
+    {
+        publish_offboard_control_mode();
+        publish_actuator_commands();
+    }
+
+    void publish_offboard_control_mode() const
+    {
+        px4_msgs::msg::OffboardControlMode msg{};
+        msg.timestamp = this-&gt;get_clock()-&gt;now().nanoseconds() / 1000ULL;
+        msg.position = false;
+        msg.velocity = false;
+        msg.acceleration = false;
+        msg.attitude = false;
+        msg.body_rate = false;
+        msg.direct_actuator = true; // 구동기 직접 제어 모드 활성화 중요
+        offboard_control_publisher_-&gt;publish(msg);
+    }
+
+    void publish_actuator_commands()
+    {
+        uint64_t timestamp = this-&gt;get_clock()-&gt;now().nanoseconds() / 1000ULL;
+        double t = (this-&gt;now() - start_time_).seconds();
+
+        // 모터 제어: 0번 모터(우상측)에 정현파 피드포워드 추력 지시
+        px4_msgs::msg::ActuatorMotors motor_msg{};
+        motor_msg.timestamp = timestamp;
+        
+        // C++ 배열 초기화를 활용하여 빈값을 NaN으로 채움
+        for(int i=0; i&lt;12; i++) motor_msg.control[i] = std::numeric_limits&lt;float&gt;::quiet_NaN();
+        
+        // 0.2 ~ 0.8 사이의 무차원 추력(Thrust)
+        float thrust_cmd = 0.5f + 0.3f * std::sin(2.0 * M_PI * 0.5 * t); 
+        motor_msg.control[0] = thrust_cmd; 
+
+        actuator_motors_publisher_-&gt;publish(motor_msg);
+
+        // 서보 제어: 0번 서보 모터(예: 벡터링 노즐)의 각도 지속 변경
+        px4_msgs::msg::ActuatorServos servo_msg{};
+        servo_msg.timestamp = timestamp;
+        
+        for(int i=0; i&lt;8; i++) servo_msg.control[i] = std::numeric_limits&lt;float&gt;::quiet_NaN();
+
+        // -0.5 ~ 0.5 범위를 스윙하는 서보 명령
+        float servo_cmd = 0.5f * std::cos(2.0 * M_PI * 0.5 * t);
+        servo_msg.control[0] = servo_cmd;
+
+        actuator_servos_publisher_-&gt;publish(servo_msg);
+    }
+
+    rclcpp::Time start_time_;
+    rclcpp::Publisher&lt;px4_msgs::msg::OffboardControlMode&gt;::SharedPtr offboard_control_publisher_;
+    rclcpp::Publisher&lt;px4_msgs::msg::ActuatorMotors&gt;::SharedPtr actuator_motors_publisher_;
+    rclcpp::Publisher&lt;px4_msgs::msg::ActuatorServos&gt;::SharedPtr actuator_servos_publisher_;
+    rclcpp::TimerBase::SharedPtr timer_;
+};
+
+int main(int argc, char * argv[])
+{
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared&lt;DirectActuatorNode&gt;());
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+<h2>6.  QGroundControl 검증 및 아키텍처적 주의 사항</h2>
+<p>피드포워드 제어 기술을 배포하기 전에 반드시 HITL(Hardware In The Loop)이나 프로펠러가 제거된 상태의 HIL 검증을 거쳐야 한다.</p>
+<ol>
+<li><strong>MAVLink Inspector 검증</strong>: QGroundControl의 <code>Analyze Tools</code> 내의 <code>MAVLink Inspector</code>에서 <code>HIL_ACTUATOR_CONTROLS</code> 메시지(시뮬레이션 환경)나 <code>ACTUATOR_OUTPUT_STATUS</code> 메시지를 확인하여, 수학적 모델에 기반한 목표 정현파가 실제로 모터 PWM 또는 Dshot 신호로 정확하게 매핑되고 있는지 타임 테이블 플롯(Time Table Plot)으로 검증해야 한다.</li>
+<li><strong>Ardupilot과의 차별점</strong>: Ardupilot은 서보 프로그래밍을 위해 전통적인 <code>RC_CHANNELS_OVERRIDE</code> 방식이나 LUA 스크립팅 기반의 제어를 선호하는 반면, PX4는 uORB 아키텍처에 <code>ActuatorMotors</code> 토픽을 네이티브하게 마련하여 uXRCE-DDS 레이어에 밀착 통합함으로써 제어 루프의 시간 지연(Latency)을 근본적으로 단축시켰다.</li>
+</ol>
 
             </article>
             <footer>

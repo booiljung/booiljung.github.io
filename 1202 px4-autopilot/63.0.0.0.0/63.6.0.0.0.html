@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:63.6 강체 자세 및 병진 추력(Attitude & Translational Thrust) 기반 회전 운동 제어 알고리즘 및 실습</title>
+    <title>BIJUNG:63.6. 강체 자세 및 병진 추력(Attitude & Translational Thrust) 기반 회전 운동 제어 알고리즘 및 실습</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,149 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>63.6 강체 자세 및 병진 추력(Attitude & Translational Thrust) 기반 회전 운동 제어 알고리즘 및 실습</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.6 강체 자세 및 병진 추력(Attitude & Translational Thrust) 기반 회전 운동 제어 알고리즘 및 실습</span></nav>
+                    <h1>63.6. 강체 자세 및 병진 추력(Attitude & Translational Thrust) 기반 회전 운동 제어 알고리즘 및 실습</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.6. 강체 자세 및 병진 추력(Attitude & Translational Thrust) 기반 회전 운동 제어 알고리즘 및 실습</span></nav>
                 </div>
             </header>
             <article>
-                <h1>63.6 강체 자세 및 병진 추력(Attitude &amp; Translational Thrust) 기반 회전 운동 제어 알고리즘 및 실습</h1>
+                <h1>63.6. 강체 자세 및 병진 추력(Attitude &amp; Translational Thrust) 기반 회전 운동 제어 알고리즘 및 실습</h1>
+<p>기존의 위치 및 속도 기반 병진 운동 제어(Translational Control)는 PX4-Autopilot 시스템 내의 위치 컨트롤러가 추종 오차를 계산하여 자체적으로 목표 자세와 추력을 산출하는 고수준(High-level) 추상화 제어 방식이다. 하지만 멀티로터의 동력학을 극한까지 활용하는 아크로바틱 비행 시스템(Acrobatic Flight System), 지면 효과나 외란이 심각한 환경에서의 고반응성 제어, 혹은 특수한 기구학적 요구사항(예: 슬링 로드 운송, 매니퓰레이터 장착 기체)을 지닌 연구 등에서는 기존의 위치 컨트롤러 루프를 우회할 필요성이 대두된다.</p>
+<p>이러한 경우 <strong>강체 자세(Attitude)</strong> 및 <strong>병진 추력(Translational Thrust)</strong> 벡터를 외부 ROS2 노드(Offboard 모드)에서 직접 생성하고 PX4 내부의 각속도/모터 배분기(Angular Rate &amp; Actuator Allocation)로 직접 하달하는 저수준(Low-level) 회전 운동 제어 알고리즘이 필수적이다. 이 절에서는 병진 추력과 자세 동역학 간의 관계를 분석하고, ROS2 기반에서 자세 제어 명령을 실시간으로 퍼블리시하는 실습을 다룬다.</p>
+<hr />
+<h2>1.  자세 및 추력 기반 회전 운동 동역학 이해</h2>
+<p>멀티로터는 본질적으로 부족 구동 시스템(Underactuated System)이다. 공간상에서 6자유도(3자유도 병진, 3자유도 회전)를 가지지만, 실제 구동기(프로펠러)를 통해 독립적으로 발생시킬 수 있는 제어력은 4자유도(총 추력, 롤, 피치, 요 토크)에 불과하다. 따라서 X축이나 Y축 방향으로 이동하기 위해서는 기체를 해당 방향으로 기울여(Roll/Pitch) Z축으로 발생하는 주 추력(Main Thrust)의 일부를 목표 방향의 병진력(Translational Force) 벡터로 분산시켜야 한다.</p>
+<p>이를 수학적으로 표현하면 강체의 병진 운동 방정식은 Newton-Euler 역학에 의해 다음과 같이 정의된다.</p>
+<p><span class="math math-display">
+m \ddot{\mathbf{p}} = m g \mathbf{e}_3 - f \mathbf{R} \mathbf{e}_3
+</span></p>
+<ul>
+<li><span class="math math-inline">m</span>: 기체의 질량</li>
+<li><span class="math math-inline">\ddot{\mathbf{p}}</span>: 관성 좌표계 상의 공간 가속도 벡터</li>
+<li><span class="math math-inline">g</span>: 중력 가속도</li>
+<li><span class="math math-inline">\mathbf{e}_3</span>: 관성 좌표계의 Z축 단위 벡터 <span class="math math-inline">(0, 0, 1)^T</span> (NED 기준 Down 방향 양수)</li>
+<li><span class="math math-inline">f</span>: 프로펠러들이 생성하는 총 추력 (Total Thrust)</li>
+<li><span class="math math-inline">\mathbf{R}</span>: 몸체 좌표계(Body Frame)에서 관성 좌표계(Inertial Frame)로의 3D 회전 변환 행렬(Rotation Matrix)</li>
+</ul>
+<p>위 수식에서 알 수 있듯이, 외부에서 목표 가속도 <span class="math math-inline">\ddot{\mathbf{p}}_{des}</span>를 달성하고자 할 때 시스템에 인가할 수 있는 물리적 제어 입력은 단 두 가지, 즉 **총 추력 크기(<span class="math math-inline">f</span>)**와 그 추력 벡터의 방향을 결정하는 **자세 회전 행렬(<span class="math math-inline">\mathbf{R}</span>)**뿐이다. ROS2 Offboard 환경에서는 이 수은을 기반으로 <code>VehicleAttitudeSetpoint</code> 메시지에 쿼터니언(Quaternion) 형태의 목표 자세를, 추력 필드(Thrust Field)에 방향별 추력 정규화 비율(Normalized Ratio)을 전송하게 된다.</p>
+<h2>2.  PX4 제어 루프 아키텍처 상의 자세/추력 개입 구조</h2>
+<pre><code class="language-mermaid">graph TD
+    A[ROS2 External Node] --&gt;|Position/Velocity| B(Position Controller)
+    B --&gt;|Attitude &amp; Thrust Setpoint| C(Attitude Controller)
+    
+    A --&gt;|Direct Attitude &amp; Thrust: VehicleAttitudeSetpoint| C
+    
+    C --&gt;|Angular Rate Setpoint| D(Angular Rate Controller)
+    A --&gt;|Direct Rates &amp; Thrust: VehicleRatesSetpoint| D
+    
+    D --&gt;|Actuator Outputs| E(Mixer / Control Allocation)
+    E --&gt; F[Motors]
+</code></pre>
+<p>위의 흐름도와 같이 ROS2의 외부 노드는 PX4 내부의 위치 컨트롤러를 통과시키지 않고, 자세 컨트롤러(Attitude Controller) 모듈 또는 제일 내측의 각속도 컨트롤러(Angular Rate Controller) 모듈로 메시지를 직접 삽입(Injection)할 수 있다. 이번 실습에서는 <code>VehicleAttitudeSetpoint</code> 메시지를 다루며 자세 컨트롤러 단에 개입한다.</p>
+<h2>3.  회전 운동 표기 체계: 오일러 각(Euler Angle)과 쿼터니언(Quaternion)의 비교</h2>
+<p>자세를 표현하는 수학적 도구로 가장 쉬운 것은 롤, 피치, 요(Roll, Pitch, Yaw)로 이루어진 오일러 각이다. 하지만 짐벌 락(Gimbal Lock)이라는 수학적 특이점(Singularity) 문제를 가지고 있으며 삼각함수 연산 부하가 크다.</p>
+<p>PX4-Autopilot은 내부 제어 스택에서 모든 자세 데이터를 연산 효율적이고 공간상 연속성을 보장하는 **쿼터니언(Quaternion)**으로 처리한다. 쿼터니언 <span class="math math-inline">\mathbf{q}</span>는 1개의 실수부와 3개의 허수부(초복소수) 벡터 블록으로 구성된다.</p>
+<p><span class="math math-display">
+\mathbf{q} = [q_w \quad q_x \quad q_y \quad q_z]^T = [\cos(\theta/2) \quad \mathbf{u}\sin(\theta/2)]^T
+</span></p>
+<ul>
+<li>여기서 <span class="math math-inline">\mathbf{u}</span>는 회전 축의 단위 벡터이고, <span class="math math-inline">\theta</span>는 그 축을 중심으로 한 회전 각도이다.</li>
+<li>ROS2 노드 작성 시, 직관적인 오일러 각을 계산한 뒤, 프로그램 내부에서 쿼터니언으로 변환하여 토픽을 퍼블리시하는 방식이 정석이다. 논문 <em>Attitude Representation using Quaternions for Control of Multirotor UAVs</em>에 따르면 쿼터니언 변환은 병렬 연산에 매우 유리하여 제어 주기를 수십 배 끌어올린다.</li>
+</ul>
+<hr />
+<h2>4.  [실습] ROS2 기반 추력 및 강체 자세 지령(Attitude Command) 제어기 구현</h2>
+<p>다음의 C++ 코드는 오프보드 모드 상태에서 기체가 일정한 추력을 유지한 채, 좌우 로큰롤(Rock and Roll) 진동 모션을 수행하도록 롤(Roll) 각도를 시간의 흐름(Sine 곡선)에 맞춰 연속적으로 명령하는 스크립트이다.</p>
+<h3>4.1  C++ Node 구현</h3>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;px4_msgs/msg/vehicle_attitude_setpoint.hpp&gt;
+#include &lt;cmath&gt;
+
+using namespace std::chrono_literals;
+
+class AttitudePublisherNode : public rclcpp::Node {
+public:
+    AttitudePublisherNode() : Node("attitude_publisher_node") {
+        attitude_setpoint_publisher_ = this-&gt;create_publisher&lt;px4_msgs::msg::VehicleAttitudeSetpoint&gt;(
+            "/fmu/in/vehicle_attitude_setpoint", 10);
+
+        // 100 Hz 주기로 토픽 발행 (자세 제어는 주기를 빠르게 설정해야 안정적임)
+        timer_ = this-&gt;create_wall_timer(
+            10ms, std::bind(&amp;AttitudePublisherNode::timer_callback, this));
+    }
+
+private:
+    rclcpp::Publisher&lt;px4_msgs::msg::VehicleAttitudeSetpoint&gt;::SharedPtr attitude_setpoint_publisher_;
+    rclcpp::TimerBase::SharedPtr timer_;
+
+    // 오일러 각에서 쿼터니언 배열로 변환하는 유틸리티 함수
+    std::array&lt;float, 4&gt; EulerToQuaternion(double roll, double pitch, double yaw) {
+        double cr = cos(roll * 0.5);
+        double sr = sin(roll * 0.5);
+        double cp = cos(pitch * 0.5);
+        double sp = sin(pitch * 0.5);
+        double cy = cos(yaw * 0.5);
+        double sy = sin(yaw * 0.5);
+
+        std::array&lt;float, 4&gt; q;
+        q[0] = cr * cp * cy + sr * sp * sy; // w
+        q[1] = sr * cp * cy - cr * sp * sy; // x
+        q[2] = cr * sp * cy + sr * cp * sy; // y
+        q[3] = cr * cp * sy - sr * sp * cy; // z
+        return q;
+    }
+
+    void timer_callback() {
+        auto current_time = this-&gt;get_clock()-&gt;now();
+        double t = current_time.seconds();
+
+        // 1. 역동적인 비행 모션 생성 (예: 진폭 20도, 0.5Hz 주기의 사인파 롤링)
+        double roll_deg = 20.0 * sin(2.0 * M_PI * 0.5 * t);
+        double pitch_deg = 0.0;
+        double yaw_deg = 0.0; 
+
+        // 라디안 변환
+        double roll_rad = roll_deg * M_PI / 180.0;
+        double pitch_rad = pitch_deg * M_PI / 180.0;
+        double yaw_rad = yaw_deg * M_PI / 180.0;
+
+        // 2. 오일러 각 -&gt; 쿼터니언 산출
+        std::array&lt;float, 4&gt; q = EulerToQuaternion(roll_rad, pitch_rad, yaw_rad);
+
+        // 3. 메시지 초기화 및 값 주입
+        px4_msgs::msg::VehicleAttitudeSetpoint att_setpoint;
+        att_setpoint.timestamp = current_time.nanoseconds() / 1000;
+        
+        att_setpoint.q_d[0] = q[0];
+        att_setpoint.q_d[1] = q[1];
+        att_setpoint.q_d[2] = q[2];
+        att_setpoint.q_d[3] = q[3];
+
+        // 4. 총 병진 추력(Normalized Thrust) 설정
+        // 크기 제한: -1.0 ~ 1.0 (일반적인 멀티로터는 Z축 음수 방향으로 양의 추력을 생성하므로 Z가 음수여야 기체가 뜸)
+        // 0.65G 수준의 추력을 임의 인가 (호버링 추력이 약 0.5 ~ 0.7 사이임)
+        att_setpoint.thrust_body[0] = 0.0f; // Body X Forward
+        att_setpoint.thrust_body[1] = 0.0f; // Body Y Right
+        att_setpoint.thrust_body[2] = -0.65f; // Body Z Down (위로 상승하는 힘)
+
+        // Yaw와 Spintaill 설정을 위한 각속도 초기화 (옵션)
+        att_setpoint.yaw_sp_move_rate = 0.0f;
+
+        attitude_setpoint_publisher_-&gt;publish(att_setpoint);
+    }
+};
+
+int main(int argc, char * argv[]) {
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared&lt;AttitudePublisherNode&gt;());
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+<h3>4.2  파라미터 튜닝 및 제어 고찰</h3>
+<p>위 코드에서 <code>thrust_body</code> 배열의 값은 기체마다 배터리 잔량, 페이로드 무게 등에 따라 달라지는 튜닝 요소인 **호버 추력 게인 (Hover Thrust)**에 매우 큰 영향을 받는다.<br />
+단순 오프보드 위치 제어(<code>TrajectorySetpoint</code> 사용) 시에는 PX4에 내장된 고도 제어기(Altitude Controller)가 PID 적분항을 통해 자동으로 호버링 추력을 찾고 유지하지만, 이와 같이 자세 및 추력 레벨(<code>VehicleAttitudeSetpoint</code>)로 직접 진입하면 개발자가 자체적으로 로스(ROS) 노드 내에 고도 측정 피드백 센서 값을 받고, 중력 보상(Gravity Compensation) 및 위치-추력 매핑 컨트롤러 식을 새로 구축해야 기체가 땅에 떨어지지 않는다.</p>
+<p>위의 예제는 고정된 -0.65 값의 추력을 송출하므로 기체는 상승 혹은 하강을 계속할 위험이 크다. 진성 연구 목적의 자세 통제 소프트웨어를 구축할 때는 VIO나 LiDAR 고도 데이터를 피드백 받아 적분식 추력 보상 코드가 함께 작성되어야 오프보드 체계를 완성시킬 수 있다.</p>
+<h2>5.  요약</h2>
+<p>고전적인 위치 제어 추종은 직관적이지만 시스템의 물리적 비선형 대처 측면에서는 한계가 명확하다. 높은 민첩성과 공격적 궤적 추종 루틴이 요구되는 환경에서는 로봇 운영 체제(ROS2) 노드단에서 직접 <code>VehicleAttitudeSetpoint</code>를 산출해 내어 쿼터니언 기반 회전 운동 텐서와 동역학 추력 벡터의 결합을 이끌어 내는 것이 필수적이다. 이를 위해 이 장에서는 변환 행렬 모델링과 직접적 추력 주입 프로그래밍 방법론을 소개하였고, 이 기법은 궁극적으로 무인 비행체의 각운동학 및 모터 스티어링 믹스 최적화 알고리즘의 뼈대로 발전한다.</p>
 
             </article>
             <footer>

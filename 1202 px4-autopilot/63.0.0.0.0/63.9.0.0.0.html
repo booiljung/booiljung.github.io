@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:63.9 Offboard 자율 비행 모드에서의 내결함성(Fault Tolerance) 시스템 및 비선형 예외 처리 아키텍처</title>
+    <title>BIJUNG:63.9. Offboard 자율 비행 자율 비행 모드에서의 내결함성(Fault Tolerance) 시스템 및 비선형 예외 처리 아키텍처</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,61 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>63.9 Offboard 자율 비행 모드에서의 내결함성(Fault Tolerance) 시스템 및 비선형 예외 처리 아키텍처</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.9 Offboard 자율 비행 모드에서의 내결함성(Fault Tolerance) 시스템 및 비선형 예외 처리 아키텍처</span></nav>
+                    <h1>63.9. Offboard 자율 비행 자율 비행 모드에서의 내결함성(Fault Tolerance) 시스템 및 비선형 예외 처리 아키텍처</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.9. Offboard 자율 비행 자율 비행 모드에서의 내결함성(Fault Tolerance) 시스템 및 비선형 예외 처리 아키텍처</span></nav>
                 </div>
             </header>
             <article>
-                <h1>63.9 Offboard 자율 비행 모드에서의 내결함성(Fault Tolerance) 시스템 및 비선형 예외 처리 아키텍처</h1>
+                <h1>63.9. Offboard 자율 비행 자율 비행 모드에서의 내결함성(Fault Tolerance) 시스템 및 비선형 예외 처리 아키텍처</h1>
+<h2>1.  개요 (Introduction)</h2>
+<p>로보틱스 및 무인항공기 운영에서 시스템 오동작이나 하드웨어 결함은 기체의 치명적 추락과 인적·물적 피해로 즉결되는 고위험 요소이다. 특히, 기체 내부 센싱 데이터를 바탕으로 자율적으로 의사 결정을 내리고 <span class="math math-inline">\mathbf{u}(t)</span> 제어 지령을 산출하는 <strong>Offboard(외부 제어) 모드</strong>에서는 센서 잡음(Noise), 통신 지연시간(Latency), 컴패니언 컴퓨터(Companion Computer)의 연산 오버플로(Overflow) 등 무수한 간섭 인자가 존재한다.</p>
+<p>PX4-Autopilot(v1.14.0 기준) 펌웨어 레벨에서는 RC 연결 단절(RC Loss), 배터리 전압 경고(Low Battery), GPS 신호 유실(GPS Loss) 등 명시적인 1차 Failsafe 시스템을 훌륭히 내장하고 있다. 그러나, 인공지능(Vision AI)이나 복잡한 비선형 궤적 탐색 알고리즘과 같이 엣지 단(Edge Node)에서 동작하는 상위 애플리케이션 프로그램이 예기치 못한 교착 상태(Deadlock)나 논리적 무한 루프에 빠지는 **소프트웨어적·비선형적 예외 오류(Nonlinear Exceptions)**를 감지하고 복구하는 아키텍처 설계는 전적으로 개발자의 몫이다.</p>
+<p>본 장에서는 ROS 2 및 MAVLink 기반으로 구동되는 외부 제어 관제 시스템을 설계할 때 단일 장애점(Single Point of Failure, SPOF)으로 인한 시스템 붕괴를 예방할 수 있도록, <strong>내결함성(Fault Tolerance) 감지 파이프라인</strong>과 <strong>비선형 예외 처리 복구 상태 머신(Recovery State Machine)</strong> 시스템 설계 방법론을 고찰하라.</p>
+<h2>2.  Offboard 모드의 취약점 및 장애 발생 메커니즘</h2>
+<p>PX4 프레임워크 설계 철학 상 Offboard 제어 모드는 컴패니언 컴퓨터, 혹은 지상 관제 노드의 강력한 컴퓨팅 자원에 조종 권한(Control Authority)을 온전히 위임하는 형태를 취한다. 이러한 메커니즘 특성 때문에 다음과 같은 구조적 장애 포인트가 수반된다.</p>
+<h3>2.1  제어 토픽(Setpoint Topic) 타임아웃 인터락(Interlock) 메커니즘</h3>
+<p>PX4의 커맨더(Commander) 모듈은 <code>TrajectorySetpoint</code> 또는 <code>VehicleRatesSetpoint</code>와 같은 제어 토픽이 <strong>0.5초(500ms)</strong> 이상 유입되지 않거나 데이터그램 타임스탬프(Timestamp)가 갱신되지 않으면, 즉각적으로 통신 데이터 링크 소실(Data Link Loss)로 간주하고 <code>COM_OBL_RC_ACT</code> 파라미터 값 설정에 따라 기체를 <code>Hold(Hovering)</code>, <code>Return(RTL)</code> 혹은 <code>Land</code> 모드로 강제 추방(Eviction) 및 전환시킨다. 반면 Ardupilot 체계에서는 Guided 모드가 비교적 유연한 시간 정책을 가지는 것과 대조적으로 PX4의 엄격한 워치독(Watchdog) 설계이다.</p>
+<h3>2.2  비선형 물리적 제어 발산(Divergence) 오류</h3>
+<p>ROS 2 제어 노드가 정상적으로 100Hz로 메시지를 발행하더라도, 제어기(예: APF 회피나 강화 학습 모델)에서 산출한 속도 지령 <span class="math math-inline">V_{cmd}</span>가 물리적 가속 한계를 지속 초과하거나 상태 행렬 지터(Jitter)가 증폭될 경우, 내부 구동기(Actuators) 포화 상태 진입을 유발하여 물리적 기동 불안정(Oscillation)과 진동을 낳게 된다. 이는 1차 통신 타임아웃을 우회하는 은닉된 비선형적 장애 요소이다.</p>
+<h2>3.  내결함성(Fault Tolerance) 진단 및 감지 파이프라인 구조</h2>
+<p>상기한 문제를 모니터링하기 위하여 ROS 2의 메인 제어 노드에 병렬 스레드로 동작하는 비동기 워치독 감지기(Asynchronous Watchdog Detector) 파이프라인을 구축한다.</p>
+<ol>
+<li><strong>상태 피드백 감시계</strong>: EKF2 추정기의 상태 메시지(<code>VehicleOdometry</code>, <code>EstimatorStatus</code>)의 혁신(Innovation) 공분산(Covariance) 허용치 지표를 감시하여, VIO 혹은 GPS 데이터 소스의 열화(Degradation) 수치를 계량한다.</li>
+<li><strong>연산 지연 및 무한 루프 모니터</strong>: 제어 반복 주기 타이머(<code>rclcpp::TimerBase</code>)가 시스템 운영체제의 인터럽트로 인해 Blocked 되었는가를 판별하는 스누핑(Snooping) 알림을 구성한다.</li>
+<li><strong>명령 벡터 제약 조건 필터링(Constraint Filtering)</strong>: 송출 예정인 <span class="math math-inline">\mathbf{u}_{t}</span> 벡터 크기 <span class="math math-inline">\| \mathbf{u} \|</span> 가 직전 프레임 지령과의 유클리드 차이 <span class="math math-inline">\Delta \mathbf{u}</span> 허용 대역폭(Saturation Limits Bandwidth)을 벗어나는지 출하시 검증(Pre-release Verification)한다.</li>
+</ol>
+<h2>4.  다단계 예외 복구 상태 머신(Multi-Tier Recovery State Machine)</h2>
+<p>결함 종류(Fault ID)가 감지되었을 때, 이를 안전하게 처리하는 일련의 상태 머신 복구 전략(Recovery Tactics)을 계층화해야 한다.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    direction TB
+    state "Offboard Normal Execution" as Normal
+    state "Exception Detected" as Detected
+
+    Normal --&gt; Detected : Fault Triggered (Delay/NaN computation)
+    
+    state Detected {
+        direction LR
+        state "Tier 1: Soft Reset &amp; Hold" as Tier1
+        state "Tier 2: Mode Override Escalate" as Tier2
+        state "Tier 3: Flight Termination" as Tier3
+        
+        [*] --&gt; Tier1 : Transient Error
+        Tier1 --&gt; Tier2 : Error Persists (&gt; 1 sec)
+        Tier2 --&gt; Tier3 : Critical Hardware Failure
+    }
+    
+    Tier1 --&gt; Normal : Recovered by Re-initialization
+    Tier2 --&gt; [*] : Mission/Return Mode Enforced
+    Tier3 --&gt; [*] : Actuators Disabled (Crash Landing)
+</code></pre>
+<ul>
+<li><strong>Tier 1. 소프트 리셋(Soft Reset)</strong>: 제어 루프 알고리즘(예: SLAM 맵 버퍼 한계) 내의 일시적 교착 상태 판단 시, 현재 좌표를 캡처하여 즉각 영점 조향(Zero-Velocity Setpoint: <span class="math math-inline">\vec{v} = \mathbf{0}</span>)으로 <code>Hold</code> 명령을 계속 발행하면서 알고리즘 버퍼를 정리한다.</li>
+<li><strong>Tier 2. 모드 강제 전환(Mode Override Escalate)</strong>: 1초 이상 오프보드 연산이 마비되었음을 컴패니언 컴퓨터가 자각한 경우, 스스로 uXRCE-DDS 클라이언트를 닫거나 <code>VehicleCommand(VEHICLE_CMD_DO_SET_MODE)</code>를 <code>Hold</code> 또는 <code>Return</code> 매직 넘버 값으로 발행하여 내부 Flight Controller 고유의 로직으로 안전 반환 통제권을 념겨준다.</li>
+<li><strong>Tier 3. 하드 킬(Flight Termination/Kill Switch)</strong>: 프로펠러가 충돌 등에 의해 물리적으로 파손되거나, 피치/롤 각도가 <span class="math math-inline">\pm 60^\circ</span>를 초과하는 회복 불능한 자유낙하 상태 발생 시 펌웨어 파라미터 <code>CBRK_FLIGHTTERM</code>과 연결된 즉시 정지 커맨드(<code>VEHICLE_CMD_DO_FLIGHTTERMINATION</code>)를 발동하여 추가 사고 확산을 막는다.</li>
+</ul>
+<h2>5.  결론 (Conclusion)</h2>
+<p>“Fault-Tolerant Control System Design for Unmanned Aerial Vehicles” 논문 등의 궤일치와 같이, 기체의 컴퓨팅 파워 단말단에 자율 지능이 집약될수록, 컴패니언 컴퓨터 스스로 자기 자신의 연산 및 로직 오류를 진단하고 하드웨어 단으로 권한을 이양하는 <strong>소프트웨어적 내결함성 스택</strong>이 핵심 보호막이 된다.</p>
+<p>결과적으로, PX4-Autopilot과 ROS 2 기반 응용 프로그램 설계의 성숙도는 단순 목적 달성 알고리즘 구현 수준을 넘어서, 시스템이 마주할 수 있는 가장 극단적인 비선형 예외 케이스(Nonlinear Exceptions Core Case)들을 얼마나 다층적 모델(Multi-Tier Architecture) 상에서 회피 및 복구하도록 설계했느냐가 결정적인 실무 무인항공 비행 인가 통과(Certification) 기준이 될 것이다.</p>
 
             </article>
             <footer>

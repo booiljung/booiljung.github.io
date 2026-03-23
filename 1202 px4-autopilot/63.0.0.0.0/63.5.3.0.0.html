@@ -115,6 +115,87 @@
             </header>
             <article>
                 <h1>63.5.3 [실습] 자율 이륙 및 사전 정의된 3차원 유클리드 공간 경유지(Waypoint) 궤적 연속 추종 비행 구현</h1>
+<p>이전 절에서 학습한 <span class="math math-inline">SO(3)</span> 특수 직교군 기반의 좌표계 변환 원리와 <code>TrajectorySetpoint</code> 메시지 구조를 바탕으로, 본 절에서는 ROS2(Humble)와 PX4(v1.14 이상)를 연동하여 실제 기체가 자율적으로 이륙하고 여러 3차원 유클리드 공간의 경유지(Waypoint)를 순차적으로 비행하는 오프보드(Offboard) 제어기 노드를 C++로 구현한다.</p>
+<h2>1.  실습 개요 및 시스템 요구사항</h2>
+<p>이 실습의 목표는 GCS(QGroundControl v4.3.x 이상)의 임무(Mission) 모드를 사용하지 않고, ROS2 외부 제어기(Companion Computer)가 실시간으로 생성한 공간 텐서(Spatial Tensor) 타겟을 기반으로 기체 비행 궤적을 제어하는 것이다.</p>
+<ul>
+<li><strong>통신 레이어:</strong> Micro XRCE-DDS 프로토콜을 통한 uORB 메시지(ROS2 Topic) 브릿징</li>
+<li><strong>제어 대상 메시지:</strong> <code>px4_msgs::msg::TrajectorySetpoint</code> (NED 변환 완료 상태), <code>px4_msgs::msg::VehicleCommand</code></li>
+<li><strong>피드백 메시지:</strong> <code>px4_msgs::msg::VehicleOdometry</code>, <code>px4_msgs::msg::VehicleStatus</code></li>
+</ul>
+<h2>2.  노드 상태 머신(Node State Machine) 설계</h2>
+<p>안전하고 결정론적인 비행을 위해, ROS2 노드 내부에 유한 상태 머신(FSM: Finite State Machine)을 설계하여 순차적인 제어 로직을 적용하라.</p>
+<pre><code class="language-mermaid">stateDiagram-v2
+    [*] --&gt; INIT: 노드 실행
+    INIT --&gt; ARMING: Offboard 권한 획득 및 Arm 명령
+    ARMING --&gt; TAKEOFF: 시동 확인 후 이륙 고도 설정
+    TAKEOFF --&gt; WAYPOINT_NAV: 이륙 고도 도달
+    WAYPOINT_NAV --&gt; LAND: 모든 Waypoint 순회 완료
+    LAND --&gt; [*]: 착륙 및 Disarm 완료
+</code></pre>
+<h2>3.  핵심 C++ 구현 파이프라인</h2>
+<p>자율 비행의 핵심은 50Hz 이상의 고주파수 타이머 인터럽트를 통해 연속적으로 <code>OffboardControlMode</code>와 <code>TrajectorySetpoint</code> 메시지를 퍼블리시하는 것이다.</p>
+<h3>3.1  3차원 웨이포인트 목록 정의</h3>
+<p>실습을 위해 10m x 10m 정사각형 궤적을 5m 고도에서 순회하는 시나리오를 정의한다. (이하 코드는 이해를 돕기 위한 로보틱스 ENU 기준의 의사-구현체이다.)</p>
+<pre><code class="language-cpp">#include &lt;vector&gt;
+#include &lt;Eigen/Dense&gt;
+
+// ENU 기준 경유지 집합 (East, North, Up)
+const std::vector&lt;Eigen::Vector3d&gt; waypoints_enu = {
+    {0.0, 0.0, 5.0},   // WP 0: 이륙점 위
+    {10.0, 0.0, 5.0},  // WP 1
+    {10.0, 10.0, 5.0}, // WP 2
+    {0.0, 10.0, 5.0},  // WP 3
+    {0.0, 0.0, 5.0}    // WP 4: 복귀
+};
+</code></pre>
+<h3>3.2  상태 전이 및 세트포인트 발행 (Timer Callback)</h3>
+<p>ROS2 노드의 메인 제어 루프는 주기적으로 호출되며, 현재 상태에 따라 기체의 위치 목표를 PX4 네이티브 프레임(NED)으로 변환하여 발행한다.</p>
+<pre><code class="language-cpp">void OffboardControlNode::control_loop_callback() {
+    // 1. Offboard 모드 유지를 위한 ControlMode Heartbeat 퍼블리시
+    publish_offboard_control_mode();
+
+    // 2. 현재 상태 머신에 따른 세트포인트 결정
+    Eigen::Vector3d target_enu;
+    switch (current_state_) {
+        case State::TAKEOFF:
+            target_enu = waypoints_enu[0]; // 이륙 고도로 직진
+            break;
+        case State::WAYPOINT_NAV:
+            target_enu = waypoints_enu[current_wp_index_];
+            break;
+        case State::LAND:
+            execute_land_command(); // VehicleCommand(VEHICLE_CMD_NAV_LAND) 전송
+            return;
+    }
+
+    // 3. ENU -&gt; NED 선형 변환 (이전 절에서 도출한 행렬 활용)
+    Eigen::Vector3d target_ned;
+    target_ned.x() = target_enu.y();
+    target_ned.y() = target_enu.x();
+    target_ned.z() = -target_enu.z(); // 위상 반전
+
+    // 4. TrajectorySetpoint 퍼블리시
+    px4_msgs::msg::TrajectorySetpoint setpoint;
+    setpoint.position[0] = target_ned.x();
+    setpoint.position[1] = target_ned.y();
+    setpoint.position[2] = target_ned.z();
+    // Yaw 설정: 항상 기수가 진행 방향을 향하게 하거나 고정값 적용 가능
+    setpoint.yaw = 1.57f; // 예시: 90도 북쪽 방향
+    
+    trajectory_setpoint_publisher_-&gt;publish(setpoint);
+}
+</code></pre>
+<h2>4.  실습 구동 및 시뮬레이션 환경(SITL) 검증 절차</h2>
+<p>실제 기체(Pixhawk)에 코드를 배포하기 전, 사고를 예방하기 위해 반드시 Gazebo 등 SITL(Software-In-The-Loop) 환경에서 알고리즘을 체계적으로 검증해야 한다.</p>
+<ol>
+<li><strong>시뮬레이터 기동:</strong> <code>make px4_sitl gz_x500</code> 명령을 통해 가상 환경을 로드한다.</li>
+<li><strong>XRCE-DDS 에이전트 실행:</strong> <code>MicroXRCEAgent udp4 -p 8888</code> 명령으로 통신 브릿지를 개방하라.</li>
+<li><strong>QGroundControl 모니터링:</strong> GCS를 실행하여, 오프보드 제어 시 비행 모드가 변경(‘Offboard’)되는 현상과 웨이포인트를 향해 이동하는 3차원 궤적(3D Trace)을 시각적으로 모니터링한다.</li>
+<li><strong>C++ 노드 실행:</strong> 빌드된 ROS2 패키지를 <code>ros2 run</code>으로 실행하여 기체가 궤적을 정확히 추종하는지 확인한다.</li>
+</ol>
+<h2>5. 결론</h2>
+<p>본 실습을 통해 오프보드 제어의 근간이 되는 <span class="math math-inline">SO(3)</span> 변환 로직이 어떻게 C++ 프로덕션 코드에 결합되어 자율 이륙 및 유클리드 공간 탐색으로 시각화되는지 확인하였다. 이 아키텍처는 향후 라이다(LiDAR) 기반 장애물 회피(Obstacle Avoidance) 센서계와 융합하여 더욱 복잡하고 역동적인 군집 비행 등을 설계하기 위한 강력한 소프트웨어 기반이 된다.</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:63.9.1 임무 컴퓨터 측 중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 및 ROS2 프로세스 교착 상태(Deadlock) / 세그멘테이션 결함(Segmentation Fault) 메모리 침범 상황 복구 알고리즘</title>
+    <title>BIJUNG:63.9.1. 임무 컴퓨터 측 중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 및 ROS2 프로세스 교착 상태(Deadlock) / 세그멘테이션 결함(Segmentation Fault) 메모리 침범 상황 복구 알고리즘</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,114 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>63.9.1 임무 컴퓨터 측 중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 및 ROS2 프로세스 교착 상태(Deadlock) / 세그멘테이션 결함(Segmentation Fault) 메모리 침범 상황 복구 알고리즘</h1>
-                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.9.1 임무 컴퓨터 측 중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 및 ROS2 프로세스 교착 상태(Deadlock) / 세그멘테이션 결함(Segmentation Fault) 메모리 침범 상황 복구 알고리즘</span></nav>
+                    <h1>63.9.1. 임무 컴퓨터 측 중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 및 ROS2 프로세스 교착 상태(Deadlock) / 세그멘테이션 결함(Segmentation Fault) 메모리 침범 상황 복구 알고리즘</h1>
+                    <nav class="breadcrumbs"><a href="../../index.html">Home</a> / <a href="../index.html">최신 PX4-Autopilot</a> / <a href="index.html">Chapter 63. ROS2 Offboard 모드 제어 원리 및 실습</a> / <span>63.9.1. 임무 컴퓨터 측 중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 및 ROS2 프로세스 교착 상태(Deadlock) / 세그멘테이션 결함(Segmentation Fault) 메모리 침범 상황 복구 알고리즘</span></nav>
                 </div>
             </header>
             <article>
-                <h1>63.9.1 임무 컴퓨터 측 중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 및 ROS2 프로세스 교착 상태(Deadlock) / 세그멘테이션 결함(Segmentation Fault) 메모리 침범 상황 복구 알고리즘</h1>
+                <h1>63.9.1. 임무 컴퓨터 측 중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 및 ROS2 프로세스 교착 상태(Deadlock) / 세그멘테이션 결함(Segmentation Fault) 메모리 침범 상황 복구 알고리즘</h1>
+<p>고신뢰성 무인항공기 자율 비행 시스템을 구현함에 있어, 비행 제어기(PX4-Autopilot)와 통신하며 주도적인 명령을 내리는 보조 임무 컴퓨터(Mission Computer, 예: Raspberry Pi, Nvidia Jetson 시리즈 등)의 소프트웨어 안정성은 매우 중요하다. 임무 컴퓨터 내부에서 구동되는 ROS2 기반의 오프보드(Offboard) 제어 노드는 실시간(Real-time) 센서 데이터를 융합하고, 최적의 궤적(Trajectory)을 산출하여 uXRCE-DDS 미들웨어 브리지를 통해 PX4로 명령을 하달한다. 이 과정에서 범용 컴퓨팅 운영체제(Linux) 환경 고유의 취약점인 스케줄링 병목, 스레드 동기화 실패, 혹은 메모리 침범 오류가 발생할 경우 기체의 치명적인 추락이나 오작동으로 직결될 수 있다.</p>
+<p>본 절에서는 ROS2 오프보드 제어 아키텍처 환경에서 발생할 수 있는 주요 소프트웨어 결함(중앙 처리 장치 스레드 기아 상태, 프로세스 교착 상태, 세그멘테이션 결함)에 대한 모니터링 및 복구(Recovery) 알고리즘 설계와 더불어, 물리적인 장애 발생 시 PX4 내부 안전 장치(Failsafe)의 연동 로직에 관해 심도 있게 다룬다(참고: 기재된 내용은 주로 PX4 v1.14 펌웨어 및 ROS2 Humble 버전을 기준으로 서술되었다).</p>
+<h2>1.  중앙 처리 장치(CPU) 연산 스레드 기아 상태(Thread Starvation) 감지 메커니즘</h2>
+<p>스레드 기아 상태(Thread Starvation)는 운영체제의 스케줄러에 의해 특정 스레드가 충분한 CPU 자원(Time Slice)을 할당받지 못하여 우선순위 역전(Priority Inversion) 현상을 겪거나, 지연 시간(Latency)이 과도하게 길어지는 컴퓨팅 병목 현상이다. 실시간 궤적 제어기 노드에서 이러한 현상이 발생하면 오프보드 제어 주기가 지연되어 비행 동역학의 안전 마진을 벗어나는 위치 오차가 누적된다.</p>
+<h3>1.1  시간 기반 스레드 지연 감시자(Watchdog Timer) 설계</h3>
+<p>스레드 기아 상태를 능동적으로 파악하기 위해서는 제어 루프 내부의 상태 간 지연 시간을 정교하게 측정하는 로직이 동반되어야 한다. ROS2 노드의 메인 제어 콜백 스케줄 내부에 지연 감지 변수를 삽입하여 기준 시간(Threshold)을 초과한 이탈을 탐지한다.</p>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;chrono&gt;
+
+class ThreadStarvationMonitor : public rclcpp::Node
+{
+public:
+    ThreadStarvationMonitor() : Node("thread_starvation_monitor")
+    {
+        // 제어 루프 주기 50Hz (20ms) 기준 설정
+        expected_loop_period_ = std::chrono::milliseconds(20);
+        last_execution_time_ = this-&gt;now();
+        
+        // 20ms 주기의 고속 타이머 콜백
+        control_timer_ = this-&gt;create_wall_timer(
+            expected_loop_period_, 
+            std::bind(&amp;ThreadStarvationMonitor::control_loop_callback, this)
+        );
+    }
+
+private:
+    void control_loop_callback()
+    {
+        auto current_time = this-&gt;now();
+        auto jitter = current_time - last_execution_time_;
+        last_execution_time_ = current_time;
+
+        // 허용 딜레이 임계값을 40ms로 설정하여 이를 초과하는 지연 감지
+        if (jitter.seconds() &gt; 0.04) {
+            RCLCPP_WARN(this-&gt;get_logger(), 
+                "[경고] CPU 스레드 기아 현상 감지! 루프 지연 시간 초과: %f sec", 
+                jitter.seconds());
+            // 필요한 경우 우선순위를 재조정하거나 QoS 정책을 변경하는 비상 루틴 
+            execute_starvation_recovery_routine();
+        }
+        
+        // 주 제어 로직 (Trajectory Computation 등)
+        compute_trajectory_and_publish();
+    }
+    
+    void compute_trajectory_and_publish() { /* 제어 명령 하달 로직 */ }
+    void execute_starvation_recovery_routine() { /* 자원 해제 및 QoS 변경 로직 */ }
+
+    rclcpp::TimerBase::SharedPtr control_timer_;
+    rclcpp::Time last_execution_time_;
+    std::chrono::milliseconds expected_loop_period_;
+};
+</code></pre>
+<p>이러한 모니터링의 근본적인 대책으로, ROS2 실행 환경에서 Linux의 <code>PREEMPT_RT</code> 패치가 적용된 커널을 활용하여 실시간 스케줄링 우선순위 패러다임(<code>SCHED_FIFO</code> 또는 <code>SCHED_RR</code>)을 적용하는 것이 권장된다.</p>
+<h2>2.  ROS2 프로세스 교착 상태(Deadlock) 현상 분석 및 회피</h2>
+<p>ROS2 시스템에서 다중 스레드 실행자(Multi-Threaded Executor) 또는 상호 배제 잠금(Mutex) 체계를 사용할 떄, 서로 다른 스레드가 자원 점유를 무한정 대기하는 상황인 교착 상태(Deadlock)에 직면할 수 있다. 예를 들어, 센서 콜백 병렬 스레드와 제어 연산 메인 스레드가 공용 자원을 획득하는 과정에서 타이밍 이슈로 인해 데드락이 형성될 수 있다.</p>
+<h3>2.1  외부 헬스 모니터링 데몬(External Health Monitoring Daemon) 연동</h3>
+<p>노드 자체에서 락이 걸린 경우 자신의 상태를 복구할 수 없으므로, 프로세스의 생존 주기와 상태를 감시하는 외부 데몬 아키텍처가 필수적이다. 이를 위해 <code>Systemd</code> Watchdog이나 분리된 프로세스를 통해 ‘Ping-Pong’ 방식의 활성화 상태 점검(Liveness Check) 메커니즘을 작동시킨다.</p>
+<pre><code class="language-mermaid">sequenceDiagram
+    participant PX4 as PX4-Autopilot
+    participant Node as ROS2 제어 노드 (Offboard Node)
+    participant Monitor as 헬스 모니터링 데몬 (Systemd/Daemon)
+
+    Node-&gt;&gt;Monitor: 하트비트 시그널 전송 (Ping, e.g. sd_notify)
+    loop 주기적 감시 (100ms 간격)
+        Monitor-&gt;&gt;Monitor: 하트비트 유효성 확인
+    end
+    Note over Node,Monitor: 제어 노드의 자원 경쟁으로 교착 상태(Deadlock) 발생
+    Node--xMonitor: 더 이상 하트비트 전송 불가
+    Monitor-&gt;&gt;Monitor: 타임아웃 초과 판단 (e.g. 500ms 경과)
+    Monitor-&gt;&gt;Node: SIGKILL 시그널 발송 (강제 종료)
+    Monitor-&gt;&gt;Node: 프로세스 재시작 (Restart) 명령 인가
+    Node-&gt;&gt;PX4: 오프보드 제어 갱신 재개
+</code></pre>
+<p>해당 방식을 적용할 경우 교착 상태 발생 이후 즉각적인 ROS2 노드 강제 종료가 이루어지며, 이를 감지한 백업 메커니즘이 프로세스를 즉각 재생성(Respawn)시킨다.</p>
+<h2>3.  세그멘테이션 결함(Segmentation Fault) 분리 및 메모리 침범 관리</h2>
+<p>포인터 오류 접근, 힙 버퍼 오버플로우 등으로 야기되는 세그멘테이션 결함(<code>SIGSEGV</code>) 발생 시 운영체제의 커널은 응용 프로세스를 즉결 처형시킨다. 메모리 누수와 침범이 이미 발생한 상태에서의 C++ 예외 처리 루틴은 시스템의 행동을 예측 불가능하게 만드므로, 결함 발생 시점에서의 어설픈 자가 복구 루틴 실행보다는 “빠르게 실패하고 재시작(Fail-Fast &amp; Restart)” 하는 디자인 패턴을 채택한다.</p>
+<ul>
+<li>시스템 서비스 등록(Systemd 기반): 임무 컴퓨터가 Ubuntu 기반 환경일 때, ROS2 제어 노드를 <code>systemd</code> 데몬 서비스로 포장하여 세그멘테이션 결함 종료 시 즉각적인 재시작을 강제한다.
+<pre><code class="language-ini">[Service]
+ExecStart=/opt/ros/humble/bin/ros2 run offboard_control offboard_main
+Restart=on-failure
+RestartSec=1
+LimitCORE=infinity
+</code></pre>
+</li>
+</ul>
+<pre><code>- 코어 덤프(Core Dump) 추적: 시스템 충돌 사후 분석을 위해 커널 로그와 코어 덤프를 파일로 저장하도록 구성하여 결함이 발생한 메모리 주소를 `gdb`(GNU Debugger)를 통해 오프라인 트러블슈팅(Off-line Troubleshooting)에 활용한다.
+
+## 4.  PX4-Autopilot 측 비상 복구 통신 연동 (COM_OBL 파라미터 제어)
+
+
+위에서 서술된 일련의 결함(기아 상태, 교착 상태, 강제 종료 후 재시작 기간)으로 인해 ROS2 노드가 임시적으로 제어 명령(`TrajectorySetpoint` 또는 `VehicleCommand` 메시지)의 발행을 멈출 경우, PX4 펌웨어는 자체적인 "Offboard 제어 시간 초과(Timeout)" 이벤트를 감지하게 된다.
+
+PX4의 커맨더 모듈(Commander Module)은 `COM_OF_LOSS_T`(Offboard 상실 타임아웃, 기본 초단위 설정) 파라미터를 감시한다. 궤적 설정값(Setpoint)이 일정 시간 수신되지 않으면 PX4는 오프보드 연동 상실(Data Link Loss)로 진단하고 시스템의 파라미터인 `COM_OBL_ACT` (오프보드 상실 시 제어 동작) 의 설정에 따라 지체 없이 상태 머신을 자가 전환한다.
+
+- `COM_OBL_ACT` 파라미터 설정값과 반응 체계
+- `0`: Return mode (RTL) - 미리 설정된 이륙 지점이나 귀환 경로로 고도 상승 후 회귀(권장 및 디폴트).
+- `1`: Land mode - 현재 위치에서 수직 방향으로 즉시 착륙 시퀀스 수행.
+- `2`: Hold mode - 현재 위치와 고도 기하학적 좌표계를 유지한 채 제자리 체공(Hovering) 수행. 임무 컴퓨터와의 재접속 대기에 유리하다.
+
+이러한 유한 상태 전이 논리를 통해 결함 감지와 프로세스 재시작 시간 단면(Time Slot) 동안 PX4가 제자리 체공 또는 회귀 모드로 단독 비행 제어를 인계하여 하드웨어적 대형 손실과 생존성 단락 현상을 완벽에 가깝게 차단하는 하이브리드 장애 허용 아키텍처(Hybrid Fault Tolerant Architecture)를 정립할 수 있다.</code></pre>
 
             </article>
             <footer>

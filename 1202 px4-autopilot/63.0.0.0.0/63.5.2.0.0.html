@@ -115,6 +115,76 @@
             </header>
             <article>
                 <h1>63.5.2 기준 관성 좌표계(Inertial Frame) 변환 행렬 및 공간 기하학적 텐서 매핑 원리</h1>
+<p>로봇 공학 및 무인 항공기(UAV) 분야에서 자율 비행 알고리즘을 구현할 때, 서로 다른 시스템 간의 기준 관성 좌표계(Inertial Reference Frame)를 일치시키는 작업은 가장 핵심적이고 기초적인 단계이다. 특히 PX4-Autopilot(펌웨어 v1.14 이상)과 ROS2(Humble 등) 생태계는 기본적으로 채택하고 있는 공간 좌표계 기준이 다르기 때문에, Offboard 제어 노드(Node) 설계 시 좌표 변환(Coordinate Transformation) 및 텐서 매핑(Tensor Mapping)을 명확히 이해하고 적용해야 한다.</p>
+<h2>1.  프레임 변환의 필요성: NED와 ENU 좌표계</h2>
+<p>항공우주 분야에서는 관행적으로 <strong>NED(North-East-Down)</strong> 우수 좌표계(Right-handed Coordinate System)를 사용한다. 반면, ROS2와 같은 일반적인 모바일 로보틱스 환경에서는 <strong>ENU(East-North-Up)</strong> 우수 좌표계를 표준으로 채택하고 있다.</p>
+<ul>
+<li><strong>NED 프레임 (PX4 네이티브):</strong> 기체 전면부(Heading) 방향이 North(<span class="math math-inline">+X</span>), 우측 날개 방향이 East(<span class="math math-inline">+Y</span>), 중력 방향이 Down(<span class="math math-inline">+Z</span>)을 향한다.</li>
+<li><strong>ENU 프레임 (ROS2 네이티브):</strong> 우측 방향이 East(<span class="math math-inline">+X</span>), 전면부 방향이 North(<span class="math math-inline">+Y</span>), 중력 반대 방향이 Up(<span class="math math-inline">+Z</span>)을 향한다.</li>
+</ul>
+<p>Offboard 모드에서 ROS2의 <code>TrajectorySetpoint</code> 메시지를 통해 위치(Position)나 선속도(Linear Velocity) 제어 명령을 PX4로 퍼블리시(Publish)할 때, 데이터는 PX4의 네이티브 프레임인 NED 기준으로 전달되어야 한다. 따라서 ROS2의 ENU 기반 알고리즘 출력값을 NED로 역변환하는 공간 기하학적 텐서 매핑이 필요하다.</p>
+<pre><code class="language-mermaid">graph LR
+    subgraph ROS2_ENU_Frame ["ROS2 ENU Frame (로보틱스 표준)"]
+        direction TB
+        X_ENU["X축: East (동)"]
+        Y_ENU["Y축: North (북)"]
+        Z_ENU["Z축: Up (상)"]
+    end
+    
+    subgraph PX4_NED_Frame ["PX4 NED Frame (항공우주 표준)"]
+        direction TB
+        X_NED["X축: North (북)"]
+        Y_NED["Y축: East (동)"]
+        Z_NED["Z축: Down (하)"]
+    end
+    
+    X_ENU -- "매핑" --&gt; Y_NED
+    Y_ENU -- "매핑" --&gt; X_NED
+    Z_ENU -- "부호 반전 및 매핑" --&gt; Z_NED
+</code></pre>
+<h2>2.  방향 코사인 행렬(Direction Cosine Matrix, DCM) 및 회전 변환</h2>
+<p>두 3차원 유클리드 공간(Euclidean Space) 삼각 기준계(Orthogonal Triad) 간의 관계는 방향 코사인 행렬(DCM, Direction Cosine Matrix)로 정의할 수 있다. ENU 좌표계 벡터 <span class="math math-inline">\mathbf{v}_{ENU} = [x_{ENU}, y_{ENU}, z_{ENU}]^T</span>를 NED 좌표계 벡터 <span class="math math-inline">\mathbf{v}_{NED} = [x_{NED}, y_{NED}, z_{NED}]^T</span>로 변환하는 선형 변환 행렬 <span class="math math-inline">R_{ENU}^{NED}</span>는 다음과 같이 구면 기하학과 특수 직교군(Special Orthogonal Group, <span class="math math-inline">SO(3)</span>)에 기반하여 도출된다.</p>
+<p>이 변환은 <span class="math math-inline">Z</span>축을 기준으로 90도(+<span class="math math-inline">\pi/2</span>) 회전한 뒤, <span class="math math-inline">X</span>축을 기준으로 180도(+<span class="math math-inline">\pi</span>) 회전하는 복합 회전으로 해석할 수 있다.</p>
+<p><span class="math math-display">
+\mathbf{v}_{NED} = R_{ENU}^{NED} \cdot \mathbf{v}_{ENU}
+</span></p>
+<p>여기서 변환 행렬 <span class="math math-inline">R_{ENU}^{NED}</span>는 다음과 같다.</p>
+<p><span class="math math-display">
+R_{ENU}^{NED} = \begin{bmatrix}
+0 &amp; 1 &amp; 0 \\
+1 &amp; 0 &amp; 0 \\
+0 &amp; 0 &amp; -1 
+\end{bmatrix}
+</span></p>
+<p>따라서 위치 벡터 및 선속도 벡터 매핑 규칙은 아래와 같다.</p>
+<ul>
+<li><span class="math math-inline">x_{NED} = y_{ENU}</span></li>
+<li><span class="math math-inline">y_{NED} = x_{ENU}</span></li>
+<li><span class="math math-inline">z_{NED} = -z_{ENU}</span></li>
+</ul>
+<h2>3.  오일러 각(Euler Angles) 및 쿼터니언(Quaternion) 텐서 매핑 원리</h2>
+<p>기체의 위치(Position)뿐만 아니라 기준 관성 좌표계에 대한 기체의 3차원 회전 상태인 자세(Attitude)를 표현할 때, 오일러 각(Roll, Pitch, Yaw) 또는 쿼터니언을 주로 사용한다. 짐벌락(Gimbal Lock) 현상을 회피하기 위해 현대의 비행 제어기 및 ROS2 tf2 라이브러리에서는 <strong>해밀턴 쿼터니언(Hamilton Quaternion)</strong> 공간을 주로 사용한다. MAVLink 및 PX4 내부 아키텍처는 해밀턴 쿼터니언 <span class="math math-inline">\mathbf{q} = [q_w, q_x, q_y, q_z]^T</span>를 사용한다.</p>
+<p>ENU 기준의 회전 상태인 <span class="math math-inline">\mathbf{q}_{ENU}</span>를 NED 기준의 회전 텐서인 <span class="math math-inline">\mathbf{q}_{NED}</span>로 변환하기 위해서는 다음과 같은 대수적(Algebraic) 매핑이 필요하다.</p>
+<p><span class="math math-display">
+q_{NED\_w} = q_{ENU\_w} \\
+q_{NED\_x} = q_{ENU\_y} \\
+q_{NED\_y} = q_{ENU\_x} \\
+q_{NED\_z} = -q_{ENU\_z}
+</span></p>
+<h3>3.1  변환 로직 구현 시 주의점</h3>
+<p>ROS2 C++ 노드(C++14/C++17) 환경에서 <code>px4_msgs</code>의 메시지를 생성할 때는, <code>px4_ros2_cpp</code> 브릿지 라이브러리를 활용하거나 자체적인 정적 함수 변환기를 구성해야 한다.</p>
+<p><strong>예시 코드 (C++ 기준):</strong></p>
+<pre><code class="language-cpp">// ROS2 ENU Position to PX4 NED Position
+px4_msgs::msg::TrajectorySetpoint msg;
+msg.position[0] = position_enu.y;  // North = Y_enu
+msg.position[1] = position_enu.x;  // East = X_enu
+msg.position[2] = -position_enu.z; // Down = -Z_enu
+</code></pre>
+<h2>4.  QGroundControl (QGC) 관점에서의 좌표계 해석</h2>
+<p>QGroundControl(버전 4.3.0 이상)에서 사용자의 클릭(명령)이나 지도 상의 좌표(WGS84 글로벌 측지 좌표계)는 내부적으로 로컬 투영(Local Projection) 알고리즘을 통해 NED 프레임 기준의 원점(Local Origin) 상쇄 벡터로 변환된다.</p>
+<p>따라서 사용자가 GCS(Ground Control Station) 상에서 지정한 Waypoint나 ROS2 Offboard를 통해 입력된 목표 공간 벡터(Target Spatial Vector)들은 기체 내의 Estimator(ECL/EKF2) 융합 엔진에 의해 단일한 NED 로컬 원점(Local Origin, EKF origin)을 기준으로 정합(Registration)되며, 이를 바탕으로 안정적인 궤적 추종 제어가 수행된다.</p>
+<h2>5. 결론</h2>
+<p>성공적인 ROS2 Offboard 제어 노드를 설계하기 위해서는 <span class="math math-inline">SO(3)</span> 특수 직교군을 활용한 좌표계 변환 행렬을 정확하게 소프트웨어로 구현해야 하며, 위치 공간 기하학적 텐서(예: 위치, 속도) 및 회전 기하학적 텐서(예: 자세 쿼터니언, 각속도)에 변환(Linear Transformation/Mapping) 원리를 적절히 적용해야 한다.</p>
 
             </article>
             <footer>
