@@ -115,6 +115,183 @@
             </header>
             <article>
                 <h1>396.40 임무 관리자와 경로 계획기의 인터페이스</h1>
+<h2>1. 개요</h2>
+<p>임무 관리자(Mission Manager)와 경로 계획기(Path Planner)는 자율 로봇 시스템에서 서로 다른 추상화 수준의 기능을 담당하면서도 긴밀하게 연동되어야 하는 핵심 모듈이다. 임무 관리자는 “무엇을 할 것인가(What)“를 결정하고, 경로 계획기는 “어떻게 이동할 것인가(How)“를 해결한다. 이 두 모듈 사이의 인터페이스 설계는 시스템의 전체적인 임무 수행 성능, 반응성, 확장성에 직접적인 영향을 미친다.</p>
+<h2>2. 임무 관리자와 경로 계획기의 기능적 역할</h2>
+<h3>2.1 임무 관리자의 역할</h3>
+<p>임무 관리자는 주어진 임무를 과업(Task) 단위로 분해하고, 각 과업의 실행 순서를 결정하며, 실행 상태를 모니터링한다. 과업 중 상당수는 로봇의 공간적 이동을 수반하며, 이 경우 임무 관리자는 경로 계획기에 이동 요청을 발행한다.</p>
+<p>임무 관리자가 경로 계획기에 전달하는 정보를 형식적으로 표현하면 다음과 같다.</p>
+<p><span class="math math-display">
+\text{NavigationRequest} = (g, C, P, \text{pri})
+</span></p>
+<p>여기서 <span class="math math-inline">g \in \mathbb{R}^n</span>은 목표 위치(Goal Position), <span class="math math-inline">C</span>는 제약 조건(Constraints) 집합, <span class="math math-inline">P</span>는 선호 사항(Preferences), <span class="math math-inline">\text{pri}</span>는 우선순위(Priority)를 나타낸다.</p>
+<h3>2.2 경로 계획기의 역할</h3>
+<p>경로 계획기는 현재 위치 <span class="math math-inline">q_{\text{start}}</span>에서 목표 위치 <span class="math math-inline">q_{\text{goal}}</span>까지의 충돌 회피 경로(Collision-Free Path) <span class="math math-inline">\tau</span>를 생성한다. 경로 계획기는 환경 지도(Map), 장애물 정보, 로봇의 기구학적 제약 조건 등을 종합하여 최적 또는 준최적(Near-Optimal) 경로를 산출한다.</p>
+<p><span class="math math-display">
+\tau : [0, 1] \rightarrow \mathcal{C}_{\text{free}}, \quad \tau(0) = q_{\text{start}}, \quad \tau(1) = q_{\text{goal}}
+</span></p>
+<p>여기서 <span class="math math-inline">\mathcal{C}_{\text{free}}</span>는 형상 공간(Configuration Space)에서 충돌이 발생하지 않는 자유 공간(Free Space)이다.</p>
+<h2>3. 인터페이스 설계 패턴</h2>
+<h3>3.1 요청-응답(Request-Response) 패턴</h3>
+<p>가장 기본적인 인터페이스 패턴은 요청-응답 방식이다. 임무 관리자가 네비게이션 요청을 발행하면, 경로 계획기는 경로를 계산하여 결과를 반환한다.</p>
+<p><span class="math math-display">
+\text{MM} \xrightarrow{\text{PlanPath}(q_{\text{start}}, q_{\text{goal}}, C)} \text{PP}
+</span></p>
+<p><span class="math math-display">
+\text{PP} \xrightarrow{\text{PathResult}(\tau, \text{cost}, \text{status})} \text{MM}
+</span></p>
+<p>이 패턴의 장점은 구현의 단순성이다. 그러나 경로 계획에 소요되는 시간이 길어질 경우 임무 관리자가 블로킹(Blocking) 상태에 빠질 수 있으므로, 비동기적 구현이 요구된다.</p>
+<h3>3.2 비동기 액션(Asynchronous Action) 패턴</h3>
+<p>ROS2 환경에서 임무 관리자와 경로 계획기의 인터페이스는 액션(Action) 프로토콜을 통해 구현되는 것이 일반적이다. 액션 프로토콜은 목표 전송(Goal), 진행 피드백(Feedback), 결과 반환(Result)의 3단계로 구성된다.</p>
+<pre><code>임무 관리자                          경로 계획기
+    │                                    │
+    │──── Goal: NavigateToPose ──────→   │
+    │                                    │
+    │←──── Feedback: progress(30%) ─────│
+    │←──── Feedback: progress(70%) ─────│
+    │                                    │
+    │←──── Result: success/failure ──────│
+</code></pre>
+<p>이 패턴은 다음의 이점을 제공한다.</p>
+<ol>
+<li><strong>비블로킹 실행</strong>: 임무 관리자는 경로 실행 중에도 다른 과업을 관리할 수 있다.</li>
+<li><strong>진행 상황 모니터링</strong>: 피드백 메시지를 통해 실시간으로 이동 진행 상황을 파악한다.</li>
+<li><strong>취소 가능성</strong>: 임무 관리자는 실행 중인 네비게이션 목표를 취소(Cancel)하고 새로운 목표를 부여할 수 있다.</li>
+</ol>
+<h3>3.3 이벤트 기반(Event-Driven) 패턴</h3>
+<p>이벤트 기반 패턴에서는 경로 계획기가 특정 이벤트(목표 도달, 경로 이탈, 장애물 감지 등)를 발생시키고, 임무 관리자가 이 이벤트에 대한 핸들러를 등록하여 반응한다.</p>
+<p><span class="math math-display">
+\text{Event} \in \{\text{GOAL\_REACHED}, \text{PATH\_BLOCKED}, \text{REPLANNING}, \text{TIMEOUT}, \text{ABORTED}\}
+</span></p>
+<p><span class="math math-display">
+\text{MM.onEvent}(e) = \begin{cases} \text{next\_task}() &amp; \text{if } e = \text{GOAL\_REACHED} \\ \text{replan\_mission}() &amp; \text{if } e = \text{PATH\_BLOCKED} \\ \text{wait}() &amp; \text{if } e = \text{REPLANNING} \\ \text{abort\_mission}() &amp; \text{if } e = \text{TIMEOUT} \end{cases}
+</span></p>
+<h2>4. 인터페이스 데이터 모델</h2>
+<h3>4.1 목표 명세 형식</h3>
+<p>임무 관리자가 경로 계획기에 전달하는 목표 명세(Goal Specification)는 다양한 수준의 추상화를 지원하여야 한다.</p>
+<p><strong>위치 기반 목표(Position-Based Goal)</strong>: 구체적인 좌표를 지정한다.</p>
+<p><span class="math math-display">
+g_{\text{position}} = (x, y, z, \theta) \in \text{SE}(3)
+</span></p>
+<p><strong>영역 기반 목표(Region-Based Goal)</strong>: 목표 영역을 지정하고, 경로 계획기가 영역 내 최적 위치를 선택한다.</p>
+<p><span class="math math-display">
+g_{\text{region}} = \{q \in \mathcal{C} \mid \|q - q_c\| \leq r\}
+</span></p>
+<p>여기서 <span class="math math-inline">q_c</span>는 영역의 중심, <span class="math math-inline">r</span>는 반경이다.</p>
+<p><strong>의미론적 목표(Semantic Goal)</strong>: 위치 대신 의미론적 레이블을 사용한다.</p>
+<p><span class="math math-display">
+g_{\text{semantic}} = \text{&quot;충전소&quot;}, \quad \text{&quot;회의실 A&quot;}, \quad \text{&quot;출입구&quot;}
+</span></p>
+<p>의미론적 목표는 시맨틱 맵(Semantic Map)이나 지식 그래프(Knowledge Graph)를 통해 구체적 좌표로 변환된다(Kostavelis &amp; Gasteratos, 2015).</p>
+<h3>4.2 제약 조건 전달</h3>
+<p>임무 관리자는 경로 계획기에 다양한 제약 조건을 전달한다.</p>
+<p><strong>시간 제약(Temporal Constraint)</strong>:</p>
+<p><span class="math math-display">
+t_{\text{arrival}} \leq t_{\text{deadline}}
+</span></p>
+<p><strong>에너지 제약(Energy Constraint)</strong>:</p>
+<p><span class="math math-display">
+E(\tau) = \int_0^1 P(\tau(s), \dot{\tau}(s)) \, ds \leq E_{\text{max}}
+</span></p>
+<p>여기서 <span class="math math-inline">P</span>는 소비 전력 함수, <span class="math math-inline">E_{\text{max}}</span>는 가용 에너지이다.</p>
+<p><strong>안전 여유(Safety Margin)</strong>:</p>
+<p><span class="math math-display">
+d_{\text{obs}}(\tau(s)) \geq d_{\text{min}}, \quad \forall s \in [0, 1]
+</span></p>
+<p>여기서 <span class="math math-inline">d_{\text{obs}}</span>는 장애물까지의 최소 거리, <span class="math math-inline">d_{\text{min}}</span>은 안전 거리 임계값이다.</p>
+<p><strong>속도 제한(Velocity Constraint)</strong>:</p>
+<p><span class="math math-display">
+\|\dot{\tau}(s)\| \leq v_{\text{max}}, \quad \forall s \in [0, 1]
+</span></p>
+<h3>4.3 피드백 데이터 형식</h3>
+<p>경로 계획기가 임무 관리자에 제공하는 피드백에는 다음의 정보가 포함된다.</p>
+<table><thead><tr><th>필드</th><th>타입</th><th>설명</th></tr></thead><tbody>
+<tr><td>current_pose</td><td>SE(3)</td><td>현재 로봇 위치 및 자세</td></tr>
+<tr><td>distance_remaining</td><td><span class="math math-inline">\mathbb{R}^+</span></td><td>목표까지 남은 거리</td></tr>
+<tr><td>estimated_time_remaining</td><td><span class="math math-inline">\mathbb{R}^+</span></td><td>예상 잔여 시간</td></tr>
+<tr><td>number_of_recoveries</td><td><span class="math math-inline">\mathbb{N}</span></td><td>복구 행동 발생 횟수</td></tr>
+<tr><td>navigation_status</td><td>enum</td><td>현재 네비게이션 상태</td></tr>
+</tbody></table>
+<h2>5. 상태 천이 모델</h2>
+<p>임무 관리자의 관점에서 네비게이션 과업의 상태는 다음과 같은 유한 상태 머신으로 모델링된다.</p>
+<p><span class="math math-display">
+\text{States} = \{\text{IDLE}, \text{PLANNING}, \text{EXECUTING}, \text{RECOVERING}, \text{SUCCEEDED}, \text{FAILED}, \text{CANCELED}\}
+</span></p>
+<p>상태 천이 규칙은 다음과 같다.</p>
+<p><span class="math math-display">
+\begin{aligned}
+\text{IDLE} &amp;\xrightarrow{\text{goal\_received}} \text{PLANNING} \\
+\text{PLANNING} &amp;\xrightarrow{\text{path\_found}} \text{EXECUTING} \\
+\text{PLANNING} &amp;\xrightarrow{\text{no\_path}} \text{FAILED} \\
+\text{EXECUTING} &amp;\xrightarrow{\text{goal\_reached}} \text{SUCCEEDED} \\
+\text{EXECUTING} &amp;\xrightarrow{\text{obstacle\_detected}} \text{RECOVERING} \\
+\text{EXECUTING} &amp;\xrightarrow{\text{cancel\_request}} \text{CANCELED} \\
+\text{RECOVERING} &amp;\xrightarrow{\text{recovery\_success}} \text{EXECUTING} \\
+\text{RECOVERING} &amp;\xrightarrow{\text{recovery\_failure}} \text{FAILED}
+\end{aligned}
+</span></p>
+<p>임무 관리자는 각 상태 천이에 대응하는 콜백(Callback)을 등록하여, 네비게이션 상태의 변화에 따라 임무 수준의 의사 결정을 수행한다.</p>
+<h2>6. 다중 경로 계획기와의 인터페이스</h2>
+<h3>6.1 계획기 선택 메커니즘</h3>
+<p>복잡한 로봇 시스템에서는 환경 조건이나 임무 특성에 따라 서로 다른 경로 계획 알고리즘을 선택적으로 사용할 수 있다. 임무 관리자는 계획기 선택 정책(Planner Selection Policy)을 통해 적절한 경로 계획기를 활성화한다.</p>
+<p><span class="math math-display">
+\text{SelectPlanner}(s, g, C) = \arg\max_{p \in \mathcal{P}} \text{Score}(p, s, g, C)
+</span></p>
+<p>여기서 <span class="math math-inline">\mathcal{P}</span>는 사용 가능한 계획기의 집합, <span class="math math-inline">\text{Score}</span>는 현재 상황에서 각 계획기의 적합도를 평가하는 함수이다.</p>
+<p>예를 들어, 구조화된 실내 환경에서는 A* 기반의 격자 탐색 계획기가 적합하고, 복잡한 형상 공간에서는 RRT*(Rapidly-exploring Random Tree Star) 기반의 샘플링 계획기가 효과적이다(Karaman &amp; Frazzoli, 2011).</p>
+<h3>6.2 전역-국소 계획기 계층</h3>
+<p>Nav2(Navigation2)와 같은 실용 시스템에서는 전역 계획기(Global Planner)와 국소 계획기(Local Planner, Controller)가 계층적으로 구성된다(Macenski et al., 2020).</p>
+<p><span class="math math-display">
+\text{MM} \xrightarrow{g} \text{GlobalPlanner} \xrightarrow{\tau_{\text{global}}} \text{LocalPlanner} \xrightarrow{\mathbf{u}} \text{Robot}
+</span></p>
+<p>임무 관리자는 전역 계획기와 직접 인터페이스하며, 국소 계획기와의 상호작용은 전역 계획기를 통해 간접적으로 이루어진다. 그러나 국소 계획기의 실패(예: 국소 최소점에 갇히는 경우)는 임무 관리자에 에스컬레이션(Escalation)되어 대응 전략이 결정된다.</p>
+<h2>7. 오류 처리와 복구 인터페이스</h2>
+<h3>7.1 경로 실패 유형 분류</h3>
+<p>경로 계획기에서 발생할 수 있는 실패는 다음과 같이 분류된다.</p>
+<table><thead><tr><th>실패 유형</th><th>원인</th><th>임무 관리자 대응</th></tr></thead><tbody>
+<tr><td>경로 미발견</td><td>목표 도달 불가능</td><td>대안 목표 탐색 또는 임무 중단</td></tr>
+<tr><td>경로 이탈</td><td>동적 장애물 출현</td><td>재계획 요청</td></tr>
+<tr><td>시간 초과</td><td>계획 연산 시간 초과</td><td>계획기 재시작 또는 대체 계획기 사용</td></tr>
+<tr><td>복구 실패</td><td>복구 행동 반복 초과</td><td>임무 재계획 또는 운용자 개입 요청</td></tr>
+</tbody></table>
+<h3>7.2 복구 프로토콜 정의</h3>
+<p>임무 관리자와 경로 계획기 사이의 복구 프로토콜은 다음과 같이 정의된다.</p>
+<p><span class="math math-display">
+\text{RecoveryProtocol}(f, n) = \begin{cases} \text{retry}(n+1) &amp; \text{if } n &lt; n_{\text{max}} \\ \text{alternate\_goal}() &amp; \text{if } n = n_{\text{max}} \wedge \exists g&#39; \\ \text{escalate\_to\_operator}() &amp; \text{otherwise} \end{cases}
+</span></p>
+<p>여기서 <span class="math math-inline">f</span>는 실패 유형, <span class="math math-inline">n</span>은 현재까지의 재시도 횟수, <span class="math math-inline">n_{\text{max}}</span>는 최대 재시도 횟수, <span class="math math-inline">g&#39;</span>는 대안 목표이다.</p>
+<h2>8. 경로 비용 정보의 상향 전달</h2>
+<h3>8.1 비용 추정과 임무 최적화</h3>
+<p>경로 계획기는 경로의 비용(거리, 시간, 에너지 등)을 임무 관리자에 전달한다. 임무 관리자는 이 비용 정보를 활용하여 과업의 실행 순서를 최적화하거나, 임무의 실행 가능성을 평가한다.</p>
+<p><span class="math math-display">
+J(\tau) = \int_0^1 L(\tau(s), \dot{\tau}(s)) \, ds
+</span></p>
+<p>여기서 <span class="math math-inline">L</span>은 경로 비용 함수(라그랑지안)이다.</p>
+<p>예를 들어, 순찰 임무에서 복수의 지점을 방문하여야 하는 경우, 임무 관리자는 각 지점 간의 경로 비용을 경로 계획기로부터 수집하여 외판원 문제(Traveling Salesman Problem, TSP)의 비용 행렬을 구성한다.</p>
+<p><span class="math math-display">
+C_{ij} = J(\tau_{i \rightarrow j}), \quad \forall (i, j) \in \mathcal{V} \times \mathcal{V}
+</span></p>
+<p>여기서 <span class="math math-inline">\mathcal{V}</span>는 방문 지점의 집합, <span class="math math-inline">\tau_{i \rightarrow j}</span>는 지점 <span class="math math-inline">i</span>에서 지점 <span class="math math-inline">j</span>까지의 경로이다.</p>
+<h2>9. 인터페이스 표준화 사례</h2>
+<h3>9.1 Nav2 NavigateToPose 인터페이스</h3>
+<p>ROS2 Nav2 스택에서 임무 관리자와 경로 계획기 사이의 인터페이스는 <code>NavigateToPose</code> 액션으로 정의된다. 이 인터페이스는 다음의 구성 요소를 포함한다.</p>
+<p><strong>Goal</strong>: <code>geometry_msgs/PoseStamped</code> (목표 위치와 자세)<br />
+<strong>Feedback</strong>: <code>geometry_msgs/PoseStamped</code> (현재 위치), <code>NavigationTime</code> (경과 시간), <code>number_of_recoveries</code> (복구 횟수)<br />
+<strong>Result</strong>: <code>std_msgs/Empty</code> (성공 시) 또는 에러 코드</p>
+<h3>9.2 move_base 인터페이스(ROS1 레거시)</h3>
+<p>ROS1의 <code>move_base</code> 패키지는 <code>MoveBaseAction</code>을 통해 유사한 인터페이스를 제공하였으며, 이는 ROS2의 Nav2 설계에 영향을 미쳤다(Marder-Eppstein et al., 2010).</p>
+<h2>10. 요약</h2>
+<p>임무 관리자와 경로 계획기의 인터페이스는 자율 로봇 시스템의 핵심적인 모듈 간 상호작용 경로이다. 이 인터페이스는 목표 명세, 제약 조건 전달, 상태 피드백, 오류 복구의 네 가지 주요 정보 흐름으로 구성된다. 비동기 액션 패턴과 이벤트 기반 패턴이 실용 시스템에서 널리 채택되며, 경로 비용 정보의 상향 전달은 임무 수준의 최적화를 가능하게 한다. 인터페이스의 표준화는 시스템의 모듈 교체 가능성과 상호 운용성을 보장하는 데 필수적이다.</p>
+<h2>11. 참고 문헌</h2>
+<ul>
+<li>Karaman, S., &amp; Frazzoli, E. (2011). “Sampling-based Algorithms for Optimal Motion Planning.” <em>The International Journal of Robotics Research</em>, 30(7), 846–894.</li>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>Proceedings of IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>, pp. 2718–2725.</li>
+<li>Marder-Eppstein, E., Berger, E., Foote, T., Gerkey, B., &amp; Konolige, K. (2010). “The Office Marathon: Robust Navigation in an Indoor Office Environment.” <em>Proceedings of IEEE International Conference on Robotics and Automation (ICRA)</em>, pp. 300–307.</li>
+<li>Kostavelis, I., &amp; Gasteratos, A. (2015). “Semantic Mapping for Mobile Robotics Tasks: A Survey.” <em>Robotics and Autonomous Systems</em>, 66, 86–103.</li>
+<li>LaValle, S. M. (2006). <em>Planning Algorithms</em>. Cambridge University Press.</li>
+</ul>
+<hr />
+<p><em>v0.1</em></p>
 
             </article>
             <footer>

@@ -115,6 +115,201 @@
             </header>
             <article>
                 <h1>396.41 임무 관리자와 행동 실행기의 인터페이스</h1>
+<h2>1. 개요</h2>
+<p>자율 로봇 시스템에서 임무 관리자(Mission Manager)와 행동 실행기(Behavior Executive)의 인터페이스는 고수준 임무 명령을 저수준 행동으로 변환하고, 행동의 실행 상태를 상위 시스템에 환류하는 핵심적 통신 경로이다. 이 인터페이스의 설계는 시스템의 반응성, 확장성, 내결함성(Fault Tolerance)에 직접적인 영향을 미친다.</p>
+<h2>2. 행동 실행기의 정의와 역할</h2>
+<h3>2.1 행동 실행기의 개념</h3>
+<p>행동 실행기(Behavior Executive)는 임무 관리자로부터 수신한 과업(Task)을 구체적인 행동(Behavior) 단위로 분해하고, 각 행동의 활성화, 비활성화, 전환, 합성 등을 제어하는 모듈이다. 행동 실행기는 상태 머신(Finite State Machine), 행동 트리(Behavior Tree), 절차적 추론 시스템(Procedural Reasoning System) 등의 실행 모델에 기반하여 구현된다.</p>
+<p>행동 실행기의 기능을 형식적으로 표현하면 다음과 같다.</p>
+<p><span class="math math-display">
+\text{BehaviorExecutive} : \mathcal{T} \times \mathcal{S} \rightarrow \mathcal{B}^*
+</span></p>
+<p>여기서 <span class="math math-inline">\mathcal{T}</span>는 과업 공간, <span class="math math-inline">\mathcal{S}</span>는 시스템 상태 공간, <span class="math math-inline">\mathcal{B}^*</span>는 행동 시퀀스 공간이다.</p>
+<h3>2.2 행동의 실행 인터페이스</h3>
+<p>개별 행동 <span class="math math-inline">b \in \mathcal{B}</span>는 다음의 표준 인터페이스를 통해 제어된다.</p>
+<p><span class="math math-display">
+b.\text{configure}(\text{params}) \rightarrow \text{Status}
+</span><br />
+<span class="math math-display">
+b.\text{activate}() \rightarrow \text{Status}
+</span><br />
+<span class="math math-display">
+b.\text{execute}() \rightarrow \text{Result} \in \{\text{RUNNING}, \text{SUCCESS}, \text{FAILURE}\}
+</span><br />
+<span class="math math-display">
+b.\text{deactivate}() \rightarrow \text{Status}
+</span><br />
+<span class="math math-display">
+b.\text{cleanup}() \rightarrow \text{Status}
+</span></p>
+<p>이 생명 주기 인터페이스는 ROS2의 Lifecycle 노드 모델(Managed Node)에서 영감을 받은 것으로, 행동의 구성, 활성화, 실행, 비활성화, 정리의 5단계를 명확히 분리한다(Open Robotics, 2017).</p>
+<h2>3. 임무 관리자에서 행동 실행기로의 하향 인터페이스</h2>
+<h3>3.1 과업 전달(Task Dispatch)</h3>
+<p>임무 관리자는 분해된 과업을 행동 실행기에 전달한다. 과업 전달 메시지는 다음과 같은 구조를 갖는다.</p>
+<p><span class="math math-display">
+\text{TaskDispatch} = (\text{task\_id}, \text{task\_type}, \text{params}, \text{constraints}, \text{priority})
+</span></p>
+<ul>
+<li><span class="math math-inline">\text{task\_id}</span>: 과업의 고유 식별자</li>
+<li><span class="math math-inline">\text{task\_type}</span>: 과업의 유형 (예: NAVIGATE, INSPECT, PICK, PLACE)</li>
+<li><span class="math math-inline">\text{params}</span>: 과업 수행에 필요한 매개변수</li>
+<li><span class="math math-inline">\text{constraints}</span>: 시간, 자원, 안전 등의 제약 조건</li>
+<li><span class="math math-inline">\text{priority}</span>: 과업의 우선순위 수준</li>
+</ul>
+<h3>3.2 과업 제어 명령(Task Control Commands)</h3>
+<p>임무 관리자는 실행 중인 과업에 대해 다음의 제어 명령을 발행할 수 있다.</p>
+<table><thead><tr><th>명령</th><th>의미</th><th>행동 실행기 반응</th></tr></thead><tbody>
+<tr><td>START</td><td>과업 실행 시작</td><td>해당 행동 체인 활성화</td></tr>
+<tr><td>PAUSE</td><td>과업 일시 정지</td><td>현재 상태 보존 후 정지</td></tr>
+<tr><td>RESUME</td><td>과업 재개</td><td>보존된 상태에서 실행 재개</td></tr>
+<tr><td>CANCEL</td><td>과업 취소</td><td>행동 체인 안전 종료</td></tr>
+<tr><td>PREEMPT</td><td>과업 선점</td><td>현재 과업 중단, 새 과업 시작</td></tr>
+</tbody></table>
+<p>과업 선점(Preemption) 명령은 다음과 같이 형식화된다.</p>
+<p><span class="math math-display">
+\text{Preempt}(T_{\text{current}}, T_{\text{new}}) : \text{pri}(T_{\text{new}}) &gt; \text{pri}(T_{\text{current}})
+</span></p>
+<p>선점이 발생할 때 행동 실행기는 현재 실행 중인 행동을 안전하게 중단하고, 새로운 과업에 대응하는 행동 체인을 활성화한다. 이 과정에서 행동의 중단 안전성(Abort Safety)이 보장되어야 한다.</p>
+<h3>3.3 행동 매개변수화(Behavior Parameterization)</h3>
+<p>임무 관리자로부터 전달된 과업은 행동 실행기에서 구체적인 행동 인스턴스로 변환된다. 이 변환 과정에서 과업의 추상적 매개변수가 행동의 구체적 매개변수로 매핑된다.</p>
+<p><span class="math math-display">
+\text{BehaviorParams} = \text{Resolve}(\text{TaskParams}, \text{Context})
+</span></p>
+<p>예를 들어, “물체 A를 위치 B로 운반하라“는 과업은 다음과 같은 행동 시퀀스로 분해된다.</p>
+<p><span class="math math-display">
+T_{\text{transport}}(A, B) \rightarrow \langle b_{\text{navigate}}(A.\text{pos}), b_{\text{pick}}(A), b_{\text{navigate}}(B), b_{\text{place}}(A, B) \rangle
+</span></p>
+<h2>4. 행동 실행기에서 임무 관리자로의 상향 인터페이스</h2>
+<h3>4.1 실행 상태 보고(Execution Status Reporting)</h3>
+<p>행동 실행기는 과업의 실행 상태를 주기적으로 또는 이벤트 발생 시 임무 관리자에 보고한다.</p>
+<p><span class="math math-display">
+\text{StatusReport} = (\text{task\_id}, \text{status}, \text{progress}, \text{details}, t)
+</span></p>
+<p>여기서 <span class="math math-inline">\text{status} \in \{\text{PENDING}, \text{RUNNING}, \text{PAUSED}, \text{SUCCEEDED}, \text{FAILED}, \text{CANCELED}\}</span>이고, <span class="math math-inline">\text{progress} \in [0, 1]</span>은 과업 완료율, <span class="math math-inline">t</span>는 타임스탬프이다.</p>
+<h3>4.2 오류 보고(Error Reporting)</h3>
+<p>행동 실행 중 발생하는 오류는 구조화된 형식으로 임무 관리자에 보고된다.</p>
+<p><span class="math math-display">
+\text{ErrorReport} = (\text{task\_id}, \text{error\_code}, \text{error\_type}, \text{severity}, \text{recoverable}, \text{context})
+</span></p>
+<p>오류 유형은 다음과 같이 분류된다.</p>
+<table><thead><tr><th>오류 유형</th><th>설명</th><th>심각도</th></tr></thead><tbody>
+<tr><td>HARDWARE_FAILURE</td><td>액추에이터 또는 센서 고장</td><td>높음</td></tr>
+<tr><td>PRECONDITION_VIOLATION</td><td>행동 전제 조건 미충족</td><td>중간</td></tr>
+<tr><td>TIMEOUT</td><td>행동 실행 시간 초과</td><td>중간</td></tr>
+<tr><td>RESOURCE_UNAVAILABLE</td><td>필요 자원 부족</td><td>중간</td></tr>
+<tr><td>EXTERNAL_DISTURBANCE</td><td>외부 간섭으로 인한 실패</td><td>낮음~중간</td></tr>
+</tbody></table>
+<p><span class="math math-inline">\text{recoverable}</span> 필드는 행동 실행기 수준에서의 자체 복구 가능 여부를 나타내며, 복구 불가능한 오류는 임무 관리자에 에스컬레이션된다.</p>
+<h3>4.3 이벤트 통지(Event Notification)</h3>
+<p>행동 실행기는 사전 정의된 이벤트가 발생할 때 임무 관리자에 통지한다.</p>
+<p><span class="math math-display">
+\text{Event} = (\text{event\_type}, \text{source\_behavior}, \text{data}, t)
+</span></p>
+<p>주요 이벤트 유형은 다음과 같다.</p>
+<ul>
+<li><span class="math math-inline">\text{TASK\_COMPLETED}</span>: 과업 정상 완료</li>
+<li><span class="math math-inline">\text{TASK\_FAILED}</span>: 과업 실패</li>
+<li><span class="math math-inline">\text{PRECONDITION\_MET}</span>: 다음 과업의 선행 조건 충족</li>
+<li><span class="math math-inline">\text{ANOMALY\_DETECTED}</span>: 이상 상황 감지</li>
+<li><span class="math math-inline">\text{RESOURCE\_CRITICAL}</span>: 자원 임계 수준 도달</li>
+</ul>
+<h2>5. 통신 패턴과 구현 전략</h2>
+<h3>5.1 동기 호출과 비동기 호출</h3>
+<p>임무 관리자와 행동 실행기 사이의 통신은 동기(Synchronous) 또는 비동기(Asynchronous) 방식으로 구현된다.</p>
+<p><strong>동기 호출</strong>: 임무 관리자가 과업을 전달하고 결과가 반환될 때까지 대기한다. 구현이 단순하지만, 장시간 행동 실행 시 임무 관리자의 응답성이 저하된다.</p>
+<p><span class="math math-display">
+\text{result} = \text{BehaviorExecutive.execute\_sync}(T)
+</span></p>
+<p><strong>비동기 호출</strong>: 임무 관리자가 과업을 전달한 후 즉시 반환받고, 결과는 콜백(Callback)이나 별도의 채널을 통해 수신한다.</p>
+<p><span class="math math-display">
+\text{future} = \text{BehaviorExecutive.execute\_async}(T)
+</span></p>
+<p><span class="math math-display">
+\text{future.on\_complete}(\lambda \text{result} : \text{MM.handle\_result}(\text{result}))
+</span></p>
+<p>자율 로봇 시스템에서는 대부분의 행동 실행이 비동기적으로 이루어지므로, 비동기 패턴이 표준적인 구현 방식이다.</p>
+<h3>5.2 ROS2 기반 구현</h3>
+<p>ROS2 환경에서 임무 관리자와 행동 실행기의 인터페이스는 다음의 통신 메커니즘을 활용하여 구현된다.</p>
+<p><strong>액션(Action)</strong>: 장기 실행 행동에 대한 비동기 요청-피드백-결과 인터페이스. 과업의 시작, 진행 모니터링, 취소를 지원한다.</p>
+<p><strong>서비스(Service)</strong>: 단발성 요청-응답 인터페이스. 행동 매개변수 설정, 상태 조회 등에 사용된다.</p>
+<p><strong>토픽(Topic)</strong>: 발행-구독 기반의 단방향 메시지 스트림. 주기적 상태 보고, 이벤트 통지 등에 사용된다.</p>
+<pre><code>임무 관리자                              행동 실행기
+    │                                          │
+    ├──→ Action Goal: ExecuteTask ─────────→  │
+    │                                          │
+    │  ←── Action Feedback: progress ──────── │
+    │  ←── Topic: /behavior_events ────────── │
+    │                                          │
+    │  ←── Action Result: success/fail ─────── │
+    │                                          │
+    ├──→ Service: ConfigureBehavior ────────→  │
+    │  ←── Service Response: ok ────────────── │
+</code></pre>
+<h3>5.3 블랙보드(Blackboard) 패턴</h3>
+<p>행동 트리 기반의 행동 실행기에서는 블랙보드(Blackboard) 패턴이 널리 사용된다(Colledanchise &amp; Ögren, 2018). 블랙보드는 공유 메모리 공간으로, 임무 관리자와 행동 실행기 사이의 간접적 데이터 교환을 가능하게 한다.</p>
+<p><span class="math math-display">
+\text{Blackboard} = \{(\text{key}_i, \text{value}_i) \mid i = 1, 2, \ldots, n\}
+</span></p>
+<p>임무 관리자는 블랙보드에 과업 매개변수와 목표 상태를 기록하고, 행동 실행기는 블랙보드로부터 필요한 정보를 읽어 행동을 수행한다. 행동의 실행 결과도 블랙보드에 기록되어 임무 관리자가 참조할 수 있다.</p>
+<p><span class="math math-display">
+\text{MM} \xrightarrow{\text{write}(\text{goal\_pose}, p)} \text{Blackboard} \xleftarrow{\text{read}(\text{goal\_pose})} \text{BehaviorExecutive}
+</span></p>
+<h2>6. 행동 합성과 실행 흐름 제어</h2>
+<h3>6.1 순차적 합성(Sequential Composition)</h3>
+<p>과업이 순차적으로 실행되어야 하는 경우, 임무 관리자는 행동 시퀀스를 행동 실행기에 전달한다.</p>
+<p><span class="math math-display">
+\text{Sequence}(b_1, b_2, \ldots, b_n) : b_i \text{가 SUCCESS를 반환하면 } b_{i+1} \text{을 실행}
+</span></p>
+<h3>6.2 병렬 합성(Parallel Composition)</h3>
+<p>복수의 행동이 동시에 실행되어야 하는 경우, 병렬 합성이 사용된다.</p>
+<p><span class="math math-display">
+\text{Parallel}(b_1, b_2, \ldots, b_n, M) : M \text{개 이상 SUCCESS이면 SUCCESS 반환}
+</span></p>
+<p>여기서 <span class="math math-inline">M</span>은 성공 임계값(Success Threshold)이다.</p>
+<h3>6.3 조건부 실행(Conditional Execution)</h3>
+<p>환경 조건이나 시스템 상태에 따라 행동의 실행 여부가 결정되는 경우, 조건부 실행 패턴이 적용된다.</p>
+<p><span class="math math-display">
+\text{ConditionalExecute}(c, b_{\text{true}}, b_{\text{false}}) = \begin{cases} b_{\text{true}} &amp; \text{if } c(\mathcal{S}) = \text{true} \\ b_{\text{false}} &amp; \text{otherwise} \end{cases}
+</span></p>
+<h2>7. 인터페이스 추상화와 플러그인 아키텍처</h2>
+<h3>7.1 행동 플러그인 인터페이스</h3>
+<p>임무 관리자와 행동 실행기의 인터페이스를 표준화하기 위해, 행동을 플러그인(Plugin) 형태로 구현하는 아키텍처가 널리 채택된다. Nav2의 행동 트리 노드 플러그인이 이 접근법의 대표적 사례이다(Macenski et al., 2020).</p>
+<p>플러그인 인터페이스의 기본 구조는 다음과 같다.</p>
+<p><span class="math math-display">
+\text{BehaviorPlugin} = (\text{name}, \text{type}, \text{configure}(), \text{activate}(), \text{execute}(), \text{deactivate}())
+</span></p>
+<p>이 아키텍처는 임무 관리자의 수정 없이도 새로운 행동을 시스템에 추가할 수 있는 확장성을 제공한다. 임무 관리자는 행동의 구체적 구현에 의존하지 않고, 표준 인터페이스를 통해서만 행동 실행기와 상호작용한다.</p>
+<h3>7.2 추상 행동 인터페이스</h3>
+<p>행동 실행기가 지원하는 모든 행동은 공통의 추상 인터페이스를 구현한다.</p>
+<p><span class="math math-display">
+\text{AbstractBehavior} = \{\text{initialize}(), \text{on\_tick}(), \text{on\_halt}(), \text{get\_status}()\}
+</span></p>
+<ul>
+<li><span class="math math-inline">\text{on\_tick}()</span>: 매 실행 주기마다 호출되어 행동의 현재 상태를 반환한다.</li>
+<li><span class="math math-inline">\text{on\_halt}()</span>: 행동이 중단될 때 안전한 정지를 수행한다.</li>
+<li><span class="math math-inline">\text{get\_status}()</span>: 행동의 현재 실행 상태를 반환한다.</li>
+</ul>
+<h2>8. 내결함성과 안정성 설계</h2>
+<h3>8.1 워치독(Watchdog) 메커니즘</h3>
+<p>임무 관리자는 행동 실행기의 응답성을 감시하는 워치독 타이머를 유지한다. 지정된 시간 내에 상태 보고가 수신되지 않으면, 행동 실행기의 비정상 상태로 판단하고 복구 절차를 개시한다.</p>
+<p><span class="math math-display">
+\text{Watchdog}(T_{\text{timeout}}) : \begin{cases} \text{normal} &amp; \text{if } t_{\text{last\_report}} - t_{\text{now}} &lt; T_{\text{timeout}} \\ \text{alert} &amp; \text{otherwise} \end{cases}
+</span></p>
+<h3>8.2 행동 격리(Behavior Isolation)</h3>
+<p>개별 행동의 실패가 전체 시스템에 파급되는 것을 방지하기 위해, 행동을 격리된 실행 환경에서 수행하는 전략이 적용된다. 이는 프로세스 격리, 예외 처리, 자원 제한 등의 메커니즘을 통해 구현된다.</p>
+<h2>9. 요약</h2>
+<p>임무 관리자와 행동 실행기의 인터페이스는 하향 방향의 과업 전달·제어 명령과 상향 방향의 상태 보고·이벤트 통지로 구성된다. 비동기 통신 패턴이 표준적으로 채택되며, 블랙보드 패턴을 통한 간접적 데이터 교환이 행동 트리 기반 시스템에서 널리 활용된다. 행동의 플러그인 아키텍처는 시스템의 확장성을 보장하고, 워치독 메커니즘과 행동 격리는 인터페이스의 내결함성을 강화한다.</p>
+<h2>10. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>Proceedings of IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>, pp. 2718–2725.</li>
+<li>Open Robotics. (2017). “ROS 2 Managed Nodes Design Document.” <em>ROS 2 Design Documentation</em>.</li>
+<li>Ingrand, F. F., Georgeff, M. P., &amp; Rao, A. S. (1992). “An Architecture for Real-Time Reasoning and System Control.” <em>IEEE Expert</em>, 7(6), 34–44.</li>
+<li>Firby, R. J. (1989). <em>Adaptive Execution in Complex Dynamic Worlds</em>. Ph.D. Dissertation, Yale University.</li>
+<li>Arkin, R. C. (1998). <em>Behavior-Based Robotics</em>. MIT Press.</li>
+</ul>
+<hr />
+<p><em>v0.1</em></p>
 
             </article>
             <footer>

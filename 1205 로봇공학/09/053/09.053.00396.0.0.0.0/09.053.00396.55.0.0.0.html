@@ -115,6 +115,166 @@
             </header>
             <article>
                 <h1>396.55 임무 중지(Pause)와 재개(Resume) 메커니즘</h1>
+<h2>1. 임무 중지와 재개의 개념</h2>
+<p>**임무 중지(pause)**와 **재개(resume)**는 실행 중인 임무를 일시적으로 보류하고, 이후 중지 시점의 상태를 복원하여 연속적으로 실행을 이어가는 메커니즘이다. 중단(preemption)이 상위 우선순위 임무에 의한 강제적 실행 전환인 반면, 중지는 동일 임무의 <strong>실행 흐름을 보존</strong>하면서 일시적으로 정지하는 행위로서, 재개 시 중지 직전 상태로부터 과업을 계속 수행할 수 있다. 이 메커니즘은 운영자 확인 대기, 일시적 환경 불확실성 대응, 자원 재충전 등 다양한 시나리오에서 필수적이다.</p>
+<h2>2. 임무 상태 모델에서의 중지와 재개</h2>
+<h3>2.1 확장된 상태 전이 모델</h3>
+<p>임무의 중지와 재개를 지원하기 위해, 기본 임무 상태 모델에 <span class="math math-inline">\texttt{PAUSED}</span> 상태를 추가한다:</p>
+<p><span class="math math-display">
+\text{MissionState} \in \{\texttt{PENDING}, \texttt{RUNNING}, \texttt{PAUSED}, \texttt{COMPLETED}, \texttt{FAILED}, \texttt{CANCELED}\}
+</span></p>
+<p>주요 상태 전이는 다음과 같다:</p>
+<table><thead><tr><th>현재 상태</th><th>이벤트</th><th>다음 상태</th></tr></thead><tbody>
+<tr><td><span class="math math-inline">\texttt{RUNNING}</span></td><td>중지 요청</td><td><span class="math math-inline">\texttt{PAUSED}</span></td></tr>
+<tr><td><span class="math math-inline">\texttt{PAUSED}</span></td><td>재개 요청</td><td><span class="math math-inline">\texttt{RUNNING}</span></td></tr>
+<tr><td><span class="math math-inline">\texttt{PAUSED}</span></td><td>취소 요청</td><td><span class="math math-inline">\texttt{CANCELED}</span></td></tr>
+<tr><td><span class="math math-inline">\texttt{PAUSED}</span></td><td>타임아웃</td><td><span class="math math-inline">\texttt{CANCELED}</span> 또는 <span class="math math-inline">\texttt{FAILED}</span></td></tr>
+</tbody></table>
+<h3>2.2 중지의 형식적 정의</h3>
+<p>시간 <span class="math math-inline">t_p</span>에서 임무 <span class="math math-inline">M</span>이 중지되면, 중지 시점의 <strong>스냅샷(snapshot)</strong> <span class="math math-inline">\mathcal{S}_p</span>가 생성된다:</p>
+<p><span class="math math-display">
+\mathcal{S}_p(M, t_p) = \bigl(\text{Phase}(M, t_p), \text{SubTaskState}(M, t_p), \text{Context}(M, t_p), \text{Resource}(M, t_p)\bigr)
+</span></p>
+<p>여기서:</p>
+<ul>
+<li><span class="math math-inline">\text{Phase}</span>: 현재 실행 단계의 식별자</li>
+<li><span class="math math-inline">\text{SubTaskState}</span>: 각 하위 과업의 진행 상태</li>
+<li><span class="math math-inline">\text{Context}</span>: 실행 맥락 데이터(블랙보드 변수, 내부 상태 등)</li>
+<li><span class="math math-inline">\text{Resource}</span>: 점유 중인 자원의 목록</li>
+</ul>
+<p>재개 시 이 스냅샷을 복원하여 <span class="math math-inline">t_p</span> 시점의 상태로부터 실행을 계속한다.</p>
+<h2>3. 중지 트리거와 분류</h2>
+<h3>3.1 중지 트리거 유형</h3>
+<table><thead><tr><th>트리거 유형</th><th>원천</th><th>예시</th></tr></thead><tbody>
+<tr><td>운영자 수동 중지</td><td>인간 명령</td><td>원격 관제에서의 일시 정지 버튼</td></tr>
+<tr><td>조건 기반 자동 중지</td><td>환경 감시</td><td>GPS 신호 손실, 강풍 감지</td></tr>
+<tr><td>자원 기반 중지</td><td>자원 관리</td><td>통신 대역폭 부족, 계산 자원 과부하</td></tr>
+<tr><td>동기화 대기 중지</td><td>과업 조율</td><td>타 로봇의 과업 완료 대기</td></tr>
+<tr><td>정책 기반 중지</td><td>운용 규칙</td><td>특정 시간대 운용 금지, 지리적 제한 구역 진입</td></tr>
+</tbody></table>
+<h3>3.2 중지의 범위(Scope)</h3>
+<p>중지는 적용 범위에 따라 다음과 같이 분류된다:</p>
+<table><thead><tr><th>범위</th><th>설명</th></tr></thead><tbody>
+<tr><td>전역 중지(Global Pause)</td><td>로봇의 모든 과업과 행동을 일시 정지</td></tr>
+<tr><td>임무 수준 중지(Mission-Level Pause)</td><td>특정 임무와 그 하위 과업만 정지</td></tr>
+<tr><td>과업 수준 중지(Task-Level Pause)</td><td>개별 과업만 정지, 다른 과업은 계속 실행</td></tr>
+<tr><td>행동 수준 중지(Action-Level Pause)</td><td>특정 행동만 정지, 감시 행동 등은 유지</td></tr>
+</tbody></table>
+<p>범위의 선택은 시스템의 안전성과 반응성 간의 균형을 결정한다. 전역 중지는 최대한의 안전성을 보장하지만, 감시 기능도 중단되므로 환경 인식의 공백이 발생할 수 있다.</p>
+<h2>4. 안전한 중지(Safe Pause) 프로토콜</h2>
+<h3>4.1 물리적 안전성 보장</h3>
+<p>로봇의 물리적 특성상, 임무를 즉시 중지하면 안전하지 않은 상태가 발생할 수 있다. 안전한 중지 프로토콜은 다음 절차를 따른다:</p>
+<p><strong>1단계 - 전이 행동 실행</strong>: 중지 요청 수신 후, 현재 행동을 안전하게 종료하기 위한 전이 행동(transition action)을 실행한다:</p>
+<p><span class="math math-display">
+a_{\text{transition}} = f_{\text{safe}}(\text{CurrentAction}, \text{EnvironmentState})
+</span></p>
+<p>예시:</p>
+<ul>
+<li>이동 중인 로봇: 감속 프로파일에 따른 정지</li>
+<li>비행 중인 드론: 호버링(hovering) 모드 전환</li>
+<li>매니퓰레이터: 현재 자세 유지 또는 안전 자세로 전환</li>
+</ul>
+<p><strong>2단계 - 상태 스냅샷 생성</strong>: 전이 행동 완료 후 현재 상태의 스냅샷을 생성하여 저장한다.</p>
+<p><strong>3단계 - 필수 기능 유지</strong>: 중지 상태에서도 다음과 같은 필수 기능은 계속 활성화된다:</p>
+<table><thead><tr><th>필수 기능</th><th>목적</th></tr></thead><tbody>
+<tr><td>위치 추정(Localization)</td><td>자기 위치 파악 유지</td></tr>
+<tr><td>장애물 감시</td><td>주변 안전 상태 감시</td></tr>
+<tr><td>통신 유지</td><td>관제국과의 연결 보전</td></tr>
+<tr><td>배터리 감시</td><td>에너지 상태 추적</td></tr>
+<tr><td>비상 대응 감시</td><td>비상 조건 탐지</td></tr>
+</tbody></table>
+<p><strong>4단계 - 중지 상태 진입</strong>: 모든 전이 행동이 완료되면 <span class="math math-inline">\texttt{PAUSED}</span> 상태로 전이한다.</p>
+<h3>4.2 중지 지연 시간(Pause Latency)</h3>
+<p>중지 요청 수신 시점 <span class="math math-inline">t_{\text{req}}</span>부터 실제 중지 상태 진입 시점 <span class="math math-inline">t_{\text{pause}}</span>까지의 지연 시간 <span class="math math-inline">\Delta t_{\text{pause}}</span>는 다음과 같이 구성된다:</p>
+<p><span class="math math-display">
+\Delta t_{\text{pause}} = t_{\text{pause}} - t_{\text{req}} = \Delta t_{\text{detect}} + \Delta t_{\text{transition}} + \Delta t_{\text{snapshot}}
+</span></p>
+<p>여기서 <span class="math math-inline">\Delta t_{\text{detect}}</span>는 중지 요청 감지 시간, <span class="math math-inline">\Delta t_{\text{transition}}</span>은 전이 행동 소요 시간, <span class="math math-inline">\Delta t_{\text{snapshot}}</span>은 스냅샷 생성 시간이다. 안전-임계적 시스템에서는 이 중지 지연 시간의 상한(worst-case bound)이 보장되어야 한다.</p>
+<h2>5. 재개(Resume) 프로토콜</h2>
+<h3>5.1 재개 전 유효성 검증</h3>
+<p>중지 상태에서 재개하기 전에, 보존된 스냅샷의 **유효성(validity)**을 검증해야 한다. 중지 기간 동안 환경이 변화하였을 수 있으므로, 다음과 같은 검증 항목을 확인한다:</p>
+<p><span class="math math-display">
+\text{Valid}(\mathcal{S}_p, t_r) = \bigwedge_{i=1}^{n} \phi_i(\mathcal{S}_p, \mathcal{S}(t_r))
+</span></p>
+<table><thead><tr><th>검증 항목</th><th>검증 내용</th></tr></thead><tbody>
+<tr><td>위치 유효성</td><td>중지 시점의 위치에서 임무 재개가 가능한가</td></tr>
+<tr><td>환경 일관성</td><td>중지 후 환경 변화로 인해 과업 전제 조건이 위반되었는가</td></tr>
+<tr><td>자원 가용성</td><td>재개에 필요한 자원(배터리, 통신 등)이 충분한가</td></tr>
+<tr><td>시간 제약</td><td>데드라인 이내에 임무 완료가 가능한가</td></tr>
+<tr><td>안전 조건</td><td>재개 시 안전 위험이 없는가</td></tr>
+</tbody></table>
+<h3>5.2 재개 전략</h3>
+<p>유효성 검증 결과에 따라 다음 중 하나의 재개 전략이 선택된다:</p>
+<table><thead><tr><th>전략</th><th>적용 조건</th><th>설명</th></tr></thead><tbody>
+<tr><td>직접 재개(Direct Resume)</td><td>모든 검증 통과</td><td>스냅샷 상태에서 즉시 실행 재개</td></tr>
+<tr><td>조정 재개(Adjusted Resume)</td><td>부분 검증 통과</td><td>변화된 환경에 맞게 일부 파라미터 조정 후 재개</td></tr>
+<tr><td>재계획 재개(Replanned Resume)</td><td>환경 변화 감지</td><td>현재 상태에서 재계획 후 새 계획으로 재개</td></tr>
+<tr><td>재시작(Restart)</td><td>유효성 검증 실패</td><td>임무를 처음부터 다시 시작</td></tr>
+<tr><td>폐기(Abort)</td><td>재개 불가능</td><td>임무를 완전히 종료</td></tr>
+</tbody></table>
+<h3>5.3 재개 절차</h3>
+<p>재개 프로토콜의 절차는 다음과 같다:</p>
+<ol>
+<li><strong>유효성 검증</strong>: 스냅샷과 현재 환경의 일관성 검사</li>
+<li><strong>전략 선택</strong>: 검증 결과에 따른 적절한 재개 전략 결정</li>
+<li><strong>상태 복원</strong>: 스냅샷으로부터 실행 상태 복원 또는 조정</li>
+<li><strong>센서 재교정</strong>: 필요 시 센서 초기화 및 위치 추정 갱신</li>
+<li><strong>전이 행동 실행</strong>: 중지 자세에서 실행 자세로의 전환 (예: 호버링에서 이동으로)</li>
+<li><strong>실행 재개</strong>: <span class="math math-inline">\texttt{RUNNING}</span> 상태 전이 및 과업 실행 계속</li>
+</ol>
+<h2>6. 중지 기간의 관리</h2>
+<h3>6.1 중지 타임아웃(Pause Timeout)</h3>
+<p>무기한 중지는 자원 점유, 배터리 소모, 임무 데드라인 위반 등의 문제를 야기한다. 따라서 중지에 <strong>최대 허용 시간(timeout)</strong> <span class="math math-inline">T_{\text{max\_pause}}</span>를 설정한다:</p>
+<p><span class="math math-display">
+\text{if } t - t_p &gt; T_{\text{max\_pause}} \implies \text{AutoAction}(M)
+</span></p>
+<p>타임아웃 도달 시의 자동 행동은 시스템 정책에 따라 자동 재개, 자동 폐기, 또는 안전 귀환 중 하나로 설정된다.</p>
+<h3>6.2 중지 중 자원 관리</h3>
+<p>중지 상태에서의 자원 관리 정책은 다음과 같이 분류된다:</p>
+<table><thead><tr><th>정책</th><th>설명</th><th>장점</th><th>단점</th></tr></thead><tbody>
+<tr><td>자원 유지(Hold)</td><td>점유 자원을 계속 보유</td><td>빠른 재개</td><td>자원 낭비</td></tr>
+<tr><td>자원 해제(Release)</td><td>일부 자원을 반환</td><td>타 임무에 자원 제공</td><td>재개 시 재할당 필요</td></tr>
+<tr><td>최소 유지(Minimal)</td><td>필수 자원만 유지</td><td>균형적 접근</td><td>복원 복잡도 증가</td></tr>
+</tbody></table>
+<h2>7. 구현 프레임워크별 중지/재개 패턴</h2>
+<h3>7.1 행동 트리에서의 구현</h3>
+<p>행동 트리에서 중지는 루트 노드의 틱(tick) 발생을 중단함으로써 구현된다. 모든 하위 노드는 자연스럽게 실행을 멈추며, RUNNING 상태의 노드는 그 상태를 유지한다. 재개 시 틱을 재개하면, RUNNING 상태였던 노드가 지속적으로 실행을 이어간다.</p>
+<p><span class="math math-display">
+\text{Pause}: \text{StopTick}(T_{\text{root}}), \quad \text{Resume}: \text{StartTick}(T_{\text{root}})
+</span></p>
+<p>이 방식의 장점은 별도의 중지/재개 로직 없이 틱 제어만으로 메커니즘이 구현된다는 점이다.</p>
+<h3>7.2 ROS2 Lifecycle 노드에서의 구현</h3>
+<p>ROS2 Lifecycle 노드의 <span class="math math-inline">\texttt{ACTIVE} \rightarrow \texttt{INACTIVE}</span> 전이를 중지로, <span class="math math-inline">\texttt{INACTIVE} \rightarrow \texttt{ACTIVE}</span> 전이를 재개로 매핑할 수 있다. <code>on_deactivate()</code> 콜백에서 실행 상태를 보존하고, <code>on_activate()</code> 콜백에서 보존된 상태를 복원한다.</p>
+<h3>7.3 유한 상태 머신에서의 구현</h3>
+<p>FSM에서는 모든 상태에서 <span class="math math-inline">\texttt{PAUSED}</span> 상태로의 전이를 명시적으로 정의하고, <span class="math math-inline">\texttt{PAUSED}</span> 상태에서 원래 상태로 복귀하는 전이를 정의해야 한다. 이를 위해 중지 전 상태를 기억하는 <strong>상태 스택(state stack)</strong> 또는 **이력 상태(history state)**가 필요하다:</p>
+<p><span class="math math-display">
+\text{Pause}(q_i) : \text{push}(q_i, \text{Stack}); \; \delta(q_i, \sigma_{\text{pause}}) = q_{\text{paused}}
+</span></p>
+<p><span class="math math-display">
+\text{Resume} : q_{\text{prev}} = \text{pop}(\text{Stack}); \; \delta(q_{\text{paused}}, \sigma_{\text{resume}}) = q_{\text{prev}}
+</span></p>
+<h2>8. 중지/재개의 안전성 속성</h2>
+<h3>8.1 일관성(Consistency)</h3>
+<p>중지와 재개가 시스템 일관성을 유지하려면, 중지 시점의 상태와 재개 시점의 상태가 **동일한 불변량(invariant)**을 만족해야 한다:</p>
+<p><span class="math math-display">
+\text{Invariant}(\mathcal{S}_p) = \text{true} \implies \text{Invariant}(\mathcal{S}_r) = \text{true}
+</span></p>
+<h3>8.2 무손실성(Losslessness)</h3>
+<p>중지-재개 주기를 거친 임무의 최종 결과가, 중지 없이 연속 실행한 경우의 결과와 논리적으로 동등해야 한다:</p>
+<p><span class="math math-display">
+\text{Result}(M_{\text{pause-resume}}) \equiv \text{Result}(M_{\text{continuous}})
+</span></p>
+<p>이 속성은 시간에 민감하지 않은 과업에 대해서 보장되며, 시간 의존적 과업(실시간 제어 등)에서는 조정 재개 전략이 필요하다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Simmons, R. (1994). “Structured Control for Autonomous Robots.” <em>IEEE Transactions on Robotics and Automation</em>, 10(1), 34–43.</li>
+<li>Colledanchise, M. and Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Open Robotics. (2024). <em>ROS 2 Documentation: Managed Nodes</em>. https://docs.ros.org/</li>
+<li>Gat, E. (1998). “On Three-Layer Architectures.” <em>Artificial Intelligence and Mobile Robots</em>, MIT Press, 195–210.</li>
+<li>Kortenkamp, D. and Simmons, R. (2008). “Robotic Systems Architectures and Programming.” <em>Springer Handbook of Robotics</em>, 187–206.</li>
+</ul>
+<hr />
+<p><em>본 절은 로봇공학 서적 Volume 9, Part 53, Chapter 396의 일부로 작성되었다. v1.0</em></p>
 
             </article>
             <footer>
