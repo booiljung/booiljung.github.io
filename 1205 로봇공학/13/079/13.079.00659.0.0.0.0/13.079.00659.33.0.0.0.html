@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:659.33 tf2::Buffer의 스레드 안전성</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>659.33 tf2::Buffer의 스레드 안전성</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> / <a href="../../index.html">Volume 13. ROS2와 로봇 소프트웨어 (ROS2 and Robot Software)</a> / <a href="../index.html">Part 79. ROS2 핵심 라이브러리 (ROS2 Core Libraries)</a> / <a href="index.html">Chapter 659. TF2 좌표 변환 라이브러리 (TF2 Coordinate Transformation Library)</a> / <span>659.33 tf2::Buffer의 스레드 안전성</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>659.33 tf2::Buffer의 스레드 안전성</h1>
+<h2>1. 개요</h2>
+<p><code>tf2::BufferCore</code>(및 이를 상속하는 <code>tf2_ros::Buffer</code>)는 멀티스레드 환경에서의 동시 접근을 안전하게 처리할 수 있도록 설계되어 있다. 로봇 시스템에서는 <code>TransformListener</code>의 콜백 스레드가 변환을 저장(write)하는 동시에, 사용자의 타이머 콜백이나 구독자 콜백에서 변환을 조회(read)하는 상황이 빈번하게 발생한다. 본 절에서는 <code>tf2::Buffer</code>의 스레드 안전성 메커니즘과 멀티스레드 환경에서의 올바른 사용법을 기술한다.</p>
+<h2>2. 멀티스레드 접근 시나리오</h2>
+<h3>2.1 일반적인 동시 접근 패턴</h3>
+<p>ROS2 노드에서 <code>tf2::Buffer</code>에 대한 동시 접근은 다음의 시나리오에서 발생한다.</p>
+<table><thead><tr><th>시나리오</th><th>쓰기 스레드</th><th>읽기 스레드</th></tr></thead><tbody>
+<tr><td>Listener 전용 스레드 + 타이머 콜백</td><td><code>TransformListener</code> 내부 스레드</td><td>사용자 타이머 콜백</td></tr>
+<tr><td>Listener 전용 스레드 + 구독 콜백</td><td><code>TransformListener</code> 내부 스레드</td><td>센서 데이터 구독 콜백</td></tr>
+<tr><td>MultiThreadedExecutor</td><td>콜백 스레드 A (TF 수신)</td><td>콜백 스레드 B (변환 조회)</td></tr>
+<tr><td>복수 노드 공유 Buffer</td><td>노드 A의 Listener 콜백</td><td>노드 B의 조회 호출</td></tr>
+</tbody></table>
+<h3>2.2 읽기-쓰기 경합</h3>
+<p>스레드 안전성이 보장되지 않으면, 다음과 같은 경합(race condition)이 발생할 수 있다.</p>
+<pre><code>스레드 1 (쓰기):                스레드 2 (읽기):
+  setTransform(A→B, t=1.0)       lookupTransform("A", "B", t=0.5)
+        ↓                              ↓
+  캐시 내부 자료구조 수정 중      캐시 내부 자료구조 읽기 중
+        ↓                              ↓
+  → 데이터 불일치 가능!
+</code></pre>
+<h2>3. BufferCore의 동기화 메커니즘</h2>
+<h3>3.1 내부 뮤텍스 구조</h3>
+<p><code>tf2::BufferCore</code>는 내부적으로 <code>std::mutex</code>를 사용하여 프레임 데이터에 대한 접근을 동기화한다. 핵심적인 동기화 지점은 다음과 같다.</p>
+<ol>
+<li><strong>프레임 맵 접근</strong>: 새로운 프레임의 등록 또는 기존 프레임의 탐색 시 뮤텍스가 사용된다.</li>
+<li><strong>시간 캐시 접근</strong>: 특정 프레임의 시간 캐시(TimeCache)에 변환을 추가하거나 조회할 때 뮤텍스가 사용된다.</li>
+</ol>
+<pre><code class="language-cpp">// BufferCore 내부 (개념적 표현)
+class BufferCore {
+private:
+  mutable std::mutex frame_mutex_;
+  std::unordered_map&lt;CompactFrameID, TimeCacheInterfacePtr&gt; frames_;
+
+  // 변환 저장
+  bool setTransformImpl(...) {
+    std::lock_guard&lt;std::mutex&gt; lock(frame_mutex_);
+    // 캐시에 변환 추가
+  }
+
+  // 변환 조회
+  TransformStamped lookupTransformImpl(...) const {
+    std::lock_guard&lt;std::mutex&gt; lock(frame_mutex_);
+    // 캐시에서 변환 탐색
+  }
+};
+</code></pre>
+<h3>3.2 잠금 범위 (Lock Scope)</h3>
+<p><code>BufferCore</code>의 뮤텍스는 각 공개 메서드 호출의 전체 범위에 걸쳐 획득된다. 이는 다음과 같은 의미를 갖는다.</p>
+<ul>
+<li><strong>원자적 조회</strong>: <code>lookupTransform()</code> 호출 중에 다른 스레드가 변환을 추가하거나 삭제할 수 없다. 따라서 조회 결과는 항상 일관된 상태를 반영한다.</li>
+<li><strong>원자적 설정</strong>: <code>setTransform()</code> 호출 중에 다른 스레드가 캐시를 읽을 수 없다. 따라서 부분적으로 갱신된 캐시가 관측되는 상황이 방지된다.</li>
+</ul>
+<h3>3.3 성능 영향</h3>
+<p>뮤텍스 잠금은 성능에 미미한 영향을 미친다. 잠금의 지속 시간은 변환 트리의 경로 탐색과 보간 연산에 소요되는 시간에 비례하며, 일반적인 로봇 시스템에서 이 시간은 마이크로초(µs) 단위이다.</p>
+<p>그러나 고주기 조회(예: 1000Hz 이상)와 고주기 변환 수신이 동시에 발생하는 극한 상황에서는 잠금 경합(lock contention)에 의한 지연이 관측될 수 있다.</p>
+<h2>4. Executor 모델별 스레드 안전성</h2>
+<h3>4.1 SingleThreadedExecutor</h3>
+<pre><code class="language-cpp">rclcpp::spin(node);
+</code></pre>
+<p><code>SingleThreadedExecutor</code>에서는 모든 콜백이 단일 스레드에서 순차적으로 실행된다. 그러나 <code>TransformListener</code>가 기본 설정(<code>spin_thread=true</code>)으로 생성된 경우, 별도의 전용 스레드가 변환 수신을 처리하므로, 이 경우에도 멀티스레드 접근이 발생한다.</p>
+<pre><code>[전용 스레드]     → Buffer.setTransform()    (쓰기)
+[메인 스레드]     → Buffer.lookupTransform() (읽기)
+</code></pre>
+<p><code>Buffer</code>의 내부 뮤텍스가 이 상황을 안전하게 처리한다.</p>
+<h3>4.2 MultiThreadedExecutor</h3>
+<pre><code class="language-cpp">rclcpp::executors::MultiThreadedExecutor executor;
+executor.add_node(node);
+executor.spin();
+</code></pre>
+<p><code>MultiThreadedExecutor</code>에서는 복수의 콜백이 병렬로 실행되므로, <code>Buffer</code>에 대한 동시 읽기-쓰기 접근이 자연스럽게 발생한다. <code>Buffer</code>의 내부 뮤텍스가 스레드 안전성을 보장한다.</p>
+<h3>4.3 spin_thread=false 모드</h3>
+<p><code>TransformListener</code>를 <code>spin_thread=false</code>로 생성한 경우에는 전용 스레드가 생성되지 않으므로, 모든 콜백이 사용자의 Executor에 의하여 처리된다.</p>
+<pre><code class="language-cpp">tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(
+  *tf_buffer_, this, false);  // spin_thread=false
+</code></pre>
+<p><code>SingleThreadedExecutor</code>에서 <code>spin_thread=false</code>를 사용하면, 변환 수신 콜백과 변환 조회가 동일한 스레드에서 순차적으로 실행되므로, 동시 접근 문제가 원천적으로 발생하지 않는다. 이 구성은 가장 단순하고 안전한 모드이다.</p>
+<h2>5. Python(rclpy)에서의 스레드 안전성</h2>
+<h3>5.1 GIL의 역할</h3>
+<p>Python의 GIL(Global Interpreter Lock)은 동시에 하나의 스레드만 Python 바이트코드를 실행할 수 있도록 제한한다. 이로 인하여 순수 Python 코드에서는 데이터 경합이 발생하지 않는다.</p>
+<p>그러나 <code>tf2_ros</code>의 핵심 로직은 C++ 확장 모듈로 구현되어 있으며, C++ 코드 실행 중에는 GIL이 해제될 수 있다. 따라서 <code>tf2::BufferCore</code>의 내부 뮤텍스에 의한 스레드 안전성이 여전히 중요한 역할을 한다.</p>
+<h3>5.2 spin_thread=True (기본값)</h3>
+<pre><code class="language-python">self.tf_listener = TransformListener(self.tf_buffer, self, spin_thread=True)
+</code></pre>
+<p>Python에서 <code>spin_thread=True</code>로 설정하면, 별도의 스레드에서 변환 메시지를 수신한다. 이 경우에도 <code>BufferCore</code>의 C++ 뮤텍스가 스레드 안전성을 보장한다.</p>
+<h2>6. 안전한 사용 패턴</h2>
+<h3>6.1 패턴 1: 기본 권장 패턴</h3>
+<pre><code class="language-cpp">class SafeTFUser : public rclcpp::Node
+{
+public:
+  SafeTFUser() : Node("safe_tf_user")
+  {
+    tf_buffer_ = std::make_unique&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+    tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(*tf_buffer_);
+
+    timer_ = this-&gt;create_wall_timer(
+      std::chrono::milliseconds(100),
+      std::bind(&amp;SafeTFUser::on_timer, this));
+  }
+
+private:
+  void on_timer()
+  {
+    // Buffer의 내부 뮤텍스에 의하여 스레드 안전
+    try {
+      auto t = tf_buffer_-&gt;lookupTransform(
+        "map", "base_link", tf2::TimePointZero);
+    } catch (const tf2::TransformException &amp; ex) {
+      RCLCPP_DEBUG(this-&gt;get_logger(), "%s", ex.what());
+    }
+  }
+
+  std::unique_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+  std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+</code></pre>
+<p>이 패턴에서 <code>TransformListener</code>의 전용 스레드가 <code>/tf</code> 토픽을 수신하여 <code>Buffer</code>에 저장하는 동안, 타이머 콜백에서 <code>lookupTransform()</code>을 호출하여도 안전하다.</p>
+<h3>6.2 패턴 2: 복수 콜백에서의 동시 조회</h3>
+<pre><code class="language-cpp">class MultiCallbackNode : public rclcpp::Node
+{
+public:
+  MultiCallbackNode() : Node("multi_callback_node")
+  {
+    tf_buffer_ = std::make_unique&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+    tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(*tf_buffer_);
+
+    timer_fast_ = this-&gt;create_wall_timer(
+      std::chrono::milliseconds(10),
+      std::bind(&amp;MultiCallbackNode::fast_callback, this));
+
+    timer_slow_ = this-&gt;create_wall_timer(
+      std::chrono::seconds(1),
+      std::bind(&amp;MultiCallbackNode::slow_callback, this));
+
+    laser_sub_ = this-&gt;create_subscription&lt;sensor_msgs::msg::LaserScan&gt;(
+      "scan", 10,
+      std::bind(&amp;MultiCallbackNode::laser_callback, this,
+        std::placeholders::_1));
+  }
+
+private:
+  void fast_callback()
+  {
+    // 100Hz 제어 루프에서의 변환 조회
+    try {
+      auto t = tf_buffer_-&gt;lookupTransform(
+        "base_link", "tool_link", tf2::TimePointZero);
+    } catch (const tf2::TransformException &amp;) {}
+  }
+
+  void slow_callback()
+  {
+    // 1Hz 모니터링에서의 변환 조회
+    try {
+      auto t = tf_buffer_-&gt;lookupTransform(
+        "map", "base_link", tf2::TimePointZero);
+    } catch (const tf2::TransformException &amp;) {}
+  }
+
+  void laser_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
+  {
+    // 센서 콜백에서의 변환 조회
+    try {
+      auto t = tf_buffer_-&gt;lookupTransform(
+        "base_link", msg-&gt;header.frame_id, tf2::TimePointZero);
+    } catch (const tf2::TransformException &amp;) {}
+  }
+
+  std::unique_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+  std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+  rclcpp::TimerBase::SharedPtr timer_fast_, timer_slow_;
+  rclcpp::Subscription&lt;sensor_msgs::msg::LaserScan&gt;::SharedPtr laser_sub_;
+};
+</code></pre>
+<p><code>MultiThreadedExecutor</code>에서 위의 세 콜백이 병렬로 실행되어도, <code>Buffer</code>의 내부 뮤텍스에 의하여 도시 접근이 안전하게 처리된다.</p>
+<h2>7. 주의사항</h2>
+<h3>7.1 Buffer 포인터의 수명 관리</h3>
+<p><code>Buffer</code>의 포인터를 복수의 스레드에서 공유하는 경우, <code>Buffer</code> 객체가 모든 사용자보다 오래 존속하도록 보장하여야 한다. <code>std::shared_ptr</code>을 사용하면 참조 계수(reference counting)에 의하여 안전하게 관리할 수 있다.</p>
+<h3>7.2 lookupTransform 결과의 사용</h3>
+<p><code>lookupTransform()</code>이 반환하는 <code>TransformStamped</code> 메시지는 복사본(copy)이므로, 반환 이후에는 <code>Buffer</code>의 뮤텍스와 무관하게 안전하게 사용할 수 있다.</p>
+<pre><code class="language-cpp">auto t = tf_buffer_-&gt;lookupTransform(...);
+// 이 시점 이후 t는 Buffer와 독립적
+// 다른 스레드에서 Buffer가 갱신되어도 t에는 영향 없음
+</code></pre>
+<h3>7.3 인위적 잠금 사용 금지</h3>
+<p><code>Buffer</code>의 공개 메서드는 이미 내부적으로 뮤텍스를 사용하므로, 사용자가 별도의 뮤텍스로 <code>Buffer</code> 접근을 감싸는 것은 불필요하며, 교착 상태(deadlock)를 유발할 위험이 있다.</p>
+<pre><code class="language-cpp">// 불필요한 코드 (안티패턴)
+{
+  std::lock_guard&lt;std::mutex&gt; lock(my_mutex_);
+  auto t = tf_buffer_-&gt;lookupTransform(...);  // 내부에서 이미 잠금 사용
+}
+</code></pre>
+<h3>7.4 장시간 잠금 방지</h3>
+<p><code>lookupTransform()</code> 호출 후 반환값을 사용하여 장시간 연산을 수행하는 것은 문제가 되지 않으나, <code>Buffer</code>의 내부 메서드를 연속으로 호출하는 경우 각 호출 사이에 다른 스레드의 쓰기가 개입할 수 있음을 인지하여야 한다.</p>
+<pre><code class="language-cpp">// 두 조회 사이에 Buffer가 갱신될 수 있음
+auto t1 = tf_buffer_-&gt;lookupTransform("map", "odom", tf2::TimePointZero);
+// ← 이 시점에 다른 스레드가 새로운 변환을 추가할 수 있음
+auto t2 = tf_buffer_-&gt;lookupTransform("odom", "base_link", tf2::TimePointZero);
+</code></pre>
+<p>두 변환의 시간적 일관성이 중요한 경우, 동일한 타임스탬프를 명시적으로 지정하여야 한다.</p>
+<h2>8. 참고 자료</h2>
+<ul>
+<li>tf2 소스 코드, <code>buffer_core.cpp</code>, https://github.com/ros2/geometry2</li>
+<li>C++ 표준 라이브러리, <code>std::mutex</code>, https://en.cppreference.com/w/cpp/thread/mutex</li>
+<li>ROS2 MultiThreadedExecutor 문서, https://docs.ros.org/en/humble/Concepts/Intermediate/About-Executors.html</li>
+<li>ROS2 Humble Hawksbill</li>
+</ul>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
