@@ -115,6 +115,218 @@
             </header>
             <article>
                 <h1>659.89 카메라 프레임과 optical 프레임의 관계</h1>
+<h2>1. 개요</h2>
+<p>카메라 센서는 ROS2 로봇 시스템에서 두 개의 서로 다른 좌표 프레임을 사용한다. 하나는 로봇 본체에 대한 카메라의 물리적 장착 위치와 자세를 나타내는 **카메라 링크 프레임(camera_link)**이고, 다른 하나는 카메라가 생성하는 영상 데이터의 좌표계인 **광학 프레임(optical frame)**이다. 이 두 프레임은 서로 다른 좌표축 방향 규약을 따르며, 정적 회전 변환에 의하여 연결된다. 본 절에서는 두 프레임의 좌표축 규약, 변환 관계, 그리고 실제 구현 방법을 상세히 기술한다.</p>
+<h2>2. 카메라 링크 프레임 (camera_link)</h2>
+<h3>2.1 좌표축 방향</h3>
+<p><code>camera_link</code> 프레임은 REP 103의 물체 고정 좌표계(FLU) 규약을 따른다.</p>
+<table><thead><tr><th>축</th><th>방향</th><th>설명</th></tr></thead><tbody>
+<tr><td><strong>X축</strong></td><td>전방 (Forward)</td><td>카메라의 렌즈가 향하는 방향</td></tr>
+<tr><td><strong>Y축</strong></td><td>좌측 (Left)</td><td>카메라의 좌측 방향</td></tr>
+<tr><td><strong>Z축</strong></td><td>상방 (Up)</td><td>카메라의 상부 방향</td></tr>
+</tbody></table>
+<pre><code>        Z (Up)
+        ↑
+        |
+        |  camera_link
+        +------→ X (Forward, 렌즈 방향)
+       /
+      /
+     ↙
+    Y (Left)
+</code></pre>
+<h3>2.2 역할</h3>
+<p><code>camera_link</code>는 로봇의 TF2 변환 트리에서 카메라의 물리적 위치를 나타내는 프레임이다. 이 프레임은 <code>base_link</code>에 대한 정적 변환으로 연결되며, 카메라의 장착 위치(x, y, z)와 장착 각도(roll, pitch, yaw)를 반영한다.</p>
+<h2>3. 광학 프레임 (camera_optical_frame)</h2>
+<h3>3.1 좌표축 방향</h3>
+<p><code>camera_optical_frame</code>은 컴퓨터 비전 분야의 표준 관례를 따른다. 이 규약은 핀홀 카메라 모델(pinhole camera model)의 좌표계와 일치한다.</p>
+<table><thead><tr><th>축</th><th>방향</th><th>설명</th></tr></thead><tbody>
+<tr><td><strong>X축</strong></td><td>우측 (Right)</td><td>영상의 수평 방향 (열 증가 방향)</td></tr>
+<tr><td><strong>Y축</strong></td><td>하방 (Down)</td><td>영상의 수직 방향 (행 증가 방향)</td></tr>
+<tr><td><strong>Z축</strong></td><td>전방 (Forward)</td><td>카메라의 광축(optical axis) 방향</td></tr>
+</tbody></table>
+<pre><code>     X (Right) →
+     ┌──────────────────┐
+     │                  │
+     │    영상 평면      │ Y (Down)
+     │                  │ ↓
+     └──────────────────┘
+               Z (Forward, 광축) ⊙ (화면 안쪽)
+</code></pre>
+<h3>3.2 핀홀 카메라 모델과의 대응</h3>
+<p>광학 프레임의 좌표축은 핀홀 카메라 모델의 좌표 변환과 직접적으로 대응한다. 3D 공간의 점 <span class="math math-inline">\mathbf{P}_c = (X_c, Y_c, Z_c)^T</span>가 광학 프레임에서 표현되면, 영상 평면에서의 투영 좌표 <span class="math math-inline">(u, v)</span>는 다음과 같이 계산된다.</p>
+<p><span class="math math-display">
+u = f_x \frac{X_c}{Z_c} + c_x, \quad v = f_y \frac{Y_c}{Z_c} + c_y
+</span></p>
+<p>여기서 <span class="math math-inline">f_x</span>, <span class="math math-inline">f_y</span>는 초점 거리(focal length), <span class="math math-inline">c_x</span>, <span class="math math-inline">c_y</span>는 주점(principal point)의 좌표이다. 이 투영 공식이 성립하려면 좌표계가 광학 프레임의 규약(X=우측, Y=하방, Z=전방)을 따라야 한다.</p>
+<h2>4. camera_link에서 camera_optical_frame으로의 변환</h2>
+<h3>4.1 회전 변환의 유도</h3>
+<p><code>camera_link</code>(FLU)에서 <code>camera_optical_frame</code>(RDF: Right-Down-Forward)으로의 좌표 변환은 순수 회전 변환이다. 두 좌표계의 축 대응 관계는 다음과 같다.</p>
+<table><thead><tr><th>camera_link (FLU)</th><th>camera_optical_frame (RDF)</th></tr></thead><tbody>
+<tr><td>X (Forward)</td><td>Z (Forward)</td></tr>
+<tr><td>Y (Left)</td><td>-X (Right는 Left의 반대)</td></tr>
+<tr><td>Z (Up)</td><td>-Y (Down은 Up의 반대)</td></tr>
+</tbody></table>
+<p>이를 회전 행렬로 표현하면 다음과 같다.</p>
+<p><span class="math math-display">
+R_{\text{link} \to \text{optical}} = \begin{bmatrix}
+0 &amp; -1 &amp; 0 \\
+0 &amp; 0 &amp; -1 \\
+1 &amp; 0 &amp; 0
+\end{bmatrix}
+</span></p>
+<p>이 회전 행렬은 다음의 오일러 각(고정 축 RPY) 회전으로 분해된다.</p>
+<p><span class="math math-display">
+R = R_z(-90°) \cdot R_x(-90°)
+</span></p>
+<p>라디안으로 표현하면:</p>
+<ul>
+<li>Roll (X축 회전): <span class="math math-inline">-\frac{\pi}{2}</span> rad</li>
+<li>Pitch (Y축 회전): <span class="math math-inline">0</span> rad</li>
+<li>Yaw (Z축 회전): <span class="math math-inline">-\frac{\pi}{2}</span> rad</li>
+</ul>
+<h3>4.2 쿼터니언 표현</h3>
+<p>위 회전을 쿼터니언으로 표현하면 다음과 같다.</p>
+<p><span class="math math-display">
+q = (x, y, z, w) = (-0.5, 0.5, -0.5, 0.5)
+</span></p>
+<p>이 쿼터니언의 정규화 조건을 확인하면:</p>
+<p><span class="math math-display">
+\|q\| = \sqrt{(-0.5)^2 + 0.5^2 + (-0.5)^2 + 0.5^2} = \sqrt{1.0} = 1.0
+</span></p>
+<h2>5. URDF에서의 구현</h2>
+<h3>5.1 정적 관절을 이용한 프레임 정의</h3>
+<pre><code class="language-xml">&lt;!-- 카메라 링크: 물리적 부착점 --&gt;
+&lt;link name="camera_link"&gt;
+  &lt;visual&gt;
+    &lt;geometry&gt;
+      &lt;box size="0.04 0.08 0.04"/&gt;
+    &lt;/geometry&gt;
+    &lt;material name="dark_grey"&gt;
+      &lt;color rgba="0.2 0.2 0.2 1.0"/&gt;
+    &lt;/material&gt;
+  &lt;/visual&gt;
+  &lt;collision&gt;
+    &lt;geometry&gt;
+      &lt;box size="0.04 0.08 0.04"/&gt;
+    &lt;/geometry&gt;
+  &lt;/collision&gt;
+&lt;/link&gt;
+
+&lt;!-- camera_link를 base_link에 부착 --&gt;
+&lt;joint name="camera_joint" type="fixed"&gt;
+  &lt;parent link="base_link"/&gt;
+  &lt;child link="camera_link"/&gt;
+  &lt;origin xyz="0.2 0.0 0.3" rpy="0 0.15 0"/&gt;
+  &lt;!-- 전방 0.2m, 상방 0.3m, pitch 0.15 rad 하방 경사 --&gt;
+&lt;/joint&gt;
+
+&lt;!-- 광학 프레임 --&gt;
+&lt;link name="camera_optical_frame"/&gt;
+
+&lt;!-- camera_link에서 camera_optical_frame으로의 회전 변환 --&gt;
+&lt;joint name="camera_optical_joint" type="fixed"&gt;
+  &lt;parent link="camera_link"/&gt;
+  &lt;child link="camera_optical_frame"/&gt;
+  &lt;origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/&gt;
+  &lt;!-- RPY: -π/2, 0, -π/2 --&gt;
+&lt;/joint&gt;
+</code></pre>
+<h3>5.2 Xacro 매크로를 이용한 재사용</h3>
+<p>복수의 카메라를 사용하는 경우, Xacro 매크로를 이용하여 카메라 프레임 정의를 재사용할 수 있다.</p>
+<pre><code class="language-xml">&lt;xacro:macro name="camera_frame" params="name parent_link xyz rpy"&gt;
+  &lt;link name="${name}_link"&gt;
+    &lt;visual&gt;
+      &lt;geometry&gt;
+        &lt;box size="0.04 0.08 0.04"/&gt;
+      &lt;/geometry&gt;
+    &lt;/visual&gt;
+  &lt;/link&gt;
+
+  &lt;joint name="${name}_joint" type="fixed"&gt;
+    &lt;parent link="${parent_link}"/&gt;
+    &lt;child link="${name}_link"/&gt;
+    &lt;origin xyz="${xyz}" rpy="${rpy}"/&gt;
+  &lt;/joint&gt;
+
+  &lt;link name="${name}_optical_frame"/&gt;
+
+  &lt;joint name="${name}_optical_joint" type="fixed"&gt;
+    &lt;parent link="${name}_link"/&gt;
+    &lt;child link="${name}_optical_frame"/&gt;
+    &lt;origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/&gt;
+  &lt;/joint&gt;
+&lt;/xacro:macro&gt;
+
+&lt;!-- 사용 예시 --&gt;
+&lt;xacro:camera_frame name="front_camera" parent_link="base_link"
+                     xyz="0.3 0.0 0.4" rpy="0 0 0"/&gt;
+&lt;xacro:camera_frame name="rear_camera" parent_link="base_link"
+                     xyz="-0.3 0.0 0.3" rpy="0 0 3.14159"/&gt;
+</code></pre>
+<h2>6. 센서 드라이버에서의 프레임 사용</h2>
+<h3>6.1 영상 메시지의 frame_id</h3>
+<p>카메라 드라이버가 발행하는 영상 메시지(<code>sensor_msgs/msg/Image</code>)와 카메라 정보 메시지(<code>sensor_msgs/msg/CameraInfo</code>)의 <code>header.frame_id</code>는 반드시 <strong>광학 프레임</strong>의 이름이어야 한다.</p>
+<pre><code class="language-yaml"># 카메라 드라이버 설정
+usb_cam_node:
+  ros__parameters:
+    camera_name: "front_camera"
+    # 반드시 optical_frame을 사용
+    frame_id: "front_camera_optical_frame"
+</code></pre>
+<p>이는 영상 데이터의 좌표계가 광학 프레임의 규약(X=우측, Y=하방, Z=전방)을 따르기 때문이다. 만약 <code>camera_link</code>(FLU 규약)를 <code>frame_id</code>로 설정하면, 영상 좌표와 3D 좌표 사이의 변환이 부정확해진다.</p>
+<h3>6.2 깊이 카메라(RGB-D)의 프레임</h3>
+<p>깊이 카메라(예: Intel RealSense, Microsoft Azure Kinect)는 복수의 광학 프레임을 갖는다.</p>
+<pre><code>camera_link
+  ├── camera_color_optical_frame      (RGB 영상 좌표계)
+  ├── camera_depth_optical_frame      (깊이 영상 좌표계)
+  └── camera_infra_optical_frame      (적외선 영상 좌표계)
+</code></pre>
+<p>각 광학 프레임 사이의 변환은 카메라의 내부 보정(intrinsic calibration)과 외부 보정(extrinsic calibration) 결과에 의하여 결정되며, 카메라 드라이버가 정적 변환으로 발행한다.</p>
+<h2>7. D 데이터 변환 시의 좌표계</h2>
+<h3>7.1 포인트 클라우드의 좌표계</h3>
+<p>깊이 카메라에서 생성되는 포인트 클라우드(<code>sensor_msgs/msg/PointCloud2</code>)의 좌표는 <strong>광학 프레임</strong>에서 표현된다. 따라서 포인트 클라우드의 Z 좌표가 카메라로부터의 거리(깊이)를 나타내며, X와 Y 좌표는 각각 수평과 수직 방향의 위치를 나타낸다.</p>
+<p>이 포인트 클라우드를 <code>base_link</code> 프레임으로 변환하면 로봇 중심 기준의 3D 환경 표현이 된다.</p>
+<pre><code class="language-cpp">// 광학 프레임에서 base_link로의 포인트 클라우드 변환
+auto transform = tf_buffer_-&gt;lookupTransform(
+    "base_link", cloud_msg-&gt;header.frame_id,
+    tf2_ros::fromMsg(cloud_msg-&gt;header.stamp));
+
+sensor_msgs::msg::PointCloud2 cloud_base;
+tf2::doTransform(*cloud_msg, cloud_base, transform);
+</code></pre>
+<h3>7.2 ArUco 마커 검출에서의 좌표계</h3>
+<p>시각적 마커(예: ArUco, AprilTag) 검출 알고리즘이 반환하는 마커의 포즈는 광학 프레임에서 표현된다. 이를 <code>map</code> 프레임으로 변환하려면 <code>map → camera_optical_frame</code> 변환을 조회하여야 한다.</p>
+<h2>8. 변환 검증</h2>
+<h3>8.1 tf2_echo를 이용한 확인</h3>
+<p>카메라 프레임 설정이 올바른지 확인하려면 <code>tf2_echo</code>로 <code>camera_link</code>와 <code>camera_optical_frame</code> 사이의 변환을 조회한다.</p>
+<pre><code class="language-bash">ros2 run tf2_ros tf2_echo camera_link camera_optical_frame
+</code></pre>
+<p>올바르게 설정된 경우 다음과 유사한 출력이 나타난다.</p>
+<pre><code>Translation: [0.000, 0.000, 0.000]
+Rotation: in Quaternion [-0.500, 0.500, -0.500, 0.500]
+Rotation: in RPY (radian) [-1.571, -0.000, -1.571]
+Rotation: in RPY (degree) [-90.000, -0.000, -90.000]
+</code></pre>
+<h3>8.2 RViz2에서의 시각적 확인</h3>
+<p>RViz2에서 TF 프레임을 시각화하면, <code>camera_link</code>의 X축(빨간색)이 전방을 가리키는 반면, <code>camera_optical_frame</code>의 Z축(파란색)이 같은 전방을 가리키는 것을 확인할 수 있다. 이를 통하여 두 프레임의 축 방향 관계가 올바른지 시각적으로 검증할 수 있다.</p>
+<h2>9. 일반적인 오류와 해결 방안</h2>
+<table><thead><tr><th>오류 현상</th><th>원인</th><th>해결 방안</th></tr></thead><tbody>
+<tr><td>영상 좌표와 3D 포인트의 불일치</td><td><code>frame_id</code>가 <code>_link</code>로 설정됨</td><td><code>_optical_frame</code>으로 변경</td></tr>
+<tr><td>포인트 클라우드가 뒤집혀 표시됨</td><td>RPY 값이 잘못됨</td><td>RPY = (-π/2, 0, -π/2) 확인</td></tr>
+<tr><td>TF 트리에서 optical 프레임이 없음</td><td>URDF에 광학 프레임 관절이 빠짐</td><td>고정 관절 추가</td></tr>
+<tr><td>마커 포즈가 비정상적으로 회전됨</td><td>검출 알고리즘의 좌표계 불일치</td><td><code>frame_id</code> 설정 확인</td></tr>
+</tbody></table>
+<h2>10. 요약</h2>
+<p>카메라 링크 프레임(<code>camera_link</code>)은 REP 103의 FLU 규약을 따르는 물리적 부착점 프레임이고, 광학 프레임(<code>camera_optical_frame</code>)은 컴퓨터 비전의 RDF 규약을 따르는 데이터 좌표계이다. 두 프레임은 RPY = <span class="math math-inline">(-\frac{\pi}{2}, 0, -\frac{\pi}{2})</span>의 순수 회전 변환으로 연결되며, URDF의 고정 관절로 정의된다. 카메라 드라이버가 발행하는 모든 영상 관련 메시지의 <code>frame_id</code>는 반드시 광학 프레임을 사용하여야 하며, 이를 통하여 핀홀 카메라 모델과 TF2 좌표 변환의 일관성이 보장된다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>T. Foote, “REP 103 – Standard Units of Measure and Coordinate Conventions,” ROS Enhancement Proposals, https://www.ros.org/reps/rep-0103.html (2010, 최종 갱신 2023)</li>
+<li>R. Hartley, A. Zisserman, <em>Multiple View Geometry in Computer Vision</em>, 2nd ed., Cambridge University Press, 2004.</li>
+<li>ROS Wiki, “image_pipeline/CameraInfo”, https://wiki.ros.org/image_pipeline/CameraInfo</li>
+<li>ROS2 공식 문서, “URDF Tutorials”, https://docs.ros.org/en/humble/Tutorials/Intermediate/URDF/ (ROS2 Humble Hawksbill)</li>
+</ul>
 
             </article>
             <footer>

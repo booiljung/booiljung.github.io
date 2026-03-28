@@ -115,6 +115,202 @@
             </header>
             <article>
                 <h1>659.67 포즈 스탬프 (geometry_msgs::PoseStamped) 변환</h1>
+<h2>1. 개요</h2>
+<p><code>geometry_msgs::msg::PoseStamped</code>는 시간 정보(<code>stamp</code>)와 좌표 프레임 정보(<code>frame_id</code>)가 포함된 포즈 메시지로, TF2 기반 좌표 변환 파이프라인에서 가장 빈번하게 사용되는 기하학적 메시지 타입 중 하나이다. ROS2의 내비게이션, 매니퓰레이션, 객체 인식 등 대부분의 로봇 응용에서 공간 정보를 전달하는 표준 메시지로 사용되며, TF2의 <code>Buffer::transform()</code> 메서드와 가장 높은 호환성을 갖는다.</p>
+<h2>2. PoseStamped 메시지 구조</h2>
+<h3>2.1 메시지 정의</h3>
+<pre><code>geometry_msgs/PoseStamped
+  std_msgs/Header header
+    builtin_interfaces/Time stamp
+    string frame_id
+  geometry_msgs/Pose pose
+    geometry_msgs/Point position
+      float64 x
+      float64 y
+      float64 z
+    geometry_msgs/Quaternion orientation
+      float64 x
+      float64 y
+      float64 z
+      float64 w
+</code></pre>
+<h3>2.2 각 필드의 역할</h3>
+<table><thead><tr><th>필드</th><th>타입</th><th>역할</th></tr></thead><tbody>
+<tr><td><code>header.stamp</code></td><td><code>builtin_interfaces/Time</code></td><td>해당 포즈가 유효한 시점의 타임스탬프</td></tr>
+<tr><td><code>header.frame_id</code></td><td><code>string</code></td><td>포즈가 표현된 좌표 프레임의 식별자</td></tr>
+<tr><td><code>pose.position</code></td><td><code>geometry_msgs/Point</code></td><td>3차원 위치 (m 단위)</td></tr>
+<tr><td><code>pose.orientation</code></td><td><code>geometry_msgs/Quaternion</code></td><td>3차원 자세 (단위 쿼터니언)</td></tr>
+</tbody></table>
+<p><code>header.frame_id</code>와 <code>header.stamp</code>의 존재가 Stamped 메시지의 핵심적 특성이다. 이 정보를 통해 TF2는 해당 포즈의 좌표 프레임과 시간적 맥락을 자동으로 파악하여 적절한 변환을 수행한다.</p>
+<h2>3. PoseStamped vs Pose의 변환 차이</h2>
+<h3>3.1 자동 프레임 관리</h3>
+<p><code>PoseStamped</code>는 <code>header.frame_id</code>를 통해 소스 프레임 정보를 자체적으로 보유하므로, <code>Buffer::transform()</code> 호출 시 대상 프레임만 지정하면 된다. 반면, <code>Pose</code>(Non-Stamped)의 경우 소스 프레임 정보가 없으므로 개발자가 <code>lookupTransform()</code>과 <code>doTransform()</code>을 각각 명시적으로 호출해야 한다.</p>
+<h3>3.2 시간 기반 변환 자동 조회</h3>
+<p><code>PoseStamped</code>의 <code>header.stamp</code>는 변환 조회 시점을 결정한다. 동적 변환(예: <code>odom → base_link</code>)에서 타임스탬프에 따라 변환값이 달라지므로, 정확한 타임스탬프의 사용이 변환의 정밀도에 직접적인 영향을 미친다.</p>
+<h3>3.3 결과 헤더 자동 갱신</h3>
+<p>변환 후 반환되는 <code>PoseStamped</code>의 <code>header.frame_id</code>는 대상 프레임으로, <code>header.stamp</code>는 변환의 타임스탬프로 자동 갱신된다.</p>
+<h2>4. C++에서의 PoseStamped 변환</h2>
+<h3>4.1 Buffer::transform()을 이용한 변환</h3>
+<p>가장 간결하고 권장되는 방법이다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/buffer.h&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_geometry_msgs/tf2_geometry_msgs.hpp&gt;
+
+// PoseStamped 생성
+geometry_msgs::msg::PoseStamped pose_in;
+pose_in.header.frame_id = "camera_link";
+pose_in.header.stamp = node-&gt;now();
+pose_in.pose.position.x = 0.5;
+pose_in.pose.position.y = -0.1;
+pose_in.pose.position.z = 1.0;
+pose_in.pose.orientation.w = 1.0;
+
+try {
+  // 간편 변환: lookupTransform + doTransform 자동 수행
+  auto pose_out = tf_buffer-&gt;transform(
+    pose_in, "base_link");
+  
+  RCLCPP_INFO(node-&gt;get_logger(),
+    "base_link에서의 포즈: (%.2f, %.2f, %.2f)",
+    pose_out.pose.position.x,
+    pose_out.pose.position.y,
+    pose_out.pose.position.z);
+} catch (const tf2::TransformException &amp; ex) {
+  RCLCPP_ERROR(node-&gt;get_logger(), "%s", ex.what());
+}
+</code></pre>
+<h3>4.2 고정 프레임을 이용한 시간 이동 변환</h3>
+<p>서로 다른 시점의 변환을 결합해야 하는 경우, <code>Buffer::transform()</code>의 고급 오버로드를 사용한다.</p>
+<pre><code class="language-cpp">try {
+  auto pose_out = tf_buffer-&gt;transform(
+    pose_in,
+    "map",                    // 대상 프레임
+    tf2::durationFromSec(0),  // 타임아웃
+    "odom");                  // 고정 프레임 (fixed frame)
+} catch (const tf2::TransformException &amp; ex) {
+  RCLCPP_ERROR(node-&gt;get_logger(), "%s", ex.what());
+}
+</code></pre>
+<p>고정 프레임(fixed frame)을 지정하면, 입력 포즈의 시간에서 고정 프레임까지의 변환과 대상 시간에서 고정 프레임까지의 역변환이 결합된다. 이는 시간에 따라 변하는 프레임 간의 관계에서도 일관된 변환을 수행할 수 있게 한다.</p>
+<h3>4.3 doTransform()을 이용한 명시적 변환</h3>
+<pre><code class="language-cpp">geometry_msgs::msg::PoseStamped pose_out;
+auto transform = tf_buffer-&gt;lookupTransform(
+  "map", "camera_link", pose_in.header.stamp);
+tf2::doTransform(pose_in, pose_out, transform);
+</code></pre>
+<p>이 방식은 동일한 변환을 다수의 포즈에 적용할 때 <code>lookupTransform()</code>을 한 번만 호출하므로 효율적이다.</p>
+<h2>5. Python에서의 PoseStamped 변환</h2>
+<h3>5.1 Buffer.transform()을 이용한 변환</h3>
+<pre><code class="language-python">from geometry_msgs.msg import PoseStamped
+import tf2_geometry_msgs  # 반드시 import 필요
+
+pose_in = PoseStamped()
+pose_in.header.frame_id = 'camera_link'
+pose_in.header.stamp = node.get_clock().now().to_msg()
+pose_in.pose.position.x = 0.5
+pose_in.pose.position.y = -0.1
+pose_in.pose.position.z = 1.0
+pose_in.pose.orientation.w = 1.0
+
+try:
+    pose_out = tf_buffer.transform(pose_in, 'base_link')
+    node.get_logger().info(
+        f'base_link에서의 포즈: '
+        f'({pose_out.pose.position.x:.2f}, '
+        f'{pose_out.pose.position.y:.2f}, '
+        f'{pose_out.pose.position.z:.2f})')
+except TransformException as ex:
+    node.get_logger().error(f'{ex}')
+</code></pre>
+<h3>5.2 do_transform_pose_stamped()를 이용한 명시적 변환</h3>
+<pre><code class="language-python">from tf2_geometry_msgs import do_transform_pose_stamped
+
+transform = tf_buffer.lookup_transform(
+    'base_link', 'camera_link',
+    pose_in.header.stamp)
+pose_out = do_transform_pose_stamped(pose_in, transform)
+</code></pre>
+<h2>6. 타임스탬프 전략</h2>
+<h3>6.1 현재 시간 사용</h3>
+<pre><code class="language-cpp">pose_in.header.stamp = node-&gt;now();
+</code></pre>
+<p>현재 시점의 변환을 조회한다. 변환 발행 지연(latency)이 있으면 <code>ExtrapolationException</code>이 발생할 수 있다.</p>
+<h3>6.2 TimePointZero(최신 가용 변환) 사용</h3>
+<pre><code class="language-cpp">pose_in.header.stamp = rclcpp::Time(0, 0, node-&gt;get_clock()-&gt;get_clock_type());
+</code></pre>
+<pre><code class="language-python">from rclpy.time import Time
+pose_in.header.stamp = Time().to_msg()
+</code></pre>
+<p>가장 최근에 발행된 변환을 사용한다. 시간적 정확성은 다소 떨어지지만, <code>ExtrapolationException</code>을 회피할 수 있어 디버깅이나 프로토타이핑 단계에서 유용하다.</p>
+<h3>6.3 센서 데이터의 타임스탬프 사용</h3>
+<pre><code class="language-cpp">pose_in.header.stamp = sensor_msg-&gt;header.stamp;
+</code></pre>
+<p>센서 데이터와 동일한 시점의 변환을 사용하여 시간적 일관성을 보장한다. 이 방식이 프로덕션 환경에서 가장 정확한 결과를 산출한다.</p>
+<h2>7. ROS2 노드에서의 통합 사용 패턴</h2>
+<h3>7.1 콜백 내 변환 패턴</h3>
+<pre><code class="language-cpp">class PoseTransformNode : public rclcpp::Node
+{
+public:
+  PoseTransformNode() : Node("pose_transform_node")
+  {
+    tf_buffer_ = std::make_shared&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+    tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(
+      *tf_buffer_);
+    
+    pose_sub_ = this-&gt;create_subscription&lt;
+      geometry_msgs::msg::PoseStamped&gt;(
+      "input_pose", 10,
+      std::bind(&amp;PoseTransformNode::pose_callback, this,
+                std::placeholders::_1));
+    
+    pose_pub_ = this-&gt;create_publisher&lt;
+      geometry_msgs::msg::PoseStamped&gt;("output_pose", 10);
+  }
+
+private:
+  void pose_callback(
+    const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+  {
+    try {
+      auto transformed = tf_buffer_-&gt;transform(
+        *msg, "map");
+      pose_pub_-&gt;publish(transformed);
+    } catch (const tf2::TransformException &amp; ex) {
+      RCLCPP_WARN_THROTTLE(
+        this-&gt;get_logger(), *this-&gt;get_clock(), 1000,
+        "변환 실패: %s", ex.what());
+    }
+  }
+
+  std::shared_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+  std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+  rclcpp::Subscription&lt;geometry_msgs::msg::PoseStamped&gt;::SharedPtr pose_sub_;
+  rclcpp::Publisher&lt;geometry_msgs::msg::PoseStamped&gt;::SharedPtr pose_pub_;
+};
+</code></pre>
+<p>이 패턴에서 주목할 점은 다음과 같다.</p>
+<ol>
+<li><strong>예외 처리</strong>: 변환이 불가능한 경우(프레임 미존재, 시간 범위 초과 등)를 적절히 처리한다</li>
+<li><strong>RCLCPP_WARN_THROTTLE</strong>: 반복적인 변환 실패 시 로그 과출력을 방지하기 위해 주기적 로깅(throttled logging)을 사용한다</li>
+<li><strong>헤더 자동 갱신</strong>: <code>Buffer::transform()</code>의 결과는 대상 프레임의 <code>frame_id</code>와 적절한 타임스탬프가 자동으로 설정되어 즉시 발행(publish) 가능하다</li>
+</ol>
+<h2>8. 일반적 오류와 대처</h2>
+<h3>8.1 frame_id 미설정</h3>
+<pre><code>tf2::TransformException: Could not find a connection between '' and 'map'
+</code></pre>
+<p><code>header.frame_id</code>가 빈 문자열인 경우 발생한다. 포즈를 생성할 때 반드시 <code>frame_id</code>를 설정해야 한다.</p>
+<h3>8.2 쿼터니언 초기화 오류</h3>
+<p><code>geometry_msgs::msg::Quaternion</code>의 기본 생성자는 모든 필드를 0으로 초기화한다. <span class="math math-inline">(0, 0, 0, 0)</span> 쿼터니언은 유효하지 않으므로, 항등 자세를 표현하려면 반드시 <code>orientation.w = 1.0</code>을 설정해야 한다.</p>
+<h3>8.3 변환 지연에 의한 ExtrapolationException</h3>
+<p>변환 발행 노드의 지연으로 인해, 요청한 타임스탬프의 변환이 아직 수신되지 않은 경우 발생한다. <code>tf2_ros::Buffer::canTransform()</code>을 통해 변환 가용 여부를 사전 확인하거나, <code>TimePointZero</code>를 사용하여 최신 가용 변환을 조회하는 것으로 대처할 수 있다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Open Robotics, “geometry_msgs/PoseStamped,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/p/geometry_msgs/">https://docs.ros.org/en/rolling/p/geometry_msgs/</a></li>
+<li>Open Robotics, “tf2 Tutorials,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/Tutorials/Intermediate/Tf2/Tf2-Main.html">https://docs.ros.org/en/rolling/Tutorials/Intermediate/Tf2/Tf2-Main.html</a></li>
+<li>T. Foote, “tf: The transform library,” in <em>Proc. IEEE Conf. Technologies for Practical Robot Applications (TePRA)</em>, 2013, pp. 1–6.</li>
+</ul>
+<hr />
+<p><em>버전: 2026-03-26</em></p>
 
             </article>
             <footer>

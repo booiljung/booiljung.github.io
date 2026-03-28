@@ -115,6 +115,82 @@
             </header>
             <article>
                 <h1>659.97 robot_state_publisher의 내부 동작 원리</h1>
+<h2>1. 개요</h2>
+<p><code>robot_state_publisher</code>는 URDF 기반 로봇 모델의 순운동학(forward kinematics)을 계산하여 TF2 변환을 발행하는 노드이다. 본 절에서는 이 노드의 내부 구현 메커니즘, KDL 운동학 엔진의 활용, 상태 갱신 전략, 그리고 성능 최적화 방법을 상세히 기술한다.</p>
+<h2>2. 내부 아키텍처</h2>
+<h3>2.1 구성 요소</h3>
+<p><code>robot_state_publisher</code>의 내부는 다음 구성 요소로 이루어져 있다.</p>
+<table><thead><tr><th>구성 요소</th><th>역할</th></tr></thead><tbody>
+<tr><td><strong>URDF 파서</strong></td><td><code>robot_description</code> 매개변수의 URDF XML을 파싱하여 운동학 트리를 구성</td></tr>
+<tr><td><strong>KDL 트리</strong></td><td>URDF에서 변환된 KDL(Kinematics and Dynamics Library) 기반 운동학 트리</td></tr>
+<tr><td><strong>분절 맵(Segment Map)</strong></td><td>각 링크에 대한 부모-자식 관계와 관절 정보를 저장하는 맵</td></tr>
+<tr><td><strong>JointState 콜백</strong></td><td><code>/joint_states</code> 토픽의 수신 콜백</td></tr>
+<tr><td><strong>TF 발행기</strong></td><td>정적/동적 변환을 발행하는 <code>TransformBroadcaster</code>와 <code>StaticTransformBroadcaster</code></td></tr>
+<tr><td><strong>주기적 타이머</strong></td><td><code>publish_frequency</code>에 따른 주기적 TF 발행 타이머</td></tr>
+</tbody></table>
+<h3>2.2 초기화 과정</h3>
+<ol>
+<li><strong>URDF 파싱</strong>: <code>robot_description</code> 매개변수에서 URDF 문자열을 읽고, <code>urdf::Model</code>로 파싱한다.</li>
+<li><strong>KDL 변환</strong>: <code>kdl_parser</code>를 사용하여 URDF 모델을 <code>KDL::Tree</code>로 변환한다. KDL 트리는 링크와 관절의 운동학적 관계를 효율적으로 표현한다.</li>
+<li><strong>분절 맵 구성</strong>: KDL 트리의 각 분절(segment)을 순회하며, 관절 유형(고정/가동)에 따라 분리하여 관리한다.</li>
+<li><strong>정적 변환 발행</strong>: 고정 관절에 해당하는 모든 변환을 <code>/tf_static</code>으로 일괄 발행한다.</li>
+<li><strong>구독자/타이머 설정</strong>: <code>/joint_states</code> 구독자와 주기적 발행 타이머를 설정한다.</li>
+</ol>
+<h2>3. 순운동학 계산</h2>
+<h3>3.1 KDL 기반 변환 계산</h3>
+<p><code>robot_state_publisher</code>는 KDL의 <code>Segment</code> 구조체를 사용하여 각 가동 관절의 변환을 계산한다.</p>
+<p>가동 관절 <span class="math math-inline">j</span>의 변환 <span class="math math-inline">T_j(q_j)</span>는 다음과 같이 계산된다.</p>
+<p><span class="math math-display">
+T_j(q_j) = T_{\text{origin}} \cdot T_{\text{joint}}(q_j)
+</span></p>
+<p>여기서:</p>
+<ul>
+<li><span class="math math-inline">T_{\text{origin}}</span>: URDF의 <code>&lt;origin&gt;</code> 요소에서 정의된 정적 오프셋</li>
+<li><span class="math math-inline">T_{\text{joint}}(q_j)</span>: 관절 위치 <span class="math math-inline">q_j</span>에 의한 운동학적 변환</li>
+<li><span class="math math-inline">q_j</span>: <code>/joint_states</code>에서 수신된 관절 위치 값</li>
+</ul>
+<p>회전 관절(revolute, continuous)의 경우:</p>
+<p><span class="math math-display">
+T_{\text{joint}}(q_j) = \text{Rotation}(\mathbf{a}, q_j)
+</span></p>
+<p>직선 관절(prismatic)의 경우:</p>
+<p><span class="math math-display">
+T_{\text{joint}}(q_j) = \text{Translation}(\mathbf{a} \cdot q_j)
+</span></p>
+<p>여기서 <span class="math math-inline">\mathbf{a}</span>는 URDF의 <code>&lt;axis&gt;</code> 요소에서 정의된 관절 축 벡터이다.</p>
+<h3>3.2 상태 캐싱</h3>
+<p><code>robot_state_publisher</code>는 최근에 수신된 각 관절의 위치를 내부 맵에 캐시한다. <code>/joint_states</code> 메시지에 일부 관절의 데이터만 포함되어 있는 경우에도, 이전에 캐시된 값을 사용하여 전체 트리의 변환을 계산한다.</p>
+<pre><code>내부 맵: { "joint1": 0.5, "joint2": -0.3, "joint3": 1.2, ... }
+</code></pre>
+<p>새로운 <code>/joint_states</code> 메시지가 수신되면, 메시지에 포함된 관절만 갱신되고 나머지는 이전 값을 유지한다.</p>
+<h2>4. 갱신 전략</h2>
+<h3>4.1 변경 감지 방식</h3>
+<p><code>robot_state_publisher</code>는 관절 위치가 이전 값과 다른 경우에만 해당 관절의 변환을 재발행한다. 이는 불필요한 TF 발행을 줄여 네트워크 부하를 감소시킨다.</p>
+<h3>4.2 타이머 기반 발행</h3>
+<p><code>publish_frequency</code> 매개변수에 의하여 설정된 주기로 타이머 콜백이 실행되며, 이 콜백에서 변경된 관절의 변환을 발행한다. 기본 주파수는 20 Hz이다.</p>
+<h3>4.3 이벤트 기반 발행</h3>
+<p><code>/joint_states</code> 메시지가 수신되면 즉시 해당 관절의 변환이 갱신된다. 이 방식은 타이머 기반 발행과 독립적으로 동작하며, 저지연 갱신이 필요한 경우에 유용하다.</p>
+<h2>5. 동적 URDF 갱신</h2>
+<p>ROS2의 <code>robot_state_publisher</code>는 <code>robot_description</code> 매개변수를 동적으로 갱신하는 것을 지원한다. 매개변수가 변경되면 내부 운동학 트리를 재구성하고, 새로운 정적 변환을 발행한다. 이 기능은 런타임에 로봇 모델을 변경하여야 하는 경우(예: 도구 교환, 모듈 부착/탈착)에 활용된다.</p>
+<h2>6. 성능 고려 사항</h2>
+<h3>6.1 발행 주파수 설정</h3>
+<table><thead><tr><th>상황</th><th>권장 <code>publish_frequency</code></th></tr></thead><tbody>
+<tr><td>정적 로봇 (고정 관절만)</td><td>1~5 Hz (또는 비활성화)</td></tr>
+<tr><td>저속 이동 로봇</td><td>10~20 Hz</td></tr>
+<tr><td>매니퓰레이터</td><td>50~100 Hz</td></tr>
+<tr><td>고속 다관절 시스템</td><td>100~200 Hz</td></tr>
+</tbody></table>
+<h3>6.2 다수의 가동 관절에서의 부하</h3>
+<p>가동 관절의 수가 많은 로봇(예: 휴머노이드)에서는 각 관절마다 변환을 발행하므로, <code>/tf</code> 토픽의 메시지 빈도가 증가한다. 이 경우 발행 주파수를 적절히 조절하여 네트워크 부하를 관리하여야 한다.</p>
+<h2>7. 요약</h2>
+<p><code>robot_state_publisher</code>는 URDF를 KDL 운동학 트리로 변환하고, <code>/joint_states</code> 토픽에서 관절 상태를 수신하여 순운동학을 계산한 후, 결과를 TF2 변환으로 발행한다. 내부적으로 관절 상태 캐싱과 변경 감지 메커니즘을 통하여 효율적인 변환 발행을 수행하며, 고정 관절은 <code>/tf_static</code>, 가동 관절은 <code>/tf</code>로 분리하여 발행한다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li><code>robot_state_publisher</code> 소스 코드, https://github.com/ros/robot_state_publisher (ROS2 Humble 브랜치)</li>
+<li>R. Smits, “KDL: Kinematics and Dynamics Library,” Orocos Project, https://www.orocos.org/kdl/</li>
+<li><code>kdl_parser</code> 패키지, https://github.com/ros/kdl_parser (ROS2 Humble 브랜치)</li>
+</ul>
 
             </article>
             <footer>

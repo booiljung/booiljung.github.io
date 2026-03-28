@@ -115,6 +115,179 @@
             </header>
             <article>
                 <h1>659.75 tf2_ros 패키지의 구성 요소</h1>
+<h2>1. 개요</h2>
+<p><code>tf2_ros</code>는 TF2 프레임워크와 ROS2 시스템을 연결하는 인터페이스 패키지이다. 핵심 변환 라이브러리인 <code>tf2</code>가 순수 C++ 라이브러리로서 ROS에 독립적인 변환 로직을 제공하는 반면, <code>tf2_ros</code>는 ROS2의 노드, 토픽, 서비스, 파라미터, 시간 관리 등과 통합되어 실제 로봇 시스템에서 좌표 변환을 수행하기 위한 모든 실무적 기능을 제공한다.</p>
+<h2>2. 패키지 아키텍처</h2>
+<h3>2.1 계층 구조</h3>
+<pre><code>tf2_ros (ROS2 인터페이스 계층)
+  ↓ 의존
+tf2 (핵심 변환 라이브러리)
+  ↓ 의존
+geometry_msgs, sensor_msgs (표준 메시지)
+</code></pre>
+<p><code>tf2_ros</code>는 <code>tf2</code>의 기능을 ROS2 통신 인프라 위에 랩핑(wrapping)하여, 분산 시스템에서의 좌표 변환 발행, 수신, 조회를 투명하게 처리한다.</p>
+<h2>3. 핵심 구성 요소</h2>
+<h3>3.1 TransformBroadcaster</h3>
+<p>동적 좌표 변환을 <code>/tf</code> 토픽으로 발행하는 클래스이다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/transform_broadcaster.h&gt;
+
+auto tf_broadcaster = 
+  std::make_shared&lt;tf2_ros::TransformBroadcaster&gt;(node);
+
+geometry_msgs::msg::TransformStamped ts;
+ts.header.stamp = node-&gt;now();
+ts.header.frame_id = "odom";
+ts.child_frame_id = "base_link";
+ts.transform.translation.x = 1.0;
+ts.transform.rotation.w = 1.0;
+
+tf_broadcaster-&gt;sendTransform(ts);
+</code></pre>
+<p><code>TransformBroadcaster</code>는 내부적으로 <code>/tf</code> 토픽에 대한 퍼블리셔(publisher)를 생성하며, <code>tf2_msgs::msg::TFMessage</code>를 발행한다. QoS 정책은 기본적으로 <code>RELIABLE</code>, <code>KEEP_LAST(100)</code>이다.</p>
+<h3>3.2 StaticTransformBroadcaster</h3>
+<p>정적 좌표 변환을 <code>/tf_static</code> 토픽으로 발행하는 클래스이다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/static_transform_broadcaster.h&gt;
+
+auto static_tf_broadcaster = 
+  std::make_shared&lt;tf2_ros::StaticTransformBroadcaster&gt;(node);
+
+geometry_msgs::msg::TransformStamped ts;
+ts.header.stamp = node-&gt;now();
+ts.header.frame_id = "base_link";
+ts.child_frame_id = "laser_link";
+ts.transform.translation.x = 0.1;
+ts.transform.translation.z = 0.2;
+ts.transform.rotation.w = 1.0;
+
+static_tf_broadcaster-&gt;sendTransform(ts);
+</code></pre>
+<p><code>StaticTransformBroadcaster</code>는 <code>/tf_static</code> 토픽에 <code>TRANSIENT_LOCAL</code> 지속성(durability) QoS를 사용하여, 새로운 구독자(subscriber)가 연결될 때 과거에 발행된 정적 변환을 자동으로 전달받을 수 있도록 한다.</p>
+<h3>3.3 Buffer</h3>
+<p>변환 데이터를 저장하고 조회하는 핵심 클래스이다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/buffer.h&gt;
+
+auto tf_buffer = std::make_shared&lt;tf2_ros::Buffer&gt;(node-&gt;get_clock());
+</code></pre>
+<p><code>Buffer</code>는 다음의 핵심 메서드를 제공한다.</p>
+<table><thead><tr><th>메서드</th><th>역할</th></tr></thead><tbody>
+<tr><td><code>lookupTransform()</code></td><td>두 프레임 간의 변환 조회</td></tr>
+<tr><td><code>canTransform()</code></td><td>변환 가용 여부 확인</td></tr>
+<tr><td><code>transform()</code></td><td>데이터 변환 (조회 + 적용)</td></tr>
+</tbody></table>
+<p><code>Buffer</code>는 내부적으로 <code>tf2::BufferCore</code>를 래핑하며, ROS2 시간 인터페이스(<code>rclcpp::Clock</code>)와의 통합을 추가한다. 캐시 기간(cache duration)은 기본 10초이며, 생성자의 두 번째 인자로 변경할 수 있다.</p>
+<pre><code class="language-cpp">// 캐시 기간을 30초로 설정
+auto tf_buffer = std::make_shared&lt;tf2_ros::Buffer&gt;(
+  node-&gt;get_clock(), tf2::Duration(std::chrono::seconds(30)));
+</code></pre>
+<h3>3.4 TransformListener</h3>
+<p><code>/tf</code> 및 <code>/tf_static</code> 토픽을 구독하여 수신된 변환을 <code>Buffer</code>에 자동으로 저장하는 클래스이다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/transform_listener.h&gt;
+
+auto tf_buffer = std::make_shared&lt;tf2_ros::Buffer&gt;(node-&gt;get_clock());
+auto tf_listener = std::make_shared&lt;tf2_ros::TransformListener&gt;(
+  *tf_buffer);
+</code></pre>
+<p><code>TransformListener</code>는 생성 시 자동으로 <code>/tf</code>와 <code>/tf_static</code> 토픽의 구독을 시작하며, 수신된 <code>TFMessage</code>를 파싱하여 <code>Buffer</code>에 등록한다. 내부적으로 별도의 콜백 그룹(callback group)과 전용 스레드를 사용하여, 메인 콜백의 실행과 독립적으로 변환 데이터를 수신한다.</p>
+<h3>3.5 MessageFilter</h3>
+<p>특정 토픽의 메시지와 TF2 변환의 시간적 동기화를 수행하는 클래스이다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/message_filter.h&gt;
+#include &lt;message_filters/subscriber.h&gt;
+
+message_filters::Subscriber&lt;geometry_msgs::msg::PointStamped&gt;
+  point_sub(node, "point_topic", rmw_qos_profile_sensor_data);
+
+tf2_ros::MessageFilter&lt;geometry_msgs::msg::PointStamped&gt;
+  tf_filter(point_sub, *tf_buffer, "base_link", 100,
+            node-&gt;get_node_logging_interface(),
+            node-&gt;get_node_clock_interface());
+
+tf_filter.registerCallback(
+  std::bind(&amp;MyNode::filtered_callback, this, 
+            std::placeholders::_1));
+</code></pre>
+<p><code>MessageFilter</code>는 입력 메시지의 <code>header.stamp</code>에 해당하는 TF2 변환이 가용해질 때까지 메시지를 큐에 보관하고, 변환이 가용해지면 등록된 콜백을 호출한다. 이를 통해 센서 데이터와 좌표 변환의 시간적 동기화를 보장한다.</p>
+<h2>4. 부가 구성 요소</h2>
+<h3>4.1 static_transform_publisher 노드</h3>
+<p>명령행 또는 런치 파일에서 정적 변환을 발행하는 독립 실행형 노드이다.</p>
+<pre><code class="language-bash">ros2 run tf2_ros static_transform_publisher \
+  --x 0.1 --y 0.0 --z 0.2 \
+  --roll 0.0 --pitch 0.0 --yaw 0.0 \
+  --frame-id base_link \
+  --child-frame-id laser_link
+</code></pre>
+<p>런치 파일에서의 사용:</p>
+<pre><code class="language-python">from launch_ros.actions import Node
+
+Node(
+    package='tf2_ros',
+    executable='static_transform_publisher',
+    arguments=['--x', '0.1', '--z', '0.2',
+               '--frame-id', 'base_link',
+               '--child-frame-id', 'laser_link'],
+)
+</code></pre>
+<h3>4.2 tf2_echo</h3>
+<p>두 프레임 간의 변환을 실시간으로 출력하는 명령행 도구이다.</p>
+<pre><code class="language-bash">ros2 run tf2_ros tf2_echo base_link laser_link
+</code></pre>
+<h3>4.3 tf2_monitor</h3>
+<p>변환 발행 상태(주파수, 지연 시간 등)를 모니터링하는 명령행 도구이다.</p>
+<pre><code class="language-bash">ros2 run tf2_ros tf2_monitor
+</code></pre>
+<h3>4.4 view_frames</h3>
+<p>현재 변환 트리의 전체 구조를 PDF 파일로 시각화하는 도구이다.</p>
+<pre><code class="language-bash">ros2 run tf2_tools view_frames
+</code></pre>
+<h2>5. Buffer와 TransformListener의 전형적 초기화 패턴</h2>
+<h3>5.1 권장 초기화 패턴</h3>
+<pre><code class="language-cpp">class MyNode : public rclcpp::Node
+{
+public:
+  MyNode() : Node("my_node")
+  {
+    // 1. Buffer 생성 (노드의 Clock 전달)
+    tf_buffer_ = std::make_unique&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+    
+    // 2. TransformListener 생성 (Buffer에 연결)
+    tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(
+      *tf_buffer_);
+    
+    // 3. 이후 tf_buffer_를 통해 변환 조회
+  }
+
+private:
+  std::unique_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+  std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+};
+</code></pre>
+<h3>5.2 소유권 관리</h3>
+<p><code>Buffer</code>는 <code>TransformListener</code>보다 오래 존재해야 한다. <code>TransformListener</code>는 <code>Buffer</code>의 참조를 보유하므로, <code>Buffer</code>가 먼저 소멸되면 미정의 동작(undefined behavior)이 발생한다. 클래스 멤버 변수의 선언 순서로 소멸 순서를 관리하거나, <code>shared_ptr</code>을 사용하여 수명을 보장한다.</p>
+<h2>6. Python에서의 tf2_ros</h2>
+<p>Python에서도 동일한 구성 요소가 제공된다.</p>
+<pre><code class="language-python">from tf2_ros import Buffer, TransformListener
+from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
+from tf2_ros import TransformException
+
+# Buffer + TransformListener
+tf_buffer = Buffer()
+tf_listener = TransformListener(tf_buffer, node)
+
+# 변환 조회
+transform = tf_buffer.lookup_transform(
+    'base_link', 'sensor_link', rclpy.time.Time())
+
+# 변환 발행
+tf_broadcaster = TransformBroadcaster(node)
+tf_broadcaster.sendTransform(transform_stamped)
+</code></pre>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Open Robotics, “tf2_ros,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/p/tf2_ros/">https://docs.ros.org/en/rolling/p/tf2_ros/</a></li>
+<li>Open Robotics, “tf2 Tutorials,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/Tutorials/Intermediate/Tf2/Tf2-Main.html">https://docs.ros.org/en/rolling/Tutorials/Intermediate/Tf2/Tf2-Main.html</a></li>
+<li>T. Foote, “tf: The transform library,” in <em>Proc. IEEE Conf. Technologies for Practical Robot Applications (TePRA)</em>, 2013, pp. 1–6.</li>
+</ul>
+<hr />
+<p><em>버전: 2026-03-26</em></p>
 
             </article>
             <footer>

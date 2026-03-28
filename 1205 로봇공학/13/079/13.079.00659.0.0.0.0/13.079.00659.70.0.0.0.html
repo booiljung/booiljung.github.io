@@ -115,6 +115,197 @@
             </header>
             <article>
                 <h1>659.70 포인트 클라우드 (sensor_msgs::PointCloud2) 좌표 변환</h1>
+<h2>1. 개요</h2>
+<p>포인트 클라우드(point cloud)는 3차원 공간에서 다수의 점으로 구성된 데이터 구조로, LiDAR, 깊이 카메라(depth camera), 스테레오 카메라 등 다양한 3차원 센서에서 생성된다. 로봇 시스템에서 포인트 클라우드는 환경 인식, 장애물 탐지, SLAM, 객체 인식, 지도 생성 등에 광범위하게 활용된다. 센서에서 취득한 포인트 클라우드를 로봇 기체 좌표계, 오도메트리 좌표계, 또는 세계 좌표계 등 다른 좌표 프레임으로 변환하는 것은 센서 데이터 처리의 필수적인 전처리 단계이다.</p>
+<h2>2. sensor_msgs::msg::PointCloud2 메시지 구조</h2>
+<h3>2.1 메시지 정의</h3>
+<pre><code>sensor_msgs/PointCloud2
+  std_msgs/Header header
+    builtin_interfaces/Time stamp
+    string frame_id
+  uint32 height
+  uint32 width
+  sensor_msgs/PointField[] fields
+  bool is_bigendian
+  uint32 point_step
+  uint32 row_step
+  uint8[] data
+  bool is_dense
+</code></pre>
+<h3>2.2 주요 필드 설명</h3>
+<table><thead><tr><th>필드</th><th>역할</th></tr></thead><tbody>
+<tr><td><code>header.frame_id</code></td><td>포인트 클라우드가 표현된 좌표 프레임</td></tr>
+<tr><td><code>header.stamp</code></td><td>데이터 취득 시점의 타임스탬프</td></tr>
+<tr><td><code>height</code>, <code>width</code></td><td>포인트 클라우드의 구조 (organized: height &gt; 1, unorganized: height = 1)</td></tr>
+<tr><td><code>fields</code></td><td>각 포인트의 데이터 필드 정의 (x, y, z, intensity 등)</td></tr>
+<tr><td><code>point_step</code></td><td>단일 포인트의 바이트 크기</td></tr>
+<tr><td><code>row_step</code></td><td>단일 행(row)의 바이트 크기</td></tr>
+<tr><td><code>data</code></td><td>실제 포인트 데이터의 바이너리 배열</td></tr>
+<tr><td><code>is_dense</code></td><td>NaN/Inf 포인트 포함 여부 (true: 미포함)</td></tr>
+</tbody></table>
+<p><code>PointCloud2</code>는 바이너리 직렬화 형식을 사용하여 대용량 포인트 데이터를 효율적으로 저장하고 전송한다.</p>
+<h2>3. 포인트 클라우드 좌표 변환의 원리</h2>
+<h3>3.1 점별 변환</h3>
+<p>포인트 클라우드의 좌표 변환은 각 포인트(점)에 대해 동차 변환 행렬을 적용하는 점별(point-wise) 변환이다. 포인트 클라우드 <span class="math math-inline">\mathcal{P} = \{\mathbf{p}_1, \mathbf{p}_2, \ldots, \mathbf{p}_N\}</span>의 각 포인트에 대해,</p>
+<p><span class="math math-display">
+{}^{B}\mathbf{p}_i = R \cdot {}^{A}\mathbf{p}_i + \mathbf{t}, \quad \forall i \in \{1, \ldots, N\}
+</span></p>
+<p>여기서 <span class="math math-inline">R \in SO(3)</span>는 회전 행렬, <span class="math math-inline">\mathbf{t} \in \mathbb{R}^{3}</span>는 병진 벡터이다.</p>
+<h3>3.2 행렬 연산을 이용한 일괄 변환</h3>
+<p><span class="math math-inline">N</span>개의 포인트를 <span class="math math-inline">3 \times N</span> 행렬 <span class="math math-inline">P = [\mathbf{p}_1, \ldots, \mathbf{p}_N]</span>로 배열하면, 전체 포인트 클라우드의 변환을 단일 행렬 연산으로 수행할 수 있다.</p>
+<p><span class="math math-display">
+P^{B} = R \cdot P^{A} + \mathbf{t} \cdot \mathbf{1}^{\top}
+</span></p>
+<p>여기서 <span class="math math-inline">\mathbf{1} \in \mathbb{R}^{N}</span>은 모든 원소가 1인 벡터이다. 이 행렬 연산은 SIMD 명령어와 캐시 지역성(cache locality)을 활용하여 개별 점 변환에 비해 월등한 계산 효율을 제공한다.</p>
+<h2>4. tf2를 이용한 PointCloud2 변환</h2>
+<h3>4.1 tf2_sensor_msgs 패키지</h3>
+<p><code>sensor_msgs::msg::PointCloud2</code>에 대한 <code>doTransform()</code> 특수화는 <code>tf2_sensor_msgs</code> 패키지에서 제공된다. 이 패키지는 Eigen 라이브러리를 활용하여 대규모 포인트 클라우드의 효율적인 좌표 변환을 수행한다.</p>
+<h3>4.2 C++ 의존성 설정</h3>
+<pre><code class="language-cmake">find_package(tf2_sensor_msgs REQUIRED)
+ament_target_dependencies(${PROJECT_NAME}
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  sensor_msgs
+)
+</code></pre>
+<pre><code class="language-xml">&lt;depend&gt;tf2_sensor_msgs&lt;/depend&gt;
+</code></pre>
+<h3>4.3 C++에서의 변환</h3>
+<pre><code class="language-cpp">#include &lt;tf2_sensor_msgs/tf2_sensor_msgs.hpp&gt;
+
+sensor_msgs::msg::PointCloud2 cloud_in;
+// cloud_in은 센서 토픽으로부터 수신
+
+sensor_msgs::msg::PointCloud2 cloud_out;
+
+try {
+  auto transform = tf_buffer-&gt;lookupTransform(
+    "base_link", cloud_in.header.frame_id,
+    cloud_in.header.stamp);
+  tf2::doTransform(cloud_in, cloud_out, transform);
+} catch (const tf2::TransformException &amp; ex) {
+  RCLCPP_ERROR(node-&gt;get_logger(), "%s", ex.what());
+}
+</code></pre>
+<h3>4.4 Buffer::transform()을 이용한 간편 변환</h3>
+<pre><code class="language-cpp">try {
+  sensor_msgs::msg::PointCloud2 cloud_out;
+  tf_buffer-&gt;transform(cloud_in, cloud_out, "base_link");
+} catch (const tf2::TransformException &amp; ex) {
+  RCLCPP_ERROR(node-&gt;get_logger(), "%s", ex.what());
+}
+</code></pre>
+<h3>4.5 Python에서의 변환</h3>
+<pre><code class="language-python">import tf2_sensor_msgs
+
+try:
+    transform = tf_buffer.lookup_transform(
+        'base_link', cloud_in.header.frame_id,
+        cloud_in.header.stamp)
+    cloud_out = tf2_sensor_msgs.do_transform_cloud(
+        cloud_in, transform)
+except TransformException as ex:
+    node.get_logger().error(f'{ex}')
+</code></pre>
+<h2>5. PCL(Point Cloud Library) 기반 변환</h2>
+<h3>5.1 pcl_ros를 이용한 변환</h3>
+<p>PCL(Point Cloud Library)과 ROS2의 통합 패키지인 <code>pcl_ros</code>는 포인트 클라우드의 좌표 변환 기능을 제공한다.</p>
+<pre><code class="language-cpp">#include &lt;pcl_ros/transforms.hpp&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+
+// sensor_msgs → pcl 변환
+pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud_pcl(
+  new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+pcl::fromROSMsg(cloud_in, *cloud_pcl);
+
+// 변환 행렬 구성
+Eigen::Isometry3d T = Eigen::Isometry3d::Identity();
+tf2::Transform tf2_transform;
+tf2::fromMsg(transform_msg.transform, tf2_transform);
+
+// Eigen 변환 행렬로 변환
+Eigen::Matrix4f transform_matrix = Eigen::Matrix4f::Identity();
+// ... (tf2_transform에서 Eigen 행렬로 변환)
+
+pcl::PointCloud&lt;pcl::PointXYZ&gt;::Ptr cloud_transformed(
+  new pcl::PointCloud&lt;pcl::PointXYZ&gt;);
+pcl::transformPointCloud(
+  *cloud_pcl, *cloud_transformed, transform_matrix);
+
+// pcl → sensor_msgs 변환
+sensor_msgs::msg::PointCloud2 cloud_out;
+pcl::toROSMsg(*cloud_transformed, cloud_out);
+cloud_out.header.frame_id = "base_link";
+</code></pre>
+<h3>5.2 PCL 직접 변환의 장점</h3>
+<p>PCL의 <code>transformPointCloud()</code> 함수는 내부적으로 Eigen의 SIMD 최적화를 활용하며, 변환과 동시에 필터링(voxel grid downsampling, statistical outlier removal 등)을 적용할 수 있어 전체 처리 파이프라인의 효율성이 향상된다.</p>
+<h2>6. 성능 최적화</h2>
+<h3>6.1 대규모 포인트 클라우드의 성능 고려사항</h3>
+<p>현대의 3D LiDAR 센서(예: Velodyne VLP-16, Ouster OS1-64)는 초당 수십만에서 수백만 개의 포인트를 생성한다. 이러한 대규모 데이터의 실시간 좌표 변환은 상당한 연산 부하를 요구한다.</p>
+<table><thead><tr><th>LiDAR 모델</th><th>포인트/초</th><th>프레임당 포인트 수 (10 Hz)</th></tr></thead><tbody>
+<tr><td>VLP-16</td><td>~300,000</td><td>~30,000</td></tr>
+<tr><td>VLP-32C</td><td>~600,000</td><td>~60,000</td></tr>
+<tr><td>OS1-64</td><td>~1,310,720</td><td>~131,072</td></tr>
+<tr><td>OS1-128</td><td>~2,621,440</td><td>~262,144</td></tr>
+</tbody></table>
+<h3>6.2 변환 조회 최적화</h3>
+<p>포인트 클라우드 변환에서 <code>lookupTransform()</code>은 전체 클라우드에 대해 한 번만 호출하면 되므로, 변환 조회의 부하는 미미하다. 핵심 병목은 개별 포인트에 대한 변환 적용 단계이다.</p>
+<h3>6.3 메모리 접근 패턴</h3>
+<p><code>PointCloud2</code>의 바이너리 데이터는 연속 메모리 블록에 저장되므로, 순차적 접근 시 CPU 캐시의 공간적 지역성(spatial locality)을 활용할 수 있다. 반면, 포인트의 필드가 비연속적으로 배치된 경우(예: x, y, z 사이에 intensity 등 다른 필드가 삽입된 경우) 캐시 미스가 증가할 수 있다.</p>
+<h3>6.4 병렬 처리</h3>
+<p>OpenMP나 Intel TBB를 이용하여 포인트 클라우드의 변환을 병렬 처리할 수 있다.</p>
+<pre><code class="language-cpp">#include &lt;omp.h&gt;
+
+auto R_matrix = T.getBasis();
+auto t_vector = T.getOrigin();
+
+#pragma omp parallel for
+for (size_t i = 0; i &lt; point_count; ++i) {
+  float * p = reinterpret_cast&lt;float *&gt;(
+    &amp;cloud_out.data[i * cloud_in.point_step]);
+  tf2::Vector3 p_in(p[0], p[1], p[2]);
+  tf2::Vector3 p_out = R_matrix * p_in + t_vector;
+  p[0] = static_cast&lt;float&gt;(p_out.x());
+  p[1] = static_cast&lt;float&gt;(p_out.y());
+  p[2] = static_cast&lt;float&gt;(p_out.z());
+}
+</code></pre>
+<h2>7. 운동 보정 (Motion Compensation)</h2>
+<h3>7.1 스캐닝 왜곡 문제</h3>
+<p>회전형 LiDAR는 기계적으로 회전하면서 데이터를 수집하므로, 하나의 스캔(scan) 내에서 각 포인트의 취득 시점이 다르다. 로봇이 이동 중인 경우, 스캔 시작 시점과 종료 시점의 로봇 자세가 달라지므로 포인트 클라우드에 왜곡(distortion)이 발생한다.</p>
+<h3>7.2 TF2를 이용한 운동 보정</h3>
+<p>운동 보정(motion compensation 또는 deskewing)은 각 포인트의 취득 시점에서의 변환을 TF2로 조회하여, 모든 포인트를 동일한 시점의 좌표 프레임으로 변환하는 과정이다.</p>
+<pre><code class="language-cpp">for (size_t i = 0; i &lt; point_count; ++i) {
+  // 각 포인트의 상대적 시간 오프셋 계산
+  double time_offset = compute_point_time_offset(cloud, i);
+  rclcpp::Time point_time = cloud_time + 
+    rclcpp::Duration::from_seconds(time_offset);
+  
+  // 해당 시점의 변환 조회
+  auto transform = tf_buffer-&gt;lookupTransform(
+    "odom", cloud.header.frame_id, point_time);
+  
+  // 포인트 변환
+  // ...
+}
+</code></pre>
+<p>이 방식은 포인트별로 <code>lookupTransform()</code>을 호출하므로 계산 비용이 높다. 실제로는 시간 구간을 분할하여 보간하는 방식이 사용된다.</p>
+<h2>8. 주의사항</h2>
+<h3>8.1 float 정밀도</h3>
+<p><code>PointCloud2</code>의 좌표 데이터는 일반적으로 <code>float32</code>(단정밀도)로 저장되지만, TF2의 변환 행렬은 <code>float64</code>(배정밀도)로 계산된다. 변환 후 다시 <code>float32</code>로 저장할 때 정밀도 손실이 발생할 수 있으며, 원점에서 멀리 떨어진 포인트(예: GPS 좌표)에서 이 문제가 두드러진다.</p>
+<h3>8.2 헤더 갱신</h3>
+<p>변환 후 포인트 클라우드의 <code>header.frame_id</code>를 대상 프레임으로 갱신해야 한다. <code>tf2::doTransform()</code>은 이를 자동으로 처리하지만, PCL을 통한 수동 변환에서는 개발자가 직접 갱신해야 한다.</p>
+<h3>8.3 비좌표 필드의 보존</h3>
+<p>포인트 클라우드에는 좌표(x, y, z) 외에도 intensity, RGB, normal, ring 등의 추가 필드가 포함될 수 있다. 좌표 변환 시 이러한 비좌표 필드는 변경되지 않고 보존되어야 한다. 단, 법선 벡터(normal)는 좌표 변환의 회전 성분에 따라 함께 회전되어야 한다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Open Robotics, “sensor_msgs/PointCloud2,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/p/sensor_msgs/">https://docs.ros.org/en/rolling/p/sensor_msgs/</a></li>
+<li>Open Robotics, “tf2_sensor_msgs,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/p/tf2_sensor_msgs/">https://docs.ros.org/en/rolling/p/tf2_sensor_msgs/</a></li>
+<li>R. B. Rusu and S. Cousins, “3D is here: Point Cloud Library (PCL),” in <em>Proc. IEEE Int. Conf. Robotics and Automation (ICRA)</em>, 2011, pp. 1–4.</li>
+</ul>
+<hr />
+<p><em>버전: 2026-03-26</em></p>
 
             </article>
             <footer>

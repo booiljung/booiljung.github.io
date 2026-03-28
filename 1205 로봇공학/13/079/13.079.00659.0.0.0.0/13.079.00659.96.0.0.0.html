@@ -115,6 +115,114 @@
             </header>
             <article>
                 <h1>659.96 robot_state_publisher를 이용한 TF 자동 발행</h1>
+<h2>1. 개요</h2>
+<p><code>robot_state_publisher</code>는 URDF로 정의된 로봇 모델을 기반으로 TF2 변환을 자동으로 발행하는 ROS2 노드이다. 이 노드는 URDF의 고정 관절(fixed joint)에 대한 정적 변환을 <code>/tf_static</code>으로 발행하고, 가동 관절(revolute, continuous, prismatic)에 대한 동적 변환을 <code>/tf</code>로 발행한다. <code>robot_state_publisher</code>는 <code>/joint_states</code> 토픽을 구독하여 관절 상태 데이터를 수신하며, 이를 URDF의 운동학 모델과 결합하여 각 링크의 포즈를 계산한다.</p>
+<h2>2. 동작 원리</h2>
+<h3>2.1 입력과 출력</h3>
+<table><thead><tr><th>입력</th><th>출력</th></tr></thead><tbody>
+<tr><td><code>robot_description</code> 매개변수 (URDF/Xacro 문자열)</td><td><code>/tf</code> 토픽 (동적 변환)</td></tr>
+<tr><td><code>/joint_states</code> 토픽 (<code>sensor_msgs/msg/JointState</code>)</td><td><code>/tf_static</code> 토픽 (정적 변환)</td></tr>
+<tr><td></td><td><code>/robot_description</code> 토픽 (URDF 문자열 재발행)</td></tr>
+</tbody></table>
+<h3>2.2 처리 흐름</h3>
+<ol>
+<li><strong>초기화</strong>: <code>robot_description</code> 매개변수에서 URDF를 파싱하여 운동학 트리를 구성한다.</li>
+<li><strong>정적 변환 발행</strong>: 모든 <code>fixed</code> 관절의 변환을 <code>/tf_static</code>으로 발행한다. 이 변환은 한 번만 발행되며 TF2 버퍼에 영구적으로 유지된다.</li>
+<li><strong>관절 상태 수신</strong>: <code>/joint_states</code> 토픽을 구독하여 각 가동 관절의 현재 위치를 수신한다.</li>
+<li><strong>순운동학 계산</strong>: 수신된 관절 위치를 URDF의 운동학 모델에 적용하여 각 링크의 포즈를 계산한다.</li>
+<li><strong>동적 변환 발행</strong>: 계산된 포즈를 <code>/tf</code> 토픽으로 발행한다.</li>
+</ol>
+<h2>3. 런치 파일에서의 사용</h2>
+<h3>3.1 기본 사용법</h3>
+<pre><code class="language-python">from launch import LaunchDescription
+from launch_ros.actions import Node
+import xacro
+import os
+
+
+def generate_launch_description():
+    # URDF 파일 로드
+    urdf_file = os.path.join(
+        get_package_share_directory('my_robot'),
+        'urdf', 'my_robot.urdf.xacro')
+
+    robot_description = xacro.process_file(urdf_file).toxml()
+
+    return LaunchDescription([
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='robot_state_publisher',
+            parameters=[{
+                'robot_description': robot_description,
+                'publish_frequency': 50.0,
+                'use_tf_static': True,
+                'ignore_timestamp': False,
+            }],
+            output='screen',
+        ),
+    ])
+</code></pre>
+<h3>3.2 주요 매개변수</h3>
+<table><thead><tr><th>매개변수</th><th>유형</th><th>기본값</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>robot_description</code></td><td>string</td><td>(필수)</td><td>URDF 문자열</td></tr>
+<tr><td><code>publish_frequency</code></td><td>double</td><td>20.0</td><td>동적 TF 발행 주파수 (Hz)</td></tr>
+<tr><td><code>use_tf_static</code></td><td>bool</td><td>true</td><td>고정 관절을 <code>/tf_static</code>으로 발행할지 여부</td></tr>
+<tr><td><code>ignore_timestamp</code></td><td>bool</td><td>false</td><td>JointState 메시지의 타임스탬프 무시 여부</td></tr>
+</tbody></table>
+<h2>4. JointState 메시지</h2>
+<h3>4.1 메시지 구조</h3>
+<pre><code>std_msgs/Header header
+  builtin_interfaces/Time stamp
+  string frame_id
+
+string[] name           # 관절 이름 배열
+float64[] position      # 관절 위치 배열 (rad 또는 m)
+float64[] velocity      # 관절 속도 배열 (rad/s 또는 m/s)
+float64[] effort        # 관절 힘/토크 배열 (N·m 또는 N)
+</code></pre>
+<p><code>robot_state_publisher</code>는 <code>name</code>과 <code>position</code> 필드만을 사용하여 TF 변환을 계산한다.</p>
+<h3>4.2 관절 이름의 일치</h3>
+<p><code>JointState</code> 메시지의 <code>name</code> 필드에 포함된 관절 이름은 URDF에서 정의한 관절 이름과 정확히 일치하여야 한다. 불일치 시 해당 관절의 변환이 갱신되지 않는다.</p>
+<h2>5. 정적 변환과 동적 변환의 분리</h2>
+<h3>5.1 정적 변환 (<code>use_tf_static: true</code>)</h3>
+<p>고정 관절의 변환을 <code>/tf_static</code> 토픽으로 발행하면 다음과 같은 이점이 있다.</p>
+<ol>
+<li><strong>네트워크 부하 감소</strong>: 정적 변환은 한 번만 발행되므로 주기적 발행에 의한 네트워크 부하가 없다.</li>
+<li><strong>항상 가용</strong>: <code>/tf_static</code>은 래치(latch) 특성의 QoS를 사용하므로, 나중에 구독하는 노드도 변환을 수신할 수 있다.</li>
+</ol>
+<h3>5.2 동적 변환</h3>
+<p>가동 관절의 변환은 <code>/joint_states</code> 갱신 시마다 <code>/tf</code>로 발행된다. 발행 주파수는 <code>publish_frequency</code> 매개변수와 <code>/joint_states</code> 수신 빈도 중 작은 값에 의하여 결정된다.</p>
+<h2>6. 고정 관절만 있는 경우</h2>
+<p>센서 프레임만을 정의하는 로봇(예: 고정형 센서 스테이션)이나, 모든 관절이 고정인 경우에도 <code>robot_state_publisher</code>를 사용할 수 있다. 이 경우 <code>/joint_states</code> 토픽이 필요하지 않으며, 정적 변환만 발행된다.</p>
+<pre><code class="language-python"># 고정 관절만 있는 경우 (joint_state_publisher 불필요)
+Node(
+    package='robot_state_publisher',
+    executable='robot_state_publisher',
+    parameters=[{'robot_description': robot_description}],
+)
+</code></pre>
+<h2>7. 검증</h2>
+<h3>7.1 TF2 트리 확인</h3>
+<pre><code class="language-bash"># 발행되는 프레임 확인
+ros2 run tf2_tools view_frames
+
+# 특정 프레임 간 변환 확인
+ros2 run tf2_ros tf2_echo base_link laser_link
+</code></pre>
+<h3>7.2 URDF 재발행 확인</h3>
+<pre><code class="language-bash"># robot_description 토픽에서 URDF 확인
+ros2 topic echo /robot_description --once
+</code></pre>
+<h2>8. 요약</h2>
+<p><code>robot_state_publisher</code>는 URDF 기반의 TF2 변환 자동 발행 노드로, 고정 관절의 정적 변환과 가동 관절의 동적 변환을 구분하여 발행한다. <code>/joint_states</code> 토픽에서 관절 상태를 수신하여 순운동학을 계산하고, 결과를 TF2 변환으로 발행함으로써 URDF와 TF2 사이의 자동 연동을 구현한다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li><code>robot_state_publisher</code> 패키지, https://github.com/ros/robot_state_publisher (ROS2 Humble 브랜치)</li>
+<li>ROS2 공식 문서, “Using Robot State Publisher”, https://docs.ros.org/en/humble/Tutorials/Intermediate/URDF/Using-robot-state-publisher.html (ROS2 Humble Hawksbill)</li>
+<li><code>sensor_msgs/msg/JointState</code> API 문서, https://docs.ros2.org/latest/api/sensor_msgs/msg/JointState.html</li>
+</ul>
 
             </article>
             <footer>

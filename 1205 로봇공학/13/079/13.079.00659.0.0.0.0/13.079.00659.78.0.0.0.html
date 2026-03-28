@@ -115,6 +115,451 @@
             </header>
             <article>
                 <h1>659.78 tf2_ros와 Executor의 연계 전략</h1>
+<h2>1. 개요</h2>
+<p>ROS2에서 tf2_ros 패키지는 좌표 변환 데이터의 수신과 처리를 위하여 내부적으로 구독(Subscription)과 콜백(Callback) 메커니즘을 활용한다. 이러한 콜백의 실행은 ROS2의 <strong>Executor</strong>에 의하여 관리되므로, tf2_ros의 성능과 동작 특성은 Executor의 구성 및 운용 전략에 직접적으로 의존한다. 본 절에서는 tf2_ros와 Executor의 연계 방식을 체계적으로 분석하고, 다양한 로봇 응용 시나리오에 적합한 연계 전략을 제시한다.</p>
+<h2>2. ROS2 Executor의 기본 개념</h2>
+<h3>2.1 Executor의 역할</h3>
+<p>ROS2에서 Executor는 노드(Node)에 등록된 콜백 함수들의 실행을 관리하는 핵심 구성 요소이다. 구독 콜백, 타이머 콜백, 서비스 콜백, 액션 콜백 등 모든 종류의 콜백이 Executor를 통하여 스케줄링되고 실행된다.</p>
+<h3>2.2 Executor의 종류</h3>
+<p>ROS2는 다음과 같은 Executor 유형을 제공한다.</p>
+<table><thead><tr><th>Executor 유형</th><th>특성</th><th>적용 시나리오</th></tr></thead><tbody>
+<tr><td><code>SingleThreadedExecutor</code></td><td>단일 스레드에서 모든 콜백을 순차적으로 실행한다</td><td>단순 구조의 노드, 스레드 안전성이 보장되지 않는 코드</td></tr>
+<tr><td><code>MultiThreadedExecutor</code></td><td>복수의 스레드를 활용하여 콜백을 병렬로 실행한다</td><td>고부하 시스템, 병렬 처리가 필요한 노드</td></tr>
+<tr><td><code>StaticSingleThreadedExecutor</code></td><td>초기화 시 콜백 목록을 고정하여 오버헤드를 최소화한다</td><td>콜백 구조가 변동되지 않는 경량 시스템</td></tr>
+</tbody></table>
+<h2>3. tf2_ros 내부의 콜백 구조</h2>
+<h3>3.1 TransformListener의 콜백 메커니즘</h3>
+<p><code>tf2_ros::TransformListener</code>는 초기화 시 <code>/tf</code> 토픽과 <code>/tf_static</code> 토픽에 대한 구독자를 생성한다. 각 구독자는 수신된 <code>tf2_msgs/msg/TFMessage</code> 메시지를 처리하는 콜백 함수를 등록하며, 이 콜백 함수는 수신된 변환 데이터를 <code>tf2::Buffer</code>에 저장하는 역할을 수행한다.</p>
+<pre><code class="language-cpp">// TransformListener 내부의 콜백 등록 (개념적 구조)
+tf_subscription_ = node-&gt;create_subscription&lt;tf2_msgs::msg::TFMessage&gt;(
+    "/tf",
+    tf_qos,
+    [this](tf2_msgs::msg::TFMessage::SharedPtr%20msg) {
+        for (const auto&amp; transform : msg-&gt;transforms) {
+            buffer_.setTransform(transform, "default_authority", false);
+        }
+    }
+);
+
+tf_static_subscription_ = node-&gt;create_subscription&lt;tf2_msgs::msg::TFMessage&gt;(
+    "/tf_static",
+    tf_static_qos,
+    [this](tf2_msgs::msg::TFMessage::SharedPtr%20msg) {
+        for (const auto&amp; transform : msg-&gt;transforms) {
+            buffer_.setTransform(transform, "default_authority", true);
+        }
+    }
+);
+</code></pre>
+<p>위 구조에서 <code>/tf</code> 콜백과 <code>/tf_static</code> 콜백은 모두 Executor에 의하여 실행 스케줄링이 이루어진다. 따라서 Executor가 제시간에 이러한 콜백을 처리하지 못하면 변환 데이터의 갱신이 지연되어 <code>lookupTransform()</code> 호출 시 오래된 데이터가 반환되거나 <code>ExtrapolationException</code>이 발생할 수 있다.</p>
+<h3>3.2 콜백 그룹의 역할</h3>
+<p>ROS2에서 콜백 그룹(Callback Group)은 콜백들의 실행 동시성을 제어하는 메커니즘이다. tf2_ros는 내부적으로 콜백 그룹을 설정하여 변환 데이터 수신 콜백의 실행 정책을 결정한다.</p>
+<ul>
+<li><strong>MutuallyExclusiveCallbackGroup</strong>: 그룹 내 콜백이 동시에 실행되지 않도록 보장한다. 단일 스레드 Executor와 유사한 직렬화 효과를 제공한다.</li>
+<li><strong>ReentrantCallbackGroup</strong>: 그룹 내 콜백이 동시에 실행될 수 있도록 허용한다. <code>MultiThreadedExecutor</code>와 함께 사용하면 병렬 처리가 가능하다.</li>
+</ul>
+<h2>4. Executor와 tf2_ros의 연계 전략</h2>
+<h3>4.1 전략 1: 단일 노드, SingleThreadedExecutor</h3>
+<p>가장 기본적인 구성으로, 하나의 노드에서 <code>SingleThreadedExecutor</code>를 사용하여 tf2_ros의 콜백을 처리하는 방식이다.</p>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_ros/buffer.h&gt;
+
+class SimpleTransformNode : public rclcpp::Node
+{
+public:
+    SimpleTransformNode()
+    : Node("simple_tf_node")
+    {
+        tf_buffer_ = std::make_shared&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+        tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(*tf_buffer_, this);
+
+        timer_ = this-&gt;create_wall_timer(
+            std::chrono::milliseconds(100),
+            std::bind(&amp;SimpleTransformNode::on_timer, this)
+        );
+    }
+
+private:
+    void on_timer()
+    {
+        try {
+            auto transform = tf_buffer_-&gt;lookupTransform(
+                "map", "base_link", tf2::TimePointZero);
+            RCLCPP_INFO(get_logger(), "변환 조회 성공: [%.3f, %.3f, %.3f]",
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                transform.transform.translation.z);
+        } catch (const tf2::TransformException&amp; ex) {
+            RCLCPP_WARN(get_logger(), "변환 조회 실패: %s", ex.what());
+        }
+    }
+
+    std::shared_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+    std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+    rclcpp::TimerBase::SharedPtr timer_;
+};
+
+int main(int argc, char** argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared&lt;SimpleTransformNode&gt;();
+    rclcpp::spin(node);
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+<p>이 구성의 특징은 다음과 같다.</p>
+<ul>
+<li>모든 콜백(타이머, <code>/tf</code> 구독, <code>/tf_static</code> 구독)이 단일 스레드에서 순차적으로 실행된다.</li>
+<li>스레드 안전성 문제가 발생하지 않으나, 콜백 처리 지연이 누적될 수 있다.</li>
+<li>타이머 콜백이 오래 수행되면 <code>/tf</code> 콜백의 처리가 지연되어 변환 데이터가 갱신되지 못하는 상황이 발생할 수 있다.</li>
+</ul>
+<p><strong>적용 시나리오</strong>: 변환 조회 빈도가 낮고 콜백 처리 부하가 경미한 단순 노드에 적합하다.</p>
+<h3>4.2 전략 2: 단일 노드, MultiThreadedExecutor</h3>
+<p><code>MultiThreadedExecutor</code>를 사용하면 tf2_ros의 콜백과 사용자 정의 콜백을 병렬로 처리할 수 있다.</p>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_ros/buffer.h&gt;
+
+class ParallelTransformNode : public rclcpp::Node
+{
+public:
+    ParallelTransformNode()
+    : Node("parallel_tf_node")
+    {
+        // tf2_ros 콜백을 위한 ReentrantCallbackGroup 설정
+        tf_callback_group_ = this-&gt;create_callback_group(
+            rclcpp::CallbackGroupType::MutuallyExclusive);
+
+        tf_buffer_ = std::make_shared&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+
+        // TransformListener 생성 시 콜백 그룹 전달 (ROS2 Humble 이상)
+        tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(
+            *tf_buffer_, this, false,
+            rclcpp::QoS(100),
+            rclcpp::QoS(100).durability(rclcpp::DurabilityPolicy::TransientLocal),
+            tf_callback_group_);
+
+        // 사용자 정의 콜백을 위한 별도의 CallbackGroup
+        user_callback_group_ = this-&gt;create_callback_group(
+            rclcpp::CallbackGroupType::MutuallyExclusive);
+
+        timer_ = this-&gt;create_wall_timer(
+            std::chrono::milliseconds(50),
+            std::bind(&amp;ParallelTransformNode::on_timer, this),
+            user_callback_group_
+        );
+    }
+
+private:
+    void on_timer()
+    {
+        try {
+            auto transform = tf_buffer_-&gt;lookupTransform(
+                "map", "base_link", tf2::TimePointZero);
+            // 변환 데이터를 활용한 연산 수행
+            process_transform(transform);
+        } catch (const tf2::TransformException&amp; ex) {
+            RCLCPP_WARN(get_logger(), "변환 조회 실패: %s", ex.what());
+        }
+    }
+
+    void process_transform(const geometry_msgs::msg::TransformStamped&amp; transform)
+    {
+        // 연산 집약적 처리 로직
+        (void)transform;
+    }
+
+    rclcpp::CallbackGroup::SharedPtr tf_callback_group_;
+    rclcpp::CallbackGroup::SharedPtr user_callback_group_;
+    std::shared_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+    std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+    rclcpp::TimerBase::SharedPtr timer_;
+};
+
+int main(int argc, char** argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared&lt;ParallelTransformNode&gt;();
+
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    executor.spin();
+
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+<p>이 구성의 핵심 원리는 다음과 같다.</p>
+<ul>
+<li>tf2_ros의 구독 콜백과 사용자 정의 타이머 콜백을 <strong>별도의 콜백 그룹</strong>에 할당한다.</li>
+<li><code>MultiThreadedExecutor</code>가 서로 다른 콜백 그룹에 속한 콜백을 병렬 스레드에서 실행하므로, 사용자 콜백의 처리 지연이 tf2 콜백에 영향을 미치지 않는다.</li>
+<li><code>tf2::Buffer</code>는 내부적으로 뮤텍스(mutex)를 사용하여 스레드 안전성을 보장하므로, 병렬 접근에 의한 데이터 경합 문제가 발생하지 않는다.</li>
+</ul>
+<p><strong>적용 시나리오</strong>: 고빈도 변환 조회가 필요하거나 연산 집약적 콜백이 존재하는 복잡한 노드에 적합하다.</p>
+<h3>4.3 전략 3: 전용 Executor를 이용한 tf2_ros 분리</h3>
+<p>tf2_ros의 콜백 처리를 완전히 독립적인 Executor로 분리하여, 메인 Executor의 부하와 무관하게 변환 데이터를 안정적으로 수신하는 전략이다.</p>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_ros/buffer.h&gt;
+#include &lt;thread&gt;
+
+class DedicatedExecutorNode : public rclcpp::Node
+{
+public:
+    DedicatedExecutorNode()
+    : Node("dedicated_executor_tf_node")
+    {
+        // tf2 전용 콜백 그룹
+        tf_callback_group_ = this-&gt;create_callback_group(
+            rclcpp::CallbackGroupType::MutuallyExclusive);
+
+        tf_buffer_ = std::make_shared&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+        tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(
+            *tf_buffer_, this, false,
+            rclcpp::QoS(100),
+            rclcpp::QoS(100).durability(rclcpp::DurabilityPolicy::TransientLocal),
+            tf_callback_group_);
+
+        timer_ = this-&gt;create_wall_timer(
+            std::chrono::milliseconds(20),
+            std::bind(&amp;DedicatedExecutorNode::on_timer, this)
+        );
+    }
+
+    void spin_tf_executor()
+    {
+        // tf2 전용 콜백 그룹만 처리하는 별도의 Executor
+        rclcpp::executors::SingleThreadedExecutor tf_executor;
+        tf_executor.add_callback_group(tf_callback_group_, this-&gt;get_node_base_interface());
+        tf_executor.spin();
+    }
+
+private:
+    void on_timer()
+    {
+        try {
+            auto transform = tf_buffer_-&gt;lookupTransform(
+                "odom", "base_link", tf2::TimePointZero);
+            RCLCPP_DEBUG(get_logger(), "변환 수신: t=[%.3f, %.3f, %.3f]",
+                transform.transform.translation.x,
+                transform.transform.translation.y,
+                transform.transform.translation.z);
+        } catch (const tf2::TransformException&amp; ex) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                "변환 조회 실패: %s", ex.what());
+        }
+    }
+
+    rclcpp::CallbackGroup::SharedPtr tf_callback_group_;
+    std::shared_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+    std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+    rclcpp::TimerBase::SharedPtr timer_;
+};
+
+int main(int argc, char** argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared&lt;DedicatedExecutorNode&gt;();
+
+    // tf2 전용 Executor를 별도 스레드에서 실행
+    std::thread tf_thread([&amp;node]() {
+        node-&gt;spin_tf_executor();
+    });
+
+    // 메인 Executor에서 나머지 콜백 처리
+    rclcpp::spin(node);
+
+    tf_thread.join();
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+<p>이 전략의 장점은 다음과 같다.</p>
+<ul>
+<li>tf2 콜백의 실행이 메인 Executor의 부하에 완전히 독립적이다.</li>
+<li><code>/tf</code> 토픽의 높은 발행 빈도(수백 Hz)에도 안정적으로 변환 데이터를 수신할 수 있다.</li>
+<li>변환 데이터의 갱신 지연(latency)을 최소화할 수 있다.</li>
+</ul>
+<p><strong>적용 시나리오</strong>: 실시간 제어 루프, 고주파 센서 융합, 다중 로봇 시스템 등 변환 데이터의 적시(timely) 갱신이 필수적인 시스템에 적합하다.</p>
+<h3>4.4 전략 4: Composable Node와 Executor의 통합</h3>
+<p>ROS2의 <strong>컴포넌트 노드(Component Node)</strong> 아키텍처를 활용하여 tf2_ros를 포함한 복수의 노드를 단일 프로세스 내에서 공유 Executor로 실행하는 전략이다.</p>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rclcpp_components/register_node_macro.hpp&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_ros/buffer.h&gt;
+
+namespace robotics_components
+{
+
+class TfConsumerComponent : public rclcpp::Node
+{
+public:
+    explicit TfConsumerComponent(const rclcpp::NodeOptions&amp; options)
+    : Node("tf_consumer_component", options)
+    {
+        tf_buffer_ = std::make_shared&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+        tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(*tf_buffer_, this);
+
+        timer_ = this-&gt;create_wall_timer(
+            std::chrono::milliseconds(100),
+            std::bind(&amp;TfConsumerComponent::on_timer, this)
+        );
+    }
+
+private:
+    void on_timer()
+    {
+        try {
+            auto t = tf_buffer_-&gt;lookupTransform(
+                "map", "base_link", tf2::TimePointZero);
+            RCLCPP_INFO(get_logger(), "Position: [%.2f, %.2f, %.2f]",
+                t.transform.translation.x,
+                t.transform.translation.y,
+                t.transform.translation.z);
+        } catch (const tf2::TransformException&amp; ex) {
+            RCLCPP_WARN(get_logger(), "%s", ex.what());
+        }
+    }
+
+    std::shared_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+    std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+    rclcpp::TimerBase::SharedPtr timer_;
+};
+
+}  // namespace robotics_components
+
+RCLCPP_COMPONENTS_REGISTER_NODE(robotics_components::TfConsumerComponent)
+</code></pre>
+<p>컴포넌트 노드 방식의 장점은 다음과 같다.</p>
+<ul>
+<li>복수의 tf2_ros 소비 노드가 동일 프로세스 내에서 실행되므로 프로세스 간 통신(IPC) 오버헤드가 제거된다.</li>
+<li>컨테이너(Container)가 제공하는 <code>MultiThreadedExecutor</code>를 통하여 자동으로 병렬 처리가 이루어진다.</li>
+<li>런치 파일을 통하여 동적으로 노드를 로드하고 Executor 스레드 수를 조정할 수 있다.</li>
+</ul>
+<h2>5. Python(rclpy)에서의 Executor 연계</h2>
+<p>Python에서도 유사한 Executor 연계 패턴을 적용할 수 있다.</p>
+<pre><code class="language-python">import rclpy
+from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from tf2_ros import TransformListener, Buffer
+from tf2_ros import TransformException
+
+
+class TfListenerNode(Node):
+    def __init__(self):
+        super().__init__('tf_listener_node')
+
+        # tf2 콜백 그룹 생성
+        self.tf_callback_group = MutuallyExclusiveCallbackGroup()
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(
+            self.tf_buffer,
+            self,
+            callback_group=self.tf_callback_group
+        )
+
+        # 사용자 정의 콜백 그룹
+        self.user_callback_group = MutuallyExclusiveCallbackGroup()
+        self.timer = self.create_timer(
+            0.1,
+            self.on_timer,
+            callback_group=self.user_callback_group
+        )
+
+    def on_timer(self):
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                'map', 'base_link', rclpy.time.Time())
+            self.get_logger().info(
+                f'변환: [{transform.transform.translation.x:.3f}, '
+                f'{transform.transform.translation.y:.3f}, '
+                f'{transform.transform.translation.z:.3f}]'
+            )
+        except TransformException as ex:
+            self.get_logger().warning(f'변환 조회 실패: {ex}')
+
+
+def main():
+    rclpy.init()
+    node = TfListenerNode()
+
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+
+    try:
+        executor.spin()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+</code></pre>
+<p>Python에서의 주요 고려 사항은 다음과 같다.</p>
+<ul>
+<li>Python의 **GIL(Global Interpreter Lock)**로 인하여 <code>MultiThreadedExecutor</code>를 사용하더라도 순수 Python 코드의 진정한 병렬 실행은 제한된다.</li>
+<li>그러나 I/O 바운드 작업(네트워크 통신, DDS 메시지 수신 등)에서는 GIL이 해제되므로 tf2 콜백의 병렬 처리 효과를 얻을 수 있다.</li>
+<li><code>callback_group</code> 매개변수를 명시적으로 지정하지 않으면 모든 콜백이 기본 <code>MutuallyExclusiveCallbackGroup</code>에 할당되어 순차 실행만 이루어진다.</li>
+</ul>
+<h2>6. Executor 연계 시 주의 사항</h2>
+<h3>6.1 콜백 실행 지연 문제</h3>
+<p>Executor의 스레드 수가 부족하거나 특정 콜백의 처리 시간이 과도하게 길면, <code>/tf</code> 콜백의 실행이 지연될 수 있다. 이 경우 다음과 같은 문제가 발생한다.</p>
+<ol>
+<li><strong>Buffer의 변환 데이터 부재</strong>: <code>lookupTransform()</code> 호출 시 요청 시점의 변환 데이터가 아직 Buffer에 저장되지 않아 <code>ExtrapolationException</code>이 발생한다.</li>
+<li><strong>시간 불일치</strong>: 센서 데이터의 타임스탬프와 Buffer에 저장된 최신 변환의 타임스탬프 간 차이가 보간 허용 범위를 초과한다.</li>
+<li><strong>성능 저하</strong>: 변환 조회 실패로 인한 재시도 로직이 전체 시스템의 처리량을 감소시킨다.</li>
+</ol>
+<h3>6.2 스레드 안전성 보장</h3>
+<p><code>tf2::Buffer</code>는 내부적으로 <code>std::mutex</code>를 사용하여 스레드 안전성을 보장한다. 그러나 다음 사항에 주의하여야 한다.</p>
+<ul>
+<li><code>lookupTransform()</code>과 <code>setTransform()</code>은 동일한 뮤텍스를 공유하므로, 고빈도 변환 발행과 고빈도 변환 조회가 동시에 발생하면 뮤텍스 경합(contention)에 의한 성능 저하가 나타날 수 있다.</li>
+<li><code>waitForTransform()</code>을 사용하는 경우, 대기 중인 스레드가 Executor의 스레드 풀을 차지하여 다른 콜백의 실행이 차단될 수 있다. 이를 방지하기 위하여 비동기 방식의 대기를 사용하거나 충분한 스레드 수를 확보하여야 한다.</li>
+</ul>
+<h3>6.3 Executor 스레드 수 결정 지침</h3>
+<p>Executor의 스레드 수는 시스템의 콜백 구조와 처리 부하에 따라 결정하여야 한다. 일반적인 지침은 다음과 같다.</p>
+<table><thead><tr><th>시스템 구성</th><th>권장 스레드 수</th><th>사유</th></tr></thead><tbody>
+<tr><td>단순 변환 조회</td><td>1~2</td><td>콜백 부하가 낮아 병렬 처리 불필요</td></tr>
+<tr><td>센서 융합 노드</td><td>3~4</td><td>tf2 콜백, 센서 콜백, 처리 콜백의 병렬 실행 필요</td></tr>
+<tr><td>다중 센서 + 제어 루프</td><td>4~8</td><td>다수의 독립 콜백 체인이 존재</td></tr>
+<tr><td>다중 로봇 관리 노드</td><td>8 이상</td><td>로봇별 독립적 콜백 처리 필요</td></tr>
+</tbody></table>
+<h2>7. 성능 최적화 모범 사례</h2>
+<h3>7.1  tf2 콜백 그룹 분리</h3>
+<p>tf2_ros의 구독 콜백을 별도의 콜백 그룹으로 분리하여, 사용자 정의 콜백의 처리 지연이 tf2 데이터 수신에 영향을 미치지 않도록 구성한다. 이는 <code>MultiThreadedExecutor</code> 환경에서 특히 효과적이다.</p>
+<h3>7.2  StaticSingleThreadedExecutor 활용</h3>
+<p>콜백 구성이 런타임에 변경되지 않는 시스템에서는 <code>StaticSingleThreadedExecutor</code>를 사용하여 Executor의 내부 오버헤드를 최소화할 수 있다. 이 Executor는 초기화 시 콜백 목록을 캐시하여 매 반복(iteration)마다 콜백 탐색 비용을 절감한다.</p>
+<h3>7.3  콜백 실행 시간 최소화</h3>
+<p>tf2 구독 콜백과 동일 Executor에서 실행되는 모든 콜백의 실행 시간을 최소화하여야 한다. 연산 집약적 작업은 별도의 스레드나 프로세스로 위임하고, 콜백 내에서는 데이터 수신과 큐잉(queueing)만 수행하는 것이 바람직하다.</p>
+<h3>7.4  waitForTransform() 대신 비동기 패턴 사용</h3>
+<p><code>waitForTransform()</code>의 동기적 대기는 Executor 스레드를 차단하여 시스템 전반의 응답성을 저하시킬 수 있다. 대신, <code>canTransform()</code>을 사용한 폴링(polling) 방식이나 <code>tf2_ros::MessageFilter</code>를 활용한 비동기 패턴을 권장한다.</p>
+<pre><code class="language-cpp">// 비동기 패턴 예시: canTransform을 이용한 비차단 대기
+void on_timer()
+{
+    if (tf_buffer_-&gt;canTransform("map", "base_link", tf2::TimePointZero)) {
+        auto transform = tf_buffer_-&gt;lookupTransform(
+            "map", "base_link", tf2::TimePointZero);
+        process_transform(transform);
+    } else {
+        RCLCPP_DEBUG(get_logger(), "변환이 아직 이용 가능하지 않음");
+    }
+}
+</code></pre>
+<h2>8. 요약</h2>
+<p>tf2_ros와 Executor의 연계 전략은 로봇 시스템의 규모, 복잡도, 실시간 요구 사항에 따라 선택하여야 한다. 단순 시스템에서는 <code>SingleThreadedExecutor</code>와 기본 설정으로 충분하나, 고빈도 변환 처리나 복잡한 콜백 구조를 갖는 시스템에서는 <code>MultiThreadedExecutor</code>와 콜백 그룹 분리 또는 전용 Executor 분리 전략을 적용하여야 한다. 어떤 전략을 선택하든 <code>tf2::Buffer</code>의 스레드 안전성을 이해하고, 콜백 실행 지연이 변환 데이터의 적시성에 미치는 영향을 고려하여 설계하는 것이 중요하다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>ROS2 공식 문서, “Executors”, https://docs.ros.org/en/humble/Concepts/Intermediate/About-Executors.html (ROS2 Humble Hawksbill)</li>
+<li>ROS2 공식 문서, “Using tf2 with ROS2”, https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Tf2-Main.html (ROS2 Humble Hawksbill)</li>
+<li>tf2_ros API 문서, https://docs.ros2.org/latest/api/tf2_ros/ (ROS2 Humble Hawksbill)</li>
+<li>Open Robotics, “ROS2 Design: Callback Groups”, https://design.ros2.org/ (2023)</li>
+<li>S. Macenski et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” <em>Science Robotics</em>, vol. 7, no. 66, 2022.</li>
+</ul>
 
             </article>
             <footer>

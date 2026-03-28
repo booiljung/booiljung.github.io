@@ -115,6 +115,140 @@
             </header>
             <article>
                 <h1>659.77 tf2_ros에서의 콜백 그룹 구성</h1>
+<h2>1. 개요</h2>
+<p>ROS2의 콜백 그룹(callback group)은 노드 내의 콜백 함수들의 실행을 조직화하고 동시성(concurrency)을 제어하는 메커니즘이다. <code>tf2_ros</code>의 <code>TransformListener</code>는 <code>/tf</code> 및 <code>/tf_static</code> 토픽의 구독 콜백을 처리해야 하므로, 콜백 그룹의 구성이 시스템의 동작 안정성과 성능에 직접적인 영향을 미친다. 특히, 사용자 콜백 내에서 <code>lookupTransform()</code>을 호출하는 패턴에서 데드락(deadlock)을 방지하기 위해서는 콜백 그룹의 올바른 구성이 필수적이다.</p>
+<h2>2. ROS2 콜백 그룹의 기본 개념</h2>
+<h3>2.1 콜백 그룹 유형</h3>
+<p>ROS2는 두 가지 유형의 콜백 그룹을 제공한다.</p>
+<table><thead><tr><th>유형</th><th>클래스</th><th>특성</th></tr></thead><tbody>
+<tr><td>상호 배제 (MutuallyExclusive)</td><td><code>rclcpp::callback_group::MutuallyExclusive</code></td><td>그룹 내 콜백이 동시에 실행되지 않음</td></tr>
+<tr><td>재진입 가능 (Reentrant)</td><td><code>rclcpp::callback_group::Reentrant</code></td><td>그룹 내 콜백이 동시에 실행될 수 있음</td></tr>
+</tbody></table>
+<p>기본적으로 노드의 모든 콜백(구독, 타이머, 서비스 등)은 하나의 기본 <code>MutuallyExclusive</code> 콜백 그룹에 소속된다.</p>
+<h3>2.2 Executor와의 관계</h3>
+<ul>
+<li><strong>SingleThreadedExecutor</strong>: 하나의 스레드에서 모든 콜백을 순차적으로 처리한다. 동일 콜백 그룹의 콜백이 동시에 실행될 수 없으므로, 콜백 내에서 자체 토픽의 구독 콜백을 대기하면 데드락이 발생한다.</li>
+<li><strong>MultiThreadedExecutor</strong>: 다수의 스레드에서 콜백을 병렬 처리한다. 서로 다른 콜백 그룹에 소속된 콜백은 동시에 실행될 수 있다.</li>
+</ul>
+<h2>3. TransformListener의 콜백 그룹 동작</h2>
+<h3>3.1 spin_thread = true (기본)</h3>
+<p>기본 설정에서 <code>TransformListener</code>는 내부적으로 전용 콜백 그룹과 전용 <code>SingleThreadedExecutor</code>를 생성하고, 별도의 스레드에서 이 Executor를 실행한다.</p>
+<pre><code>사용자 스레드 (메인 Executor):
+  └── 사용자 콜백 (기본 콜백 그룹)
+      └── lookupTransform() 호출 → Buffer에서 데이터 조회
+
+TF2 전용 스레드 (내부 Executor):
+  └── TF2 콜백 그룹 (MutuallyExclusive)
+      ├── /tf 구독 콜백 → Buffer에 변환 저장
+      └── /tf_static 구독 콜백 → Buffer에 정적 변환 저장
+</code></pre>
+<p>이 구성에서는 사용자 콜백과 TF2 콜백이 서로 다른 스레드에서 실행되므로, 사용자 콜백 내에서 <code>lookupTransform()</code>을 호출해도 TF2 콜백의 실행이 차단되지 않는다.</p>
+<h3>3.2 spin_thread = false</h3>
+<p>전용 스레드를 사용하지 않는 경우, TF2 구독 콜백은 노드의 기본 콜백 그룹 또는 사용자가 지정한 콜백 그룹에서 실행된다.</p>
+<h2>4. 데드락 시나리오</h2>
+<h3>4.1 SingleThreadedExecutor + 공유 콜백 그룹</h3>
+<p>다음 구성에서 데드락이 발생할 수 있다.</p>
+<pre><code class="language-cpp">// 위험한 구성
+auto tf_buffer = std::make_shared&lt;tf2_ros::Buffer&gt;(node-&gt;get_clock());
+auto tf_listener = std::make_shared&lt;tf2_ros::TransformListener&gt;(
+  *tf_buffer, node, false);  // spin_thread = false
+
+// 타이머 콜백에서 lookupTransform 호출
+auto timer = node-&gt;create_wall_timer(
+  std::chrono::milliseconds(100),
+  [&amp;tf_buffer]() {
+    auto transform = tf_buffer-&gt;lookupTransform(
+      "map", "base_link",
+      rclcpp::Time(0),
+      rclcpp::Duration::from_seconds(1.0));  // 1초 대기
+    // 이 대기 중에 /tf 콜백이 실행되어야 하지만,
+    // SingleThreadedExecutor에서는 현재 콜백이 완료될 때까지
+    // 다른 콜백이 실행되지 않으므로 데드락 발생
+  });
+
+rclcpp::spin(node);  // SingleThreadedExecutor
+</code></pre>
+<h3>4.2 데드락 발생 메커니즘</h3>
+<ol>
+<li>타이머 콜백이 실행된다</li>
+<li><code>lookupTransform()</code>이 타임아웃 내에서 변환을 대기한다</li>
+<li><code>/tf</code> 콜백이 실행되어야 새로운 변환 데이터가 Buffer에 저장된다</li>
+<li>그러나 <code>SingleThreadedExecutor</code>에서는 현재 실행 중인 타이머 콜백이 완료될 때까지 <code>/tf</code> 콜백이 실행될 수 없다</li>
+<li>결과: 타이머 콜백은 변환을 대기하고, <code>/tf</code> 콜백은 타이머 콜백의 완료를 대기하는 <strong>순환 대기(circular wait)</strong> 발생</li>
+</ol>
+<h2>5. 안전한 콜백 그룹 구성</h2>
+<h3>5.1 방법 1: 기본 설정 사용 (spin_thread = true)</h3>
+<p>가장 간단하고 권장되는 방법이다.</p>
+<pre><code class="language-cpp">auto tf_buffer = std::make_shared&lt;tf2_ros::Buffer&gt;(node-&gt;get_clock());
+auto tf_listener = std::make_shared&lt;tf2_ros::TransformListener&gt;(
+  *tf_buffer);  // spin_thread = true (기본)
+</code></pre>
+<h3>5.2 방법 2: 별도 콜백 그룹 + MultiThreadedExecutor</h3>
+<pre><code class="language-cpp">// 사용자 콜백 그룹
+auto user_cb_group = node-&gt;create_callback_group(
+  rclcpp::CallbackGroupType::MutuallyExclusive);
+
+// TF2 전용 콜백 그룹
+auto tf_cb_group = node-&gt;create_callback_group(
+  rclcpp::CallbackGroupType::MutuallyExclusive);
+
+auto tf_buffer = std::make_shared&lt;tf2_ros::Buffer&gt;(node-&gt;get_clock());
+
+// TransformListener에 전용 콜백 그룹 지정
+// (고급 생성자 또는 구독 옵션을 통해)
+
+// MultiThreadedExecutor 사용
+rclcpp::executors::MultiThreadedExecutor executor;
+executor.add_node(node);
+executor.spin();
+</code></pre>
+<h3>5.3 방법 3: 타임아웃 없는 조회</h3>
+<p><code>lookupTransform()</code>에서 타임아웃을 사용하지 않으면 대기가 발생하지 않으므로 데드락이 방지된다.</p>
+<pre><code class="language-cpp">try {
+  auto transform = tf_buffer-&gt;lookupTransform(
+    "map", "base_link",
+    tf2::TimePointZero);  // 타임아웃 없이 최신 변환 조회
+} catch (const tf2::TransformException &amp; ex) {
+  // 변환이 아직 가용하지 않은 경우 처리
+}
+</code></pre>
+<h3>5.4 방법 4: canTransform()으로 사전 확인</h3>
+<pre><code class="language-cpp">if (tf_buffer-&gt;canTransform("map", "base_link", tf2::TimePointZero)) {
+  auto transform = tf_buffer-&gt;lookupTransform(
+    "map", "base_link", tf2::TimePointZero);
+  // 변환 사용
+}
+</code></pre>
+<h2>6. ComponentNode에서의 구성</h2>
+<h3>6.1 Composable Node에서의 고려사항</h3>
+<p>ROS2의 컴포넌트 노드(component node)에서는 단일 프로세스 내에 다수의 노드가 공존한다. 이 환경에서 각 노드가 자체 <code>TransformListener</code>를 갖는 경우, 전용 스레드의 수가 노드 수에 비례하여 증가한다. 리소스 효율을 위해 공유 <code>Buffer</code>와 단일 <code>TransformListener</code>를 사용하거나, <code>spin_thread = false</code>와 <code>MultiThreadedExecutor</code>를 조합하여 스레드 수를 제한할 수 있다.</p>
+<h2>7. Python에서의 콜백 그룹</h2>
+<p>Python에서도 동일한 원칙이 적용된다.</p>
+<pre><code class="language-python">from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from tf2_ros import Buffer, TransformListener
+
+# TF2 전용 콜백 그룹
+tf_cb_group = MutuallyExclusiveCallbackGroup()
+
+tf_buffer = Buffer()
+tf_listener = TransformListener(
+    tf_buffer, node,
+    spin_thread=True)  # 기본: True
+
+# 또는 MultiThreadedExecutor와 함께 사용
+executor = MultiThreadedExecutor()
+executor.add_node(node)
+executor.spin()
+</code></pre>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Open Robotics, “Using callback groups,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/How-To-Guides/Using-callback-groups.html">https://docs.ros.org/en/rolling/How-To-Guides/Using-callback-groups.html</a></li>
+<li>Open Robotics, “tf2_ros: TransformListener,” ROS 2 Source Code, <a href="https://github.com/ros2/geometry2">https://github.com/ros2/geometry2</a></li>
+<li>Open Robotics, “Executors,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Executors.html">https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Executors.html</a></li>
+</ul>
+<hr />
+<p><em>버전: 2026-03-26</em></p>
 
             </article>
             <footer>

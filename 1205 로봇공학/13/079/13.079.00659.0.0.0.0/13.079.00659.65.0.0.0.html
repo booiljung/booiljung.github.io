@@ -115,6 +115,167 @@
             </header>
             <article>
                 <h1>659.65 벡터 (geometry_msgs::Vector3) 변환</h1>
+<h2>1. 개요</h2>
+<p>3차원 벡터(vector)는 방향과 크기를 나타내는 기하학적 객체로, 속도(velocity), 가속도(acceleration), 힘(force), 각속도(angular velocity) 등 로봇 공학의 다양한 물리량을 표현하는 데 사용된다. 벡터의 좌표 변환은 점(point)의 변환과 본질적으로 다른 특성을 갖는다. 벡터는 자유 벡터(free vector)로서 공간상의 위치에 무관하며, 따라서 좌표 변환 시 회전(rotation)만 적용되고 병진(translation)은 무시된다. TF2에서는 <code>geometry_msgs::msg::Vector3Stamped</code> 메시지에 대한 좌표 변환을 <code>tf2_geometry_msgs</code> 패키지를 통해 지원한다.</p>
+<h2>2. geometry_msgs::msg::Vector3 메시지 구조</h2>
+<h3>2.1 Vector3</h3>
+<pre><code>geometry_msgs/Vector3
+  float64 x
+  float64 y
+  float64 z
+</code></pre>
+<p>세 개의 <code>float64</code> 필드는 각각 좌표 프레임의 <span class="math math-inline">x</span>, <span class="math math-inline">y</span>, <span class="math math-inline">z</span> 축 방향 성분을 나타낸다. 단위는 표현하는 물리량에 따라 달라진다 (예: 속도의 경우 m/s, 힘의 경우 N).</p>
+<h3>2.2 Vector3Stamped</h3>
+<pre><code>geometry_msgs/Vector3Stamped
+  std_msgs/Header header
+    builtin_interfaces/Time stamp
+    string frame_id
+  geometry_msgs/Vector3 vector
+    float64 x
+    float64 y
+    float64 z
+</code></pre>
+<p><code>header.frame_id</code>는 벡터가 표현된 좌표 프레임을 식별한다. TF2의 변환 파이프라인과의 연동을 위해 <code>Vector3Stamped</code> 사용이 권장된다.</p>
+<h2>3. 벡터 변환의 수학적 원리</h2>
+<h3>3.1 자유 벡터의 변환</h3>
+<p>자유 벡터 <span class="math math-inline">\mathbf{v}</span>의 좌표 변환에는 회전만 적용된다.</p>
+<p><span class="math math-display">
+{}^{B}\mathbf{v} = R \cdot {}^{A}\mathbf{v}
+</span></p>
+<p>여기서 <span class="math math-inline">R \in SO(3)</span>는 프레임 <span class="math math-inline">A</span>에서 프레임 <span class="math math-inline">B</span>로의 회전 행렬이다. 병진 벡터 <span class="math math-inline">\mathbf{t}</span>는 적용되지 않는다.</p>
+<h3>3.2 동차 좌표를 이용한 이해</h3>
+<p>동차 좌표(homogeneous coordinates) 표현에서 벡터는 네 번째 성분이 0인 4차원 벡터로 표현된다.</p>
+<p><span class="math math-display">
+\begin{bmatrix} {}^{B}\mathbf{v} \\ 0 \end{bmatrix} = \begin{bmatrix} R &amp; \mathbf{t} \\ \mathbf{0}^{\top} &amp; 1 \end{bmatrix} \begin{bmatrix} {}^{A}\mathbf{v} \\ 0 \end{bmatrix} = \begin{bmatrix} R \cdot {}^{A}\mathbf{v} \\ 0 \end{bmatrix}
+</span></p>
+<p>네 번째 성분이 0이므로 병진 <span class="math math-inline">\mathbf{t}</span>가 자연스럽게 소거된다. 이것이 점(네 번째 성분 1)과 벡터(네 번째 성분 0)의 변환이 구별되는 수학적 근거이다.</p>
+<h3>3.3 점 변환과의 비교</h3>
+<table><thead><tr><th>속성</th><th>점 (Point)</th><th>벡터 (Vector3)</th></tr></thead><tbody>
+<tr><td>동차 좌표 마지막 성분</td><td>1</td><td>0</td></tr>
+<tr><td>회전 적용</td><td>O</td><td>O</td></tr>
+<tr><td>병진 적용</td><td>O</td><td>X</td></tr>
+<tr><td>물리적 의미</td><td>공간상의 위치</td><td>방향과 크기</td></tr>
+<tr><td>예시</td><td>로봇 위치, 장애물 좌표</td><td>속도, 가속도, 힘</td></tr>
+</tbody></table>
+<h3>3.4 쿼터니언 기반 벡터 변환</h3>
+<p>TF2 내부에서 회전은 쿼터니언으로 표현되므로, 벡터의 변환은 쿼터니언 회전 연산으로 수행된다.</p>
+<p><span class="math math-display">
+{}^{B}\mathbf{v} = q \otimes {}^{A}\mathbf{v} \otimes q^{*}
+</span></p>
+<p>여기서 <span class="math math-inline">q</span>는 단위 쿼터니언이고, <span class="math math-inline">q^{*}</span>는 그 켤레이며, <span class="math math-inline">{}^{A}\mathbf{v}</span>는 순수 쿼터니언 <span class="math math-inline">(0, v_x, v_y, v_z)</span>으로 취급된다. 이 연산은 회전 행렬 곱 <span class="math math-inline">R \cdot \mathbf{v}</span>와 수학적으로 동치이다.</p>
+<h2>4. C++에서의 Vector3 변환</h2>
+<h3>4.1 doTransform()을 이용한 변환</h3>
+<pre><code class="language-cpp">#include &lt;tf2_geometry_msgs/tf2_geometry_msgs.hpp&gt;
+
+geometry_msgs::msg::Vector3Stamped velocity_in;
+velocity_in.header.frame_id = "base_link";
+velocity_in.header.stamp = node-&gt;now();
+velocity_in.vector.x = 1.0;  // 전방 1.0 m/s
+velocity_in.vector.y = 0.0;
+velocity_in.vector.z = 0.0;
+
+geometry_msgs::msg::Vector3Stamped velocity_out;
+
+try {
+  auto transform = tf_buffer-&gt;lookupTransform(
+    "map", "base_link", velocity_in.header.stamp);
+  tf2::doTransform(velocity_in, velocity_out, transform);
+  
+  RCLCPP_INFO(node-&gt;get_logger(),
+    "map 프레임에서의 속도: (%.2f, %.2f, %.2f)",
+    velocity_out.vector.x,
+    velocity_out.vector.y,
+    velocity_out.vector.z);
+} catch (const tf2::TransformException &amp; ex) {
+  RCLCPP_ERROR(node-&gt;get_logger(), "%s", ex.what());
+}
+</code></pre>
+<h3>4.2 Buffer::transform()을 이용한 간편 변환</h3>
+<pre><code class="language-cpp">try {
+  auto velocity_out = tf_buffer-&gt;transform(velocity_in, "map");
+} catch (const tf2::TransformException &amp; ex) {
+  RCLCPP_ERROR(node-&gt;get_logger(), "%s", ex.what());
+}
+</code></pre>
+<h3>4.3 tf2 내부 타입을 이용한 변환</h3>
+<pre><code class="language-cpp">tf2::Transform T;
+tf2::fromMsg(transform_msg.transform, T);
+
+tf2::Vector3 v_in(1.0, 0.0, 0.0);
+
+// 벡터 변환: 회전만 적용 (병진은 무시)
+tf2::Vector3 v_out = T.getBasis() * v_in;
+</code></pre>
+<p>여기서 <code>T.getBasis()</code>는 변환의 회전 성분만을 <span class="math math-inline">3 \times 3</span> 행렬(<code>tf2::Matrix3x3</code>)로 반환한다. <code>T * v_in</code>과 달리 <code>T.getBasis() * v_in</code>은 병진을 적용하지 않으므로 벡터 변환에 적합하다.</p>
+<h2>5. Python에서의 Vector3 변환</h2>
+<h3>5.1 do_transform_vector3()를 이용한 변환</h3>
+<pre><code class="language-python">from geometry_msgs.msg import Vector3Stamped
+from tf2_geometry_msgs import do_transform_vector3
+
+velocity_in = Vector3Stamped()
+velocity_in.header.frame_id = 'base_link'
+velocity_in.header.stamp = node.get_clock().now().to_msg()
+velocity_in.vector.x = 1.0
+velocity_in.vector.y = 0.0
+velocity_in.vector.z = 0.0
+
+try:
+    transform = tf_buffer.lookup_transform(
+        'map', 'base_link',
+        velocity_in.header.stamp)
+    velocity_out = do_transform_vector3(velocity_in, transform)
+    
+    node.get_logger().info(
+        f'map 프레임에서의 속도: '
+        f'({velocity_out.vector.x:.2f}, '
+        f'{velocity_out.vector.y:.2f}, '
+        f'{velocity_out.vector.z:.2f})')
+except TransformException as ex:
+    node.get_logger().error(f'{ex}')
+</code></pre>
+<h3>5.2 numpy를 이용한 수동 벡터 변환</h3>
+<pre><code class="language-python">import numpy as np
+from tf_transformations import quaternion_matrix
+
+# 쿼터니언에서 회전 행렬 추출
+q = [transform.transform.rotation.x,
+     transform.transform.rotation.y,
+     transform.transform.rotation.z,
+     transform.transform.rotation.w]
+R = quaternion_matrix(q)[:3, :3]
+
+# 벡터 변환 (회전만 적용)
+v_in = np.array([1.0, 0.0, 0.0])
+v_out = R @ v_in
+</code></pre>
+<h2>6. 벡터 변환이 적용되는 물리량</h2>
+<h3>6.1 속도 벡터</h3>
+<p>로봇의 선속도(linear velocity)를 로봇 기체 프레임에서 세계 프레임으로 변환할 때 벡터 변환이 사용된다. 속도는 방향과 크기를 갖는 벡터량이므로 좌표계의 원점 이동에 무관하다.</p>
+<h3>6.2 가속도 벡터</h3>
+<p>IMU 센서에서 측정된 가속도를 로봇 기체 프레임이나 세계 프레임으로 변환할 때도 벡터 변환이 적용된다.</p>
+<h3>6.3 힘 벡터와 토크 벡터</h3>
+<p>접촉 센서나 힘/토크 센서에서 측정된 물리량을 다른 프레임에서 해석할 때 벡터 변환이 필요하다. 다만, 렌치(wrench)로 결합된 경우에는 힘과 토크가 함께 변환되어야 하며, 작용점의 이동에 따른 모멘트 암(moment arm) 보정이 필요할 수 있다.</p>
+<h3>6.4 법선 벡터</h3>
+<p>표면의 법선 벡터(normal vector)를 변환할 때도 벡터 변환이 사용된다. 그러나 비등방 스케일링(non-isotropic scaling)이 포함된 변환에서는 법선 벡터가 역전치 행렬(inverse-transpose matrix) <span class="math math-inline">R^{-\top}</span>로 변환되어야 한다. TF2에서 다루는 강체 변환(rigid body transformation)에서는 <span class="math math-inline">R^{-\top} = R</span>이므로 이 구별이 필요 없다.</p>
+<h2>7. 일반적 오류</h2>
+<h3>7.1 벡터에 병진을 적용하는 오류</h3>
+<p>가장 빈번한 오류는 벡터를 점으로 취급하여 병진을 적용하는 것이다. 예를 들어, 속도 벡터 <span class="math math-inline">\mathbf{v} = (1, 0, 0)^{\top}</span>을 점으로 취급하여 병진 <span class="math math-inline">(10, 0, 0)^{\top}</span>을 적용하면, 결과가 <span class="math math-inline">(11, 0, 0)^{\top}</span>이 되어 물리적으로 무의미한 “속도“가 된다. <code>tf2_geometry_msgs</code>의 <code>Vector3Stamped</code> 변환은 내부적으로 이를 올바르게 처리한다.</p>
+<h3>7.2 Vector3 vs Point 타입 혼동</h3>
+<p>ROS 메시지에서 <code>geometry_msgs::msg::Vector3</code>와 <code>geometry_msgs::msg::Point</code>는 구조적으로 동일(세 개의 <code>float64</code> 필드)하지만, TF2에서의 변환 의미론이 다르다. 물리량의 특성에 맞는 메시지 타입을 선택해야 올바른 변환이 적용된다.</p>
+<h3>7.3 크기 보존 확인</h3>
+<p>강체 변환에서 벡터의 크기(norm)는 변환 전후로 보존되어야 한다.</p>
+<p><span class="math math-display">
+\|{}^{B}\mathbf{v}\| = \|R \cdot {}^{A}\mathbf{v}\| = \|{}^{A}\mathbf{v}\|
+</span></p>
+<p>이는 회전 행렬 <span class="math math-inline">R</span>이 직교 행렬이기 때문이다. 변환 후 벡터의 크기가 변화하면 변환 과정에 오류가 있음을 의미하므로, 디버깅 시 크기 보존 여부를 확인하는 것이 유용하다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Open Robotics, “geometry_msgs/Vector3,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/p/geometry_msgs/">https://docs.ros.org/en/rolling/p/geometry_msgs/</a></li>
+<li>Open Robotics, “tf2_geometry_msgs,” ROS 2 Documentation, <a href="https://docs.ros.org/en/rolling/p/tf2_geometry_msgs/">https://docs.ros.org/en/rolling/p/tf2_geometry_msgs/</a></li>
+<li>R. M. Murray, Z. Li, and S. S. Sastry, <em>A Mathematical Introduction to Robotic Manipulation</em>, CRC Press, 1994.</li>
+</ul>
+<hr />
+<p><em>버전: 2026-03-26</em></p>
 
             </article>
             <footer>

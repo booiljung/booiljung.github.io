@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:2.11 엑시큐터(Executor) 기반 콜백 그룹 분리 및 멀티스레딩 최적화</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>2.11 엑시큐터(Executor) 기반 콜백 그룹 분리 및 멀티스레딩 최적화</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">자율 에이전트 드론</a> / <a href="../../index.html">Volume 1. ROS2 자율 드론 아키텍처 및 메타 시스템</a> / <a href="../index.html">Part 1. 자율 에이전트 드론의 진화와 ROS2 생태계</a> / <a href="index.html">Chapter 2. ROS1에서 ROS2로의 로봇 소프트웨어 아키텍처 진화</a> / <span>2.11 엑시큐터(Executor) 기반 콜백 그룹 분리 및 멀티스레딩 최적화</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>2.11 엑시큐터(Executor) 기반 콜백 그룹 분리 및 멀티스레딩 최적화</h1>
+<p>로봇 제어 소프트웨어에서 수백 헤르츠(Hz)로 유입되는 센서 데이터와 비동기적인 임무 지시 명령을 동시에 처리하기 위해서는 단일 스레드 구조를 넘어선 고도화된 병렬 제어 모델이 필수적이다. 기존 ROS 1 아키텍처는 콜백 큐를 단순히 복수의 스레드가 경쟁적으로 가져가는(Spinner) 방식에 머물렀으나, 제어 결정론(Determinism)을 근간으로 하는 ROS 2 패러다임은 엑시큐터(Executor) 개념과 콜백 그룹(Callback Group) 분리 체계를 새롭게 도입하여 マルチ코어 컴퓨팅 환경에서의 스레드 할당 및 실행 우선순위를 애플리케이션 계층에서 정밀하게 통제한다.</p>
+<h2>1.  엑시큐터(Executor)의 아키텍처 모델 및 스케줄링 역할</h2>
+<p>ROS 2에서 노드(Node) 객체 자체는 메시지를 담는 컨테이너 구조일 뿐, 실제 서브스크립션(Subscription), 타이머(Timer), 서비스(Service) 등의 이벤트를 수신하여 콜백 함수를 실행하는 주체는 엑시큐터(Executor) 인터페이스이다. 엑시큐터는 하위 DDS 계층의 WaitSet 메커니즘을 통해 커널 단의 파일 디스크립터(File Descriptor) 이벤트를 수집하고 유저 공간의 콜백에 맵핑(Mapping)하는 스케줄러 역할을 수행한다. 단일 스레드 엑시큐터(Single-Threaded Executor)는 이벤트의 큐잉(Queueing) 순서에 기반한 완전한 직렬 구동을 보장하는 반면, 다중 스레드 엑시큐터(Multi-Threaded Executor)는 CPU의 멀티코어 가용성을 극대화하여 서로 다른 콜백 로직이 병렬적으로 컨텍스트 지연 없이 실행될 수 있는 확정적 토대를 마련해 준다.</p>
+<h2>2.  상호 배제형(Mutually Exclusive) 및 재진입(Reentrant) 콜백 그룹 패턴</h2>
+<p>엑시큐터가 여러 개의 스레드를 가용할지라도 다중 로봇 시스템 내부의 모든 콜백이 무분별하게 병렬 호출될 경우, 심각한 경쟁 상태(Race Condition)가 유발되어 드론의 내부 상태(State) 변수가 손상될 수 있다. ROS 2는 이를 제어하기 위해 모든 이벤트 소스를 반드시 특정 ’콜백 그룹’에 할당하도록 강제한다.</p>
+<ul>
+<li><strong>상호 배제형 콜백 그룹(Mutually Exclusive Callback Group)</strong>: 해당 그룹에 귀속된 콜백 함수들은 엑시큐터 내부에서 결코 동시에 병렬로 실행되지 않는다. 드론의 모터 PWM 출력 제어나 메모리 쓰기 등 내부 변이에 취약한 공유 자원 접근 콜백들을 이 그룹으로 묶음으로써 별도의 뮤텍스(Mutex) 동기화 없이 암묵적인 스레드 안전성(Thread Safety)을 보장한다.</li>
+<li><strong>재진입 콜백 그룹(Reentrant Callback Group)</strong>: 해당 그룹 내의 콜백들은 운영 환경의 할당 스레드 자원이 허용하는 한 중복적이고 병렬적으로 동시 실행될 수 있다. 무상태(Stateless) 고빈도 이미지 프로세싱이나 LiDAR 포인트 클라우드의 독립 연산 등 CPU 코어를 최대한 활용해야 하는 알고리즘에 적용되어 처리량을 극대화한다.</li>
+</ul>
+<h2>3.  서비스 호출 데드락(Deadlock) 방지 및 비동기 API 통제</h2>
+<p>ROS 2 노드 프로그래밍 시 가장 빈번히 초래되는 치명적 한계점 중 하나는 단일 스레드 엑시큐터 내의 콜백 함수 내부에서 다른 ROS 2 서비스 동기식 직접 호출(<code>send_request()</code>)을 수행하여 발생하는 엑시큐터 데드락(Deadlock) 현상이다. 본 연산이 대기(Block) 상태에 빠지면 다른 모든 타이머 제어 루프가 정지되어 드론의 비행 제어 상실을 야기한다. 따라서 다중 에이전트 오케스트레이션 아키텍처에서는 반드시 <code>async_send_request</code> 와 같은 비동기 퓨처(Future) 기반 API를 활용하거나, 서비스 클라이언트 요청 로직을 별도의 상호 배제적 콜백 그룹 및 멀티스레드 엑시큐터 스레드풀에 격리 배포(Isolation)하는 설계가 학술적으로 의무화된다.</p>
+<h2>4.  다중 에이전트 멀티태스킹 최적화 구조 도출</h2>
+<p>자율 드론 내부에는 VIO(Visual Inertial Odometry) 노드, 궤적 생성 노드, DDS 통제 노드 등 무거운 연산을 요구하는 컴포넌트가 동시다발적으로 상주한다. 엑시큐터와 콜백 그룹 병렬 디자인 모델을 결합하면 특정 시스템의 주요 제어 주파수(예: 400Hz Flight Control)를 보장하는 전용 엑시큐터를 스레드 코어에 고정(CPU Affinity Pinning)하고, 비교적 여유가 있는 비전 백엔드 연산을 Background 멀티스레드 엑시큐터에 위임하는 방식의 비대칭형 멀티프로세싱 최적화 구조의 완성이 가능해진다.</p>
+<ul>
+<li>참고문헌 및 버전 정보</li>
+<li>ROS 2 Design: Executors and Synchronization, Open Robotics.</li>
+<li>rclcpp Executor API documentation (ROS 2 Rolling/Jazzy 기준).</li>
+</ul>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

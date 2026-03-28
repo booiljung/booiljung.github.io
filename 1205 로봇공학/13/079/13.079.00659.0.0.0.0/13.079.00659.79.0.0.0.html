@@ -115,6 +115,402 @@
             </header>
             <article>
                 <h1>659.79 tf2_ros의 메시지 필터 (MessageFilter) 활용</h1>
+<h2>1. 개요</h2>
+<p>로봇 시스템에서 센서 데이터는 특정 좌표 프레임에서 측정된다. 이 센서 데이터를 다른 좌표 프레임으로 변환하여 활용하려면 해당 시점의 좌표 변환 정보가 반드시 필요하다. 그러나 센서 데이터와 좌표 변환 데이터는 서로 다른 토픽을 통하여 비동기적으로 전달되므로, 센서 메시지가 도착하는 시점에 해당 타임스탬프의 좌표 변환이 아직 이용 가능하지 않을 수 있다. **메시지 필터(MessageFilter)**는 이러한 시간적 동기화 문제를 해결하기 위한 tf2_ros 패키지의 핵심 구성 요소이다.</p>
+<h2>2. 메시지 필터의 필요성</h2>
+<h3>2.1 비동기 데이터 도착 문제</h3>
+<p>ROS2에서 센서 데이터와 좌표 변환 데이터는 독립적인 퍼블리셔에 의하여 발행된다. 예를 들어, LiDAR 센서가 <code>sensor_msgs/msg/PointCloud2</code> 메시지를 발행하고, 로봇의 주행 제어기가 <code>/tf</code> 토픽으로 주행 측정(odometry) 기반 좌표 변환을 발행하는 경우를 고려하자. 두 데이터 스트림은 다음과 같은 이유로 시간적 불일치가 발생할 수 있다.</p>
+<ul>
+<li><strong>네트워크 지연(Network Latency)</strong>: DDS 미들웨어를 통한 메시지 전달 시 가변적인 지연이 발생한다.</li>
+<li><strong>처리 지연(Processing Delay)</strong>: 변환 데이터를 생성하는 노드와 센서 데이터를 생성하는 노드의 처리 속도 차이가 존재한다.</li>
+<li><strong>발행 주파수 불일치</strong>: 센서 데이터의 발행 주파수와 변환 데이터의 발행 주파수가 상이할 수 있다.</li>
+</ul>
+<h3>2.2 직접 처리의 한계</h3>
+<p>메시지 필터 없이 센서 데이터 콜백 내에서 직접 <code>lookupTransform()</code>을 호출하면 다음과 같은 문제가 발생한다.</p>
+<pre><code class="language-cpp">// 문제가 있는 접근 방식
+void pointcloud_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
+{
+    try {
+        // 센서 메시지 도착 시점에 해당 타임스탬프의 변환이 아직 없을 수 있음
+        auto transform = tf_buffer_-&gt;lookupTransform(
+            "map", msg-&gt;header.frame_id,
+            tf2_ros::fromMsg(msg-&gt;header.stamp));
+        // 변환 적용
+    } catch (const tf2::ExtrapolationException&amp; ex) {
+        // 변환이 아직 이용 가능하지 않아 예외 발생
+        RCLCPP_WARN(get_logger(), "변환 불가: %s", ex.what());
+    }
+}
+</code></pre>
+<p>위 코드에서 센서 메시지의 타임스탬프에 해당하는 좌표 변환이 <code>tf2::Buffer</code>에 아직 저장되지 않은 경우 <code>ExtrapolationException</code>이 발생하며, 해당 센서 데이터는 손실된다.</p>
+<h2>3. tf2_ros::MessageFilter의 동작 원리</h2>
+<h3>3.1 아키텍처</h3>
+<p><code>tf2_ros::MessageFilter</code>는 **입력 필터(Input Filter)**와 **출력 콜백(Output Callback)**으로 구성되는 메시지 파이프라인 구조를 갖는다.</p>
+<pre><code>센서 메시지 → [message_filters::Subscriber] → [tf2_ros::MessageFilter] → 사용자 콜백
+                                                       ↑
+                                                 [tf2::Buffer]
+                                              (변환 가용성 확인)
+</code></pre>
+<p>동작 과정은 다음과 같다.</p>
+<ol>
+<li><code>message_filters::Subscriber</code>가 센서 토픽으로부터 메시지를 수신한다.</li>
+<li>수신된 메시지가 <code>tf2_ros::MessageFilter</code>에 전달된다.</li>
+<li><code>MessageFilter</code>는 메시지의 <code>header.stamp</code>와 <code>header.frame_id</code>를 이용하여, 목표 프레임으로의 좌표 변환이 <code>tf2::Buffer</code>에서 이용 가능한지 확인한다.</li>
+<li>변환이 이용 가능하면 메시지를 출력 콜백으로 즉시 전달한다.</li>
+<li>변환이 이용 가능하지 않으면 메시지를 내부 큐에 보관하고, 변환이 이용 가능해질 때까지 대기한다.</li>
+<li>큐 내 메시지가 허용 대기 시간을 초과하면 해당 메시지를 폐기한다.</li>
+</ol>
+<h3>3.2 핵심 매개변수</h3>
+<p><code>tf2_ros::MessageFilter</code>의 동작을 제어하는 주요 매개변수는 다음과 같다.</p>
+<table><thead><tr><th>매개변수</th><th>설명</th><th>기본값</th></tr></thead><tbody>
+<tr><td><code>target_frame</code></td><td>변환의 목표 좌표 프레임</td><td>필수 지정</td></tr>
+<tr><td><code>queue_size</code></td><td>내부 큐의 최대 크기</td><td>10</td></tr>
+<tr><td><code>tolerance</code></td><td>변환 시간의 허용 오차 (Duration)</td><td>0</td></tr>
+<tr><td><code>buffer</code></td><td>변환 데이터를 조회할 <code>tf2::Buffer</code> 참조</td><td>필수 지정</td></tr>
+</tbody></table>
+<h2>4. C++에서의 MessageFilter 활용</h2>
+<h3>4.1 기본 사용법</h3>
+<pre><code class="language-cpp">#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;message_filters/subscriber.h&gt;
+#include &lt;tf2_ros/buffer.h&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_ros/message_filter.h&gt;
+#include &lt;sensor_msgs/msg/point_cloud2.hpp&gt;
+#include &lt;tf2_sensor_msgs/tf2_sensor_msgs.hpp&gt;
+
+class PointCloudTransformNode : public rclcpp::Node
+{
+public:
+    PointCloudTransformNode()
+    : Node("pointcloud_transform_node")
+    {
+        // tf2 Buffer 및 Listener 초기화
+        tf_buffer_ = std::make_shared&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+        tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(*tf_buffer_, this);
+
+        // message_filters::Subscriber를 이용한 토픽 구독
+        point_cloud_sub_.subscribe(this, "/lidar/points",
+            rmw_qos_profile_sensor_data);
+
+        // tf2_ros::MessageFilter 설정
+        tf_filter_ = std::make_shared&lt;tf2_ros::MessageFilter&lt;sensor_msgs::msg::PointCloud2&gt;&gt;(
+            point_cloud_sub_,       // 입력 필터
+            *tf_buffer_,            // tf2 Buffer
+            "map",                  // 목표 프레임
+            100,                    // 큐 크기
+            this-&gt;get_node_logging_interface(),
+            this-&gt;get_node_clock_interface(),
+            std::chrono::milliseconds(100)  // 허용 대기 시간
+        );
+
+        // 출력 콜백 등록
+        tf_filter_-&gt;registerCallback(
+            std::bind(&amp;PointCloudTransformNode::on_filtered_pointcloud,
+                      this, std::placeholders::_1));
+    }
+
+private:
+    void on_filtered_pointcloud(
+        const sensor_msgs::msg::PointCloud2::ConstSharedPtr&amp; msg)
+    {
+        // 이 콜백이 호출되는 시점에는 변환이 반드시 이용 가능함
+        try {
+            auto transform = tf_buffer_-&gt;lookupTransform(
+                "map", msg-&gt;header.frame_id,
+                tf2_ros::fromMsg(msg-&gt;header.stamp));
+
+            sensor_msgs::msg::PointCloud2 transformed_cloud;
+            tf2::doTransform(*msg, transformed_cloud, transform);
+
+            RCLCPP_INFO(get_logger(),
+                "변환 완료: %zu 포인트, 프레임: %s → map",
+                transformed_cloud.width * transformed_cloud.height,
+                msg-&gt;header.frame_id.c_str());
+
+            // 변환된 포인트 클라우드 활용
+            process_transformed_cloud(transformed_cloud);
+
+        } catch (const tf2::TransformException&amp; ex) {
+            RCLCPP_ERROR(get_logger(), "변환 실패: %s", ex.what());
+        }
+    }
+
+    void process_transformed_cloud(
+        const sensor_msgs::msg::PointCloud2&amp; cloud)
+    {
+        (void)cloud;
+        // 변환된 데이터 처리 로직
+    }
+
+    std::shared_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+    std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+    message_filters::Subscriber&lt;sensor_msgs::msg::PointCloud2&gt; point_cloud_sub_;
+    std::shared_ptr&lt;tf2_ros::MessageFilter&lt;sensor_msgs::msg::PointCloud2&gt;&gt; tf_filter_;
+};
+
+int main(int argc, char** argv)
+{
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared&lt;PointCloudTransformNode&gt;());
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+<h3>4.2 다중 목표 프레임 설정</h3>
+<p><code>MessageFilter</code>는 복수의 목표 프레임을 지정할 수 있다. 모든 목표 프레임으로의 변환이 이용 가능해야 메시지가 출력 콜백으로 전달된다.</p>
+<pre><code class="language-cpp">// 복수의 목표 프레임 설정
+std::vector&lt;std::string&gt; target_frames = {"map", "odom", "base_link"};
+
+tf_filter_ = std::make_shared&lt;tf2_ros::MessageFilter&lt;sensor_msgs::msg::PointCloud2&gt;&gt;(
+    point_cloud_sub_,
+    *tf_buffer_,
+    target_frames[0],  // 초기 목표 프레임
+    100,
+    this-&gt;get_node_logging_interface(),
+    this-&gt;get_node_clock_interface()
+);
+
+// 추가 목표 프레임 등록
+tf_filter_-&gt;setTargetFrames(target_frames);
+</code></pre>
+<h2>5. Python에서의 MessageFilter 활용</h2>
+<pre><code class="language-python">import rclpy
+from rclpy.node import Node
+from tf2_ros import Buffer, TransformListener
+from tf2_ros.buffer import Buffer
+from tf2_ros import TransformException
+import message_filters
+from tf2_ros.message_filter import MessageFilter
+from sensor_msgs.msg import LaserScan
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+
+
+class LaserTransformNode(Node):
+    def __init__(self):
+        super().__init__('laser_transform_node')
+
+        # tf2 Buffer 및 Listener 초기화
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        # QoS 프로파일 설정
+        sensor_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.BEST_EFFORT
+        )
+
+        # message_filters.Subscriber를 이용한 토픽 구독
+        self.laser_sub = message_filters.Subscriber(
+            self, LaserScan, '/scan', qos_profile=sensor_qos)
+
+        # tf2_ros MessageFilter 설정
+        self.tf_filter = MessageFilter(
+            self.laser_sub,
+            self.tf_buffer,
+            'map',          # 목표 프레임
+            100,            # 큐 크기
+            self             # 노드
+        )
+
+        # 출력 콜백 등록
+        self.tf_filter.registerCallback(self.on_filtered_laser)
+
+    def on_filtered_laser(self, msg):
+        """변환이 이용 가능한 레이저 스캔 데이터 처리"""
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                'map',
+                msg.header.frame_id,
+                msg.header.stamp
+            )
+
+            self.get_logger().info(
+                f'레이저 스캔 변환 완료: '
+                f'{msg.header.frame_id} → map, '
+                f'ranges: {len(msg.ranges)} 포인트'
+            )
+
+            # 변환된 데이터 활용
+            self.process_scan(msg, transform)
+
+        except TransformException as ex:
+            self.get_logger().warning(f'변환 실패: {ex}')
+
+    def process_scan(self, scan, transform):
+        """변환된 레이저 스캔 데이터 처리"""
+        pass
+
+
+def main():
+    rclpy.init()
+    node = LaserTransformNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+</code></pre>
+<h2>6. MessageFilter의 고급 활용</h2>
+<h3>6.1 message_filters와의 체이닝</h3>
+<p><code>tf2_ros::MessageFilter</code>는 <code>message_filters</code> 프레임워크의 일부로서, 다른 필터와 체이닝(chaining)하여 복합적인 메시지 동기화 파이프라인을 구성할 수 있다.</p>
+<pre><code class="language-cpp">#include &lt;message_filters/subscriber.h&gt;
+#include &lt;message_filters/time_synchronizer.h&gt;
+#include &lt;message_filters/sync_policies/approximate_time.h&gt;
+#include &lt;tf2_ros/message_filter.h&gt;
+#include &lt;sensor_msgs/msg/image.hpp&gt;
+#include &lt;sensor_msgs/msg/camera_info.hpp&gt;
+
+class StereoTransformNode : public rclcpp::Node
+{
+public:
+    StereoTransformNode()
+    : Node("stereo_transform_node")
+    {
+        tf_buffer_ = std::make_shared&lt;tf2_ros::Buffer&gt;(this-&gt;get_clock());
+        tf_listener_ = std::make_shared&lt;tf2_ros::TransformListener&gt;(*tf_buffer_, this);
+
+        // 좌측 영상 구독 → MessageFilter → 시간 동기화
+        left_sub_.subscribe(this, "/stereo/left/image_raw");
+
+        // tf2 MessageFilter 적용 (좌측 영상에 대해)
+        left_tf_filter_ = std::make_shared&lt;
+            tf2_ros::MessageFilter&lt;sensor_msgs::msg::Image&gt;&gt;(
+            left_sub_, *tf_buffer_, "map", 50,
+            this-&gt;get_node_logging_interface(),
+            this-&gt;get_node_clock_interface());
+
+        // 우측 영상 구독
+        right_sub_.subscribe(this, "/stereo/right/image_raw");
+
+        // 카메라 정보 구독
+        camera_info_sub_.subscribe(this, "/stereo/left/camera_info");
+
+        // ApproximateTime 정책을 이용한 시간 동기화
+        using SyncPolicy = message_filters::sync_policies::ApproximateTime&lt;
+            sensor_msgs::msg::Image,
+            sensor_msgs::msg::Image,
+            sensor_msgs::msg::CameraInfo&gt;;
+
+        sync_ = std::make_shared&lt;message_filters::Synchronizer&lt;SyncPolicy&gt;&gt;(
+            SyncPolicy(50),
+            *left_tf_filter_,   // tf2 필터가 적용된 좌측 영상
+            right_sub_,         // 우측 영상
+            camera_info_sub_    // 카메라 정보
+        );
+
+        sync_-&gt;registerCallback(
+            std::bind(&amp;StereoTransformNode::on_synchronized,
+                      this, std::placeholders::_1,
+                      std::placeholders::_2, std::placeholders::_3));
+    }
+
+private:
+    void on_synchronized(
+        const sensor_msgs::msg::Image::ConstSharedPtr&amp; left_img,
+        const sensor_msgs::msg::Image::ConstSharedPtr&amp; right_img,
+        const sensor_msgs::msg::CameraInfo::ConstSharedPtr&amp; cam_info)
+    {
+        RCLCPP_INFO(get_logger(),
+            "동기화 완료: 좌측[%ux%u] 우측[%ux%u]",
+            left_img-&gt;width, left_img-&gt;height,
+            right_img-&gt;width, right_img-&gt;height);
+        (void)cam_info;
+    }
+
+    std::shared_ptr&lt;tf2_ros::Buffer&gt; tf_buffer_;
+    std::shared_ptr&lt;tf2_ros::TransformListener&gt; tf_listener_;
+    message_filters::Subscriber&lt;sensor_msgs::msg::Image&gt; left_sub_;
+    message_filters::Subscriber&lt;sensor_msgs::msg::Image&gt; right_sub_;
+    message_filters::Subscriber&lt;sensor_msgs::msg::CameraInfo&gt; camera_info_sub_;
+    std::shared_ptr&lt;tf2_ros::MessageFilter&lt;sensor_msgs::msg::Image&gt;&gt; left_tf_filter_;
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime&lt;
+        sensor_msgs::msg::Image, sensor_msgs::msg::Image,
+        sensor_msgs::msg::CameraInfo&gt;;
+    std::shared_ptr&lt;message_filters::Synchronizer&lt;SyncPolicy&gt;&gt; sync_;
+};
+</code></pre>
+<h3>6.2 실패 콜백 등록</h3>
+<p>MessageFilter에서 변환 대기 시간을 초과하여 폐기되는 메시지에 대한 실패 콜백을 등록할 수 있다. 이를 통하여 데이터 손실의 원인을 진단할 수 있다.</p>
+<pre><code class="language-cpp">// 실패 콜백 등록
+tf_filter_-&gt;registerFailureCallback(
+    std::bind(&amp;MyNode::on_filter_failure, this,
+              std::placeholders::_1, std::placeholders::_2));
+
+void on_filter_failure(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr&amp; msg,
+    tf2_ros::filter_failure_reasons::FilterFailureReason reason)
+{
+    std::string reason_str;
+    switch (reason) {
+        case tf2_ros::filter_failure_reasons::OutTheBack:
+            reason_str = "메시지가 Buffer 캐시 기간보다 오래됨";
+            break;
+        case tf2_ros::filter_failure_reasons::EmptyFrameID:
+            reason_str = "메시지의 frame_id가 비어 있음";
+            break;
+        default:
+            reason_str = "알 수 없는 사유";
+            break;
+    }
+    RCLCPP_WARN(get_logger(),
+        "메시지 필터 실패 [stamp=%.3f]: %s",
+        rclcpp::Time(msg-&gt;header.stamp).seconds(),
+        reason_str.c_str());
+}
+</code></pre>
+<h2>7. 큐 크기와 허용 오차 설정 지침</h2>
+<h3>7.1 큐 크기(Queue Size) 결정</h3>
+<p>큐 크기는 변환 데이터 도착의 최대 지연 시간과 센서 데이터의 발행 주파수를 기반으로 결정한다.</p>
+<p><span class="math math-display">
+\text{queue\_size} \geq f_{\text{sensor}} \times t_{\text{max\_delay}}
+</span></p>
+<p>여기서 <span class="math math-inline">f_{\text{sensor}}</span>는 센서 데이터 발행 주파수(Hz), <span class="math math-inline">t_{\text{max\_delay}}</span>는 변환 데이터의 최대 도착 지연 시간(초)이다.</p>
+<p>예를 들어, 10 Hz로 발행되는 LiDAR 데이터에 대하여 변환 데이터의 최대 지연이 0.5초인 경우, 큐 크기는 최소 5 이상으로 설정하여야 한다.</p>
+<h3>7.2 시간 허용 오차(Tolerance) 설정</h3>
+<p>시간 허용 오차는 센서 데이터의 타임스탬프와 변환 데이터의 타임스탬프 간 허용 가능한 최대 시간 차이를 지정한다. 이 값은 센서 데이터와 변환 데이터 사이의 시간 동기화 정밀도에 따라 결정한다.</p>
+<ul>
+<li><strong>0초 (기본값)</strong>: 정확한 타임스탬프 일치를 요구한다. 동일 발행 주파수에서 적합하다.</li>
+<li><strong>양의 값</strong>: 지정된 시간 범위 이내의 변환을 허용한다. 보간(interpolation)을 통하여 요청 시점의 변환을 근사한다.</li>
+</ul>
+<pre><code class="language-cpp">// 10ms 허용 오차 설정
+tf_filter_ = std::make_shared&lt;tf2_ros::MessageFilter&lt;sensor_msgs::msg::PointCloud2&gt;&gt;(
+    point_cloud_sub_, *tf_buffer_, "map", 100,
+    this-&gt;get_node_logging_interface(),
+    this-&gt;get_node_clock_interface(),
+    std::chrono::milliseconds(10)  // tolerance
+);
+</code></pre>
+<h2>8. 성능 고려 사항</h2>
+<h3>8.1 메모리 사용량</h3>
+<p>MessageFilter의 내부 큐는 대기 중인 센서 메시지를 보관하므로, 큐 크기와 메시지 크기에 비례하여 메모리를 사용한다. 대용량 메시지(예: <code>PointCloud2</code>)를 처리하는 경우 큐 크기를 적절히 제한하여야 한다.</p>
+<table><thead><tr><th>메시지 유형</th><th>개별 메시지 크기 (예시)</th><th>큐 크기 100 기준 메모리 사용량</th></tr></thead><tbody>
+<tr><td><code>LaserScan</code> (720 포인트)</td><td>~5.8 KB</td><td>~580 KB</td></tr>
+<tr><td><code>Image</code> (640×480 RGB)</td><td>~921.6 KB</td><td>~92.2 MB</td></tr>
+<tr><td><code>PointCloud2</code> (65536 포인트)</td><td>~1.6 MB</td><td>~160 MB</td></tr>
+</tbody></table>
+<h3>8.2 Executor와의 상호 작용</h3>
+<p>MessageFilter의 콜백은 Executor에 의하여 실행된다. <code>MultiThreadedExecutor</code>를 사용하는 경우, MessageFilter의 출력 콜백과 tf2_ros의 구독 콜백이 서로 다른 스레드에서 동시에 실행될 수 있으므로, 공유 데이터에 대한 스레드 안전성을 보장하여야 한다.</p>
+<h3>8.3 QoS 호환성</h3>
+<p>MessageFilter의 입력 구독자에 설정된 QoS 정책이 퍼블리셔의 QoS 정책과 호환되어야 한다. 센서 데이터에 대하여는 일반적으로 <code>BEST_EFFORT</code> 신뢰성과 <code>VOLATILE</code> 내구성을 사용한다.</p>
+<pre><code class="language-cpp">// 센서 데이터용 QoS 설정
+rclcpp::QoS sensor_qos(10);
+sensor_qos.best_effort();
+sensor_qos.durability_volatile();
+
+point_cloud_sub_.subscribe(this, "/lidar/points", sensor_qos.get_rmw_qos_profile());
+</code></pre>
+<h2>9. 요약</h2>
+<p><code>tf2_ros::MessageFilter</code>는 센서 데이터와 좌표 변환 데이터의 시간적 동기화 문제를 투명하게 해결하는 핵심 도구이다. 센서 메시지를 내부 큐에 보관하고, 해당 메시지의 타임스탬프에 대한 좌표 변환이 이용 가능해질 때까지 자동으로 대기한 후 사용자 콜백으로 전달함으로써, 안정적인 좌표 변환 처리를 보장한다. <code>message_filters</code> 프레임워크와의 체이닝을 통하여 복합적인 동기화 파이프라인을 구성할 수 있으며, 큐 크기와 시간 허용 오차의 적절한 설정이 시스템 성능의 핵심 요소이다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>ROS2 공식 문서, “Using Stamped Datatypes with tf2_ros::MessageFilter”, https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Using-Stamped-Datatypes-With-Tf2-Ros-MessageFilter.html (ROS2 Humble Hawksbill)</li>
+<li>tf2_ros API 문서, <code>tf2_ros::MessageFilter</code>, https://docs.ros2.org/latest/api/tf2_ros/ (ROS2 Humble Hawksbill)</li>
+<li>message_filters API 문서, https://docs.ros2.org/latest/api/message_filters/ (ROS2 Humble Hawksbill)</li>
+<li>S. Macenski et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” <em>Science Robotics</em>, vol. 7, no. 66, 2022.</li>
+</ul>
 
             </article>
             <footer>
