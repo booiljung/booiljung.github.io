@@ -115,6 +115,108 @@
             </header>
             <article>
                 <h1>1261.48 통신 패러다임에서의 타이밍과 지연</h1>
+<h2>1. 통신 지연의 공학적 중요성</h2>
+<p>로봇 행동 제어 시스템에서 통신 지연(communication latency)은 센서 데이터의 수집에서 액추에이터 명령의 적용에 이르는 제어 루프 전체의 성능을 결정짓는 핵심 요인이다. 통신 패러다임의 선택은 시스템의 시간적 특성에 직접적으로 영향을 미치며, 실시간성(real-time property)이 요구되는 로봇 시스템에서 통신 지연의 정량적 분석과 관리는 안전성과 성능을 동시에 보장하기 위한 필수적인 공학적 활동이다.</p>
+<h2>2. 지연의 구성 요소</h2>
+<p>ROS2 통신에서 발생하는 종단 간 지연(end-to-end latency)은 다음의 구성 요소로 분해된다.</p>
+<h3>2.1 직렬화 및 역직렬화 지연</h3>
+<p>메시지가 발행자(publisher)측에서 직렬화(serialization)되고, 구독자(subscriber)측에서 역직렬화(deserialization)되는 데 소요되는 시간이다. 직렬화 지연 <span class="math math-inline">t_{ser}</span>은 메시지 크기 <span class="math math-inline">S</span>와 메시지 구조의 복잡도에 비례한다.</p>
+<p><span class="math math-display">
+t_{ser} = f(S, \text{complexity})
+</span></p>
+<p>CDR(Common Data Representation) 형식을 사용하는 ROS2의 기본 직렬화에서, 단순 구조체의 직렬화는 마이크로초(<span class="math math-inline">\mu s</span>) 단위로 수행되나, 대용량 점군(point cloud) 데이터나 영상 프레임의 경우 밀리초(<span class="math math-inline">ms</span>) 단위의 지연이 발생할 수 있다.</p>
+<h3>2.2 미들웨어 전송 지연</h3>
+<p>DDS(Data Distribution Service) 미들웨어 계층에서 데이터를 송신측의 전송 버퍼에 기록하고, 수신측의 수신 버퍼에서 읽어오는 데 소요되는 시간이다. 이 지연은 QoS(Quality of Service) 정책, 전송 프로토콜(UDP, 공유 메모리 등), 네트워크 토폴로지에 의해 결정된다.</p>
+<p>동일 호스트(localhost) 내 통신에서는 공유 메모리(shared memory) 전송이 적용되어 수 마이크로초 수준의 지연이 달성되며, 네트워크 경유 통신에서는 네트워크 대역폭, 혼잡도, 라우팅 지연이 추가된다.</p>
+<h3>2.3 스케줄링 지연</h3>
+<p>실행자(Executor)가 준비 완료된 콜백을 감지하고 실행하기까지의 대기 시간이다. 이 지연은 실행자의 유형(단일 스레드, 멀티 스레드), 현재 실행 중인 콜백의 수와 실행 시간, 콜백 그룹의 잠금 상태에 의해 결정된다. 스케줄링 지연 <span class="math math-inline">t_{sched}</span>는 다음과 같이 표현된다.</p>
+<p><span class="math math-display">
+t_{sched} = t_{wait} + t_{dispatch}
+</span></p>
+<p>여기서 <span class="math math-inline">t_{wait}</span>는 <code>rcl_wait()</code> 호출의 반환까지 대기하는 시간이고, <span class="math math-inline">t_{dispatch}</span>는 실행자가 적절한 콜백을 선택하고 호출을 개시하는 데 소요되는 시간이다.</p>
+<h3>2.4 콜백 실행 지연</h3>
+<p>콜백 함수 자체의 실행에 소요되는 시간이다. 이는 콜백 내부의 연산 복잡도에 의해 결정되며, 최악 실행 시간(Worst-Case Execution Time, WCET)으로 분석된다.</p>
+<h2>3. 각 통신 패러다임의 타이밍 특성</h2>
+<h3>3.1 토픽 통신의 타이밍</h3>
+<p>토픽(Topic) 통신은 비동기적 발행-구독 패턴을 사용한다. 발행자의 <code>publish()</code> 호출은 비차단(non-blocking)이며, 메시지가 DDS 미들웨어의 전송 버퍼에 기록된 즉시 반환된다. 구독자 측에서는 실행자의 스케줄링에 의해 수신 콜백이 호출되므로, 발행에서 콜백 실행까지의 지연은 다음과 같이 구성된다.</p>
+<p><span class="math math-display">
+L_{topic} = t_{ser} + t_{transport} + t_{deser} + t_{sched} + t_{callback}
+</span></p>
+<p>토픽 통신의 핵심적 타이밍 특성은 다음과 같다.</p>
+<table><thead><tr><th>특성</th><th>설명</th></tr></thead><tbody>
+<tr><td>비동기성</td><td>발행자와 구독자의 실행이 시간적으로 결합(coupling)되지 않는다.</td></tr>
+<tr><td>비결정론적 지연</td><td>스케줄링 지연이 시스템 부하에 따라 변동한다.</td></tr>
+<tr><td>메시지 누락 가능성</td><td>QoS 정책에 따라 수신 버퍼가 가득 찬 경우 오래된 메시지가 폐기될 수 있다.</td></tr>
+<tr><td>최신성(freshness) 문제</td><td>수신된 메시지가 현재 시점의 상태를 반영하는지 보장되지 않는다.</td></tr>
+</tbody></table>
+<h3>3.2 서비스 통신의 타이밍</h3>
+<p>서비스(Service) 통신은 요청-응답 패턴을 사용한다. 클라이언트의 <code>call()</code> 또는 <code>async_send_request()</code> 호출에서 응답 수신까지의 왕복 지연(round-trip latency)은 다음과 같다.</p>
+<p><span class="math math-display">
+L_{service} = L_{request} + t_{server\_sched} + t_{server\_callback} + L_{response}
+</span></p>
+<p>여기서 <span class="math math-inline">L_{request}</span>는 요청 메시지의 전송 지연, <span class="math math-inline">t_{server\_sched}</span>는 서비스 서버 측의 스케줄링 지연, <span class="math math-inline">t_{server\_callback}</span>은 서비스 서버 콜백의 실행 시간, <span class="math math-inline">L_{response}</span>는 응답 메시지의 전송 지연이다.</p>
+<p>동기적 서비스 호출(<code>call()</code>)은 응답이 도착할 때까지 호출 스레드를 차단하므로, 호출자(caller)의 다른 콜백 실행이 <span class="math math-inline">L_{service}</span> 동안 완전히 정지된다. 비동기적 서비스 호출(<code>async_send_request()</code>)은 호출 즉시 반환되며, 응답 도착 시 별도의 콜백에서 처리되므로 호출자의 차단이 발생하지 않는다.</p>
+<h3>3.3 액션 통신의 타이밍</h3>
+<p>액션(Action) 통신은 목표 전송, 피드백 수신, 결과 수신의 세 가지 시간적 단계로 구성된다. 이에 따라 액션의 전체 수명 주기 지연은 다음과 같이 분해된다.</p>
+<p><span class="math math-display">
+L_{action} = L_{goal\_send} + L_{goal\_accept} + \sum_{k=1}^{N} L_{feedback_k} + L_{result}
+</span></p>
+<p>여기서 <span class="math math-inline">L_{goal\_send}</span>는 목표 전송 지연, <span class="math math-inline">L_{goal\_accept}</span>는 서버의 목표 수락/거부 응답 지연, <span class="math math-inline">L_{feedback_k}</span>는 <span class="math math-inline">k</span>번째 피드백 메시지의 지연, <span class="math math-inline">N</span>은 총 피드백 수, <span class="math math-inline">L_{result}</span>는 최종 결과 전달 지연이다.</p>
+<p>액션 통신은 내부적으로 토픽과 서비스의 조합으로 구현되므로, 각 단계의 지연은 해당 통신 패러다임의 타이밍 특성을 따른다. 목표 전송과 결과 수신은 서비스 통신의 요청-응답 패턴을 사용하며, 피드백 전달은 토픽 통신의 발행-구독 패턴을 사용한다.</p>
+<h2>4. 타임스탬프와 시간 동기화</h2>
+<p>통신 지연이 존재하는 환경에서 메시지의 시간적 유효성(temporal validity)을 판단하기 위하여, ROS2는 메시지 헤더에 타임스탬프(timestamp)를 포함시키는 관행을 따른다. <code>std_msgs/msg/Header</code> 구조체의 <code>stamp</code> 필드는 메시지가 생성된 시점의 시간을 저장한다.</p>
+<pre><code class="language-cpp">auto msg = std::make_shared&lt;sensor_msgs::msg::LaserScan&gt;();
+msg-&gt;header.stamp = this-&gt;get_clock()-&gt;now();
+msg-&gt;header.frame_id = "laser_frame";
+publisher_-&gt;publish(*msg);
+</code></pre>
+<p>수신측에서 현재 시간과 메시지 타임스탬프의 차이를 계산하면 통신 지연의 추정이 가능하다.</p>
+<p><span class="math math-display">
+\hat{L} = t_{received} - t_{stamp}
+</span></p>
+<p>이 추정이 유효하기 위해서는 발행자와 구독자가 동일한 시간 기준(time base)을 사용하여야 한다. 분산 시스템에서는 NTP(Network Time Protocol), PTP(Precision Time Protocol, IEEE 1588) 등의 시간 동기화 프로토콜이 적용된다.</p>
+<h2>5. 지연 예산(Latency Budget) 분석</h2>
+<p>로봇 행동 제어 시스템의 설계 시, 제어 루프의 전체 지연 예산(latency budget)을 수립하고 각 구성 요소에 허용 가능한 지연을 할당하는 것이 권장된다. 예를 들어, 10Hz(100ms 주기)의 제어 루프에서 지연 예산은 다음과 같이 할당될 수 있다.</p>
+<table><thead><tr><th>구성 요소</th><th>할당 지연</th><th>비율</th></tr></thead><tbody>
+<tr><td>센서 데이터 직렬화/전송</td><td>5ms</td><td>5%</td></tr>
+<tr><td>센서 콜백 스케줄링</td><td>10ms</td><td>10%</td></tr>
+<tr><td>센서 데이터 처리</td><td>20ms</td><td>20%</td></tr>
+<tr><td>상태 추정 연산</td><td>15ms</td><td>15%</td></tr>
+<tr><td>행동 결정 연산</td><td>20ms</td><td>20%</td></tr>
+<tr><td>명령 직렬화/전송</td><td>5ms</td><td>5%</td></tr>
+<tr><td>안전 여유(safety margin)</td><td>25ms</td><td>25%</td></tr>
+<tr><td><strong>합계</strong></td><td><strong>100ms</strong></td><td><strong>100%</strong></td></tr>
+</tbody></table>
+<p>안전 여유는 스케줄링 지터(jitter), 네트워크 혼잡, 운영체제 수준의 인터럽트 처리 등 비결정론적 지연 변동을 흡수하기 위하여 확보한다.</p>
+<h2>6. QoS 정책과 지연의 관계</h2>
+<p>DDS QoS 정책은 통신 지연의 특성에 직접적으로 영향을 미친다.</p>
+<table><thead><tr><th>QoS 정책</th><th>지연에 대한 영향</th></tr></thead><tbody>
+<tr><td>Reliability: BEST_EFFORT</td><td>재전송이 없으므로 최소 지연을 달성하나, 메시지 손실이 발생할 수 있다.</td></tr>
+<tr><td>Reliability: RELIABLE</td><td>재전송을 통해 메시지 전달을 보장하나, 재전송에 의한 추가 지연이 발생한다.</td></tr>
+<tr><td>History: KEEP_LAST(1)</td><td>최신 메시지만 유지하여 메모리 사용과 처리 지연을 최소화한다.</td></tr>
+<tr><td>History: KEEP_ALL</td><td>모든 메시지를 보존하므로 수신 측의 처리 지연이 누적될 수 있다.</td></tr>
+<tr><td>Deadline</td><td>지정된 기한 내에 메시지가 도착하지 않으면 경고를 발생시킨다.</td></tr>
+<tr><td>Lifespan</td><td>지정된 수명이 경과한 메시지를 자동으로 폐기한다.</td></tr>
+<tr><td>Latency Budget</td><td>DDS 미들웨어에 최대 허용 지연을 명시한다. (구현 지원은 미들웨어에 의존적이다.)</td></tr>
+</tbody></table>
+<p>센서 데이터 스트리밍에는 <code>BEST_EFFORT</code> + <code>KEEP_LAST(1)</code> 조합이 적합하며, 명령 전달이나 상태 전이 이벤트에는 <code>RELIABLE</code> + <code>KEEP_LAST(1)</code> 조합이 적합하다.</p>
+<h2>7. 지연 측정과 프로파일링</h2>
+<p>ROS2에서 통신 지연을 측정하기 위한 도구와 기법은 다음과 같다.</p>
+<ol>
+<li><strong>ros2 topic delay</strong>: 메시지 헤더의 타임스탬프와 수신 시점의 차이를 계산하여 토픽 통신 지연을 측정한다.</li>
+<li><strong>ros2 topic hz</strong>: 토픽 메시지의 수신 빈도를 측정하여 발행 주기의 일관성을 평가한다.</li>
+<li><strong>tracetools</strong>: LTTng 기반의 추적(tracing) 프레임워크를 통해 콜백의 시작/종료 시점, 스케줄링 이벤트 등을 나노초 단위로 기록한다.</li>
+<li><strong>ros2_tracing</strong>: ROS2 전용 추적 패키지로, 실행자 스케줄링, 콜백 실행, 메시지 전달의 전체 경로를 시각화할 수 있다.</li>
+</ol>
+<p>Bédard 등(2022)은 <code>ros2_tracing</code> 프레임워크의 설계와 구현을 상세히 기술한 바 있으며, 이 도구는 종단 간 지연 분석의 표준적 방법론으로 활용되고 있다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>D. Casini, T. Blaß, I. Lütkebohle, B. B. Brandenburg, “Response-Time Analysis of ROS 2 Processing Chains Under Reservation-Based Scheduling,” in <em>Proceedings of the 31st Euromicro Conference on Real-Time Systems (ECRTS)</em>, 2019.</li>
+<li>C. Bédard, I. Lütkebohle, D. Lajoie, “ros2_tracing: Multipurpose Low-Overhead Framework for Real-Time Tracing of ROS 2,” <em>IEEE Robotics and Automation Letters</em>, vol. 7, no. 3, 2022.</li>
+<li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
+<li>Object Management Group, “Data Distribution Service (DDS) Version 1.4,” OMG Standard, 2015.</li>
+<li>Open Robotics, “About Quality of Service Settings,” ROS 2 Documentation, https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Quality-of-Service-Settings.html.</li>
+</ul>
 
             </article>
             <footer>

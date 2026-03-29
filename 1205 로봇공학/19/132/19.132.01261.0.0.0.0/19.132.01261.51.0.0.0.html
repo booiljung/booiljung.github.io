@@ -115,6 +115,114 @@
             </header>
             <article>
                 <h1>1261.51 DDS와 ROS2의 통합 구조</h1>
+<h2>1. 통합 설계의 동기</h2>
+<p>ROS2가 DDS(Data Distribution Service)를 미들웨어로 채택한 것은 ROS1의 자체 통신 계층이 갖고 있던 구조적 한계를 극복하기 위한 전략적 설계 결정이다. ROS1의 통신 계층은 단일 마스터(rosmaster)에 의존하는 중앙 집중식 발견, TCP/UDP 기반의 독자적 전송 프로토콜(TCPROS/UDPROS), QoS(Quality of Service) 정책의 부재 등의 한계를 가지고 있었다. DDS는 이러한 문제를 해결하는 성숙한 산업 표준으로서, 탈중앙화 발견, 풍부한 QoS 정책, 플랫폼 독립적 유선 프로토콜을 제공한다.</p>
+<p>그러나 ROS2는 DDS API를 직접 노출하지 않는다. DDS의 복잡한 API 구조와 방대한 QoS 옵션은 로봇 소프트웨어 개발자에게 불필요한 학습 부담을 야기할 수 있으므로, ROS2는 DDS를 추상화 계층 뒤에 캡슐화하여 일관되고 간결한 프로그래밍 인터페이스를 제공한다.</p>
+<h2>2. 계층적 아키텍처</h2>
+<p>ROS2의 소프트웨어 스택은 DDS 미들웨어를 포함하여 다음의 계층적 구조로 구성된다.</p>
+<pre><code>┌──────────────────────────────────────────┐
+│  사용자 애플리케이션 (User Application)    │
+├──────────────────────────────────────────┤
+│  rclcpp / rclpy                          │  ← 언어별 클라이언트 라이브러리
+├──────────────────────────────────────────┤
+│  rcl (ROS Client Library)                │  ← C 기반 공통 라이브러리
+├──────────────────────────────────────────┤
+│  RMW Interface                           │  ← 미들웨어 추상화 인터페이스
+├──────────────────────────────────────────┤
+│  rmw_fastrtps / rmw_cyclonedds /         │  ← RMW 구현체 (미들웨어 어댑터)
+│  rmw_connextdds / rmw_zenoh              │
+├──────────────────────────────────────────┤
+│  Fast DDS / Cyclone DDS /                │  ← DDS 미들웨어 구현체
+│  RTI Connext DDS / Zenoh                 │
+├──────────────────────────────────────────┤
+│  운영체제 (Linux, Windows, macOS, RTOS)   │  ← OS 계층
+└──────────────────────────────────────────┘
+</code></pre>
+<h3>2.1 rclcpp / rclpy 계층</h3>
+<p><code>rclcpp</code>(C++)와 <code>rclpy</code>(Python)는 각 프로그래밍 언어에 특화된 ROS2 클라이언트 라이브러리이다. 이 계층은 노드(Node), 발행자(Publisher), 구독(Subscription), 서비스(Service), 액션(Action), 타이머(Timer), 매개변수(Parameter) 등 ROS2의 핵심 개념에 대한 객체 지향적 API를 제공한다. 개발자는 이 계층의 API만을 사용하여 로봇 애플리케이션을 작성하며, DDS의 존재를 인식할 필요가 없다.</p>
+<h3>2.2 rcl 계층</h3>
+<p><code>rcl</code>(ROS Client Library)은 C 언어로 작성된 언어 독립적 공통 라이브러리이다. <code>rclcpp</code>와 <code>rclpy</code>는 내부적으로 <code>rcl</code>의 함수를 호출하여 핵심 기능을 수행한다. <code>rcl</code>은 노드 관리, 대기 집합(wait set) 관리, 시간 관리, 로깅 등의 기능을 구현하며, 하위 계층의 RMW 인터페이스를 통해 미들웨어와 상호 작용한다.</p>
+<h3>2.3 RMW(ROS Middleware Interface) 계층</h3>
+<p>RMW 인터페이스는 ROS2와 DDS 미들웨어 사이의 추상화 경계(abstraction boundary)를 정의한다. RMW는 C 언어 함수 포인터 테이블의 형태로 구현되며, 다음의 핵심 연산에 대한 통일된 인터페이스를 제공한다.</p>
+<table><thead><tr><th>RMW 연산</th><th>기능</th></tr></thead><tbody>
+<tr><td><code>rmw_create_node()</code></td><td>노드(DDS Participant) 생성</td></tr>
+<tr><td><code>rmw_create_publisher()</code></td><td>발행자(DDS DataWriter) 생성</td></tr>
+<tr><td><code>rmw_create_subscription()</code></td><td>구독(DDS DataReader) 생성</td></tr>
+<tr><td><code>rmw_publish()</code></td><td>메시지 발행</td></tr>
+<tr><td><code>rmw_take()</code></td><td>메시지 수신</td></tr>
+<tr><td><code>rmw_create_service()</code></td><td>서비스 서버 생성</td></tr>
+<tr><td><code>rmw_create_client()</code></td><td>서비스 클라이언트 생성</td></tr>
+<tr><td><code>rmw_wait()</code></td><td>대기 집합에서 이벤트 대기</td></tr>
+<tr><td><code>rmw_create_guard_condition()</code></td><td>가드 조건 생성</td></tr>
+</tbody></table>
+<p>RMW 인터페이스의 존재에 의해 ROS2 애플리케이션은 특정 DDS 구현체에 종속되지 않으며, 빌드 시점 또는 실행 시점에 미들웨어를 교체할 수 있다.</p>
+<h3>2.4 RMW 구현체 계층</h3>
+<p>각 DDS 구현체에 대한 RMW 구현체(adapter)가 존재한다. 예를 들어, <code>rmw_fastrtps_cpp</code>는 Fast DDS에 대한 RMW 구현체이며, <code>rmw_cyclonedds_cpp</code>는 Cyclone DDS에 대한 RMW 구현체이다. 각 RMW 구현체는 RMW 인터페이스의 함수들을 해당 DDS 구현체의 네이티브 API로 변환한다.</p>
+<p>실행 시점에 사용할 RMW 구현체는 환경 변수 <code>RMW_IMPLEMENTATION</code>을 통해 지정한다.</p>
+<pre><code class="language-bash">export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ros2 run my_package my_node
+</code></pre>
+<h2>3. ROS2 개념과 DDS 엔티티의 매핑</h2>
+<h3>3.1 노드와 DomainParticipant</h3>
+<p>ROS2 초기 설계에서는 각 노드가 하나의 DDS DomainParticipant에 대응하였다. 그러나 DomainParticipant의 생성 비용(메모리, 발견 트래픽)이 높기 때문에, 후속 구현에서는 동일 프로세스 내의 복수 노드가 하나의 DomainParticipant를 공유하는 방식이 채택되었다. 이 최적화는 <code>rmw_fastrtps</code>에서 <code>RMW_FASTRTPS_USE_QOS_FROM_XML</code> 옵션 등을 통해 제어된다.</p>
+<h3>3.2 토픽 이름의 변환</h3>
+<p>ROS2의 토픽 이름은 DDS 토픽 이름으로 변환될 때 네임스페이스 접두사가 추가된다. 변환 규칙은 다음과 같다.</p>
+<table><thead><tr><th>ROS2 토픽</th><th>DDS 토픽</th></tr></thead><tbody>
+<tr><td><code>/sensor/scan</code></td><td><code>rt/sensor/scan</code></td></tr>
+<tr><td><code>/cmd_vel</code></td><td><code>rt/cmd_vel</code></td></tr>
+</tbody></table>
+<p>접두사 <code>rt/</code>(ROS Topic)는 ROS2 토픽과 DDS 네이티브 토픽을 구분하기 위하여 추가된다. 서비스의 경우 <code>rq/</code>(Request)와 <code>rr/</code>(Reply) 접두사가 사용된다.</p>
+<h3>3.3 메시지 타입의 변환</h3>
+<p>ROS2의 <code>.msg</code> 파일은 빌드 시점에 <code>rosidl</code> 생성기(generator)에 의해 DDS IDL(Interface Definition Language) 파일 또는 CDR(Common Data Representation) 직렬화 코드로 변환된다. 변환 과정은 다음과 같다.</p>
+<pre><code>sensor_msgs/msg/LaserScan.msg
+        ↓ (rosidl_generator)
+sensor_msgs::msg::dds_::LaserScan_ (DDS 타입)
+        ↓ (CDR 직렬화)
+바이트 스트림 → DDS 전송
+</code></pre>
+<h3>3.4 QoS 정책의 매핑</h3>
+<p>ROS2의 QoS 프로파일은 DDS의 QoS 정책 집합에 매핑된다. ROS2는 사전 정의된 QoS 프로파일을 제공하여 DDS의 복잡한 QoS 설정을 단순화한다.</p>
+<table><thead><tr><th>ROS2 QoS 프로파일</th><th>용도</th><th>핵심 DDS QoS 설정</th></tr></thead><tbody>
+<tr><td><code>rclcpp::SystemDefaultsQoS</code></td><td>기본 통신</td><td>DDS 기본값 사용</td></tr>
+<tr><td><code>rclcpp::SensorDataQoS</code></td><td>센서 데이터</td><td>BEST_EFFORT, KEEP_LAST(5), VOLATILE</td></tr>
+<tr><td><code>rclcpp::ServicesQoS</code></td><td>서비스 통신</td><td>RELIABLE, KEEP_LAST(10), VOLATILE</td></tr>
+<tr><td><code>rclcpp::ParameterEventsQoS</code></td><td>파라미터 이벤트</td><td>RELIABLE, KEEP_LAST(1000), VOLATILE</td></tr>
+<tr><td><code>rclcpp::ActionStatusQoS</code></td><td>액션 상태</td><td>BEST_EFFORT, KEEP_LAST(1), TRANSIENT_LOCAL</td></tr>
+</tbody></table>
+<h2>4. 인트라 프로세스 통신(Intra-Process Communication)</h2>
+<p>동일 프로세스 내에서 실행되는 노드 간의 통신에서 DDS 미들웨어를 경유하면 불필요한 직렬화/역직렬화와 전송 오버헤드가 발생한다. ROS2는 이를 최적화하기 위하여 인트라 프로세스 통신(IPC) 경로를 제공한다.</p>
+<p>인트라 프로세스 통신이 활성화되면, 동일 프로세스 내의 발행자와 구독자 사이에서 메시지가 DDS를 거치지 않고 공유 메모리 버퍼를 통해 직접 전달된다. <code>std::unique_ptr</code>을 사용한 소유권 이전(ownership transfer) 방식으로 제로 카피(zero-copy) 전달이 구현된다.</p>
+<pre><code class="language-cpp">auto node = std::make_shared&lt;rclcpp::Node&gt;(
+  "my_node",
+  rclcpp::NodeOptions().use_intra_process_comms(true));
+
+auto publisher = node-&gt;create_publisher&lt;std_msgs::msg::String&gt;(
+  "topic", 10);
+
+// unique_ptr를 사용한 제로 카피 발행
+auto msg = std::make_unique&lt;std_msgs::msg::String&gt;();
+msg-&gt;data = "hello";
+publisher-&gt;publish(std::move(msg));
+</code></pre>
+<p>인트라 프로세스 통신의 지연은 DDS 경유 통신 대비 1~2 자릿수 낮은 수준(수 마이크로초)이며, 직렬화 비용이 완전히 제거된다.</p>
+<h2>5. DDS 구현체의 교체와 상호 운용성</h2>
+<p>RMW 추상화 계층에 의해 DDS 구현체를 교체하더라도 ROS2 애플리케이션의 소스 코드 변경은 불필요하다. 그러나 다음의 주의사항이 존재한다.</p>
+<ol>
+<li><strong>QoS 호환성</strong>: 각 DDS 구현체의 기본 QoS 설정이 상이할 수 있으므로, 명시적 QoS 설정이 권장된다.</li>
+<li><strong>전송 계층 차이</strong>: 공유 메모리, 멀티캐스트 설정 등의 전송 계층 구성은 구현체별 설정 파일을 통해 개별적으로 관리된다.</li>
+<li><strong>기능 지원 범위</strong>: DDS Security, Content-Filtered Topic 등 일부 기능은 구현체에 따라 지원 여부가 상이하다.</li>
+</ol>
+<p>서로 다른 DDS 구현체를 사용하는 ROS2 노드 간에도 RTPS 유선 프로토콜에 의해 상호 운용성이 보장된다. 다만, 동일 호스트 내에서 서로 다른 구현체를 혼용할 경우 공유 메모리 전송이 비활성화되어 성능이 저하될 수 있다.</p>
+<h2>6. Zenoh 기반 미들웨어의 등장</h2>
+<p>ROS2 Jazzy(2024) 이후 DDS 외에 Zenoh 프로토콜 기반의 <code>rmw_zenoh</code>가 공식 지원되기 시작하였다. Zenoh는 DDS 대비 경량의 발견 프로토콜, 낮은 메모리 사용량, WAN(Wide Area Network) 환경에서의 우수한 성능을 제공한다. RMW 추상화 계층의 존재에 의해 <code>rmw_zenoh</code>로의 전환은 환경 변수 변경만으로 가능하며, 애플리케이션 코드의 수정은 불필요하다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
+<li>Open Robotics, “About DDS and ROS middleware implementations,” ROS 2 Documentation, https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Different-Middleware-Vendors.html.</li>
+<li>Open Robotics, “ROS 2 Middleware Interface,” ROS 2 Design, https://design.ros2.org/articles/ros_middleware_interface.html.</li>
+<li>Open Robotics, “Intra-Process Communication,” ROS 2 Documentation, https://docs.ros.org/en/rolling/Tutorials/Demos/Intra-Process-Communication.html.</li>
+<li>Object Management Group, “Data Distribution Service (DDS) Version 1.4,” OMG Standard, formal/15-04-10, 2015.</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,141 @@
             </header>
             <article>
                 <h1>1261.52 DDS QoS 프로파일과 통신 신뢰성</h1>
+<h2>1. QoS 정책의 개념과 역할</h2>
+<p>DDS(Data Distribution Service)에서 QoS(Quality of Service) 정책은 통신의 품질 특성을 다차원적으로 제어하는 선언적 메커니즘이다. QoS 정책은 데이터의 신뢰성(reliability), 내구성(durability), 응답 기한(deadline), 데이터 수명(lifespan), 전달 순서(ordering), 자원 할당(resource limits) 등 통신의 비기능적 요구사항(non-functional requirement)을 명시적으로 정의한다.</p>
+<p>ROS2에서 QoS 정책은 발행자(Publisher), 구독(Subscription), 서비스(Service), 액션(Action) 등 모든 통신 엔티티에 적용되며, 센서 데이터 스트리밍, 제어 명령 전달, 상태 보고 등 각 통신 유형의 특성에 맞는 QoS 프로파일을 선택하는 것이 로봇 시스템의 안정적 동작을 보장하는 핵심 설계 활동이다.</p>
+<h2>2. QoS 정책의 제의-요청 모델(Offered-Requested Model)</h2>
+<p>DDS의 QoS 호환성 검증은 제의-요청(Offered-Requested) 모델에 기반한다. 데이터 기록자(DataWriter)는 자신이 제공할 수 있는 QoS를 **제의(offered)**하며, 데이터 독자(DataReader)는 자신이 요구하는 QoS를 **요청(requested)**한다. 제의된 QoS가 요청된 QoS를 충족하면 매칭(matching)이 성립하여 통신이 개시되고, 충족하지 못하면 매칭이 실패하여 통신이 이루어지지 않는다.</p>
+<p>QoS 호환성 검증의 규칙은 다음과 같다.</p>
+<table><thead><tr><th>요청 QoS</th><th>제의 QoS</th><th>호환성</th></tr></thead><tbody>
+<tr><td>RELIABLE</td><td>RELIABLE</td><td>호환</td></tr>
+<tr><td>RELIABLE</td><td>BEST_EFFORT</td><td><strong>비호환</strong> (매칭 실패)</td></tr>
+<tr><td>BEST_EFFORT</td><td>RELIABLE</td><td>호환</td></tr>
+<tr><td>BEST_EFFORT</td><td>BEST_EFFORT</td><td>호환</td></tr>
+</tbody></table>
+<p>이 비대칭적 호환성 규칙에 의해, 수신측이 요구하는 QoS 수준이 송신측이 제공하는 수준보다 높으면 매칭이 실패한다.</p>
+<h2>3. 핵심 QoS 정책의 상세 분석</h2>
+<h3>3.1 Reliability (신뢰성)</h3>
+<p>통신의 메시지 전달 보장 수준을 결정하는 가장 기본적인 QoS 정책이다.</p>
+<table><thead><tr><th>설정값</th><th>동작</th><th>적용 사례</th></tr></thead><tbody>
+<tr><td><code>BEST_EFFORT</code></td><td>메시지 손실을 허용한다. 재전송을 수행하지 않는다. 최소 지연을 달성한다.</td><td>센서 데이터 스트리밍, 영상 프레임</td></tr>
+<tr><td><code>RELIABLE</code></td><td>ACK/NACK 기반 재전송을 통해 모든 메시지의 전달을 보장한다. 재전송에 의한 추가 지연이 발생할 수 있다.</td><td>제어 명령, 상태 전이 이벤트, 경로 계획 결과</td></tr>
+</tbody></table>
+<p><code>RELIABLE</code> 모드에서 DDS 미들웨어는 수신측으로부터 확인 응답(ACK)을 수신하지 못하면 해당 메시지를 재전송한다. RTPS 프로토콜의 HEARTBEAT과 NACK 메커니즘에 의해 구현되며, 재전송 주기, 최대 재전송 횟수 등은 DDS 구현체별 설정을 통해 조정할 수 있다.</p>
+<h3>3.2 Durability (내구성)</h3>
+<p>늦은 참여자(late joiner)에 대한 데이터 제공 정책을 결정한다.</p>
+<table><thead><tr><th>설정값</th><th>동작</th></tr></thead><tbody>
+<tr><td><code>VOLATILE</code></td><td>구독자가 연결되기 전에 발행된 데이터는 수신되지 않는다.</td></tr>
+<tr><td><code>TRANSIENT_LOCAL</code></td><td>발행자의 메모리에 보존된 데이터를 늦은 구독자에게 제공한다.</td></tr>
+<tr><td><code>TRANSIENT</code></td><td>별도의 영속 서비스에 데이터를 보관하여 제공한다. (DDS 구현체 의존적)</td></tr>
+<tr><td><code>PERSISTENT</code></td><td>데이터베이스에 영구 저장하여 시스템 재시작 후에도 데이터를 제공한다. (DDS 구현체 의존적)</td></tr>
+</tbody></table>
+<p>ROS2에서는 <code>VOLATILE</code>과 <code>TRANSIENT_LOCAL</code>이 주로 사용된다. <code>TRANSIENT_LOCAL</code>은 파라미터 서비스, 정적 변환(static transform) 발행 등 늦은 구독자가 이전 데이터를 필요로 하는 경우에 적합하다.</p>
+<h3>3.3 History (이력)</h3>
+<p>수신 버퍼에 보존할 데이터 샘플의 수를 결정한다.</p>
+<table><thead><tr><th>설정값</th><th>동작</th></tr></thead><tbody>
+<tr><td><code>KEEP_LAST(n)</code></td><td>최근 <span class="math math-inline">n</span>개의 샘플만 보존한다. 버퍼가 가득 차면 가장 오래된 샘플을 폐기한다.</td></tr>
+<tr><td><code>KEEP_ALL</code></td><td>모든 샘플을 보존한다. 자원 한계에 도달하면 백프레셔(backpressure)가 발생한다.</td></tr>
+</tbody></table>
+<p>센서 데이터의 경우 <code>KEEP_LAST(1)</code>을 사용하여 항상 최신 데이터만 처리하는 것이 일반적이며, 이벤트 로그의 경우 <code>KEEP_ALL</code>을 사용하여 모든 이벤트를 보존하는 것이 적합하다.</p>
+<h3>3.4 Deadline (기한)</h3>
+<p>데이터 갱신의 최대 허용 주기를 지정한다. 발행자가 지정된 기한 내에 새로운 데이터를 발행하지 않거나, 구독자가 기한 내에 새로운 데이터를 수신하지 못하면 기한 위반(deadline miss) 이벤트가 발생한다.</p>
+<pre><code class="language-cpp">rclcpp::QoS qos(10);
+qos.deadline(std::chrono::milliseconds(100));  // 100ms 기한
+
+auto subscription = node-&gt;create_subscription&lt;sensor_msgs::msg::Imu&gt;(
+  "imu", qos,
+  [](const%20sensor_msgs::msg::Imu::SharedPtr%20msg) { /* ... */ });
+</code></pre>
+<p>기한 위반은 <code>SubscriptionEventCallbacks</code>의 <code>deadline_callback</code>을 통해 감지할 수 있다. 로봇 시스템에서 IMU 데이터의 갱신 중단, 모터 제어 명령의 누락 등 안전 관련 이상 상황을 조기에 감지하는 데 활용된다.</p>
+<h3>3.5 Liveliness (활성)</h3>
+<p>데이터 기록자(DataWriter)가 활성 상태인지를 판별하는 메커니즘이다. 데이터 기록자가 지정된 기간 동안 활성 신호를 보내지 않으면 비활성(not alive)으로 판정되며, 구독측에 통보된다.</p>
+<table><thead><tr><th>설정값</th><th>동작</th></tr></thead><tbody>
+<tr><td><code>AUTOMATIC</code></td><td>DDS 미들웨어가 자동으로 활성 신호를 관리한다.</td></tr>
+<tr><td><code>MANUAL_BY_TOPIC</code></td><td>애플리케이션이 명시적으로 <code>assert_liveliness()</code>를 호출하여 활성 상태를 선언한다.</td></tr>
+</tbody></table>
+<h3>3.6 Lifespan (수명)</h3>
+<p>데이터 샘플의 유효 수명을 지정한다. 지정된 수명이 경과한 샘플은 DDS 미들웨어에 의해 자동으로 폐기되며, 구독자에게 전달되지 않는다. 이는 오래된 센서 데이터가 잘못된 행동 결정을 초래하는 것을 방지하는 데 유용하다.</p>
+<h2>4. ROS2 사전 정의 QoS 프로파일</h2>
+<p>ROS2는 DDS의 복잡한 QoS 설정을 단순화하기 위하여 사전 정의된 QoS 프로파일을 제공한다.</p>
+<table><thead><tr><th>프로파일</th><th>Reliability</th><th>Durability</th><th>History</th><th>Depth</th><th>용도</th></tr></thead><tbody>
+<tr><td><code>SystemDefaultsQoS</code></td><td>시스템 기본</td><td>시스템 기본</td><td>시스템 기본</td><td>시스템 기본</td><td>기본 통신</td></tr>
+<tr><td><code>SensorDataQoS</code></td><td>BEST_EFFORT</td><td>VOLATILE</td><td>KEEP_LAST</td><td>5</td><td>센서 데이터</td></tr>
+<tr><td><code>ParameterEventsQoS</code></td><td>RELIABLE</td><td>VOLATILE</td><td>KEEP_LAST</td><td>1000</td><td>파라미터 이벤트</td></tr>
+<tr><td><code>ServicesQoS</code></td><td>RELIABLE</td><td>VOLATILE</td><td>KEEP_LAST</td><td>10</td><td>서비스 통신</td></tr>
+<tr><td><code>ParametersQoS</code></td><td>RELIABLE</td><td>VOLATILE</td><td>KEEP_LAST</td><td>1000</td><td>파라미터</td></tr>
+</tbody></table>
+<h3>4.1 QoS 프로파일의 C++ 적용 예시</h3>
+<pre><code class="language-cpp">#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+
+class RobotNode : public rclcpp::Node
+{
+public:
+  RobotNode() : Node("robot_node")
+  {
+    // 센서 데이터: BEST_EFFORT로 최신 데이터만 수신
+    scan_sub_ = this-&gt;create_subscription&lt;sensor_msgs::msg::LaserScan&gt;(
+      "scan", rclcpp::SensorDataQoS(),
+      [this](const%20sensor_msgs::msg::LaserScan::SharedPtr%20msg) {
+        process_scan(msg);
+      });
+
+    // 제어 명령: RELIABLE로 전달 보장
+    cmd_pub_ = this-&gt;create_publisher&lt;geometry_msgs::msg::Twist&gt;(
+      "cmd_vel", rclcpp::QoS(10).reliable());
+
+    // 사용자 정의 QoS
+    auto custom_qos = rclcpp::QoS(rclcpp::KeepLast(1))
+      .reliable()
+      .durability(rclcpp::DurabilityPolicy::TransientLocal)
+      .deadline(std::chrono::milliseconds(200));
+
+    status_pub_ = this-&gt;create_publisher&lt;std_msgs::msg::String&gt;(
+      "status", custom_qos);
+  }
+
+private:
+  void process_scan(const sensor_msgs::msg::LaserScan::SharedPtr msg) { /* ... */ }
+
+  rclcpp::Subscription&lt;sensor_msgs::msg::LaserScan&gt;::SharedPtr scan_sub_;
+  rclcpp::Publisher&lt;geometry_msgs::msg::Twist&gt;::SharedPtr cmd_pub_;
+  rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr status_pub_;
+};
+</code></pre>
+<h2>5. QoS 비호환 문제의 진단</h2>
+<p>ROS2에서 발행자와 구독자의 QoS가 비호환적일 때, 매칭이 실패하여 데이터가 전달되지 않는다. 이 문제는 다음의 도구를 통해 진단할 수 있다.</p>
+<pre><code class="language-bash"># 토픽의 QoS 프로파일 확인
+ros2 topic info /scan --verbose
+
+# QoS 비호환 이벤트 감지
+ros2 topic echo /rosout  # QoS 비호환 경고 메시지 확인
+</code></pre>
+<p><code>ros2 topic info --verbose</code> 명령은 해당 토픽에 연결된 발행자와 구독자의 QoS 설정을 각각 출력하며, 비호환 항목을 식별할 수 있게 한다.</p>
+<h2>6. 통신 신뢰성과 QoS 설계 원칙</h2>
+<p>로봇 행동 제어 시스템에서 QoS 설계는 다음의 원칙을 따른다.</p>
+<table><thead><tr><th>설계 원칙</th><th>상세 설명</th></tr></thead><tbody>
+<tr><td>데이터 유형별 차별화</td><td>센서 데이터에는 BEST_EFFORT, 제어 명령에는 RELIABLE을 적용한다.</td></tr>
+<tr><td>최신성 우선</td><td>실시간 제어에서는 KEEP_LAST(1)을 사용하여 항상 최신 데이터를 처리한다.</td></tr>
+<tr><td>기한 모니터링</td><td>안전 관련 데이터에는 Deadline 정책을 설정하여 갱신 중단을 감지한다.</td></tr>
+<tr><td>활성 감시</td><td>핵심 노드의 활성 상태를 Liveliness 정책으로 감시한다.</td></tr>
+<tr><td>호환성 사전 검증</td><td>시스템 통합 전에 모든 발행자-구독자 쌍의 QoS 호환성을 검증한다.</td></tr>
+<tr><td>명시적 설정 원칙</td><td>시스템 기본값에 의존하지 않고, 모든 통신 엔티티에 명시적 QoS를 설정한다.</td></tr>
+</tbody></table>
+<p>특히 로봇 시스템에서 자주 발생하는 QoS 관련 오류는 발행자가 <code>BEST_EFFORT</code>로 센서 데이터를 발행하고, 구독자가 <code>RELIABLE</code>을 요청하여 매칭이 실패하는 경우이다. 이는 토픽에 데이터가 발행되고 있음에도 구독자가 데이터를 수신하지 못하는 현상으로 나타나며, 로깅 메시지 없이 조용하게 실패(silent failure)하므로 진단이 어렵다.</p>
+<h2>7. DDS 구현체별 QoS 확장</h2>
+<p>표준 DDS QoS 정책 외에, 각 DDS 구현체는 독자적인 확장 QoS 설정을 제공한다. 이러한 확장은 XML 구성 파일을 통해 설정되며, ROS2에서 환경 변수를 통해 적용할 수 있다.</p>
+<p>Fast DDS의 경우 <code>FASTRTPS_DEFAULT_PROFILES_FILE</code> 환경 변수를 통해 XML 프로파일을 지정할 수 있으며, 전송 계층(공유 메모리, UDP 버퍼 크기 등), 발견 프로토콜(초기 피어 목록 등), 보안(DDS Security) 등의 세부 설정이 가능하다.</p>
+<p>Cyclone DDS의 경우 <code>CYCLONEDDS_URI</code> 환경 변수를 통해 XML 구성 파일을 지정하며, 네트워크 인터페이스 선택, 멀티캐스트 설정, 내부 스레드 구성 등을 제어할 수 있다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Object Management Group, “Data Distribution Service (DDS) Version 1.4,” OMG Standard, formal/15-04-10, 2015.</li>
+<li>Open Robotics, “About Quality of Service Settings,” ROS 2 Documentation, https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Quality-of-Service-Settings.html.</li>
+<li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
+<li>eProsima, “Fast DDS Documentation,” https://fast-dds.docs.eprosima.com/.</li>
+<li>Eclipse Foundation, “Eclipse Cyclone DDS Documentation,” https://cyclonedds.io/docs/.</li>
+</ul>
 
             </article>
             <footer>

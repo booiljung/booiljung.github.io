@@ -115,6 +115,108 @@
             </header>
             <article>
                 <h1>1261.53 Zenoh 프로토콜의 개요와 ROS2 연동</h1>
+<h2>1. Zenoh의 정의와 설계 철학</h2>
+<p>Zenoh(/’ziːnoʊ/, “Zero Overhead Network Protocol”)는 Eclipse Foundation에서 개발한 경량 데이터 중심 통신 프로토콜이다. Zenoh는 발행-구독(pub/sub), 분산 질의(query), 분산 저장(storage)의 세 가지 통신 패턴을 단일 프로토콜로 통합하였으며, 극도로 제약된 임베디드 환경부터 클라우드 인프라까지 아우르는 “엣지에서 클라우드까지의 연속체(Edge-to-Cloud Continuum)” 환경에서의 효율적 데이터 교환을 설계 목표로 한다.</p>
+<p>Zenoh는 DDS(Data Distribution Service)의 설계 경험에 기반하면서도, DDS의 구조적 과부하(발견 프로토콜의 복잡성, 높은 메모리 사용량, WAN 환경에서의 성능 한계)를 극복하기 위한 대안적 설계를 채택하였다. Zenoh의 핵심 설계자인 Angelo Corsaro는 OMG DDS 사양의 공동 저자이기도 하며, DDS의 한계에 대한 직접적인 경험이 Zenoh의 설계에 반영되었다.</p>
+<h2>2. Zenoh의 핵심 개념</h2>
+<h3>2.1 키 표현식(Key Expression)</h3>
+<p>Zenoh에서 데이터는 키 표현식(key expression)으로 주소화된다. 키 표현식은 URI와 유사한 계층적 문자열이며, 와일드카드(<code>*</code>, <code>**</code>)를 지원하여 유연한 패턴 매칭이 가능하다.</p>
+<pre><code>robot/sensor/lidar/scan       # 특정 리소스
+robot/sensor/*/scan            # 단일 수준 와일드카드
+robot/**                       # 다수준 와일드카드
+</code></pre>
+<p>이 키 표현식 체계는 DDS의 토픽 이름 체계보다 유연하며, REST(Representational State Transfer) 아키텍처의 URL 패턴과 자연스럽게 매핑된다.</p>
+<h3>2.2 통신 패턴</h3>
+<p>Zenoh는 세 가지 핵심 통신 패턴을 통합적으로 제공한다.</p>
+<table><thead><tr><th>통신 패턴</th><th>기능</th><th>대응하는 ROS2 개념</th></tr></thead><tbody>
+<tr><td>발행-구독(Pub/Sub)</td><td>키 표현식에 데이터를 비동기적으로 발행하고 구독한다.</td><td>토픽 통신</td></tr>
+<tr><td>질의-응답(Queryable)</td><td>키 표현식에 대한 요청을 보내고 응답을 수신한다.</td><td>서비스 통신</td></tr>
+<tr><td>분산 저장(Storage)</td><td>데이터를 분산 저장하고 과거 데이터를 질의할 수 있다.</td><td>로깅, 파라미터 서버</td></tr>
+</tbody></table>
+<p>이 세 가지 패턴은 동일한 키 표현식 공간에서 통합적으로 동작한다. 예를 들어, <code>robot/sensor/imu</code> 키에 대한 구독과 질의가 동시에 가능하며, 구독은 실시간 데이터 스트림을 수신하고 질의는 저장된 과거 데이터를 검색한다.</p>
+<h3>2.3 세션(Session)과 피어(Peer)</h3>
+<p>Zenoh 세션(Session)은 Zenoh 네트워크에 참여하기 위한 진입점이다. 세션은 세 가지 모드로 생성될 수 있다.</p>
+<table><thead><tr><th>모드</th><th>설명</th><th>적용 환경</th></tr></thead><tbody>
+<tr><td>Peer</td><td>다른 피어와 직접 연결하여 대등한 관계로 통신한다.</td><td>LAN 내 로봇 간 직접 통신</td></tr>
+<tr><td>Client</td><td>라우터에 연결하여 간접적으로 통신한다.</td><td>방화벽/NAT 뒤의 장치</td></tr>
+<tr><td>Router</td><td>피어와 클라이언트의 데이터를 중계한다.</td><td>게이트웨이, WAN 브리지</td></tr>
+</tbody></table>
+<h2>3. DDS 대비 Zenoh의 구조적 차이</h2>
+<h3>3.1 발견 프로토콜</h3>
+<p>DDS의 SPDP/SEDP 발견 프로토콜은 멀티캐스트 기반으로 동작하며, 참여자 수에 비례하여 발견 트래픽이 증가한다(<span class="math math-inline">O(n^2)</span> 복잡도). 대규모 시스템에서 발견 트래픽의 폭증은 네트워크 대역폭을 소모하고 발견 완료 시간을 증가시킨다.</p>
+<p>Zenoh는 스카우트(scout) 프로토콜을 사용하여 피어를 발견하며, 라우터를 통한 중앙화된 발견을 지원한다. 라우터 모드에서 발견 트래픽은 <span class="math math-inline">O(n)</span>으로 감소하며, 발견 완료 시간이 수 밀리초로 단축된다.</p>
+<h3>3.2 메모리 사용량</h3>
+<p>DDS DomainParticipant의 생성에는 수 MB(megabyte) 수준의 메모리가 소요되며, 이는 자원 제약이 있는 임베디드 시스템에서 부담이 된다. Zenoh의 피코(Pico) 라이브러리(<code>zenoh-pico</code>)는 수 KB(kilobyte) 수준의 메모리만을 사용하며, 마이크로컨트롤러(MCU) 환경에서도 동작이 가능하다.</p>
+<h3>3.3 WAN 환경 지원</h3>
+<p>DDS는 본질적으로 LAN(Local Area Network) 환경을 위해 설계되었으며, WAN(Wide Area Network) 환경에서는 멀티캐스트 불가, NAT/방화벽 통과 문제, 높은 지연 등의 한계가 존재한다. Zenoh는 TCP, TLS, QUIC, WebSocket 등 다양한 전송 프로토콜을 지원하며, 라우터를 통한 WAN 브리징이 기본적으로 지원된다.</p>
+<table><thead><tr><th>특성</th><th>DDS</th><th>Zenoh</th></tr></thead><tbody>
+<tr><td>기본 전송</td><td>UDP (멀티캐스트/유니캐스트)</td><td>TCP, UDP, TLS, QUIC, WebSocket</td></tr>
+<tr><td>발견 프로토콜</td><td>SPDP/SEDP (멀티캐스트)</td><td>Scout + Router (유니캐스트 가능)</td></tr>
+<tr><td>WAN 지원</td><td>추가 브리지/게이트웨이 필요</td><td>네이티브 지원</td></tr>
+<tr><td>NAT 통과</td><td>미지원 (추가 구성 필요)</td><td>라우터를 통한 클라이언트 모드</td></tr>
+<tr><td>최소 메모리</td><td>수 MB</td><td>수 KB (zenoh-pico)</td></tr>
+<tr><td>발견 복잡도</td><td><span class="math math-inline">O(n^2)</span></td><td><span class="math math-inline">O(n)</span> (라우터 모드)</td></tr>
+</tbody></table>
+<h2>4. ROS2에서의 Zenoh 연동</h2>
+<h3>4.1 rmw_zenoh</h3>
+<p>ROS2 Jazzy(2024) 이후 Zenoh 기반의 RMW(ROS Middleware) 구현체인 <code>rmw_zenoh</code>가 Tier-1 지원 수준으로 공식 도입되었다. <code>rmw_zenoh</code>는 ROS2의 RMW 추상화 인터페이스를 구현하므로, DDS 기반의 <code>rmw_fastrtps</code> 또는 <code>rmw_cyclonedds</code>와 동일한 방식으로 사용할 수 있다.</p>
+<pre><code class="language-bash"># Zenoh 미들웨어로 전환
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+
+# Zenoh 라우터 시작 (rmw_zenoh 필요)
+ros2 run rmw_zenoh_cpp rmw_zenohd
+
+# 일반적인 ROS2 노드 실행
+ros2 run demo_nodes_cpp talker
+ros2 run demo_nodes_cpp listener
+</code></pre>
+<p><code>rmw_zenoh</code>를 사용할 때에는 Zenoh 라우터 데몬(<code>rmw_zenohd</code>)의 실행이 필요하다. 이 라우터는 DDS의 멀티캐스트 발견을 대체하며, 노드 간의 데이터 라우팅을 수행한다.</p>
+<h3>4.2 아키텍처 차이</h3>
+<p>DDS 기반 RMW와 Zenoh 기반 RMW의 아키텍처 차이는 다음과 같다.</p>
+<pre><code>DDS 기반:                          Zenoh 기반:
+Node A ←(DDS multicast)→ Node B    Node A ←(Zenoh)→ Router ←(Zenoh)→ Node B
+</code></pre>
+<p>DDS 기반에서는 노드 간 직접적인 피어 투 피어(peer-to-peer) 통신이 이루어지는 반면, Zenoh 기반에서는 라우터를 통한 중계 방식이 기본이다. 그러나 동일 호스트 내에서는 공유 메모리 전송이 적용되어 라우터 경유에 의한 추가 지연이 최소화된다.</p>
+<h3>4.3 ROS2 개념의 Zenoh 매핑</h3>
+<table><thead><tr><th>ROS2 개념</th><th>Zenoh 매핑</th></tr></thead><tbody>
+<tr><td>토픽 발행</td><td>Zenoh Publisher (키 표현식에 put)</td></tr>
+<tr><td>토픽 구독</td><td>Zenoh Subscriber (키 표현식 구독)</td></tr>
+<tr><td>서비스 서버</td><td>Zenoh Queryable</td></tr>
+<tr><td>서비스 클라이언트</td><td>Zenoh Query (get)</td></tr>
+<tr><td>노드 발견</td><td>Zenoh 라우터의 참여자 관리</td></tr>
+<tr><td>QoS 정책</td><td>Zenoh의 신뢰성/우선순위 설정</td></tr>
+</tbody></table>
+<h2>5. Zenoh의 성능 특성</h2>
+<p>Zenoh 프로젝트에서 공개한 벤치마크 결과에 따르면, Zenoh는 다음의 성능 특성을 나타낸다.</p>
+<ol>
+<li><strong>지연</strong>: 64바이트 메시지의 일대일 지연이 수 마이크로초 수준이며, DDS 대비 동등하거나 우수한 수준이다.</li>
+<li><strong>처리량</strong>: 초당 수백만 메시지의 처리가 가능하다.</li>
+<li><strong>시작 시간</strong>: 발견 프로토콜의 경량성에 의해 노드 시작에서 통신 가능까지의 시간이 DDS 대비 현저히 짧다.</li>
+<li><strong>메모리 효율</strong>: Zenoh-Pico 라이브러리는 수 KB의 RAM만으로 동작하여 마이크로컨트롤러에서의 사용이 가능하다.</li>
+</ol>
+<h2>6. Zenoh와 DDS의 상호 운용</h2>
+<p>Zenoh는 DDS와의 상호 운용성을 위하여 <code>zenoh-plugin-dds</code> 플러그인을 제공한다. 이 플러그인은 DDS 네트워크와 Zenoh 네트워크 사이의 브리지(bridge)로 동작하며, DDS 기반 ROS2 노드와 Zenoh 기반 ROS2 노드가 동일 시스템 내에서 공존할 수 있게 한다.</p>
+<pre><code class="language-bash"># DDS-Zenoh 브리지 실행
+zenoh-bridge-dds
+</code></pre>
+<p>이 브리지는 DDS 도메인의 토픽을 Zenoh 키 표현식으로 자동 매핑하며, 양방향 데이터 전달을 수행한다. 이를 통해 기존 DDS 기반 시스템을 점진적으로 Zenoh로 이전하는 것이 가능하다.</p>
+<h2>7. 로봇 행동 제어에서의 Zenoh 활용 전망</h2>
+<p>Zenoh는 다음의 관점에서 로봇 행동 제어 시스템에 유리한 특성을 제공한다.</p>
+<table><thead><tr><th>관점</th><th>Zenoh의 이점</th></tr></thead><tbody>
+<tr><td>자원 제약 로봇</td><td>경량 라이브러리(zenoh-pico)로 MCU 기반 로봇에서도 통신 가능</td></tr>
+<tr><td>WAN 원격 제어</td><td>네이티브 WAN 지원으로 원격 관제 인프라 구축 용이</td></tr>
+<tr><td>대규모 다중 로봇</td><td>효율적 발견 프로토콜로 수십~수백 대의 로봇 관리</td></tr>
+<tr><td>에지-클라우드 통합</td><td>단일 프로토콜로 에지 로봇과 클라우드 서비스 연결</td></tr>
+<tr><td>빠른 시작 시간</td><td>발견 지연 최소화로 가동 중단 후 빠른 복구 가능</td></tr>
+</tbody></table>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Eclipse Foundation, “Zenoh: Zero Overhead Pub/Sub, Store/Query and Compute,” https://zenoh.io/.</li>
+<li>A. Corsaro, “Zenoh: Zero Overhead Network Protocol,” Eclipse Foundation, 2020.</li>
+<li>Open Robotics, “rmw_zenoh,” ROS 2 Documentation, https://github.com/ros2/rmw_zenoh.</li>
+<li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
+<li>Eclipse Foundation, “Zenoh Plugin for DDS,” https://github.com/eclipse-zenoh/zenoh-plugin-dds.</li>
+</ul>
 
             </article>
             <footer>

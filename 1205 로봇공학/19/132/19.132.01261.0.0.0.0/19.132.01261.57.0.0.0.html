@@ -115,6 +115,150 @@
             </header>
             <article>
                 <h1>1261.57 행동 명령의 전달 체계와 프로토콜</h1>
+<h2>1. 행동 명령의 정의와 분류</h2>
+<p>로봇 행동 제어 시스템에서 행동 명령(behavior command)은 상위 계층의 의사결정 모듈이 하위 계층의 실행 모듈에 전달하는 지시(instruction)이다. 행동 명령은 로봇이 수행하여야 할 행동의 종류, 목표, 매개변수, 제약 조건 등을 포함하며, 명령의 수신자는 이를 해석하여 구체적인 제어 신호(모터 속도, 관절 각도 등)로 변환한다.</p>
+<p>행동 명령은 시간적 특성에 따라 다음과 같이 분류된다.</p>
+<table><thead><tr><th>분류</th><th>특성</th><th>지속 시간</th><th>예시</th></tr></thead><tbody>
+<tr><td>즉시 명령(Instantaneous Command)</td><td>단일 시점에서 실행되고 완료된다.</td><td>밀리초 단위</td><td>비상 정지, 그리퍼 개방/폐쇄</td></tr>
+<tr><td>연속 명령(Continuous Command)</td><td>지속적으로 발행되어 연속적 행동을 제어한다.</td><td>제어 주기 단위</td><td>속도 명령(<code>cmd_vel</code>), 힘/토크 명령</td></tr>
+<tr><td>목표 명령(Goal Command)</td><td>달성하여야 할 목표를 지정하고 완료를 대기한다.</td><td>초~분 단위</td><td>내비게이션 목표, 매니퓰레이션 목표</td></tr>
+<tr><td>임무 명령(Mission Command)</td><td>복수의 행동을 순차적 또는 조건적으로 결합한 임무를 지정한다.</td><td>분~시간 단위</td><td>순찰 임무, 재고 조사 임무</td></tr>
+</tbody></table>
+<h2>2. 명령 전달을 위한 ROS2 통신 패러다임 선택</h2>
+<p>각 행동 명령 유형에 따라 적합한 ROS2 통신 패러다임은 다음과 같다.</p>
+<h3>2.1 연속 명령: 토픽(Topic) 기반 전달</h3>
+<p>주기적으로 갱신되는 연속 명령은 토픽 발행-구독 패턴으로 전달한다. 발행자는 제어 주기마다 새로운 명령을 발행하고, 수신 노드는 최신 명령에 기반하여 액추에이터를 구동한다.</p>
+<pre><code class="language-cpp">// 속도 명령 발행 (연속 명령)
+auto cmd = geometry_msgs::msg::Twist();
+cmd.linear.x = desired_velocity;
+cmd.angular.z = desired_angular_velocity;
+cmd_vel_pub_-&gt;publish(cmd);
+</code></pre>
+<p>연속 명령의 토픽 설계에서 권장되는 QoS 설정은 다음과 같다.</p>
+<table><thead><tr><th>QoS 정책</th><th>설정값</th><th>근거</th></tr></thead><tbody>
+<tr><td>Reliability</td><td>RELIABLE 또는 BEST_EFFORT</td><td>제어 명령은 RELIABLE이 권장되나, 고주파 발행 시 BEST_EFFORT도 허용</td></tr>
+<tr><td>History</td><td>KEEP_LAST(1)</td><td>항상 최신 명령만 유효</td></tr>
+<tr><td>Durability</td><td>VOLATILE</td><td>늦은 구독자에게 과거 명령 전달 불필요</td></tr>
+</tbody></table>
+<p>연속 명령 전달에서 주의하여야 할 점은 <strong>명령 타임아웃(command timeout)</strong> 문제이다. 발행 노드가 비정상적으로 종료되면 마지막 명령이 무한히 유지되어 로봇이 의도하지 않은 행동을 지속할 수 있다. 이를 방지하기 위하여 수신 노드는 명령의 수신 주기를 감시하고, 지정된 타임아웃 내에 새로운 명령이 도착하지 않으면 안전 상태(속도 0 등)로 전환하여야 한다.</p>
+<pre><code class="language-cpp">void on_cmd_vel_received(const geometry_msgs::msg::Twist::SharedPtr msg)
+{
+  last_cmd_time_ = this-&gt;get_clock()-&gt;now();
+  current_cmd_ = *msg;
+}
+
+void on_safety_timer()
+{
+  auto elapsed = this-&gt;get_clock()-&gt;now() - last_cmd_time_;
+  if (elapsed &gt; cmd_timeout_) {
+    // 타임아웃: 속도 명령 초기화
+    current_cmd_ = geometry_msgs::msg::Twist();
+    RCLCPP_WARN(this-&gt;get_logger(), "Command timeout: stopping robot");
+  }
+  motor_controller_-&gt;apply(current_cmd_);
+}
+</code></pre>
+<h3>2.2 즉시 명령: 서비스(Service) 기반 전달</h3>
+<p>단일 시점에서 실행되고 즉시 결과를 반환하는 명령은 서비스 요청-응답 패턴으로 전달한다.</p>
+<pre><code class="language-cpp">// 비상 정지 서비스 서버
+auto service = node-&gt;create_service&lt;std_srvs::srv::Trigger&gt;(
+  "emergency_stop",
+  [](const%20std_srvs::srv::Trigger::Request::SharedPtr,
+%20%20%20%20%20std_srvs::srv::Trigger::Response::SharedPtr%20response) {
+    engage_emergency_brake();
+    response-&gt;success = true;
+    response-&gt;message = "Emergency stop engaged";
+  });
+</code></pre>
+<p>서비스 기반 전달의 장점은 명령의 수신과 처리 결과를 동기적으로 확인할 수 있다는 것이다. 명령을 전송한 측은 응답을 통해 명령이 성공적으로 처리되었는지, 오류가 발생하였는지를 즉시 파악할 수 있다.</p>
+<h3>2.3 목표 명령: 액션(Action) 기반 전달</h3>
+<p>완료까지 상당한 시간이 소요되며 진행 상황의 감시와 취소가 필요한 목표 명령은 액션 통신으로 전달한다.</p>
+<pre><code class="language-cpp">// 내비게이션 목표 전송 (액션 클라이언트)
+auto goal_msg = NavigateToPose::Goal();
+goal_msg.pose.header.frame_id = "map";
+goal_msg.pose.pose.position.x = 5.0;
+goal_msg.pose.pose.position.y = 3.0;
+
+auto send_goal_options = rclcpp_action::Client&lt;NavigateToPose&gt;::SendGoalOptions();
+send_goal_options.feedback_callback = 
+  std::bind(&amp;MyNode::on_feedback, this, _1, _2);
+send_goal_options.result_callback = 
+  std::bind(&amp;MyNode::on_result, this, _1);
+
+navigation_client_-&gt;async_send_goal(goal_msg, send_goal_options);
+</code></pre>
+<p>액션 기반 전달은 다음의 기능을 제공한다.</p>
+<table><thead><tr><th>기능</th><th>설명</th></tr></thead><tbody>
+<tr><td>목표 수락/거부</td><td>서버가 목표를 수락하거나 거부할 수 있다.</td></tr>
+<tr><td>진행 피드백</td><td>실행 중 주기적으로 진행 상황을 보고한다.</td></tr>
+<tr><td>결과 반환</td><td>행동 완료 시 최종 결과를 반환한다.</td></tr>
+<tr><td>취소 요청</td><td>실행 중인 행동을 중단할 수 있다.</td></tr>
+</tbody></table>
+<h2>3. 명령 전달 프로토콜의 설계</h2>
+<h3>3.1 명령 메시지 구조</h3>
+<p>행동 명령 메시지는 명령의 의도를 명확하게 전달하기 위하여 다음의 필드를 포함하여야 한다.</p>
+<pre><code># BehaviorCommand.msg
+std_msgs/Header header        # 타임스탬프와 프레임 ID
+string command_id              # 명령 고유 식별자
+string command_type            # 명령 유형 (NAVIGATE, MANIPULATE, STOP 등)
+geometry_msgs/Pose target_pose # 목표 위치/자세 (해당 시)
+float64[] parameters           # 명령별 추가 매개변수
+uint8 priority                 # 명령 우선순위
+float64 timeout                # 최대 허용 실행 시간 (초)
+</code></pre>
+<h3>3.2 명령 수명 주기(Command Lifecycle)</h3>
+<p>행동 명령은 다음의 수명 주기 상태를 거친다.</p>
+<pre><code>PENDING → ACCEPTED → EXECUTING → COMPLETED
+                  ↘ REJECTED     ↘ FAILED
+                                  ↘ CANCELED
+                                  ↘ TIMED_OUT
+</code></pre>
+<table><thead><tr><th>상태</th><th>설명</th></tr></thead><tbody>
+<tr><td>PENDING</td><td>명령이 전송되었으나 아직 수신 확인되지 않은 상태</td></tr>
+<tr><td>ACCEPTED</td><td>수신 노드가 명령을 수락하고 실행 대기 중인 상태</td></tr>
+<tr><td>REJECTED</td><td>수신 노드가 명령을 거부한 상태 (자원 부족, 잘못된 매개변수 등)</td></tr>
+<tr><td>EXECUTING</td><td>명령이 실행 중인 상태</td></tr>
+<tr><td>COMPLETED</td><td>명령이 성공적으로 완료된 상태</td></tr>
+<tr><td>FAILED</td><td>명령 실행 중 오류가 발생하여 실패한 상태</td></tr>
+<tr><td>CANCELED</td><td>상위 계층에 의해 명령이 취소된 상태</td></tr>
+<tr><td>TIMED_OUT</td><td>지정된 제한 시간 내에 명령이 완료되지 못한 상태</td></tr>
+</tbody></table>
+<p>이 수명 주기는 ROS2 액션 통신의 목표 상태 머신(Goal State Machine)과 유사한 구조를 갖는다.</p>
+<h3>3.3 명령 선점(Command Preemption)</h3>
+<p>새로운 명령이 도착하였을 때 현재 실행 중인 명령을 어떻게 처리할 것인지에 대한 선점 정책(preemption policy)을 정의하여야 한다.</p>
+<table><thead><tr><th>선점 정책</th><th>동작</th></tr></thead><tbody>
+<tr><td>즉시 선점</td><td>현재 명령을 즉시 취소하고 새로운 명령을 실행한다.</td></tr>
+<tr><td>큐잉(Queueing)</td><td>새로운 명령을 대기열에 추가하고, 현재 명령 완료 후 실행한다.</td></tr>
+<tr><td>우선순위 선점</td><td>새로운 명령의 우선순위가 현재 명령보다 높은 경우에만 선점한다.</td></tr>
+<tr><td>거부</td><td>현재 명령이 실행 중이면 새로운 명령을 거부한다.</td></tr>
+</tbody></table>
+<p>ROS2 액션 서버에서 선점은 목표 수락 콜백에서 구현된다. 새로운 목표가 도착하면 현재 목표를 취소하고 새로운 목표를 수락하거나, 새로운 목표를 거부하는 로직을 선점 정책에 따라 구현한다.</p>
+<h2>4. 명령 전달의 안전성 보장</h2>
+<h3>4.1 명령 인증과 권한 제어</h3>
+<p>안전이 중요한(safety-critical) 로봇 시스템에서는 명령의 발신자가 적법한 권한을 가진 노드인지를 검증하여야 한다. ROS2는 DDS Security 사양(SROS2)을 통해 노드 인증, 토픽/서비스의 접근 제어, 메시지 암호화를 지원한다.</p>
+<h3>4.2 명령 유효성 검증</h3>
+<p>수신 노드는 명령의 매개변수가 유효한 범위 내에 있는지를 검증한 후에만 실행을 개시하여야 한다. 범위를 벗어난 속도 명령, 도달 불가능한 목표 위치, 물리적으로 불가능한 관절 각도 등을 사전에 거부하는 방어적 프로그래밍(defensive programming)이 권장된다.</p>
+<h3>4.3 명령 확인(Command Acknowledgment)</h3>
+<p>명령의 수신과 처리 상태를 발신자에게 확인하는 프로토콜이다. 서비스와 액션 통신은 응답 메커니즘을 내장하고 있으므로 확인이 구조적으로 보장된다. 토픽 기반 명령 전달에서는 별도의 확인 토픽 또는 상태 토픽을 통해 수신 확인을 구현한다.</p>
+<h2>5. 다중 계층 명령 전달 구조</h2>
+<p>복잡한 로봇 시스템에서 명령 전달은 계층적 구조를 갖는다.</p>
+<pre><code>임무 관리자 (Mission Manager)
+    ↓ 임무 명령 (액션)
+행동 관리자 (Behavior Manager)
+    ↓ 행동 명령 (액션/서비스)
+기능 모듈 (Navigation, Manipulation)
+    ↓ 제어 명령 (토픽)
+액추에이터 드라이버 (Motor Driver)
+</code></pre>
+<p>각 계층은 상위 계층으로부터 추상적인 명령을 수신하고, 이를 하위 계층이 이해할 수 있는 구체적인 명령으로 분해하여 전달한다. 이러한 계층적 분해는 시스템의 모듈성과 재사용성을 향상시킨다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
+<li>S. Macenski, F. Martín, R. White, J. G. Clavero, “The Marathon 2: A Navigation System,” in <em>Proceedings of the IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>, 2020.</li>
+<li>Open Robotics, “ROS 2 Actions,” ROS 2 Documentation, https://docs.ros.org/en/rolling/Concepts/Basic/About-Actions.html.</li>
+<li>Open Robotics, “SROS2: Security Enhancements for ROS 2,” https://design.ros2.org/articles/ros2_dds_security.html.</li>
+<li>R. Arkin, <em>Behavior-Based Robotics</em>, MIT Press, 1998.</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,159 @@
             </header>
             <article>
                 <h1>1261.55 로봇 행동 제어에서의 이벤트 구동 아키텍처</h1>
+<h2>1. 이벤트 구동 아키텍처의 정의</h2>
+<p>이벤트 구동 아키텍처(Event-Driven Architecture, EDA)는 시스템의 동작이 외부 또는 내부에서 발생하는 이벤트(event)에 의해 촉발(trigger)되는 소프트웨어 아키텍처 패턴이다. 이벤트란 시스템 내에서 의미 있는 상태 변화(significant change in state)를 나타내는 불변 사실(immutable fact)이며, 센서 데이터의 도착, 타이머의 만료, 사용자 명령의 수신, 내부 상태의 전이 등이 이에 해당한다.</p>
+<p>로봇 행동 제어 시스템에서 이벤트 구동 아키텍처는 센서-인지-결정-행동(Sense-Perceive-Decide-Act) 루프를 구성하는 자연스러운 패러다임이다. 로봇은 본질적으로 외부 환경의 변화에 반응하여 행동을 결정하고 실행하는 시스템이므로, 이벤트에 의해 구동되는 아키텍처가 로봇 소프트웨어의 구조적 특성에 부합한다.</p>
+<h2>2. 이벤트 구동과 시간 구동의 비교</h2>
+<p>로봇 행동 제어 시스템의 실행 모델은 크게 이벤트 구동(event-driven)과 시간 구동(time-driven)으로 분류된다.</p>
+<table><thead><tr><th>특성</th><th>이벤트 구동</th><th>시간 구동</th></tr></thead><tbody>
+<tr><td>실행 트리거</td><td>이벤트 발생 (메시지 도착, 상태 변화)</td><td>고정 주기의 타이머 만료</td></tr>
+<tr><td>실행 빈도</td><td>이벤트 발생 빈도에 의존적 (비균일)</td><td>일정 주기 (균일)</td></tr>
+<tr><td>자원 사용</td><td>이벤트 부재 시 자원 소비 최소</td><td>이벤트 부재 시에도 주기적 자원 소비</td></tr>
+<tr><td>반응 지연</td><td>이벤트 발생 즉시 반응 가능</td><td>최대 한 주기 만큼의 지연 발생</td></tr>
+<tr><td>결정론성</td><td>이벤트 발생 타이밍에 의존적</td><td>고정 주기에 의해 결정론적</td></tr>
+<tr><td>적합 영역</td><td>비동기적, 비주기적 이벤트 처리</td><td>고정 주기 제어 루프</td></tr>
+</tbody></table>
+<p>실제 로봇 시스템에서는 두 모델이 혼합적으로 사용된다. 센서 데이터의 수신은 이벤트 구동으로 처리하고, 제어 명령의 발행은 고정 주기 타이머에 의해 시간 구동으로 수행하는 것이 전형적인 구성이다.</p>
+<h2>3. ROS2에서의 이벤트 구동 구현</h2>
+<p>ROS2의 실행자(Executor) 기반 콜백 모델은 본질적으로 이벤트 구동 아키텍처의 구현이다. 각 통신 엔티티(구독, 서비스, 액션, 타이머)에 연결된 콜백 함수가 해당 이벤트의 발생 시 실행자에 의해 호출되며, 이벤트 부재 시에는 <code>rcl_wait()</code> 호출에서 스레드가 휴면 상태에 놓여 자원을 소비하지 않는다.</p>
+<h3>3.1 이벤트 유형과 콜백 매핑</h3>
+<p>ROS2에서 행동 제어와 관련된 주요 이벤트 유형과 대응하는 콜백은 다음과 같다.</p>
+<table><thead><tr><th>이벤트 유형</th><th>ROS2 메커니즘</th><th>콜백</th><th>행동 제어 상의 의미</th></tr></thead><tbody>
+<tr><td>센서 데이터 수신</td><td>토픽 구독</td><td>구독 콜백</td><td>환경 인식 갱신</td></tr>
+<tr><td>주기 경과</td><td>타이머</td><td>타이머 콜백</td><td>제어 루프 실행</td></tr>
+<tr><td>서비스 요청 수신</td><td>서비스 서버</td><td>서비스 콜백</td><td>파라미터 변경, 상태 조회</td></tr>
+<tr><td>액션 목표 수신</td><td>액션 서버</td><td>목표 콜백</td><td>새로운 임무 접수</td></tr>
+<tr><td>액션 취소 요청</td><td>액션 서버</td><td>취소 콜백</td><td>현재 임무 중단</td></tr>
+<tr><td>파라미터 변경</td><td>파라미터 이벤트</td><td>파라미터 콜백</td><td>동적 설정 변경</td></tr>
+<tr><td>생명주기 전이</td><td>생명주기 노드</td><td>전이 콜백</td><td>노드 상태 변경</td></tr>
+</tbody></table>
+<h3>3.2 이벤트 기반 행동 전환의 구현 예시</h3>
+<p>센서 이벤트에 의해 행동이 전환되는 시나리오를 C++로 구현하면 다음과 같다.</p>
+<pre><code class="language-cpp">#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+
+enum class BehaviorState { EXPLORE, AVOID_OBSTACLE, STOP };
+
+class EventDrivenController : public rclcpp::Node
+{
+public:
+  EventDrivenController() : Node("event_driven_controller"),
+    state_(BehaviorState::EXPLORE)
+  {
+    // 센서 이벤트 구독 (이벤트 구동)
+    scan_sub_ = this-&gt;create_subscription&lt;sensor_msgs::msg::LaserScan&gt;(
+      "scan", rclcpp::SensorDataQoS(),
+      std::bind(&amp;EventDrivenController::on_scan_received, this,
+                std::placeholders::_1));
+
+    // 제어 출력 발행자
+    cmd_pub_ = this-&gt;create_publisher&lt;geometry_msgs::msg::Twist&gt;(
+      "cmd_vel", 10);
+
+    // 주기적 제어 루프 (시간 구동)
+    control_timer_ = this-&gt;create_wall_timer(
+      std::chrono::milliseconds(50),
+      std::bind(&amp;EventDrivenController::on_control_cycle, this));
+  }
+
+private:
+  void on_scan_received(
+    const sensor_msgs::msg::LaserScan::SharedPtr msg)
+  {
+    // 이벤트 기반 상태 전이
+    double min_range = *std::min_element(
+      msg-&gt;ranges.begin(), msg-&gt;ranges.end());
+
+    if (min_range &lt; 0.5) {
+      state_ = BehaviorState::AVOID_OBSTACLE;
+    } else {
+      state_ = BehaviorState::EXPLORE;
+    }
+  }
+
+  void on_control_cycle()
+  {
+    // 시간 구동 제어 출력 생성
+    auto cmd = geometry_msgs::msg::Twist();
+    switch (state_) {
+      case BehaviorState::EXPLORE:
+        cmd.linear.x = 0.5;
+        break;
+      case BehaviorState::AVOID_OBSTACLE:
+        cmd.angular.z = 1.0;
+        break;
+      case BehaviorState::STOP:
+        break;
+    }
+    cmd_pub_-&gt;publish(cmd);
+  }
+
+  BehaviorState state_;
+  rclcpp::Subscription&lt;sensor_msgs::msg::LaserScan&gt;::SharedPtr scan_sub_;
+  rclcpp::Publisher&lt;geometry_msgs::msg::Twist&gt;::SharedPtr cmd_pub_;
+  rclcpp::TimerBase::SharedPtr control_timer_;
+};
+</code></pre>
+<p>위 구현에서 <code>on_scan_received()</code>는 센서 데이터 도착 이벤트에 의해 비동기적으로 호출되며, 장애물 감지 상태에 따라 행동 상태를 전환한다. <code>on_control_cycle()</code>는 50ms 주기의 타이머에 의해 시간 구동으로 호출되며, 현재 행동 상태에 따른 제어 명령을 발행한다.</p>
+<h2>4. 이벤트 구동 아키텍처의 설계 패턴</h2>
+<h3>4.1 이벤트-조건-행동(Event-Condition-Action, ECA) 패턴</h3>
+<p>ECA 패턴은 이벤트 구동 행동 제어의 기본적인 구조화 패턴이다. 이벤트가 발생하면 조건을 검사하고, 조건이 충족되면 행동을 실행한다.</p>
+<pre><code>Event: 장애물 감지 센서 값 &lt; 임계값
+Condition: 현재 상태가 EXPLORE
+Action: 상태를 AVOID_OBSTACLE로 전환, 회피 행동 개시
+</code></pre>
+<h3>4.2 이벤트 필터링(Event Filtering) 패턴</h3>
+<p>모든 이벤트가 동일한 중요도를 갖지는 않으므로, 이벤트 필터링을 통해 불필요한 이벤트를 걸러내고 의미 있는 이벤트만 처리한다. ROS2에서는 DDS의 Content-Filtered Topic 또는 콜백 내부의 조건 검사를 통해 구현한다.</p>
+<h3>4.3 이벤트 집약(Event Aggregation) 패턴</h3>
+<p>복수의 이벤트를 수집하여 하나의 상위 수준 이벤트로 합성하는 패턴이다. 예를 들어, 라이다 스캔과 카메라 영상을 모두 수신한 후에 장애물 감지 판정을 수행하는 경우, <code>message_filters</code> 패키지의 <code>ApproximateTimeSynchronizer</code>를 사용하여 시간적으로 근접한 이벤트를 동기화한다.</p>
+<pre><code class="language-cpp">#include "message_filters/subscriber.h"
+#include "message_filters/time_synchronizer.h"
+
+message_filters::Subscriber&lt;sensor_msgs::msg::LaserScan&gt; scan_sub(
+  node, "scan", rmw_qos_profile_sensor_data);
+message_filters::Subscriber&lt;sensor_msgs::msg::Image&gt; image_sub(
+  node, "camera/image", rmw_qos_profile_sensor_data);
+
+message_filters::TimeSynchronizer&lt;
+  sensor_msgs::msg::LaserScan, sensor_msgs::msg::Image&gt; sync(
+  scan_sub, image_sub, 10);
+
+sync.registerCallback(
+  [](const%20sensor_msgs::msg::LaserScan::ConstSharedPtr%20&amp;%20scan,
+%20%20%20%20%20const%20sensor_msgs::msg::Image::ConstSharedPtr%20&amp;%20image) {
+    // 동기화된 센서 융합 처리
+  });
+</code></pre>
+<h3>4.4 이벤트 우선순위 패턴</h3>
+<p>안전 관련 이벤트(비상 정지 등)가 일반 이벤트보다 우선적으로 처리되어야 하는 경우, 콜백 그룹의 분리와 멀티 스레드 실행자의 조합을 통해 사실상의 우선순위 처리를 구현한다.</p>
+<h2>5. 이벤트 구동 아키텍처의 장점과 한계</h2>
+<h3>5.1 장점</h3>
+<table><thead><tr><th>장점</th><th>설명</th></tr></thead><tbody>
+<tr><td>자원 효율성</td><td>이벤트 부재 시 CPU 자원을 소비하지 않는다.</td></tr>
+<tr><td>반응성</td><td>이벤트 발생 즉시 처리를 개시할 수 있다.</td></tr>
+<tr><td>모듈성</td><td>이벤트 생산자와 소비자의 느슨한 결합(loose coupling)이 보장된다.</td></tr>
+<tr><td>확장성</td><td>새로운 이벤트 소스와 핸들러의 추가가 기존 구조에 영향을 미치지 않는다.</td></tr>
+</tbody></table>
+<h3>5.2 한계</h3>
+<table><thead><tr><th>한계</th><th>설명</th></tr></thead><tbody>
+<tr><td>제어 흐름 추적 어려움</td><td>이벤트에 의한 간접적 호출로 실행 경로의 추적이 복잡하다.</td></tr>
+<tr><td>디버깅 난이도</td><td>비동기적 실행으로 인해 재현 가능한 디버깅이 어렵다.</td></tr>
+<tr><td>이벤트 폭풍(Event Storm)</td><td>단시간에 대량의 이벤트가 발생하면 시스템이 과부하에 빠질 수 있다.</td></tr>
+<tr><td>순서 보장 어려움</td><td>복수의 이벤트 소스에서 발생한 이벤트의 전체적 순서를 보장하기 어렵다.</td></tr>
+</tbody></table>
+<p>이벤트 폭풍에 대한 대비책으로는 이벤트 드롭(event dropping), 이벤트 디바운싱(debouncing), 속도 제한(rate limiting) 등의 기법이 적용된다. ROS2에서는 <code>KEEP_LAST(1)</code> QoS 정책을 통해 최신 이벤트만 유지하고 이전 이벤트를 자동으로 폐기하는 방식이 사용된다.</p>
+<h2>6. 행동 제어 프레임워크와의 관계</h2>
+<p>이벤트 구동 아키텍처는 행동 트리(Behavior Tree), 유한 상태 머신(FSM) 등 상위 수준의 행동 제어 프레임워크의 기반 실행 모델로 기능한다. 행동 트리의 틱(tick)은 타이머 이벤트에 의해 구동되며, 각 행동 노드의 실행 과정에서 발생하는 센서 데이터 수신, 액션 피드백 수신 등은 이벤트 구동으로 처리된다. 이러한 혼합 구동 방식에 의해 행동 제어 시스템은 주기적 의사결정과 비동기적 환경 반응을 동시에 수행할 수 있다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
+<li>R. A. Brooks, “A Robust Layered Control System for a Mobile Robot,” <em>IEEE Journal on Robotics and Automation</em>, vol. 2, no. 1, pp. 14–23, 1986.</li>
+<li>Open Robotics, “ROS 2 Executors,” ROS 2 Documentation, https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Executors.html.</li>
+<li>M. Fowler, “Event-Driven Architecture,” <em>martinfowler.com</em>, 2017.</li>
+<li>D. Casini, T. Blaß, I. Lütkebohle, B. B. Brandenburg, “Response-Time Analysis of ROS 2 Processing Chains Under Reservation-Based Scheduling,” in <em>Proceedings of the 31st Euromicro Conference on Real-Time Systems (ECRTS)</em>, 2019.</li>
+</ul>
 
             </article>
             <footer>

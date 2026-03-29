@@ -115,6 +115,213 @@
             </header>
             <article>
                 <h1>1261.56 상태 기반 행동 전환과 통신 트리거</h1>
+<h2>1. 상태 기반 행동 전환의 개념</h2>
+<p>로봇 행동 제어에서 상태 기반 행동 전환(state-based behavior transition)은 로봇의 현재 행동 상태(state)와 외부/내부 이벤트의 조합에 의해 다음 행동 상태가 결정되는 제어 패러다임이다. 이 패러다임은 유한 상태 머신(Finite State Machine, FSM)의 이론적 기반 위에 구축되며, 각 상태는 로봇이 수행 중인 행동(예: 탐색, 회피, 정지, 충전)을 나타내고, 상태 간의 전이(transition)는 특정 조건의 충족에 의해 발동된다.</p>
+<p>ROS2 기반의 로봇 시스템에서 상태 전이의 트리거(trigger)는 대부분 통신 이벤트, 즉 토픽 메시지의 수신, 서비스 응답의 도착, 액션 피드백의 수신, 타이머의 만료 등에 의해 발생한다. 따라서 통신 인프라의 설계는 행동 전환의 정확성과 적시성에 직접적으로 영향을 미친다.</p>
+<h2>2. 상태 전이 모델의 형식적 정의</h2>
+<p>상태 기반 행동 제어 시스템은 다음의 5-튜플로 형식적으로 정의된다.</p>
+<p><span class="math math-display">
+M = (S, E, \delta, s_0, F)
+</span></p>
+<p>여기서 각 요소의 의미는 다음과 같다.</p>
+<table><thead><tr><th>요소</th><th>정의</th></tr></thead><tbody>
+<tr><td><span class="math math-inline">S</span></td><td>유한한 상태의 집합 (행동 상태)</td></tr>
+<tr><td><span class="math math-inline">E</span></td><td>유한한 이벤트(입력)의 집합</td></tr>
+<tr><td><span class="math math-inline">\delta: S \times E \rightarrow S</span></td><td>상태 전이 함수</td></tr>
+<tr><td><span class="math math-inline">s_0 \in S</span></td><td>초기 상태</td></tr>
+<tr><td><span class="math math-inline">F \subseteq S</span></td><td>종료 상태의 집합</td></tr>
+</tbody></table>
+<p>예를 들어, 단순한 장애물 회피 행동 시스템은 다음과 같이 정의된다.</p>
+<p><span class="math math-display">
+S = \{\text{EXPLORE}, \text{AVOID}, \text{STOP}\}
+</span><br />
+<span class="math math-display">
+E = \{\text{obstacle\_detected}, \text{obstacle\_cleared}, \text{emergency\_stop}, \text{resume}\}
+</span><br />
+<span class="math math-display">
+\delta(\text{EXPLORE}, \text{obstacle\_detected}) = \text{AVOID}
+</span><br />
+<span class="math math-display">
+\delta(\text{AVOID}, \text{obstacle\_cleared}) = \text{EXPLORE}
+</span><br />
+<span class="math math-display">
+\delta(*, \text{emergency\_stop}) = \text{STOP}
+</span><br />
+<span class="math math-display">
+\delta(\text{STOP}, \text{resume}) = \text{EXPLORE}
+</span></p>
+<h2>3. 통신 이벤트에 의한 상태 전이 트리거</h2>
+<p>ROS2에서 상태 전이를 촉발하는 통신 이벤트의 유형과 특성은 다음과 같다.</p>
+<h3>3.1 토픽 메시지 수신에 의한 트리거</h3>
+<p>센서 데이터의 도착이 상태 전이 조건의 평가를 촉발한다. 이 방식은 가장 빈번하게 사용되는 트리거 메커니즘이다.</p>
+<pre><code class="language-cpp">void on_scan_received(const sensor_msgs::msg::LaserScan::SharedPtr msg)
+{
+  double min_range = compute_min_range(msg);
+
+  switch (current_state_) {
+    case State::EXPLORE:
+      if (min_range &lt; obstacle_threshold_) {
+        transition_to(State::AVOID);
+      }
+      break;
+    case State::AVOID:
+      if (min_range &gt; safe_distance_) {
+        transition_to(State::EXPLORE);
+      }
+      break;
+    default:
+      break;
+  }
+}
+</code></pre>
+<p>토픽 기반 트리거의 특성:</p>
+<ul>
+<li><strong>비동기적</strong>: 메시지 도착 시점에 의해 전이 시점이 결정된다.</li>
+<li><strong>비결정론적 주기</strong>: 발행자의 주기와 네트워크 지연에 의해 트리거 시점이 변동한다.</li>
+<li><strong>최신성 보장</strong>: <code>KEEP_LAST(1)</code> QoS를 사용하면 항상 최신 데이터에 기반한 전이 판정이 가능하다.</li>
+</ul>
+<h3>3.2 서비스 응답에 의한 트리거</h3>
+<p>상태 전이 전에 외부 시스템에 질의를 수행하고, 그 응답에 따라 전이를 결정하는 경우에 사용된다.</p>
+<pre><code class="language-cpp">void check_battery_and_transition()
+{
+  auto request = std::make_shared&lt;BatteryStatus::Request&gt;();
+  auto future = battery_client_-&gt;async_send_request(request,
+    [this](rclcpp::Client&lt;BatteryStatus&gt;::SharedFuture%20result) {
+      auto response = result.get();
+      if (response-&gt;level &lt; low_battery_threshold_) {
+        transition_to(State::RETURN_TO_BASE);
+      }
+    });
+}
+</code></pre>
+<h3>3.3 액션 상태 변화에 의한 트리거</h3>
+<p>장시간 행동의 완료, 실패, 취소 등 액션 상태의 변화가 상위 수준의 행동 상태 전이를 촉발한다.</p>
+<pre><code class="language-cpp">void on_navigation_result(
+  const NavigateToPose::WrappedResult &amp; result)
+{
+  switch (result.code) {
+    case rclcpp_action::ResultCode::SUCCEEDED:
+      transition_to(State::TASK_COMPLETE);
+      break;
+    case rclcpp_action::ResultCode::ABORTED:
+      transition_to(State::ERROR_RECOVERY);
+      break;
+    case rclcpp_action::ResultCode::CANCELED:
+      transition_to(State::IDLE);
+      break;
+    default:
+      break;
+  }
+}
+</code></pre>
+<h3>3.4 타이머 만료에 의한 트리거</h3>
+<p>특정 상태에서 일정 시간이 경과하면 자동으로 전이가 발생하는 타임아웃(timeout) 기반 트리거이다.</p>
+<pre><code class="language-cpp">void on_avoidance_timeout()
+{
+  if (current_state_ == State::AVOID) {
+    RCLCPP_WARN(this-&gt;get_logger(),
+      "Avoidance timeout: transitioning to STOP");
+    transition_to(State::STOP);
+  }
+}
+</code></pre>
+<p>타이머 기반 트리거는 장시간 행동의 안전 보호(safety guard) 메커니즘으로 활용되며, 행동이 예상 시간 내에 완료되지 않은 경우 안전 상태로 전이시킨다.</p>
+<h2>4. 상태 전이의 통신 발행</h2>
+<p>상태 전이가 발생하면 시스템 내 다른 노드에 현재 상태를 통보하여야 한다. 이를 위한 통신 패턴은 다음과 같다.</p>
+<h3>4.1 상태 발행 토픽</h3>
+<p>현재 행동 상태를 주기적으로 또는 전이 시점에 발행하는 토픽이다. 다른 노드는 이 토픽을 구독하여 로봇의 행동 상태를 감시할 수 있다.</p>
+<pre><code class="language-cpp">void transition_to(State new_state)
+{
+  State previous_state = current_state_;
+  current_state_ = new_state;
+
+  // 상태 전이 메시지 발행
+  auto msg = std_msgs::msg::String();
+  msg.data = state_to_string(current_state_);
+  state_pub_-&gt;publish(msg);
+
+  RCLCPP_INFO(this-&gt;get_logger(),
+    "State transition: %s -&gt; %s",
+    state_to_string(previous_state).c_str(),
+    state_to_string(current_state_).c_str());
+
+  // 상태 진입 행동 실행
+  on_state_enter(current_state_);
+}
+</code></pre>
+<h3>4.2 진입 행동과 퇴출 행동</h3>
+<p>상태 전이 시 이전 상태에서의 퇴출 행동(exit action)과 새로운 상태에서의 진입 행동(entry action)이 실행된다. 이 패턴은 Mealy 머신과 Moore 머신의 설계에서 차용된 것이다.</p>
+<table><thead><tr><th>행동 유형</th><th>실행 시점</th><th>예시</th></tr></thead><tbody>
+<tr><td>진입 행동(Entry Action)</td><td>새로운 상태에 진입할 때</td><td>액션 목표 전송, 타이머 시작, LED 색상 변경</td></tr>
+<tr><td>퇴출 행동(Exit Action)</td><td>현재 상태에서 이탈할 때</td><td>액션 취소, 타이머 중지, 속도 명령 초기화</td></tr>
+<tr><td>전이 행동(Transition Action)</td><td>전이 발생 시</td><td>로깅, 상태 발행, 경고음 출력</td></tr>
+</tbody></table>
+<h2>5. 가드 조건(Guard Condition)</h2>
+<p>가드 조건은 이벤트가 발생하더라도 추가적인 조건이 충족되어야만 전이가 허용되는 보호 메커니즘이다. 가드 조건의 사용은 의도하지 않은 상태 전이를 방지한다.</p>
+<p><span class="math math-display">
+\delta(s, e) = s&#39; \quad \text{iff} \quad g(s, e) = \text{true}
+</span></p>
+<p>여기서 <span class="math math-inline">g(s, e)</span>는 상태 <span class="math math-inline">s</span>에서 이벤트 <span class="math math-inline">e</span>가 발생하였을 때 전이를 허용할지를 결정하는 부울 함수이다.</p>
+<pre><code class="language-cpp">void on_scan_received(const sensor_msgs::msg::LaserScan::SharedPtr msg)
+{
+  if (current_state_ == State::EXPLORE) {
+    double min_range = compute_min_range(msg);
+    // 가드 조건: 최소 거리 임계값 AND 속도가 양수
+    if (min_range &lt; obstacle_threshold_ &amp;&amp; current_velocity_ &gt; 0.0) {
+      transition_to(State::AVOID);
+    }
+  }
+}
+</code></pre>
+<h2>6. 상태 전이의 원자성 보장</h2>
+<p>멀티 스레드 실행자 환경에서 복수의 콜백이 동시에 상태 전이를 시도할 수 있다. 이 경우 경쟁 조건(race condition)에 의해 일관성 없는 상태 전이가 발생할 수 있다. 이를 방지하기 위한 전략은 다음과 같다.</p>
+<ol>
+<li><strong>상호 배타적 콜백 그룹</strong>: 상태 전이를 수행하는 모든 콜백을 동일한 상호 배타적 콜백 그룹에 배치하여 동시 실행을 방지한다.</li>
+<li><strong>원자적 상태 변수</strong>: <code>std::atomic&lt;State&gt;</code>를 사용하여 상태 변수의 읽기/쓰기를 원자적으로 수행한다.</li>
+<li><strong>뮤텍스 보호</strong>: 상태 전이 로직 전체를 뮤텍스로 보호하여 임계 구역(critical section)의 배타적 실행을 보장한다.</li>
+</ol>
+<pre><code class="language-cpp">void transition_to(State new_state)
+{
+  std::lock_guard&lt;std::mutex&gt; lock(state_mutex_);
+  if (is_valid_transition(current_state_, new_state)) {
+    on_state_exit(current_state_);
+    current_state_ = new_state;
+    on_state_enter(current_state_);
+  }
+}
+</code></pre>
+<h2>7. 계층적 상태 전이와 통신</h2>
+<p>복잡한 행동 제어 시스템에서는 계층적 유한 상태 머신(Hierarchical FSM, HFSM)이 사용된다. HFSM에서 상위 상태(superstate)는 하위 상태(substate)를 포함하며, 상위 상태로의 전이는 하위 상태 머신 전체를 활성화 또는 비활성화한다.</p>
+<pre><code>OPERATING (상위 상태)
+├── EXPLORE (하위 상태)
+├── AVOID (하위 상태)
+└── NAVIGATE (하위 상태)
+    ├── PLANNING (하위-하위 상태)
+    └── EXECUTING (하위-하위 상태)
+
+EMERGENCY (상위 상태)
+├── E_STOP (하위 상태)
+└── RECOVERY (하위 상태)
+</code></pre>
+<p>계층적 상태 전이에서 통신 트리거는 현재 활성화된 계층 수준에 따라 라우팅된다. 비상 정지 이벤트는 최상위 수준에서 처리되어 모든 하위 상태를 즉시 중단시키며, 센서 데이터 이벤트는 하위 수준에서 처리되어 세부 행동의 전환에 기여한다.</p>
+<h2>8. 상태 전이 로그와 진단</h2>
+<p>상태 전이의 이력을 기록하는 것은 시스템의 디버깅과 사후 분석에 필수적이다. 전이 로그에는 다음의 정보가 포함되어야 한다.</p>
+<table><thead><tr><th>로그 항목</th><th>설명</th></tr></thead><tbody>
+<tr><td>타임스탬프</td><td>전이 발생 시점</td></tr>
+<tr><td>이전 상태</td><td>전이 전의 행동 상태</td></tr>
+<tr><td>새로운 상태</td><td>전이 후의 행동 상태</td></tr>
+<tr><td>트리거 이벤트</td><td>전이를 촉발한 이벤트의 식별자</td></tr>
+<tr><td>가드 조건 값</td><td>전이 시점의 가드 조건 평가 결과</td></tr>
+</tbody></table>
+<p>ROS2의 <code>rclcpp::Logger</code>와 <code>ros2 bag record</code>를 조합하여 상태 전이 로그를 체계적으로 기록하고, 사후에 재생하여 분석할 수 있다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>D. Harel, “Statecharts: A Visual Formalism for Complex Systems,” <em>Science of Computer Programming</em>, vol. 8, no. 3, pp. 231–274, 1987.</li>
+<li>R. A. Brooks, “A Robust Layered Control System for a Mobile Robot,” <em>IEEE Journal on Robotics and Automation</em>, vol. 2, no. 1, pp. 14–23, 1986.</li>
+<li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
+<li>Open Robotics, “Managed Nodes (Lifecycle),” ROS 2 Documentation, https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Lifecycle.html.</li>
+<li>J. Bohren, S. Cousins, “The SMACH High-Level Executive,” <em>IEEE Robotics and Automation Magazine</em>, vol. 17, no. 4, pp. 18–20, 2010.</li>
+</ul>
 
             </article>
             <footer>

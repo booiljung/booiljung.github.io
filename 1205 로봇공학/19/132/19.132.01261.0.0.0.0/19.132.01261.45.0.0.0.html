@@ -115,116 +115,192 @@
             </header>
             <article>
                 <h1>1261.45 실행자(Executor)와 콜백 그룹의 관계</h1>
-<h2>1. 실행자의 정의와 역할</h2>
-<p>ROS2에서 실행자(Executor)는 노드에 등록된 콜백(callback) 함수들을 스케줄링하고 실행하는 핵심 런타임 구성요소이다. 토픽 구독 콜백, 서비스 요청 처리 콜백, 타이머 콜백, 액션 관련 콜백 등 모든 이벤트 기반 처리가 실행자를 통해 디스패치(dispatch)된다.</p>
-<p>ROS1에서는 <code>ros::spin()</code> 또는 <code>ros::spinOnce()</code>라는 단일 전역 함수에 의해 모든 콜백이 처리되었다. 이러한 구조는 콜백 실행의 병렬성 제어나 우선순위 관리가 불가능하다는 한계를 지니고 있었다. ROS2는 실행자라는 추상화 계층을 도입하여 콜백 스케줄링에 대한 세밀한 제어를 가능하게 하였다.</p>
-<h2>2. 실행자의 동작 원리</h2>
-<p>실행자는 내부적으로 대기 집합(wait set)을 관리한다. 대기 집합에는 구독자(subscription), 타이머(timer), 서비스 서버(service server), 액션 서버(action server), 클라이언트(client) 등의 핸들이 등록된다. 실행자는 반복적으로 다음의 과정을 수행한다.</p>
+<h2>1. 실행자의 정의와 아키텍처적 위상</h2>
+<p>ROS2에서 실행자(Executor)는 노드(Node)에 등록된 콜백(callback) 함수들의 스케줄링과 디스패치(dispatch)를 담당하는 핵심 런타임 구성요소이다. 토픽 구독 콜백, 서비스 요청 처리 콜백, 타이머 콜백, 액션 목표 수신 콜백, 액션 취소 요청 콜백 등 ROS2 통신 인프라에서 발생하는 모든 이벤트 기반 처리는 실행자를 통해 호출된다. 실행자는 DDS(Data Distribution Service) 미들웨어 계층과 사용자 애플리케이션 계층 사이에서 이벤트 루프(event loop)를 형성하며, 콜백 함수의 실행 순서, 동시성(concurrency), 자원 할당을 제어하는 추상화 계층(abstraction layer)으로 기능한다.</p>
+<p>ROS1에서는 <code>ros::spin()</code> 또는 <code>ros::spinOnce()</code>라는 단일 전역 함수에 의해 전체 콜백이 순차적으로 처리되었다. 이러한 구조에서는 콜백 실행의 병렬성 제어, 우선순위 관리, 실행 정책의 분리가 구조적으로 불가능하였다. ROS2는 실행자라는 명시적 객체를 도입함으로써 콜백 스케줄링에 대한 세밀한 제어를 가능하게 하였으며, 이는 실시간 시스템(real-time system)에서의 결정론적(deterministic) 콜백 실행 요구를 충족하기 위한 설계적 결정이다.</p>
+<h2>2. 실행자의 내부 동작 원리</h2>
+<p>실행자는 내부적으로 대기 집합(wait set)을 관리한다. 대기 집합은 DDS 미들웨어의 <code>dds::core::cond::WaitSet</code> 개념에 대응하며, 구독자(subscription), 타이머(timer), 서비스 서버(service server), 액션 서버(action server), 클라이언트(client), 가드 조건(guard condition) 등의 엔티티 핸들이 등록된다. 실행자의 주 루프(main loop)는 다음의 절차를 반복적으로 수행한다.</p>
 <ol>
-<li>대기 집합에 등록된 모든 엔티티에 대해 준비 상태를 확인한다.</li>
-<li>새로운 데이터가 도착하였거나 타이머가 만료된 등 준비 완료된 엔티티를 식별한다.</li>
-<li>해당 엔티티에 연결된 콜백 함수를 실행한다.</li>
-<li>위 과정을 반복한다.</li>
+<li>대기 집합에 등록된 모든 엔티티에 대한 준비 상태(readiness)를 확인한다.</li>
+<li>새로운 메시지가 도착하였거나 타이머가 만료된 등 준비 완료(ready) 상태의 엔티티를 식별한다.</li>
+<li>준비 완료된 엔티티에 연결된 콜백 함수를 콜백 그룹의 실행 정책에 따라 실행한다.</li>
+<li>위 과정을 비차단(non-blocking) 또는 차단(blocking) 방식으로 반복한다.</li>
 </ol>
-<p>이 과정은 DDS 미들웨어의 조건 변수(condition variable) 및 대기 집합 메커니즘에 기반하며, 불필요한 폴링(polling)을 최소화하여 CPU 자원을 효율적으로 사용한다.</p>
-<h2>3. 실행자의 유형</h2>
-<p>ROS2는 다음의 실행자 유형을 제공한다.</p>
-<table><thead><tr><th>실행자 유형</th><th>클래스명</th><th>특성</th></tr></thead><tbody>
-<tr><td>단일 스레드 실행자</td><td><code>SingleThreadedExecutor</code></td><td>하나의 스레드에서 모든 콜백을 순차적으로 실행한다.</td></tr>
-<tr><td>멀티 스레드 실행자</td><td><code>MultiThreadedExecutor</code></td><td>다수의 스레드를 사용하여 콜백을 병렬로 실행한다.</td></tr>
-<tr><td>정적 단일 스레드 실행자</td><td><code>StaticSingleThreadedExecutor</code></td><td>노드 추가 시 대기 집합을 한 번만 구성하여 오버헤드를 줄인다.</td></tr>
+<p>이 과정에서 실행자는 DDS 미들웨어의 조건 변수(condition variable) 및 대기 집합 메커니즘에 기반하여 동작하며, 능동적 폴링(active polling)을 최소화함으로써 CPU 자원을 효율적으로 활용한다. <code>rcl</code>(ROS Client Library) 계층의 <code>rcl_wait()</code> 함수가 운영체제 수준의 <code>select()</code>, <code>poll()</code>, 또는 <code>epoll()</code> 시스템 호출에 대응하여 이벤트 대기를 수행한다.</p>
+<h2>3. 실행자의 유형과 특성 비교</h2>
+<p>ROS2 <code>rclcpp</code> 라이브러리는 다음의 실행자 유형을 제공한다.</p>
+<table><thead><tr><th>실행자 유형</th><th>클래스명</th><th>스레드 모델</th><th>특성</th></tr></thead><tbody>
+<tr><td>단일 스레드 실행자</td><td><code>SingleThreadedExecutor</code></td><td>단일 스레드</td><td>모든 콜백을 하나의 스레드에서 순차적으로 실행한다. 콜백 간 경쟁 조건(race condition)이 원천적으로 배제된다.</td></tr>
+<tr><td>멀티 스레드 실행자</td><td><code>MultiThreadedExecutor</code></td><td>스레드 풀</td><td>복수의 스레드를 사용하여 준비 완료된 콜백들을 병렬로 실행한다. 스레드 수는 생성 시 지정할 수 있다.</td></tr>
+<tr><td>정적 단일 스레드 실행자</td><td><code>StaticSingleThreadedExecutor</code></td><td>단일 스레드</td><td>노드 추가 시점에 대기 집합을 한 번만 구성하여 반복적인 대기 집합 재구성 오버헤드를 제거한다.</td></tr>
+<tr><td>이벤트 기반 실행자</td><td><code>EventsExecutor</code></td><td>이벤트 구동</td><td>미들웨어 이벤트를 직접 수신하여 대기 집합 재구성 없이 콜백을 실행한다. (ROS2 Iron 이후 실험적 도입)</td></tr>
 </tbody></table>
-<p>단일 스레드 실행자는 콜백 간 경쟁 조건(race condition)이 발생하지 않으므로 동기화 문제를 회피할 수 있다는 장점이 있으나, 하나의 콜백이 장시간 차단(blocking)될 경우 다른 콜백의 실행이 지연된다는 단점이 존재한다. 멀티 스레드 실행자는 이러한 지연 문제를 완화하지만, 공유 자원에 대한 동기화 메커니즘이 필요하다.</p>
-<h2>4. 콜백 그룹의 개념</h2>
-<p>콜백 그룹(Callback Group)은 콜백 함수들의 실행 정책을 정의하는 논리적 묶음이다. 멀티 스레드 실행자를 사용할 때, 콜백 그룹은 어떤 콜백들이 병렬로 실행될 수 있는지, 어떤 콜백들이 상호 배타적으로 실행되어야 하는지를 결정한다.</p>
-<p>ROS2는 두 가지 유형의 콜백 그룹을 제공한다.</p>
-<h3>4.1 상호 배타적 콜백 그룹 (Mutually Exclusive Callback Group)</h3>
-<p><code>MutuallyExclusiveCallbackGroup</code>에 속하는 콜백들은 동시에 실행되지 않는다. 하나의 콜백이 실행 중이면 같은 그룹에 속하는 다른 콜백들은 대기 상태에 놓인다. 이는 암묵적인 뮤텍스(mutex)와 유사한 효과를 제공하며, 공유 자원에 대한 접근을 보호하는 데 적합하다.</p>
-<h3>4.2 재진입 콜백 그룹 (Reentrant Callback Group)</h3>
-<p><code>ReentrantCallbackGroup</code>에 속하는 콜백들은 동시에 병렬 실행이 허용된다. 동일한 콜백 함수의 복수 인스턴스가 동시에 실행될 수도 있다. 이 그룹을 사용할 때에는 개발자가 명시적으로 스레드 안전성(thread safety)을 보장하여야 한다.</p>
-<h2>5. 실행자와 콜백 그룹의 상호 작용</h2>
-<p>실행자와 콜백 그룹의 관계는 다음과 같이 정리된다.</p>
-<pre><code>Executor
+<p>단일 스레드 실행자는 콜백 함수 간의 상호 배제(mutual exclusion)가 암묵적으로 보장되므로 동기화 기법의 적용이 불필요하지만, 하나의 콜백이 장시간 차단(blocking)될 경우 다른 모든 콜백의 실행이 지연된다는 구조적 한계가 존재한다. 멀티 스레드 실행자는 이러한 지연 문제를 완화하지만, 공유 자원에 대한 명시적 동기화 기법(뮤텍스, 조건 변수 등)의 적용이 필수적이다.</p>
+<h2>4. 콜백 그룹의 개념과 존재 의의</h2>
+<p>콜백 그룹(Callback Group)은 콜백 함수들의 동시 실행 정책을 정의하는 논리적 단위이다. 멀티 스레드 실행자 환경에서 콜백 그룹은 어떤 콜백들이 병렬로 실행될 수 있는지, 어떤 콜백들이 상호 배타적으로 실행되어야 하는지를 결정론적으로 지정하는 메커니즘이다. 단일 스레드 실행자에서는 모든 콜백이 본질적으로 순차 실행되므로 콜백 그룹의 실행 정책이 동작에 영향을 미치지 않는다.</p>
+<p>콜백 그룹은 운영체제의 스레드 동기화 원시 객체(synchronization primitive)를 추상화한 상위 수준의 동시성 제어 기법이다. 개발자가 뮤텍스, 세마포어 등을 직접 관리하는 대신, 콜백 그룹의 유형을 선택함으로써 선언적(declarative) 방식으로 동시성 정책을 표현할 수 있다.</p>
+<h2>5. 콜백 그룹의 유형</h2>
+<p>ROS2는 다음의 두 가지 콜백 그룹 유형을 제공한다.</p>
+<h3>5.1 상호 배타적 콜백 그룹(Mutually Exclusive Callback Group)</h3>
+<p><code>MutuallyExclusiveCallbackGroup</code>에 속하는 콜백들은 동시에 실행되지 않는다. 하나의 콜백이 실행 중인 동안 같은 그룹에 속하는 다른 콜백들은 대기 상태(waiting state)에 놓인다. 실행자는 내부적으로 해당 그룹에 대한 잠금(lock)을 획득한 후 콜백을 실행하며, 콜백 실행이 완료되면 잠금을 해제한다. 이는 암묵적 뮤텍스(implicit mutex)와 동등한 보호 효과를 제공하며, 공유 자원(shared resource)에 대한 접근을 직렬화(serialize)하는 데 적합하다.</p>
+<p>노드를 생성할 때 명시적으로 콜백 그룹을 지정하지 않으면 기본 콜백 그룹(default callback group)이 사용되며, 기본 콜백 그룹의 유형은 상호 배타적이다.</p>
+<h3>5.2 재진입 콜백 그룹(Reentrant Callback Group)</h3>
+<p><code>ReentrantCallbackGroup</code>에 속하는 콜백들은 동시에 병렬 실행이 허용된다. 동일한 콜백 함수의 복수 인스턴스가 서로 다른 스레드에서 동시에 실행될 수도 있다. 이 그룹을 사용할 때에는 개발자가 콜백 함수 내부에서 접근하는 모든 공유 자원에 대하여 명시적으로 스레드 안전성(thread safety)을 보장하여야 한다. 재진입 콜백 그룹은 독립적인 메시지 처리, 상태 비의존적(stateless) 연산, 높은 처리량(throughput)이 요구되는 경로에 적합하다.</p>
+<h2>6. 실행자와 콜백 그룹의 상호 작용 모델</h2>
+<p>실행자와 콜백 그룹의 계층적 관계는 다음의 구조로 표현된다.</p>
+<pre><code>Executor (MultiThreadedExecutor, thread_count=4)
 ├── Node A
-│   ├── MutuallyExclusiveCallbackGroup (기본)
-│   │   ├── Subscription Callback 1
-│   │   └── Timer Callback 1
+│   ├── MutuallyExclusiveCallbackGroup (기본 그룹)
+│   │   ├── Subscription Callback α
+│   │   └── Timer Callback β
 │   └── ReentrantCallbackGroup
-│       ├── Subscription Callback 2
-│       └── Service Callback 1
+│       ├── Subscription Callback γ
+│       └── Service Server Callback δ
 └── Node B
-    └── MutuallyExclusiveCallbackGroup (기본)
-        ├── Subscription Callback 3
-        └── Timer Callback 2
+    ├── MutuallyExclusiveCallbackGroup (기본 그룹)
+    │   ├── Subscription Callback ε
+    │   └── Timer Callback ζ
+    └── MutuallyExclusiveCallbackGroup (사용자 정의)
+        └── Action Server Callback η
 </code></pre>
-<p>노드를 생성할 때 명시적으로 콜백 그룹을 지정하지 않으면 기본 콜백 그룹(default callback group)이 사용된다. 기본 콜백 그룹은 상호 배타적 유형이다.</p>
-<p>멀티 스레드 실행자에서 위의 구성이 적용되면, <code>Subscription Callback 1</code>과 <code>Timer Callback 1</code>은 상호 배타적이므로 동시에 실행되지 않는다. 반면 <code>Subscription Callback 2</code>와 <code>Service Callback 1</code>은 재진입 그룹에 속하므로 병렬로 동시에 실행될 수 있다. 서로 다른 콜백 그룹에 속하는 콜백들은 항상 병렬 실행이 가능하다.</p>
-<h2>6. 콜백 그룹의 설정 방법</h2>
-<p>C++에서 콜백 그룹을 생성하고 구독자, 타이머, 서비스에 할당하는 방법은 다음과 같다.</p>
+<p>위 구조에서 콜백 실행의 동시성은 다음의 규칙에 의해 결정된다.</p>
+<ol>
+<li>같은 상호 배타적 그룹에 속하는 콜백 α와 β는 동시에 실행되지 않는다.</li>
+<li>같은 재진입 그룹에 속하는 콜백 γ와 δ는 동시에 병렬 실행이 가능하다.</li>
+<li>서로 다른 콜백 그룹에 속하는 콜백들(예: α와 γ, α와 ε)은 그룹 유형에 관계없이 동시 실행이 가능하다.</li>
+<li>서로 다른 노드의 서로 다른 그룹에 속하는 콜백들(예: β와 η)도 동시 실행이 가능하다.</li>
+</ol>
+<p>이 규칙 체계를 통해 개발자는 공유 자원을 보호하면서도 독립적인 처리 경로의 병렬성을 극대화할 수 있다.</p>
+<h2>7. 콜백 그룹의 프로그래밍 인터페이스</h2>
+<p>C++(<code>rclcpp</code>)에서 콜백 그룹을 생성하고 구독자, 타이머, 서비스에 할당하는 방식은 다음과 같다.</p>
 <pre><code class="language-cpp">#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
 
-class MyNode : public rclcpp::Node
+class BehaviorControlNode : public rclcpp::Node
 {
 public:
-  MyNode() : Node("my_node")
+  BehaviorControlNode() : Node("behavior_control_node")
   {
     // 콜백 그룹 생성
-    cb_group_mutex_ = this-&gt;create_callback_group(
+    cb_group_exclusive_ = this-&gt;create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
     cb_group_reentrant_ = this-&gt;create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
 
-    // 구독 옵션에 콜백 그룹 지정
+    // 구독 옵션에 재진입 콜백 그룹 지정
     rclcpp::SubscriptionOptions sub_options;
     sub_options.callback_group = cb_group_reentrant_;
 
-    subscription_ = this-&gt;create_subscription&lt;std_msgs::msg::String&gt;(
-      "topic", 10,
-      std::bind(&amp;MyNode::topic_callback, this, std::placeholders::_1),
+    sensor_sub_ = this-&gt;create_subscription&lt;std_msgs::msg::String&gt;(
+      "sensor_data", 10,
+      std::bind(&amp;BehaviorControlNode::sensor_callback, this,
+                std::placeholders::_1),
       sub_options);
 
-    // 타이머에 콜백 그룹 지정
-    timer_ = this-&gt;create_wall_timer(
+    // 타이머에 상호 배타적 콜백 그룹 지정
+    control_timer_ = this-&gt;create_wall_timer(
       std::chrono::milliseconds(100),
-      std::bind(&amp;MyNode::timer_callback, this),
-      cb_group_mutex_);
+      std::bind(&amp;BehaviorControlNode::control_loop_callback, this),
+      cb_group_exclusive_);
   }
 
 private:
-  void topic_callback(const std_msgs::msg::String::SharedPtr msg) { /* ... */ }
-  void timer_callback() { /* ... */ }
+  void sensor_callback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    // 센서 데이터 처리 (병렬 실행 허용)
+  }
 
-  rclcpp::CallbackGroup::SharedPtr cb_group_mutex_;
+  void control_loop_callback()
+  {
+    // 제어 루프 실행 (상호 배타적 보호)
+  }
+
+  rclcpp::CallbackGroup::SharedPtr cb_group_exclusive_;
   rclcpp::CallbackGroup::SharedPtr cb_group_reentrant_;
-  rclcpp::Subscription&lt;std_msgs::msg::String&gt;::SharedPtr subscription_;
-  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::Subscription&lt;std_msgs::msg::String&gt;::SharedPtr sensor_sub_;
+  rclcpp::TimerBase::SharedPtr control_timer_;
 };
 </code></pre>
-<h2>7. 콜백 그룹 설계 시 고려사항</h2>
-<p>콜백 그룹의 설계는 시스템의 동시성(concurrency)과 안전성(safety) 사이의 균형을 결정한다. 다음의 원칙을 준수하는 것이 권장된다.</p>
-<table><thead><tr><th>설계 원칙</th><th>설명</th></tr></thead><tbody>
-<tr><td>공유 자원 보호</td><td>동일한 자원에 접근하는 콜백들은 상호 배타적 그룹에 배치한다.</td></tr>
-<tr><td>독립 연산 분리</td><td>상호 의존성이 없는 콜백들은 재진입 그룹 또는 별도의 상호 배타적 그룹에 배치하여 병렬성을 확보한다.</td></tr>
-<tr><td>교착 상태 방지</td><td>상호 배타적 그룹 내에서 동기적 서비스 호출을 수행하면 교착 상태(deadlock)가 발생할 수 있으므로 주의하여야 한다.</td></tr>
-<tr><td>실시간성 보장</td><td>실시간 제약이 있는 콜백은 장시간 차단이 발생할 수 있는 콜백과 분리된 그룹에 배치한다.</td></tr>
+<p>Python(<code>rclpy</code>)에서의 콜백 그룹 설정은 다음과 같다.</p>
+<pre><code class="language-python">import rclpy
+from rclpy.node import Node
+from rclpy.callback_groups import (
+    MutuallyExclusiveCallbackGroup,
+    ReentrantCallbackGroup
+)
+from std_msgs.msg import String
+
+class BehaviorControlNode(Node):
+    def __init__(self):
+        super().__init__('behavior_control_node')
+
+        self.exclusive_group = MutuallyExclusiveCallbackGroup()
+        self.reentrant_group = ReentrantCallbackGroup()
+
+        self.sensor_sub = self.create_subscription(
+            String, 'sensor_data', self.sensor_callback, 10,
+            callback_group=self.reentrant_group)
+
+        self.control_timer = self.create_timer(
+            0.1, self.control_loop_callback,
+            callback_group=self.exclusive_group)
+
+    def sensor_callback(self, msg):
+        pass  # 센서 데이터 처리
+
+    def control_loop_callback(self):
+        pass  # 제어 루프 실행
+</code></pre>
+<h2>8. 교착 상태 문제와 회피 전략</h2>
+<p>실행자와 콜백 그룹의 설계에서 가장 빈번하게 발생하는 결함은 교착 상태(deadlock)이다. 상호 배타적 콜백 그룹 내에서 동기적 서비스 클라이언트 호출을 수행하면, 서비스 응답을 처리하는 콜백이 같은 그룹의 잠금에 의해 실행되지 못하여 무한 대기 상태에 빠지게 된다. 이 문제의 발생 메커니즘은 다음과 같다.</p>
+<ol>
+<li>콜백 A가 상호 배타적 그룹 G의 잠금을 획득하고 실행을 시작한다.</li>
+<li>콜백 A 내부에서 동기적 서비스 호출 <code>client-&gt;call(request)</code>을 수행한다.</li>
+<li>서비스 응답이 도착하면 이를 처리하는 내부 콜백이 그룹 G에서 실행되어야 한다.</li>
+<li>그러나 그룹 G의 잠금은 콜백 A에 의해 이미 보유(held)되어 있으므로, 내부 콜백은 잠금 획득에 실패하여 대기한다.</li>
+<li>콜백 A는 서비스 응답을 기다리며 차단되고, 내부 콜백은 잠금 해제를 기다리므로 교착 상태가 형성된다.</li>
+</ol>
+<p>이 문제를 회피하기 위한 전략은 다음과 같다.</p>
+<table><thead><tr><th>회피 전략</th><th>설명</th></tr></thead><tbody>
+<tr><td>비동기적 서비스 호출</td><td><code>async_send_request()</code>를 사용하여 콜백 내에서 차단을 유발하지 않는다.</td></tr>
+<tr><td>별도 콜백 그룹 할당</td><td>서비스 클라이언트를 호출 콜백과 다른 콜백 그룹에 배치한다.</td></tr>
+<tr><td>재진입 그룹 사용</td><td>서비스 호출과 응답 처리가 병렬로 실행될 수 있도록 재진입 그룹에 배치한다.</td></tr>
 </tbody></table>
-<p>특히 교착 상태 문제는 빈번하게 발생하는 설계 오류이다. 상호 배타적 콜백 그룹 내에서 동기적 서비스 클라이언트 호출을 수행하면, 서비스 응답을 처리하는 콜백이 같은 그룹의 잠금에 의해 실행되지 못하여 무한 대기 상태에 빠지게 된다. 이를 방지하기 위하여 비동기적 서비스 호출을 사용하거나, 서비스 클라이언트를 별도의 콜백 그룹에 할당하여야 한다.</p>
-<h2>8. 실행자와 노드 조합 패턴</h2>
+<h2>9. 실행자와 노드 조합 패턴</h2>
 <p>하나의 실행자에 복수의 노드를 등록하여 단일 프로세스 내에서 여러 노드를 실행할 수 있다. 이를 컴포넌트 기반 구성(component composition)이라 한다.</p>
-<pre><code class="language-cpp">rclcpp::executors::MultiThreadedExecutor executor;
-auto node_a = std::make_shared&lt;NodeA&gt;();
-auto node_b = std::make_shared&lt;NodeB&gt;();
-executor.add_node(node_a);
-executor.add_node(node_b);
+<pre><code class="language-cpp">rclcpp::executors::MultiThreadedExecutor executor(
+  rclcpp::ExecutorOptions(), 4);  // 4개 스레드
+auto sensor_node = std::make_shared&lt;SensorProcessingNode&gt;();
+auto behavior_node = std::make_shared&lt;BehaviorDecisionNode&gt;();
+auto actuator_node = std::make_shared&lt;ActuatorCommandNode&gt;();
+executor.add_node(sensor_node);
+executor.add_node(behavior_node);
+executor.add_node(actuator_node);
 executor.spin();
 </code></pre>
-<p>이 패턴은 프로세스 간 통신 오버헤드를 제거하고, 동일 프로세스 내에서 제로 카피(zero-copy) 메시지 전달을 가능하게 하여 통신 지연을 최소화한다. 로봇 행동 제어 시스템에서는 센서 처리 노드, 행동 결정 노드, 액추에이터 명령 노드를 단일 실행자에 구성하여 제어 루프의 지연을 줄이는 전략이 널리 사용된다.</p>
-<h2>9. 참고 문헌</h2>
+<p>이 패턴은 프로세스 간 통신(IPC) 오버헤드를 제거하고, 동일 프로세스 내에서 인트라 프로세스 통신(intra-process communication) 및 제로 카피(zero-copy) 메시지 전달을 가능하게 하여 통신 지연을 최소화한다. 로봇 행동 제어 시스템에서는 센서 처리 노드, 행동 결정 노드, 액추에이터 명령 노드를 단일 실행자에 구성하여 제어 루프의 종단 간 지연(end-to-end latency)을 줄이는 전략이 널리 적용된다.</p>
+<h2>10. 콜백 그룹 설계 원칙</h2>
+<p>콜백 그룹의 설계는 시스템의 동시성과 안전성 사이의 균형을 결정한다. 다음의 원칙을 준수하는 것이 권장된다.</p>
+<table><thead><tr><th>설계 원칙</th><th>상세 설명</th></tr></thead><tbody>
+<tr><td>공유 자원 보호</td><td>동일한 메모리 영역, 파일 핸들, 하드웨어 인터페이스 등 공유 자원에 접근하는 콜백들은 상호 배타적 그룹에 배치한다.</td></tr>
+<tr><td>독립 연산 분리</td><td>상호 의존성이 없는 콜백들은 재진입 그룹 또는 별도의 상호 배타적 그룹에 배치하여 병렬성을 극대화한다.</td></tr>
+<tr><td>교착 상태 방지</td><td>상호 배타적 그룹 내에서 동기적 서비스 호출 또는 동기적 액션 목표 전송을 수행하지 않는다.</td></tr>
+<tr><td>실시간성 보장</td><td>결정론적 실행 주기가 요구되는 제어 콜백은 장시간 차단을 유발할 수 있는 콜백과 분리된 그룹에 배치한다.</td></tr>
+<tr><td>최소 그룹 원칙</td><td>불필요하게 많은 콜백 그룹을 생성하면 관리 복잡도가 증가하므로, 논리적으로 필요한 최소한의 그룹만 생성한다.</td></tr>
+</tbody></table>
+<h2>11. 응답 시간 분석과 실시간 확장</h2>
+<p>Casini 등(2019)은 ROS2 처리 체인(processing chain)의 응답 시간 분석(response-time analysis)을 수행한 바 있다. 이 연구에서는 실행자의 스케줄링 정책과 콜백 그룹의 상호 작용이 종단 간 지연에 미치는 영향을 수학적으로 모델링하였다. 콜백 <span class="math math-inline">\tau_i</span>의 최악 응답 시간(worst-case response time) <span class="math math-inline">R_i</span>는 다음과 같이 표현된다.</p>
+<p><span class="math math-display">
+R_i = C_i + \sum_{j \in \text{hp}(i)} \left\lceil \frac{R_i}{T_j} \right\rceil C_j + B_i
+</span></p>
+<p>여기서 <span class="math math-inline">C_i</span>는 콜백 <span class="math math-inline">\tau_i</span>의 최악 실행 시간(worst-case execution time), <span class="math math-inline">T_j</span>는 고우선순위 콜백 <span class="math math-inline">\tau_j</span>의 주기, <span class="math math-inline">\text{hp}(i)</span>는 <span class="math math-inline">\tau_i</span>보다 높은 우선순위를 가진 콜백의 집합, <span class="math math-inline">B_i</span>는 저우선순위 콜백에 의한 차단 시간(blocking time)이다. 상호 배타적 콜백 그룹은 <span class="math math-inline">B_i</span> 항을 증가시키며, 재진입 콜백 그룹은 <span class="math math-inline">B_i</span>를 0으로 만들지만 공유 자원에 대한 외부 동기화 비용을 발생시킨다.</p>
+<h2>12. 참고 문헌</h2>
 <ul>
 <li>Open Robotics, “ROS 2 Executors,” ROS 2 Documentation, https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Executors.html.</li>
 <li>Open Robotics, “Using Callback Groups,” ROS 2 Tutorials, https://docs.ros.org/en/rolling/How-To-Guides/Using-callback-groups.html.</li>
 <li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
 <li>D. Casini, T. Blaß, I. Lütkebohle, B. B. Brandenburg, “Response-Time Analysis of ROS 2 Processing Chains Under Reservation-Based Scheduling,” in <em>Proceedings of the 31st Euromicro Conference on Real-Time Systems (ECRTS)</em>, 2019.</li>
+<li>Y. Jiang, H. Yun, “RT-ROS2: Real-Time ROS2 Infrastructure,” <em>IEEE Access</em>, vol. 10, 2022.</li>
 </ul>
 
             </article>

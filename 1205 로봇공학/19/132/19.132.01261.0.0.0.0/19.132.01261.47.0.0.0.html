@@ -115,6 +115,132 @@
             </header>
             <article>
                 <h1>1261.47 콜백 기반 이벤트 처리 모델</h1>
+<h2>1. 이벤트 처리 모델의 개요</h2>
+<p>로봇 소프트웨어 시스템에서 이벤트 처리 모델(event processing model)은 외부 자극(센서 데이터 수신, 타이머 만료, 서비스 요청 도착 등)에 대한 시스템의 반응 방식을 정의하는 아키텍처적 기반이다. ROS2는 콜백 기반 이벤트 처리 모델(callback-based event processing model)을 핵심 실행 패러다임으로 채택하고 있다. 이 모델에서 개발자는 특정 이벤트에 반응하는 콜백 함수(callback function)를 등록하고, 실행자(Executor)가 해당 이벤트의 발생 시점에 등록된 콜백을 호출하는 방식으로 프로그램의 제어 흐름이 구성된다.</p>
+<p>콜백 기반 모델은 할리우드 원칙(Hollywood Principle), 즉 “우리가 당신을 호출할 것이니, 당신이 우리를 호출하지 마라(Don’t call us, we’ll call you)“라는 제어 역전(Inversion of Control, IoC) 패턴의 구현이다. 개발자는 능동적으로 데이터를 조회하거나 이벤트를 폴링(polling)하는 대신, 이벤트 발생 시 실행될 로직을 선언적으로 등록한다.</p>
+<h2>2. 콜백의 정의와 분류</h2>
+<p>ROS2에서 콜백(callback)은 특정 이벤트에 의해 트리거(trigger)되어 실행자에 의해 호출되는 함수 또는 호출 가능 객체(callable object)이다. ROS2에서 제공하는 주요 콜백 유형은 다음과 같다.</p>
+<table><thead><tr><th>콜백 유형</th><th>트리거 이벤트</th><th>설명</th></tr></thead><tbody>
+<tr><td>구독 콜백</td><td>토픽 메시지 수신</td><td>발행자로부터 새로운 메시지가 도착하면 호출된다.</td></tr>
+<tr><td>타이머 콜백</td><td>타이머 주기 만료</td><td>지정된 주기마다 반복적으로 호출된다.</td></tr>
+<tr><td>서비스 서버 콜백</td><td>서비스 요청 수신</td><td>클라이언트로부터 서비스 요청이 도착하면 호출된다.</td></tr>
+<tr><td>서비스 클라이언트 콜백</td><td>서비스 응답 수신</td><td>비동기 서비스 호출의 응답이 도착하면 호출된다.</td></tr>
+<tr><td>액션 목표 콜백</td><td>액션 목표 수신</td><td>액션 클라이언트로부터 목표 요청이 도착하면 호출된다.</td></tr>
+<tr><td>액션 취소 콜백</td><td>취소 요청 수신</td><td>실행 중인 액션 목표에 대한 취소 요청이 도착하면 호출된다.</td></tr>
+<tr><td>액션 피드백 콜백</td><td>피드백 수신</td><td>액션 서버로부터 진행 상황 피드백이 도착하면 호출된다.</td></tr>
+<tr><td>가드 조건 콜백</td><td>가드 조건 트리거</td><td>사용자 정의 조건이 충족되면 호출된다.</td></tr>
+</tbody></table>
+<h2>3. 콜백 등록과 실행 흐름</h2>
+<p>콜백 기반 이벤트 처리의 실행 흐름은 다음의 단계로 구성된다.</p>
+<h3>3.1 단계: 콜백 등록(Registration)</h3>
+<p>노드 생성 시 개발자는 이벤트 소스(토픽, 타이머, 서비스 등)와 콜백 함수를 연결(binding)한다. 이 과정에서 콜백 함수는 실행자의 대기 집합(wait set)에 등록되는 엔티티와 연관된다.</p>
+<pre><code class="language-cpp">// 구독 콜백 등록
+auto subscription = node-&gt;create_subscription&lt;sensor_msgs::msg::LaserScan&gt;(
+  "scan", rclcpp::SensorDataQoS(),
+  [](const%20sensor_msgs::msg::LaserScan::SharedPtr%20msg) {
+    // 레이저 스캔 데이터 처리
+  });
+
+// 타이머 콜백 등록
+auto timer = node-&gt;create_wall_timer(
+  std::chrono::milliseconds(100),
+  []() {
+    // 100ms 주기 제어 루프 실행
+  });
+</code></pre>
+<h3>3.2 단계: 이벤트 대기(Waiting)</h3>
+<p>실행자는 <code>rcl_wait()</code> 함수를 호출하여 대기 집합에 등록된 엔티티들의 이벤트 발생을 감시한다. 이 호출은 운영체제 수준의 입출력 다중화(I/O multiplexing) 메커니즘(예: <code>epoll</code>, <code>select</code>, <code>poll</code>)에 기반하며, 이벤트가 발생하지 않은 동안에는 스레드가 휴면(sleep) 상태에 놓여 CPU 자원을 소비하지 않는다.</p>
+<h3>3.3 단계: 이벤트 감지와 콜백 선택(Detection and Selection)</h3>
+<p>대기 집합에서 하나 이상의 엔티티가 준비 완료(ready) 상태로 전환되면, 실행자는 해당 엔티티에 연결된 콜백을 실행 후보로 선택한다. 준비 완료의 의미는 엔티티 유형에 따라 다르다.</p>
+<ul>
+<li><strong>구독자</strong>: DDS 미들웨어 수신 버퍼에 새로운 메시지가 도착하였다.</li>
+<li><strong>타이머</strong>: 지정된 주기가 경과하였다.</li>
+<li><strong>서비스 서버</strong>: 클라이언트로부터 요청 메시지가 도착하였다.</li>
+<li><strong>가드 조건</strong>: 사용자가 명시적으로 조건을 트리거하였다.</li>
+</ul>
+<h3>3.4 단계: 콜백 실행(Execution)</h3>
+<p>선택된 콜백은 실행자의 스레드 모델(단일 스레드 또는 멀티 스레드)과 콜백 그룹(callback group)의 실행 정책에 따라 실행된다. 콜백 실행 중에 발생하는 새로운 이벤트는 대기 집합의 다음 주기에서 처리된다.</p>
+<h3>3.5 단계: 반복(Iteration)</h3>
+<p>위의 과정이 <code>executor.spin()</code> 호출에 의해 무한히 반복된다. <code>spin_some()</code>, <code>spin_once()</code> 등의 변형을 통해 반복의 세밀도를 제어할 수 있다.</p>
+<h2>4. 폴링 모델과 콜백 모델의 비교</h2>
+<p>콜백 기반 모델을 이해하기 위하여 대조적인 폴링 기반 모델(polling-based model)과의 차이를 분석한다.</p>
+<table><thead><tr><th>특성</th><th>폴링 모델</th><th>콜백 모델</th></tr></thead><tbody>
+<tr><td>제어 흐름</td><td>애플리케이션이 능동적으로 데이터를 조회한다.</td><td>프레임워크가 이벤트 발생 시 콜백을 호출한다.</td></tr>
+<tr><td>CPU 사용률</td><td>이벤트 부재 시에도 CPU를 소비한다.</td><td>이벤트 발생 시에만 CPU를 사용한다.</td></tr>
+<tr><td>응답 지연</td><td>폴링 주기에 의해 결정된다.</td><td>이벤트 발생 즉시 반응이 가능하다.</td></tr>
+<tr><td>코드 구조</td><td>순차적 루프 구조이다.</td><td>이벤트 핸들러(콜백) 함수의 집합이다.</td></tr>
+<tr><td>확장성</td><td>이벤트 소스 증가에 따라 폴링 비용이 선형 증가한다.</td><td>이벤트 소스 증가에 대한 비용이 대기 집합 관리 비용에 한정된다.</td></tr>
+</tbody></table>
+<p>로봇 시스템에서 폴링 모델은 단일 센서의 주기적 읽기에는 적합하나, 다수의 비동기적 이벤트 소스(복수 센서, 통신 채널, 타이머 등)가 존재하는 환경에서는 콜백 모델이 구조적으로 우월하다.</p>
+<h2>5. ROS2 spin 함수 변형과 실행 제어</h2>
+<p>실행자는 다양한 <code>spin</code> 함수 변형을 통해 콜백 실행의 세밀한 제어를 제공한다.</p>
+<table><thead><tr><th>함수</th><th>동작</th></tr></thead><tbody>
+<tr><td><code>spin()</code></td><td>모든 준비 완료 콜백을 무한히 반복 실행한다. 차단 호출이다.</td></tr>
+<tr><td><code>spin_some()</code></td><td>현재 준비 완료된 콜백만 실행하고 즉시 반환한다. 비차단 호출이다.</td></tr>
+<tr><td><code>spin_once()</code></td><td>하나의 준비 완료 콜백만 실행하고 반환한다. 타임아웃을 지정할 수 있다.</td></tr>
+<tr><td><code>spin_until_future_complete()</code></td><td>지정된 <code>std::shared_future</code>가 완료될 때까지 콜백을 실행한다.</td></tr>
+</tbody></table>
+<p><code>spin_some()</code>과 <code>spin_once()</code>는 외부 루프와의 통합이 필요한 경우에 사용된다. 예를 들어, 게임 엔진의 프레임 루프나 사용자 정의 제어 루프 내에서 ROS2 콜백 처리를 수행할 때 활용된다.</p>
+<pre><code class="language-cpp">while (rclcpp::ok()) {
+  // 사용자 정의 제어 연산 수행
+  compute_control_output();
+
+  // 현재 준비 완료된 ROS2 콜백 처리
+  executor.spin_some();
+
+  // 제어 주기 유지
+  loop_rate.sleep();
+}
+</code></pre>
+<h2>6. 콜백 함수의 설계 원칙</h2>
+<p>콜백 기반 이벤트 처리 모델에서 콜백 함수의 설계는 시스템의 반응성과 안정성에 직결된다. 다음의 설계 원칙이 권장된다.</p>
+<h3>6.1 최소 실행 시간 원칙</h3>
+<p>콜백 함수는 가능한 한 최소한의 시간 내에 실행을 완료하여야 한다. 장시간 실행되는 콜백은 같은 콜백 그룹 또는 같은 실행자의 다른 콜백의 실행을 지연시킨다. 제어 주기 <span class="math math-inline">T</span>에 대하여 콜백의 최악 실행 시간(worst-case execution time, WCET) <span class="math math-inline">C</span>는 다음의 조건을 충족하여야 한다.</p>
+<p><span class="math math-display">
+C &lt; T
+</span></p>
+<h3>6.2 비차단 원칙</h3>
+<p>콜백 함수 내에서 차단 호출(blocking call)을 수행하면 실행자의 전체 스케줄링이 방해받는다. 파일 입출력, 네트워크 요청, 동기적 서비스 호출 등 차단을 유발하는 연산은 콜백 외부의 별도 스레드에서 수행하거나, 비동기적 호출 방식으로 대체하여야 한다.</p>
+<h3>6.3 예외 안전성 원칙</h3>
+<p>콜백 함수에서 처리되지 않은 예외(unhandled exception)가 발생하면 실행자의 주 루프가 종료될 수 있다. 모든 콜백 함수는 내부적으로 예외를 포착하고 적절한 오류 처리를 수행하여야 한다.</p>
+<pre><code class="language-cpp">void sensor_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
+{
+  try {
+    process_scan_data(msg);
+  } catch (const std::exception &amp; e) {
+    RCLCPP_ERROR(this-&gt;get_logger(), "Scan processing error: %s", e.what());
+  }
+}
+</code></pre>
+<h3>6.4 재진입 안전성(Reentrancy Safety)</h3>
+<p>재진입 콜백 그룹(ReentrantCallbackGroup)에 속하는 콜백은 동시에 복수의 스레드에서 실행될 수 있다. 이 경우 콜백 함수 내부에서 접근하는 모든 공유 상태(멤버 변수, 전역 변수 등)에 대하여 스레드 안전성을 보장하여야 한다.</p>
+<h2>7. 콜백 체인과 처리 파이프라인</h2>
+<p>로봇 행동 제어 시스템에서는 복수의 콜백이 순차적 또는 병렬적으로 연결되어 처리 파이프라인(processing pipeline)을 형성한다. 전형적인 행동 제어 파이프라인은 다음의 구조를 갖는다.</p>
+<pre><code>센서 콜백 → 상태 추정 콜백 → 행동 결정 콜백 → 액추에이터 명령 발행
+   (토픽)       (토픽)          (타이머)          (토픽)
+</code></pre>
+<p>이 파이프라인에서 각 콜백은 이전 단계의 출력을 입력으로 사용하며, 공유 메모리 또는 토픽 통신을 통해 데이터를 전달한다. Casini 등(2019)은 이러한 콜백 체인(callback chain)의 종단 간 지연(end-to-end latency)을 분석하기 위한 수학적 프레임워크를 제안하였다.</p>
+<p>콜백 체인의 종단 간 지연 <span class="math math-inline">L</span>은 다음과 같이 표현된다.</p>
+<p><span class="math math-display">
+L = \sum_{i=1}^{n} R_i + \sum_{i=1}^{n-1} D_i
+</span></p>
+<p>여기서 <span class="math math-inline">R_i</span>는 <span class="math math-inline">i</span>번째 콜백의 응답 시간이며, <span class="math math-inline">D_i</span>는 <span class="math math-inline">i</span>번째 콜백과 <span class="math math-inline">(i+1)</span>번째 콜백 사이의 통신 지연이다.</p>
+<h2>8. 콜백 기반 모델의 한계와 대안</h2>
+<p>콜백 기반 모델은 높은 유연성과 효율적인 자원 활용을 제공하지만, 다음의 구조적 한계도 존재한다.</p>
+<ol>
+<li><strong>콜백 지옥(Callback Hell)</strong>: 복수의 비동기 연산이 중첩되면 콜백의 계층적 중첩이 깊어져 코드의 가독성과 유지보수성이 저하된다.</li>
+<li><strong>제어 흐름의 비직관성</strong>: 순차적으로 실행되어야 하는 로직이 다수의 콜백으로 분산되어, 전체 제어 흐름을 파악하기 어려워진다.</li>
+<li><strong>상태 관리의 복잡성</strong>: 콜백 간에 상태를 공유하기 위해 멤버 변수를 사용하면, 상태 전이의 정확성을 보장하기 위한 추가적인 설계 노력이 필요하다.</li>
+</ol>
+<p>이러한 한계를 보완하기 위하여 코루틴(coroutine) 기반의 비동기 프로그래밍 모델, 유한 상태 머신(Finite State Machine) 기반의 행동 제어 프레임워크, 행동 트리(Behavior Tree) 기반의 의사결정 프레임워크 등이 콜백 모델 위에 상위 추상화 계층으로 사용된다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Open Robotics, “ROS 2 Executors,” ROS 2 Documentation, https://docs.ros.org/en/rolling/Concepts/Intermediate/About-Executors.html.</li>
+<li>Open Robotics, “Using Callback Groups,” ROS 2 Tutorials, https://docs.ros.org/en/rolling/How-To-Guides/Using-callback-groups.html.</li>
+<li>S. Macenski, T. Foote, B. Gerkey, C. Lalancette, W. Woodall, “Robot Operating System 2: Design, architecture, and uses in the wild,” <em>Science Robotics</em>, vol. 7, no. 66, eabm6074, 2022.</li>
+<li>D. Casini, T. Blaß, I. Lütkebohle, B. B. Brandenburg, “Response-Time Analysis of ROS 2 Processing Chains Under Reservation-Based Scheduling,” in <em>Proceedings of the 31st Euromicro Conference on Real-Time Systems (ECRTS)</em>, 2019.</li>
+<li>M. Fowler, “Inversion of Control,” <em>martinfowler.com</em>, 2005.</li>
+</ul>
 
             </article>
             <footer>
