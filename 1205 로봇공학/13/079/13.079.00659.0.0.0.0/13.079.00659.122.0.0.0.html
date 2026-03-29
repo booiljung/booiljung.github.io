@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:659.122 TF2 활용 사례와 설계 패턴</title>
+    <title>BIJUNG:659.122 TF2 활용 사례와 설계 패턴 (TF2 Use Cases and Design Patterns)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,243 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>659.122 TF2 활용 사례와 설계 패턴</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> / <a href="../../index.html">Volume 13. ROS2와 로봇 소프트웨어 (ROS2 and Robot Software)</a> / <a href="../index.html">Part 79. ROS2 핵심 라이브러리 (ROS2 Core Libraries)</a> / <a href="index.html">Chapter 659. TF2 좌표 변환 라이브러리 (TF2 Coordinate Transformation Library)</a> / <span>659.122 TF2 활용 사례와 설계 패턴</span></nav>
+                    <h1>659.122 TF2 활용 사례와 설계 패턴 (TF2 Use Cases and Design Patterns)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> / <a href="../../index.html">Volume 13. ROS2와 로봇 소프트웨어 (ROS2 and Robot Software)</a> / <a href="../index.html">Part 79. ROS2 핵심 라이브러리 (ROS2 Core Libraries)</a> / <a href="index.html">Chapter 659. TF2 좌표 변환 라이브러리 (TF2 Coordinate Transformation Library)</a> / <span>659.122 TF2 활용 사례와 설계 패턴 (TF2 Use Cases and Design Patterns)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>659.122 TF2 활용 사례와 설계 패턴</h1>
+                <h1>659.122 TF2 활용 사례와 설계 패턴 (TF2 Use Cases and Design Patterns)</h1>
+<h2>1. TF2 설계 패턴의 필요성</h2>
+<p>TF2 좌표 변환 시스템은 로봇 소프트웨어의 공간적 추론(spatial reasoning) 인프라로서, 센서 데이터 처리, 경로 계획, 제어, 시각화 등 거의 모든 모듈이 이를 의존한다. 그러나 TF2의 유연성이 높은 만큼, 비효율적이거나 오류를 유발하는 활용 방식도 다양하게 존재한다. 따라서 반복적으로 검증된 설계 패턴(design pattern)을 체계적으로 정리하고, 이를 기반으로 일관성 있고 견고한 TF2 활용 구조를 구축하는 것이 필수적이다.</p>
+<h2>2. 센서 데이터 좌표 변환 패턴</h2>
+<h3>2.1 수신 시점 변환 패턴</h3>
+<p>센서 데이터가 수신되면 콜백 내에서 즉시 목표 좌표계로 변환하는 패턴이다. 이 방식은 구현이 단순하나, 센서 데이터의 타임스탬프에 대한 변환이 아직 <code>Buffer</code>에 수신되지 않았을 경우 <code>ExtrapolationException</code>이 발생할 수 있다.</p>
+<pre><code class="language-cpp">void laserCallback(const sensor_msgs::msg::LaserScan::SharedPtr scan)
+{
+    try {
+        auto transform = tf_buffer_-&gt;lookupTransform(
+            "base_link", scan-&gt;header.frame_id,
+            tf2_ros::fromMsg(scan-&gt;header.stamp));
+        
+        // 변환을 적용하여 데이터 처리
+        processInBaseFrame(scan, transform);
+    } catch (const tf2::TransformException&amp; ex) {
+        RCLCPP_WARN_THROTTLE(this-&gt;get_logger(),
+            *this-&gt;get_clock(), 1000, "%s", ex.what());
+    }
+}
+</code></pre>
+<h3>2.2 MessageFilter 동기화 패턴</h3>
+<p>센서 데이터의 타임스탬프에 대한 변환이 <code>Buffer</code>에 수신될 때까지 자동으로 대기하는 패턴이다. <code>tf2_ros::MessageFilter</code>가 센서 메시지를 내부 큐에 보관하고, 해당 시각의 변환이 가용해지면 콜백을 트리거한다. <code>ExtrapolationException</code>의 발생을 원천적으로 방지하면서 시간적 일관성을 보장하는 가장 권장되는 패턴이다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/message_filter.h&gt;
+#include &lt;message_filters/subscriber.h&gt;
+
+// 초기화
+msg_sub_.subscribe(this, "input_topic");
+tf_filter_ = std::make_shared&lt;tf2_ros::MessageFilter&lt;MsgType&gt;&gt;(
+    msg_sub_, *tf_buffer_, "target_frame", 100,
+    this-&gt;get_node_logging_interface(),
+    this-&gt;get_node_clock_interface());
+
+tf_filter_-&gt;registerCallback(
+    std::bind(&amp;Node::syncCallback, this, std::placeholders::_1));
+
+// 콜백: 변환이 보장된 상태에서 호출됨
+void syncCallback(const MsgType::ConstSharedPtr msg)
+{
+    auto transform = tf_buffer_-&gt;lookupTransform(
+        "target_frame", msg-&gt;header.frame_id,
+        tf2_ros::fromMsg(msg-&gt;header.stamp));
+    process(msg, transform);
+}
+</code></pre>
+<h3>2.3 최신 변환 지연 처리 패턴</h3>
+<p>실시간성보다 처리 안정성이 우선되는 경우, <code>TimePointZero</code>를 사용하여 가장 최근의 가용 변환을 조회하는 패턴이다. 이 패턴은 센서 데이터의 타임스탬프와 변환 시각 간에 약간의 불일치를 허용하나, <code>ExtrapolationException</code>의 발생 가능성을 최소화한다.</p>
+<pre><code class="language-cpp">auto transform = tf_buffer_-&gt;lookupTransform(
+    "map", "sensor_frame", tf2::TimePointZero);
+</code></pre>
+<h2>3. 좌표계 변환 체인 패턴</h2>
+<h3>3.1 단일 변환 조회 패턴</h3>
+<p>TF2는 변환 트리의 경로를 자동으로 탐색하여 임의의 두 프레임 간 변환을 합성한다. 따라서 중간 프레임을 거치는 다단계 변환을 사용자가 직접 수행할 필요가 없다.</p>
+<pre><code class="language-cpp">// 잘못된 패턴: 수동 다단계 변환
+auto t1 = tf_buffer_-&gt;lookupTransform("map", "odom", time);
+auto t2 = tf_buffer_-&gt;lookupTransform("odom", "base_link", time);
+auto combined = compose(t1, t2);  // 불필요한 수동 합성
+
+// 올바른 패턴: TF2 자동 경로 탐색
+auto transform = tf_buffer_-&gt;lookupTransform("map", "base_link", time);
+</code></pre>
+<h3>3.2 교차 시간 변환 패턴</h3>
+<p>서로 다른 시각의 두 프레임 간 변환이 필요한 경우, <code>lookupTransform()</code>의 고급 오버로드를 사용한다. 이는 과거와 현재의 프레임 위치를 비교하거나, 이동 물체의 궤적을 추정하는 데 활용된다.</p>
+<pre><code class="language-cpp">// 과거 시각의 source_frame → 고정 프레임 → 현재 시각의 target_frame
+auto transform = tf_buffer_-&gt;lookupTransform(
+    "target_frame", target_time,
+    "source_frame", source_time,
+    "fixed_frame");
+</code></pre>
+<p>이 호출은 내부적으로 다음의 합성을 수행한다.</p>
+<p><span class="math math-display">
+\mathbf{T}_{\text{target}(t_1) \leftarrow \text{source}(t_0)} = \mathbf{T}_{\text{target}(t_1) \leftarrow \text{fixed}} \cdot \mathbf{T}_{\text{fixed} \leftarrow \text{source}(t_0)}
+</span></p>
+<p>여기서 고정 프레임(fixed frame)은 두 시각 모두에서 동일한 위치를 가지는 것으로 가정되는 기준 프레임이다.</p>
+<h2>4. 주기적 변환 발행 패턴</h2>
+<h3>4.1 타이머 기반 발행 패턴</h3>
+<p>동적 변환을 일정 주기로 발행하는 기본 패턴이다. 타이머 콜백에서 변환 값을 계산하고 <code>TransformBroadcaster</code>를 통해 발행한다.</p>
+<pre><code class="language-cpp">timer_ = this-&gt;create_wall_timer(
+    std::chrono::milliseconds(20),  // 50 Hz
+    [this]() {
+        geometry_msgs::msg::TransformStamped t;
+        t.header.stamp = this-&gt;get_clock()-&gt;now();
+        t.header.frame_id = "odom";
+        t.child_frame_id = "base_link";
+        t.transform = computeOdometryTransform();
+        tf_broadcaster_-&gt;sendTransform(t);
+    });
+</code></pre>
+<h3>4.2 이벤트 구동 발행 패턴</h3>
+<p>변환 값의 변경이 외부 이벤트(예: 센서 입력, 관절 명령)에 의해 트리거되는 경우, 해당 이벤트의 콜백에서 변환을 발행하는 패턴이다. 이 패턴은 불필요한 주기적 발행을 방지하여 자원 효율성을 향상시킨다.</p>
+<pre><code class="language-cpp">void jointStateCallback(
+    const sensor_msgs::msg::JointState::SharedPtr msg)
+{
+    // 관절 상태로부터 순운동학 계산
+    auto transforms = computeForwardKinematics(msg);
+    
+    for (const auto&amp; t : transforms) {
+        tf_broadcaster_-&gt;sendTransform(t);
+    }
+}
+</code></pre>
+<h2>5. 프레임 위치 추적 패턴</h2>
+<h3>5.1 목표 프레임 추적 패턴</h3>
+<p>특정 프레임의 위치를 주기적으로 추적하여 제어 또는 로깅에 활용하는 패턴이다.</p>
+<pre><code class="language-cpp">void trackingCallback()
+{
+    try {
+        auto transform = tf_buffer_-&gt;lookupTransform(
+            "map", "target_object", tf2::TimePointZero);
+        
+        double x = transform.transform.translation.x;
+        double y = transform.transform.translation.y;
+        double z = transform.transform.translation.z;
+        
+        RCLCPP_INFO(this-&gt;get_logger(),
+            "목표 위치: (%.2f, %.2f, %.2f)", x, y, z);
+    } catch (const tf2::TransformException&amp; ex) {
+        RCLCPP_WARN_THROTTLE(this-&gt;get_logger(),
+            *this-&gt;get_clock(), 2000, "%s", ex.what());
+    }
+}
+</code></pre>
+<h3>5.2 상대 위치 계산 패턴</h3>
+<p>두 이동 물체 간의 상대적 위치와 자세를 계산하는 패턴이다. 로봇과 목표 물체 간의 거리, 로봇 간의 상대 위치 등을 산출하는 데 활용된다.</p>
+<pre><code class="language-cpp">try {
+    auto transform = tf_buffer_-&gt;lookupTransform(
+        "robot_a/base_link", "robot_b/base_link",
+        tf2::TimePointZero);
+    
+    double distance = std::sqrt(
+        std::pow(transform.transform.translation.x, 2) +
+        std::pow(transform.transform.translation.y, 2));
+    
+    RCLCPP_INFO(this-&gt;get_logger(),
+        "로봇 간 거리: %.2f m", distance);
+} catch (const tf2::TransformException&amp; ex) {
+    RCLCPP_WARN(this-&gt;get_logger(), "%s", ex.what());
+}
+</code></pre>
+<h2>6. 가상 프레임 생성 패턴</h2>
+<h3>6.1 투영 프레임 패턴</h3>
+<p>로봇의 3D 위치를 지면(ground plane)에 투영한 2D 좌표를 나타내는 가상 프레임을 생성하는 패턴이다. <code>base_footprint</code> 프레임이 이 패턴의 대표적 사례이며, <code>base_link</code>의 x, y 위치와 yaw 회전만을 반영하고 z, roll, pitch를 제거한다.</p>
+<pre><code class="language-cpp">void publishBaseFootprint()
+{
+    try {
+        auto base_in_odom = tf_buffer_-&gt;lookupTransform(
+            "odom", "base_link", tf2::TimePointZero);
+        
+        geometry_msgs::msg::TransformStamped footprint;
+        footprint.header.stamp = base_in_odom.header.stamp;
+        footprint.header.frame_id = "odom";
+        footprint.child_frame_id = "base_footprint";
+        
+        // x, y 유지, z를 0으로 설정
+        footprint.transform.translation.x = 
+            base_in_odom.transform.translation.x;
+        footprint.transform.translation.y = 
+            base_in_odom.transform.translation.y;
+        footprint.transform.translation.z = 0.0;
+        
+        // yaw만 추출하여 적용
+        double yaw = extractYaw(base_in_odom.transform.rotation);
+        tf2::Quaternion q;
+        q.setRPY(0.0, 0.0, yaw);
+        footprint.transform.rotation = tf2::toMsg(q);
+        
+        tf_broadcaster_-&gt;sendTransform(footprint);
+    } catch (const tf2::TransformException&amp; ex) {
+        RCLCPP_WARN(this-&gt;get_logger(), "%s", ex.what());
+    }
+}
+</code></pre>
+<h3>6.2 관심 지점 프레임 패턴</h3>
+<p>로봇 주변의 특정 관심 지점(point of interest)에 대한 좌표 프레임을 동적으로 생성하는 패턴이다. 물체 인식 결과를 TF 프레임으로 발행하면, 다른 모듈에서 <code>lookupTransform()</code>을 통해 해당 물체의 위치를 임의의 좌표계에서 조회할 수 있다.</p>
+<pre><code class="language-cpp">void objectDetectionCallback(const Detection&amp; detection)
+{
+    geometry_msgs::msg::TransformStamped object_tf;
+    object_tf.header.stamp = detection.header.stamp;
+    object_tf.header.frame_id = detection.header.frame_id;
+    object_tf.child_frame_id = "detected_object_" + 
+                                std::to_string(detection.id);
+    object_tf.transform.translation.x = detection.pose.position.x;
+    object_tf.transform.translation.y = detection.pose.position.y;
+    object_tf.transform.translation.z = detection.pose.position.z;
+    object_tf.transform.rotation = detection.pose.orientation;
+    
+    tf_broadcaster_-&gt;sendTransform(object_tf);
+}
+</code></pre>
+<h2>7. 복합 설계 패턴</h2>
+<h3>7.1 계층적 프레임 위임 패턴</h3>
+<p>복잡한 로봇 시스템에서 변환 발행 책임을 기능 모듈별로 분리하는 패턴이다. 각 모듈은 자신이 담당하는 변환 구간만을 발행하며, 전체 변환 트리는 이들의 합성으로 구성된다.</p>
+<table><thead><tr><th>모듈</th><th>담당 변환 구간</th></tr></thead><tbody>
+<tr><td>위치 추정 모듈 (AMCL/SLAM)</td><td><code>map</code> → <code>odom</code></td></tr>
+<tr><td>주행 측정 모듈 (Odometry)</td><td><code>odom</code> → <code>base_link</code></td></tr>
+<tr><td>로봇 모형 모듈 (URDF/robot_state_publisher)</td><td><code>base_link</code> → 링크/센서 프레임</td></tr>
+<tr><td>외부 캘리브레이션 모듈</td><td><code>earth</code> → <code>map</code></td></tr>
+</tbody></table>
+<p>이 패턴의 핵심 원칙은 각 변환 구간에 대해 정확히 하나의 발행자만 존재하여야 한다는 것이다. 복수의 모듈이 동일 구간의 변환을 발행하면 값의 진동과 비결정적 동작이 발생한다.</p>
+<h3>7.2 장애 대응 변환 패턴</h3>
+<p>변환 조회 실패 시 안전한 기본 동작으로 전이하는 패턴이다. 자율 이동 로봇에서 <code>map</code> → <code>base_link</code> 변환이 실패하면 전역 경로 계획을 중단하고, <code>odom</code> → <code>base_link</code> 변환으로 폴백(fallback)하여 지역적 회피 기동만 수행하는 방식이 대표적이다.</p>
+<pre><code class="language-cpp">void navigationCallback()
+{
+    try {
+        auto global_tf = tf_buffer_-&gt;lookupTransform(
+            "map", "base_link", tf2::TimePointZero);
+        executeGlobalNavigation(global_tf);
+    } catch (const tf2::TransformException&amp;) {
+        try {
+            auto local_tf = tf_buffer_-&gt;lookupTransform(
+                "odom", "base_link", tf2::TimePointZero);
+            RCLCPP_WARN(this-&gt;get_logger(),
+                "전역 위치 추정 불가, 지역 기동으로 전환");
+            executeLocalAvoidance(local_tf);
+        } catch (const tf2::TransformException&amp; ex) {
+            RCLCPP_ERROR(this-&gt;get_logger(),
+                "모든 변환 실패, 안전 정지: %s", ex.what());
+            executeSafeStop();
+        }
+    }
+}
+</code></pre>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>ROS2 geometry2 리포지터리, <code>tf2_ros</code> 패키지, https://github.com/ros2/geometry2</li>
+<li>Foote, T. (2013). “tf: The transform library.” <em>IEEE International Conference on Technologies for Practical Robot Applications (TePRA)</em>, pp. 1–6.</li>
+<li>REP 105 – Coordinate Frames for Mobile Platforms, https://www.ros.org/reps/rep-0105.html</li>
+<li>ROS2 공식 문서, TF2 튜토리얼, https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Tf2-Main.html</li>
+<li>Gamma, E., Helm, R., Johnson, R., Vlissides, J. (1994). <em>Design Patterns: Elements of Reusable Object-Oriented Software</em>. Addison-Wesley.</li>
+</ul>
+<p><em>버전: 1.0</em></p>
 
             </article>
             <footer>

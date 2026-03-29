@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:659.117 ConnectivityException 처리</title>
+    <title>BIJUNG:659.117 ConnectivityException 처리 (Handling ConnectivityException)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,174 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>659.117 ConnectivityException 처리</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> / <a href="../../index.html">Volume 13. ROS2와 로봇 소프트웨어 (ROS2 and Robot Software)</a> / <a href="../index.html">Part 79. ROS2 핵심 라이브러리 (ROS2 Core Libraries)</a> / <a href="index.html">Chapter 659. TF2 좌표 변환 라이브러리 (TF2 Coordinate Transformation Library)</a> / <span>659.117 ConnectivityException 처리</span></nav>
+                    <h1>659.117 ConnectivityException 처리 (Handling ConnectivityException)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> / <a href="../../index.html">Volume 13. ROS2와 로봇 소프트웨어 (ROS2 and Robot Software)</a> / <a href="../index.html">Part 79. ROS2 핵심 라이브러리 (ROS2 Core Libraries)</a> / <a href="index.html">Chapter 659. TF2 좌표 변환 라이브러리 (TF2 Coordinate Transformation Library)</a> / <span>659.117 ConnectivityException 처리 (Handling ConnectivityException)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>659.117 ConnectivityException 처리</h1>
+                <h1>659.117 ConnectivityException 처리 (Handling ConnectivityException)</h1>
+<h2>1. ConnectivityException의 정의와 발생 조건</h2>
+<p><code>tf2::ConnectivityException</code>은 <code>lookupTransform()</code> 호출 시, 목표 프레임(target frame)과 원본 프레임(source frame)이 변환 트리 내에서 연결된 경로(path)를 가지지 않을 때 발생하는 예외이다. 이 예외는 <code>tf2::TransformException</code>으로부터 파생되며, 두 프레임이 모두 변환 트리에 등록되어 있지만 서로 다른 분리된 트리(disjoint tree)에 속하여 연결 경로를 구성할 수 없는 상황을 나타낸다.</p>
+<p><code>ConnectivityException</code>은 <code>LookupException</code>과 명확히 구별된다. <code>LookupException</code>은 프레임 자체가 등록되지 않은 경우에 발생하고, <code>ConnectivityException</code>은 프레임은 모두 등록되어 있으나 트리 구조상 두 프레임 간의 변환 경로가 존재하지 않는 경우에 발생한다.</p>
+<h2>2. 변환 트리의 연결성 개념</h2>
+<h3>2.1 트리 구조와 경로 탐색</h3>
+<p>TF2의 변환 트리는 방향성 비순환 그래프(Directed Acyclic Graph, DAG)가 아닌, 단일 루트를 가진 트리(tree) 구조이다. 트리 내의 임의의 두 프레임 <span class="math math-inline">A</span>와 <span class="math math-inline">B</span> 사이의 변환은, <span class="math math-inline">A</span>에서 루트까지의 경로와 <span class="math math-inline">B</span>에서 루트까지의 경로의 최소 공통 조상(Lowest Common Ancestor, LCA)을 경유하여 합성된다.</p>
+<p><span class="math math-display">
+\mathbf{T}_{A \leftarrow B} = \mathbf{T}_{A \leftarrow \text{LCA}} \cdot \mathbf{T}_{\text{LCA} \leftarrow B}
+</span></p>
+<p>이 합성이 가능하려면 <span class="math math-inline">A</span>와 <span class="math math-inline">B</span>가 동일한 트리에 속하여야 한다. 서로 다른 트리에 속하는 경우, 최소 공통 조상이 존재하지 않으므로 경로 합성이 불가능하다.</p>
+<h3>2.2 분리된 트리의 발생</h3>
+<p>정상적인 로봇 시스템에서는 모든 프레임이 단일 변환 트리에 포함되어야 한다. 그러나 다음의 상황에서 복수의 분리된 트리가 형성될 수 있다.</p>
+<ol>
+<li><strong>누락된 중간 변환</strong>: 변환 트리의 연결 구간 중 하나의 발행자가 비활성 상태인 경우, 해당 구간을 기준으로 트리가 분리된다. 예를 들어, <code>odom</code> → <code>base_link</code> 변환을 발행하는 주행 측정(odometry) 노드가 중단되면, <code>map</code> → <code>odom</code> 상위 트리와 <code>base_link</code> → 센서 프레임 하위 트리가 분리된다.</li>
+<li><strong>다중 로봇의 독립 트리</strong>: 복수의 로봇이 동일 네트워크에서 실행되면서 각자의 독립적인 변환 트리를 구성하는 경우, 로봇 <span class="math math-inline">A</span>의 프레임과 로봇 <span class="math math-inline">B</span>의 프레임 간에는 연결 경로가 존재하지 않는다.</li>
+<li><strong>외부 좌표계의 미연결</strong>: 외부 기준 좌표계(예: GPS/GNSS 기반의 글로벌 좌표계)가 로봇의 로컬 변환 트리와 연결되지 않은 경우.</li>
+</ol>
+<h2>3. 예외 메시지의 구조와 해석</h2>
+<p><code>ConnectivityException</code>의 <code>what()</code> 메서드가 반환하는 전형적인 오류 메시지는 다음과 같다.</p>
+<pre><code>Could not find a connection between 'camera_link' and 'gps_frame' because they
+are not part of the same tree.
+Tf has two or more unconnected trees.
+</code></pre>
+<p>이 메시지에서 다음의 정보를 추출할 수 있다.</p>
+<table><thead><tr><th>정보</th><th>해석</th></tr></thead><tbody>
+<tr><td>두 프레임 이름</td><td>연결 경로가 존재하지 않는 프레임 쌍</td></tr>
+<tr><td>“not part of the same tree”</td><td>두 프레임이 서로 다른 분리된 트리에 속함</td></tr>
+<tr><td>“two or more unconnected trees”</td><td>현재 시스템에 복수의 분리된 트리가 존재함</td></tr>
+</tbody></table>
+<h2>4. 진단 절차</h2>
+<h3>4.1 변환 트리의 시각적 확인</h3>
+<pre><code class="language-bash">ros2 run tf2_tools view_frames
+</code></pre>
+<p>생성된 PDF 파일에서 분리된 트리 구조를 시각적으로 확인할 수 있다. 정상적인 시스템에서는 모든 프레임이 단일 트리로 연결되어 있으나, <code>ConnectivityException</code>이 발생하는 시스템에서는 복수의 독립된 트리 구조가 표시된다.</p>
+<h3>4.2 프레임 간 경로 검증</h3>
+<p><code>tf2_echo</code>를 사용하여 두 프레임 간의 변환을 실시간으로 조회하면, 연결성 부재를 직접적으로 확인할 수 있다.</p>
+<pre><code class="language-bash">ros2 run tf2_ros tf2_echo map base_link
+</code></pre>
+<p>연결 경로가 존재하지 않으면 오류 메시지가 출력되며, 경로상의 어느 구간이 끊어져 있는지에 대한 단서를 제공한다.</p>
+<h3>4.3 변환 체인의 구간별 점검</h3>
+<p>두 프레임 <span class="math math-inline">A</span>와 <span class="math math-inline">B</span> 사이의 연결성을 점검하려면, 예상되는 변환 체인의 각 구간이 올바르게 발행되고 있는지를 개별적으로 확인한다. 예를 들어, <code>map</code> → <code>base_link</code> 변환이 실패하는 경우:</p>
+<pre><code class="language-bash"># 구간 1: map → odom
+ros2 run tf2_ros tf2_echo map odom
+
+# 구간 2: odom → base_link
+ros2 run tf2_ros tf2_echo odom base_link
+</code></pre>
+<p>실패하는 구간이 식별되면, 해당 구간의 변환을 발행하는 노드의 상태를 확인한다.</p>
+<h2>5. 주요 발생 시나리오와 해결 방안</h2>
+<h3>5.1 시나리오 1: 주행 측정 노드 미기동</h3>
+<p><code>odom</code> → <code>base_link</code> 변환은 주행 측정(odometry) 노드 또는 로봇 드라이버가 발행한다. 이 노드가 기동되지 않으면 <code>map</code> 프레임 트리와 <code>base_link</code> 프레임 트리가 분리된다.</p>
+<p><strong>해결 방안</strong>: 런치 파일에서 주행 측정 노드의 포함 여부를 확인하고, 노드의 실행 상태를 점검한다.</p>
+<pre><code class="language-bash">ros2 node list | grep -i odom
+ros2 node info /odometry_node
+</code></pre>
+<h3>5.2 시나리오 2: AMCL/SLAM 노드 비활성</h3>
+<p><code>map</code> → <code>odom</code> 변환은 AMCL(Adaptive Monte Carlo Localization) 또는 SLAM(Simultaneous Localization and Mapping) 노드가 발행한다. 위치 추정이 아직 수렴하지 않았거나 노드가 비활성 상태이면 해당 변환이 발행되지 않는다.</p>
+<p><strong>해결 방안</strong>: 위치 추정 노드의 상태를 확인하고, 초기 위치 추정(initial pose)의 설정 여부를 점검한다. AMCL의 경우 초기 위치가 설정되기 전까지 <code>map</code> → <code>odom</code> 변환을 발행하지 않을 수 있다.</p>
+<h3>5.3 시나리오 3: 다중 로봇 간 프레임 조회</h3>
+<p>로봇 <span class="math math-inline">A</span>의 <code>robot_a/base_link</code>와 로봇 <span class="math math-inline">B</span>의 <code>robot_b/base_link</code>는 각각 독립적인 변환 트리에 속한다. 이 두 프레임 간의 변환을 직접 조회하면 <code>ConnectivityException</code>이 발생한다.</p>
+<p><strong>해결 방안</strong>: 공통 기준 좌표계(예: <code>earth</code> 또는 <code>world</code> 프레임)를 정의하고, 모든 로봇의 변환 트리를 이 공통 프레임에 연결하는 브릿지 변환을 발행한다.</p>
+<pre><code>earth → robot_a/map → robot_a/odom → robot_a/base_link
+earth → robot_b/map → robot_b/odom → robot_b/base_link
+</code></pre>
+<h2>6. 예외 처리 패턴</h2>
+<h3>6.1 C++에서의 ConnectivityException 처리</h3>
+<pre><code class="language-cpp">try {
+    auto transform = tf_buffer_-&gt;lookupTransform(
+        "map", "base_link", tf2::TimePointZero);
+    processTransform(transform);
+} catch (const tf2::ConnectivityException&amp; ex) {
+    RCLCPP_ERROR_THROTTLE(
+        this-&gt;get_logger(), *this-&gt;get_clock(), 5000,
+        "프레임 연결성 부재: %s\n"
+        "변환 체인의 중간 구간 발행 노드를 점검하십시오.",
+        ex.what());
+} catch (const tf2::TransformException&amp; ex) {
+    RCLCPP_WARN(this-&gt;get_logger(),
+        "변환 조회 실패: %s", ex.what());
+}
+</code></pre>
+<h3>6.2 Python에서의 ConnectivityException 처리</h3>
+<pre><code class="language-python">from tf2_ros import ConnectivityException, TransformException
+
+try:
+    transform = self.tf_buffer.lookup_transform(
+        'map', 'base_link', rclpy.time.Time())
+except ConnectivityException as ex:
+    self.get_logger().error(
+        f'프레임 연결성 부재: {ex}',
+        throttle_duration_sec=5.0)
+except TransformException as ex:
+    self.get_logger().warn(f'변환 조회 실패: {ex}')
+</code></pre>
+<h3>6.3 연결성 복구 대기 패턴</h3>
+<p><code>ConnectivityException</code>이 일시적인 원인(예: 중간 구간 발행 노드의 지연 기동)에 의해 발생한 경우, 주기적으로 재시도하면서 연결성이 복구되기를 대기하는 패턴을 적용할 수 있다.</p>
+<pre><code class="language-cpp">void controlCallback()
+{
+    try {
+        auto transform = tf_buffer_-&gt;lookupTransform(
+            "map", "base_link", tf2::TimePointZero);
+        
+        if (!connectivity_established_) {
+            RCLCPP_INFO(this-&gt;get_logger(),
+                "map → base_link 변환 연결 확립");
+            connectivity_established_ = true;
+        }
+        
+        executeControl(transform);
+        
+    } catch (const tf2::ConnectivityException&amp; ex) {
+        connectivity_established_ = false;
+        RCLCPP_WARN_THROTTLE(
+            this-&gt;get_logger(), *this-&gt;get_clock(), 3000,
+            "연결 대기 중: %s", ex.what());
+        executeSafeStop();  // 안전 정지 수행
+    }
+}
+</code></pre>
+<h2>7. 방지 전략</h2>
+<h3>7.1 변환 체인 완전성 검증</h3>
+<p>시스템 통합 테스트 단계에서 예상되는 모든 변환 체인의 완전성을 자동으로 검증하는 테스트를 구현한다.</p>
+<pre><code class="language-python">import unittest
+import rclpy
+from tf2_ros import Buffer, TransformListener
+
+class TestTransformConnectivity(unittest.TestCase):
+    
+    def test_map_to_base_connectivity(self):
+        """map → base_link 변환 체인의 완전성 검증"""
+        rclpy.init()
+        node = rclpy.create_node('test_tf_connectivity')
+        tf_buffer = Buffer()
+        tf_listener = TransformListener(tf_buffer, node)
+        
+        # 충분한 시간 대기 후 연결성 확인
+        end_time = node.get_clock().now() + rclpy.duration.Duration(seconds=10)
+        while node.get_clock().now() &lt; end_time:
+            rclpy.spin_once(node, timeout_sec=0.1)
+            if tf_buffer.can_transform('map', 'base_link', rclpy.time.Time()):
+                break
+        
+        self.assertTrue(
+            tf_buffer.can_transform('map', 'base_link', rclpy.time.Time()),
+            "map → base_link 변환 체인이 확립되지 않음")
+        
+        node.destroy_node()
+        rclpy.shutdown()
+</code></pre>
+<h3>7.2 URDF 기반 변환 체인 설계 검증</h3>
+<p>URDF에 정의된 링크와 관절의 구조가 의도한 변환 체인을 완전하게 구성하는지 확인한다. URDF 로드 시 <code>robot_state_publisher</code>는 모든 링크 간의 변환을 자동으로 발행하므로, URDF의 구조적 완전성이 변환 체인의 연결성을 보장하는 기반이 된다. URDF에서 고아 링크(orphan link)가 존재하면 분리된 트리가 형성되므로, URDF 검증 도구(<code>check_urdf</code>)를 사용하여 구조적 결함을 사전에 탐지하여야 한다.</p>
+<pre><code class="language-bash">check_urdf robot.urdf
+</code></pre>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>ROS2 geometry2 리포지터리, <code>tf2</code> 패키지, https://github.com/ros2/geometry2</li>
+<li>Foote, T. (2013). “tf: The transform library.” <em>IEEE International Conference on Technologies for Practical Robot Applications (TePRA)</em>, pp. 1–6.</li>
+<li>REP 105 – Coordinate Frames for Mobile Platforms, https://www.ros.org/reps/rep-0105.html</li>
+<li>ROS2 공식 문서, TF2 튜토리얼, https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Tf2-Main.html</li>
+</ul>
+<p><em>버전: 1.0</em></p>
 
             </article>
             <footer>

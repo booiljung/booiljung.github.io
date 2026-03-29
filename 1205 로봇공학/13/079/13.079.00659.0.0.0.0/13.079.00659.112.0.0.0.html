@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:659.112 불필요한 변환 발행 최소화</title>
+    <title>BIJUNG:659.112 불필요한 변환 발행 최소화 (Minimizing Redundant Transform Broadcasting)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,190 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>659.112 불필요한 변환 발행 최소화</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> / <a href="../../index.html">Volume 13. ROS2와 로봇 소프트웨어 (ROS2 and Robot Software)</a> / <a href="../index.html">Part 79. ROS2 핵심 라이브러리 (ROS2 Core Libraries)</a> / <a href="index.html">Chapter 659. TF2 좌표 변환 라이브러리 (TF2 Coordinate Transformation Library)</a> / <span>659.112 불필요한 변환 발행 최소화</span></nav>
+                    <h1>659.112 불필요한 변환 발행 최소화 (Minimizing Redundant Transform Broadcasting)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> / <a href="../../index.html">Volume 13. ROS2와 로봇 소프트웨어 (ROS2 and Robot Software)</a> / <a href="../index.html">Part 79. ROS2 핵심 라이브러리 (ROS2 Core Libraries)</a> / <a href="index.html">Chapter 659. TF2 좌표 변환 라이브러리 (TF2 Coordinate Transformation Library)</a> / <span>659.112 불필요한 변환 발행 최소화 (Minimizing Redundant Transform Broadcasting)</span></nav>
                 </div>
             </header>
             <article>
-                <h1>659.112 불필요한 변환 발행 최소화</h1>
+                <h1>659.112 불필요한 변환 발행 최소화 (Minimizing Redundant Transform Broadcasting)</h1>
+<h2>1. 불필요한 변환 발행의 정의</h2>
+<p>불필요한 변환 발행(redundant transform broadcasting)이란 시스템의 정확도나 기능에 기여하지 않으면서 네트워크 대역폭, CPU 연산 자원, 그리고 메모리를 소모하는 변환 메시지의 전송을 의미한다. 이러한 불필요한 발행은 TF2 기반 로봇 시스템의 확장성을 저해하고, 특히 다중 로봇 환경이나 자원이 제한된 임베디드 플랫폼에서 심각한 성능 병목을 유발할 수 있다.</p>
+<p>불필요한 변환 발행은 크게 다음의 세 가지 유형으로 분류된다.</p>
+<ol>
+<li><strong>정적 변환의 동적 발행</strong>: 시간에 따라 변하지 않는 좌표 프레임 관계를 <code>/tf</code> 토픽으로 주기적으로 발행하는 경우</li>
+<li><strong>무변화 반복 발행</strong>: 변환 값이 이전 발행 시점과 동일함에도 새로운 메시지를 반복적으로 전송하는 경우</li>
+<li><strong>미소비 변환 발행</strong>: 어떤 구독자(subscriber)도 해당 변환을 조회하지 않는데도 지속적으로 발행하는 경우</li>
+</ol>
+<h2>2. 정적 변환의 동적 발행 방지</h2>
+<h3>2.1 문제의 본질</h3>
+<p>로봇 시스템에서 상당수의 좌표 프레임 관계는 시간이 경과하여도 변하지 않는 정적 관계이다. 센서의 장착 위치, 로봇 몸체에 대한 고정 링크의 오프셋, 카메라 프레임에서 광학 프레임으로의 90도 회전 등이 대표적인 사례이다. 이러한 변환을 <code>TransformBroadcaster</code>를 통해 <code>/tf</code> 토픽으로 발행하면, 설정된 발행 주파수에 따라 메시지가 주기적으로 반복 전송된다. 이때 발행되는 모든 메시지의 변환 값은 동일하므로, 첫 번째 메시지 이후의 모든 전송은 순수한 자원 낭비이다.</p>
+<h3>2.2 해결 방안: StaticTransformBroadcaster 사용</h3>
+<p>TF2는 정적 변환 전용 발행 인터페이스인 <code>StaticTransformBroadcaster</code>를 제공한다. 이를 통해 발행된 변환은 <code>/tf_static</code> 토픽으로 전달되며, 해당 토픽은 <code>TRANSIENT_LOCAL</code> QoS 내구성(durability) 정책을 사용한다. 이 정책 하에서 DDS 계층은 가장 최근에 발행된 메시지를 내부적으로 보관하고, 이후에 새로운 구독자가 연결될 때 자동으로 전달한다. 따라서 정적 변환은 발행 노드의 수명 동안 단 한 번만 전송하면 충분하다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/static_transform_broadcaster.h&gt;
+
+class SensorFramePublisher : public rclcpp::Node
+{
+public:
+    SensorFramePublisher()
+    : Node("sensor_frame_publisher")
+    {
+        static_broadcaster_ = 
+            std::make_shared&lt;tf2_ros::StaticTransformBroadcaster&gt;(this);
+        
+        geometry_msgs::msg::TransformStamped t;
+        t.header.stamp = this-&gt;get_clock()-&gt;now();
+        t.header.frame_id = "base_link";
+        t.child_frame_id = "lidar_link";
+        t.transform.translation.x = 0.2;
+        t.transform.translation.y = 0.0;
+        t.transform.translation.z = 0.3;
+        t.transform.rotation.w = 1.0;
+        
+        static_broadcaster_-&gt;sendTransform(t);  // 1회 발행
+    }
+
+private:
+    std::shared_ptr&lt;tf2_ros::StaticTransformBroadcaster&gt; static_broadcaster_;
+};
+</code></pre>
+<h3>2.3 URDF 기반 정적 변환 자동 분리</h3>
+<p><code>robot_state_publisher</code>는 URDF(Unified Robot Description Format)에 정의된 관절(joint) 유형에 따라 변환을 자동으로 분류한다. <code>fixed</code> 유형의 관절은 <code>/tf_static</code>으로, <code>revolute</code>, <code>prismatic</code>, <code>continuous</code> 등 가동 관절은 <code>/tf</code>로 각각 분리하여 발행한다. 따라서 URDF를 정확하게 작성하면 정적 변환의 동적 발행 문제는 자동으로 방지된다.</p>
+<pre><code class="language-xml">&lt;!-- 정적 변환으로 자동 분류 --&gt;
+&lt;joint name="camera_mount_joint" type="fixed"&gt;
+    &lt;parent link="base_link"/&gt;
+    &lt;child link="camera_link"/&gt;
+    &lt;origin xyz="0.15 0.0 0.25" rpy="0 0 0"/&gt;
+&lt;/joint&gt;
+</code></pre>
+<p>URDF에서 실질적으로 고정된 관절을 <code>fixed</code> 이외의 유형으로 선언하면, 불필요하게 동적 변환으로 취급되어 지속적인 발행이 발생한다. 이러한 선언 오류는 시스템의 자원 효율성에 직접적인 악영향을 미치므로, URDF 설계 단계에서 관절 유형의 정확한 지정이 필수적이다.</p>
+<h2>3. 무변화 반복 발행 제거</h2>
+<h3>3.1 변환 변화 감지 기반 조건부 발행</h3>
+<p>동적 변환을 발행하는 노드에서 현재 계산된 변환 값이 직전 발행 값과 유의미한 차이가 없는 경우, 해당 발행을 억제(suppress)하는 조건부 발행(conditional broadcasting) 전략을 적용할 수 있다. 변환의 변화 여부는 병진 성분과 회전 성분에 대해 각각 임계값(threshold)을 설정하여 판단한다.</p>
+<p>병진 성분의 변화량 <span class="math math-inline">\delta_t</span>와 회전 성분의 변화량 <span class="math math-inline">\delta_r</span>는 다음과 같이 정의된다.</p>
+<p><span class="math math-display">
+\delta_t = \|\mathbf{t}_{\text{current}} - \mathbf{t}_{\text{previous}}\|_2
+</span></p>
+<p><span class="math math-display">
+\delta_r = 2 \arccos\left(\left|\mathbf{q}_{\text{current}} \cdot \mathbf{q}_{\text{previous}}\right|\right)
+</span></p>
+<p>여기서 <span class="math math-inline">\mathbf{t}</span>는 병진 벡터, <span class="math math-inline">\mathbf{q}</span>는 단위 쿼터니언, <span class="math math-inline">\cdot</span>는 쿼터니언의 내적을 나타낸다. <span class="math math-inline">\delta_r</span>은 두 회전 간의 측지 거리(geodesic distance)에 해당하며, 라디안 단위로 표현된다.</p>
+<p><span class="math math-inline">\delta_t &lt; \epsilon_t</span>이고 <span class="math math-inline">\delta_r &lt; \epsilon_r</span>이면 변환의 변화가 무시할 수 있을 정도로 작으므로 발행을 생략한다. 일반적으로 <span class="math math-inline">\epsilon_t</span>는 <span class="math math-inline">10^{-4}</span>–<span class="math math-inline">10^{-3}</span> m, <span class="math math-inline">\epsilon_r</span>은 <span class="math math-inline">10^{-4}</span>–<span class="math math-inline">10^{-3}</span> rad 범위에서 설정한다.</p>
+<pre><code class="language-cpp">bool hasTransformChanged(
+    const geometry_msgs::msg::TransformStamped&amp; current,
+    const geometry_msgs::msg::TransformStamped&amp; previous,
+    double translation_threshold,
+    double rotation_threshold)
+{
+    // 병진 변화량 계산
+    double dx = current.transform.translation.x 
+                - previous.transform.translation.x;
+    double dy = current.transform.translation.y 
+                - previous.transform.translation.y;
+    double dz = current.transform.translation.z 
+                - previous.transform.translation.z;
+    double delta_t = std::sqrt(dx*dx + dy*dy + dz*dz);
+    
+    if (delta_t &gt; translation_threshold) return true;
+    
+    // 쿼터니언 내적을 이용한 회전 변화량 계산
+    double dot = std::abs(
+        current.transform.rotation.x * previous.transform.rotation.x +
+        current.transform.rotation.y * previous.transform.rotation.y +
+        current.transform.rotation.z * previous.transform.rotation.z +
+        current.transform.rotation.w * previous.transform.rotation.w);
+    dot = std::min(dot, 1.0);  // 수치 안정성 보장
+    double delta_r = 2.0 * std::acos(dot);
+    
+    return (delta_r &gt; rotation_threshold);
+}
+</code></pre>
+<h3>3.2 조건부 발행의 주의 사항</h3>
+<p>조건부 발행 전략을 적용할 때에는 TF2 보간 메커니즘과의 상호작용을 고려하여야 한다. 변환이 오랜 시간 동안 발행되지 않으면, <code>tf2::Buffer</code> 내의 최신 변환 타임스탬프와 현재 시각 간의 차이가 증가하여 <code>lookupTransform()</code> 호출 시 외삽(extrapolation)이 발생할 수 있다. 이를 방지하기 위해 변화가 없는 경우에도 일정 주기(예: 1–5 Hz)로 최소한의 “유지 발행(keep-alive broadcast)“을 수행하는 것이 바람직하다.</p>
+<pre><code class="language-cpp">void timerCallback()
+{
+    auto current_transform = computeCurrentTransform();
+    auto now = this-&gt;get_clock()-&gt;now();
+    
+    bool changed = hasTransformChanged(
+        current_transform, last_published_transform_, 1e-4, 1e-4);
+    
+    double elapsed = (now - last_publish_time_).seconds();
+    
+    // 변화가 있거나, 최대 유지 발행 간격을 초과한 경우 발행
+    if (changed || elapsed &gt; max_keepalive_interval_) {
+        current_transform.header.stamp = now;
+        tf_broadcaster_-&gt;sendTransform(current_transform);
+        last_published_transform_ = current_transform;
+        last_publish_time_ = now;
+    }
+}
+</code></pre>
+<h2>4. 미소비 변환의 식별과 제거</h2>
+<h3>4.1 미소비 변환의 발생 원인</h3>
+<p>로봇 소프트웨어의 개발 과정에서 초기에 필요하였으나 이후 사용되지 않게 된 변환, 디버깅 목적으로 임시 추가한 변환, 또는 설계 변경으로 인해 불필요해진 변환이 제거되지 않고 지속적으로 발행되는 경우가 빈번하다. 이러한 미소비 변환(unconsumed transforms)은 시스템 자원을 점유하면서도 어떤 기능적 가치도 제공하지 않는다.</p>
+<h3>4.2 진단을 통한 미소비 변환 식별</h3>
+<p><code>tf2_monitor</code>와 <code>view_frames</code> 도구를 활용하여 현재 시스템에서 발행 중인 모든 변환 채널을 열거하고, 각 변환의 소비자 존재 여부를 확인할 수 있다.</p>
+<pre><code class="language-bash"># 현재 변환 트리 구조를 PDF로 시각화
+ros2 run tf2_tools view_frames
+
+# 각 변환 채널의 발행 주파수와 지연 시간 모니터링
+ros2 run tf2_ros tf2_monitor
+</code></pre>
+<p><code>view_frames</code>의 출력에서 변환 트리의 말단(leaf) 노드이면서 어떤 노드도 해당 프레임을 <code>lookupTransform()</code>의 인자로 사용하지 않는 경우, 해당 변환은 미소비 변환일 가능성이 높다. 다만 TF2 프레임워크 자체에는 구독자별 조회 통계를 제공하는 기능이 내장되어 있지 않으므로, 이러한 분석은 소스 코드 검토와 노드 그래프 분석을 병행하여 수행하여야 한다.</p>
+<h3>4.3 런치 파일 기반 변환 발행 관리</h3>
+<p>시스템 전체의 변환 발행 노드를 런치 파일에서 중앙 집중적으로 관리하면, 불필요한 변환 발행 노드의 식별과 제거가 용이해진다. 각 <code>static_transform_publisher</code> 노드와 사용자 정의 변환 발행 노드를 역할별로 분류하고, 주석으로 목적을 명시하는 관행을 유지하여야 한다.</p>
+<pre><code class="language-python">from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        # 센서 고정 변환: LiDAR 장착 위치
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=['0.2', '0', '0.3', '0', '0', '0',
+                       'base_link', 'lidar_link'],
+            name='lidar_static_tf',
+        ),
+        # 센서 고정 변환: 카메라 장착 위치
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=['0.15', '0', '0.25', '0', '0', '0',
+                       'base_link', 'camera_link'],
+            name='camera_static_tf',
+        ),
+    ])
+</code></pre>
+<h2>5. 발행 최소화를 위한 아키텍처 설계 원칙</h2>
+<h3>5.1 단일 발행 원칙</h3>
+<p>동일한 부모-자식 프레임 쌍에 대해 다수의 노드가 중복적으로 변환을 발행하는 상황은 반드시 방지하여야 한다. TF2는 동일한 프레임 쌍에 대해 복수의 발행자가 존재할 경우 경고를 발생시키지 않으며, 최종적으로 <code>tf2::Buffer</code>에는 가장 최근에 수신된 변환이 저장된다. 이러한 중복 발행은 네트워크 트래픽을 불필요하게 증가시킬 뿐만 아니라, 발행자 간의 미세한 타이밍 차이로 인해 변환 값의 미세 진동(jitter)이 발생할 수 있다.</p>
+<h3>5.2 최소 프레임 수 원칙</h3>
+<p>변환 트리의 프레임 수가 증가할수록 <code>lookupTransform()</code> 호출 시 트리 탐색 비용이 증가하고, 발행하여야 하는 총 변환 수도 비례하여 증가한다. 따라서 기능적으로 불필요한 중간 프레임의 삽입을 지양하고, 의미 있는 좌표계만을 변환 트리에 포함시키는 최소 프레임 수 원칙(minimal frame count principle)을 준수하여야 한다.</p>
+<p>예를 들어, 센서에서 취득한 데이터가 최종적으로 <code>base_link</code> 좌표계로만 변환되어 사용되는 경우, 센서 고유의 좌표 프레임만 정의하면 충분하며, 기능적 의미가 없는 추가적인 중간 좌표 프레임을 불필요하게 삽입할 필요가 없다.</p>
+<h3>5.3 조건부 활성화 전략</h3>
+<p>특정 기능 모듈이 비활성 상태일 때 해당 모듈과 관련된 변환 발행을 함께 중단하는 조건부 활성화(conditional activation) 전략은 자원 절약에 효과적이다. 예를 들어, 매니퓰레이터 제어 노드가 비활성화된 상태에서도 매니퓰레이터 관절의 변환이 지속적으로 발행되고 있다면, 이는 불필요한 자원 소모에 해당한다. ROS2의 라이프사이클 노드(lifecycle node) 관리 인터페이스를 활용하면, 노드의 활성화 상태에 연동하여 변환 발행을 제어할 수 있다.</p>
+<h2>6. 정량적 효과 분석</h2>
+<p>불필요한 변환 발행을 체계적으로 제거한 경우의 자원 절감 효과를 정량적으로 분석하면 다음과 같다. 20개의 변환을 가진 로봇 시스템에서 그 중 8개가 정적 변환이고, 나머지 12개의 동적 변환 중 평균 30%의 발행이 무변화 반복 발행에 해당한다고 가정한다.</p>
+<p><strong>최적화 전</strong>(모든 변환을 50 Hz로 동적 발행):</p>
+<p><span class="math math-display">
+F_{\text{before}} = 20 \times 50 = 1{,}000 \text{ msg/s}
+</span></p>
+<p><strong>최적화 후</strong>(정적 변환 분리 + 무변화 발행 억제):</p>
+<p><span class="math math-display">
+F_{\text{after}} = 12 \times 50 \times 0.7 = 420 \text{ msg/s}
+</span></p>
+<p>이는 약 58%의 메시지 전송량 감소에 해당하며, 이에 비례하여 네트워크 대역폭, CPU 연산 부하, 그리고 <code>tf2::Buffer</code>의 메모리 사용량이 절감된다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>ROS2 geometry2 리포지터리, <code>tf2_ros</code> 패키지, https://github.com/ros2/geometry2</li>
+<li>Foote, T. (2013). “tf: The transform library.” <em>IEEE International Conference on Technologies for Practical Robot Applications (TePRA)</em>, pp. 1–6.</li>
+<li>REP 105 – Coordinate Frames for Mobile Platforms, https://www.ros.org/reps/rep-0105.html</li>
+<li>Open Robotics. <em>robot_state_publisher</em> 패키지 문서, https://github.com/ros/robot_state_publisher</li>
+<li>Open Robotics. <em>static_transform_publisher</em> 노드 문서, https://github.com/ros2/geometry2</li>
+</ul>
+<p><em>버전: 1.0</em></p>
 
             </article>
             <footer>
