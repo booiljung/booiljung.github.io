@@ -110,11 +110,24 @@
             <header>
                 <div class="header-content">
                     <h1>30.9 전역 국지적 모션 플래닝 자율 주행 적용을 위한 Action 통신망 매핑 구조</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">자율 에이전트 드론</a> / <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> / <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> / <a href="index.html">Chapter 30. 장기 실행(Long-Running) 테스크 제어를 위한 액션(Action) 서버-클라이언트 통신망</a> / <span>30.9 전역 국지적 모션 플래닝 자율 주행 적용을 위한 Action 통신망 매핑 구조</span></nav>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> <span class="separator">/</span> <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> <span class="separator">/</span> <a href="index.html">Chapter 30. 장기 실행(Long-Running) 테스크 제어를 위한 액션(Action) 서버-클라이언트 통신망</a> <span class="separator">/</span> <span>30.9 전역 국지적 모션 플래닝 자율 주행 적용을 위한 Action 통신망 매핑 구조</span></nav>
                 </div>
             </header>
             <article>
                 <h1>30.9 전역 국지적 모션 플래닝 자율 주행 적용을 위한 Action 통신망 매핑 구조</h1>
+<p>로보틱스 분야에서 드론의 완전 자율 비행(Autonomous Flight)을 구현하는 네비게이션 스택(Navigation Stack)은 단일 모놀리식 알고리즘이 아닌, 다수의 인지 및 추론 모듈이 유기적으로 결합된 분산 파이프라인(Distributed Pipeline)으로 구성된다. 특정 웨이포인트(Waypoint)로의 비행 명령은 그 자체로 ’전역 경로 탐색(Global Planning)’과 ’국지 궤적 추종(Local Planning)’이라는 상이한 주기율의 프로세스를 수반한다. 본 절에서는 이러한 다중 모션 플래닝 아키텍처를 ROS2 미들웨어 상에 구축할 때, 액션(Action) 통신망이 어떠한 방식으로 상하위 제어 노드를 매핑하고 비동기적 행동 제어를 통솔하는지 학술적으로 논의한다.</p>
+<h2>1.  네비게이션 스택의 계층적 액션(Action) 파이프라인</h2>
+<p>복잡한 실내외 환경에서 드론이 자율 비행을 시작할 때, 최상위 제어 관제기(Task Coordinator)는 네비게이션 스택을 향해 <code>NavigateToPose</code> 라는 매크로 액션 목표(Goal)를 방출한다. 그러나 이 단일 액션 요청의 이면에는 계층적으로 분리된 하위 액션들의 연쇄(Chaining)가 도사리고 있다.</p>
+<p>전역 경로 생성기(Global Planner)는 A* 나 RRT* 와 같은 그래프 탐색 알고리즘을 구동하여 지형 지물 맵 기반의 정적인 전역 경로(Path) 배열을 도출해 낸다. 이 배열이 확보되면, 이번에는 이 전역 경로를 그대로 이행하기 위해 국지 궤적 제어기(Local Planner)를 향하여 <code>FollowPath</code> 라는 또 다른 하위 액션 목표가 릴레이 방식으로 하달된다. 즉, 최상위 액션 클라이언트는 서버 1번(전역)을 호출하고, 서버 1번은 다시 액션 클라이언트가 되어 서버 2번(국지)을 호출하는 ‘액션 오브 액션(Action-of-Actions)’ 체인이 자율 주행 프레임워크의 기저를 이룬다.</p>
+<h2>2.  행동 트리(Behavior Tree) 구조 내의 틱(Tick) 신호 동기화</h2>
+<p>최근 자율 드론의 제어 로직은 전통적인 유한 상태 기계(FSM)를 넘어, 분기 확장성이 뛰어난 행동 트리(Behavior Tree, BT) 아키텍처로 대체되는 추세이다. 행동 트리의 부모 노드들은 하위 리프(Leaf) 노드들에게 매우 높은 주파수(예: 100Hz)로 상태를 묻는 단발성 틱(Tick) 신호를 지속적으로 파급(Propagation)시킨다.</p>
+<p>만약 일선 자율 주행 컴포넌트가 동기식의 서비스(Service) 모델로 구축되었다면 이 빈번한 틱 신호에 응답하기 위해 이그제큐터가 교착 상태(Deadlock)에 빠질 것이다. 그러나 액션 통신망은 비동기적 성향을 지니기 때문에, 백그라운드 스레드에서 <code>FollowPath</code> 연산 루프가 수 시간 구동되더라도 메인 스레드는 트리에서 내려오는 틱에 대해 <code>RUNNING</code> 상태 플래그를 지연 없이 실시간 반환할 수 있다. 이는 액션 모델이 행동 트리의 비동기 노드(Asynchronous Node) 추상화 요구 사항에 기술적으로 완벽히 부합(Fit)함을 입증한다.</p>
+<h2>3.  실시간 궤적 피드백(Feedback)과 폐루프 제어(Closed-Loop) 형성</h2>
+<p>자율 비행이 전개되는 수십 분의 시간 동안, 국지 플래너(Local Planner)는 Model Predictive Control(MPC)이나 DWA 알고리즘을 통해 계산된 모터 속도 명령을 토픽으로 발행함과 동시에, 액션 피드백(Feedback) 채널을 통해 현재의 누적 주행 거리, 남은 잔여 오차 통계치 등을 상위 플래너로 역방향 인가한다.</p>
+<p>이 피드백 브로드캐스트는 관제 알고리즘이 순수 모터 오도메트리 추정을 넘어, VSLAM 모듈과 결합된 공간 점유망(Occupancy Grid) 오차율을 중앙에서 모니터링할 수 있는 창구가 된다. 만약 피드백으로 수신된 기체 잔여 오차가 허용 범위를 벗어나는 등 이상 징후가 관측되면, 상위 노드는 즉각적으로 폐루프(Closed-Loop) 시정 조치를 가동할 수 있는 통계적 판단 근거를 얻는다.</p>
+<h2>4.  동적 장애물 출현과 다단계 선점(Preemption) 복구 역학</h2>
+<p>비행 도중 예기치 못한 동적 장애물(Dynamic Obstacle)이 출현하여 국지 플래너 측의 LiDAR 스캔 영역과 충돌할 위험이 감지되었다고 가정해 보자. 이 순간 국지 플래너는 자체적인 판단으로 현재의 <code>FollowPath</code> 액션 연산을 강제 중단(Aborted)하고, 엑추에이터에 급제동(Braking) 커맨드를 하달한다.</p>
+<p><code>FollowPath</code> 액션이 실패(Abort)했다는 비동기 결과(Result)를 수신한 전역 플래너는 그 즉시 상위 트리 스케줄러로 제어권 복귀 예외를 던진다(Throw Exception). 관제 체계는 상황을 인지한 직후, 장애물 우회를 위한 새로운 중간 기착지 좌표를 융합하여 새로운 <code>NavigateToPose</code> 액션 목표를 구버전 액션 스레드 위로 강제 선점(Preemption)시킨다. 하위 레이어의 에러 검출이 상위 레이어의 취소를 유발하고, 이어서 새로운 액션 선점으로 이어지는 이러한 유기적 리플 파급(Ripple Effect) 효과는 자율 모델링 관점에서 ROS2 비동기 액션망의 고유한 시스템 안정성 증명이라 할 수 있다.</p>
 
             </article>
             <footer>

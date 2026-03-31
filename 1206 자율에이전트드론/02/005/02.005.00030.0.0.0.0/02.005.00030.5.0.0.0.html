@@ -110,11 +110,24 @@
             <header>
                 <div class="header-content">
                     <h1>30.5 액션 클라이언트 목표 요청 및 비동기 결과 수신 메커니즘</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">자율 에이전트 드론</a> / <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> / <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> / <a href="index.html">Chapter 30. 장기 실행(Long-Running) 테스크 제어를 위한 액션(Action) 서버-클라이언트 통신망</a> / <span>30.5 액션 클라이언트 목표 요청 및 비동기 결과 수신 메커니즘</span></nav>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> <span class="separator">/</span> <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> <span class="separator">/</span> <a href="index.html">Chapter 30. 장기 실행(Long-Running) 테스크 제어를 위한 액션(Action) 서버-클라이언트 통신망</a> <span class="separator">/</span> <span>30.5 액션 클라이언트 목표 요청 및 비동기 결과 수신 메커니즘</span></nav>
                 </div>
             </header>
             <article>
                 <h1>30.5 액션 클라이언트 목표 요청 및 비동기 결과 수신 메커니즘</h1>
+<p>ROS2 분산 통신 모델에서 자율 비행이나 목표 좌표 이동(Navigate to Pose)과 같은 장기 실행 태스크(Long-Running Task)를 원격 서버에 위임하는 주체는 액션 클라이언트(Action Client)이다. 클라이언트는 단순한 데이터 송신기를 훌쩍 넘어, 전송한 임무 패킷의 수락 여부, 실시간 진행 궤적, 그리고 종단 결과물에 이르는 전체 수명 주기를 제어 권한 상실(Blocking) 없이 정밀하게 수확(Harvest)해야 하는 비동기 제어의 핵심 허브로 기능한다. 본 절에서는 이러한 비동기적 장기 실행 모델을 견고하게 뒷받침하는 클라이언트의 단계별 제어 파이프라인과 비동기 콜백 체이닝(Callback Chaining) 메커니즘을 학술적으로 서술한다.</p>
+<h2>1.  다중 콜백 옵션 객체를 통한 비동기 컨텍스트(Context) 인계</h2>
+<p>액션 클라이언트 노드가 서버와의 통신 세션을 초기화하고 <code>async_send_goal</code> 인터페이스를 호출할 때, 개발자는 단순히 목표 페이로드(Payload)만 전송하는 것이 아니라 행동의 추후 국면을 통제할 세 가지 콜백 함수—목표 수락 응답(Goal Response), 지속적 피드백(Feedback), 최종 결과(Result)—를 포괄하는 옵션 객체를 선별적으로 주입(Inject)해야 한다.</p>
+<p>C++의 <code>std::bind</code>나 람다 캡처(Lambda Capture) 기법, 혹은 파이썬의 코루틴(Coroutine) 바인딩 메커니즘을 통해 주입되는 이 콜백들은, 목표가 시공간적으로 분산되어 처리되는 동안에도 단일한 연산 문맥(Context)을 잃지 않도록 보장한다. 클라이언트의 엑시큐터(Executor)는 단일 목표 요청으로부터 파생된 각각의 콜백 이벤트들이 각기 다른 시점에 네트워크 인터페이스로부터 도달하더라도, 선언 시 스코핑(Scoping)된 지역 변수와 상태 머신 포인터에 안전하게 접근할 수 있도록 일관된 트랜잭션 도메인을 유지한다.</p>
+<h2>2.  목표 승인(Acceptance) 대기열과 서버 거절(Reject) 대항 로직</h2>
+<p>네트워크로 목표 파라미터를 방출한 직후, 클라이언트가 마주하는 첫 번째 비동기 허들(Hurdle)은 서버의 목표 수락 여부를 결정짓는 <code>Goal Response</code> 콜백이다. 이 콜백은 워커 스레드의 최종 연산 결과가 아니라, 현재 서버가 해당 임무를 백그라운드 큐에 배정할 가용 리소스를 지녔는지 검증하는 예비 진단 패킷을 파싱한다.</p>
+<p>만약 서버 측 내비게이터(Navigator) 리소스가 이미 포화 상태이거나 배터리 잔량 부족 등의 안전 임계치 위반으로 인해 요청이 거절(Reject)될 경우, 콜백 내의 검증 로직은 즉시 발동된다. 클라이언트는 이 시점에서 트랜잭션을 조기 파기(Abort)하고, 무한 대기로 인한 리소스 누수를 방어함과 동시에 드론 통제권을 대안적인 폴백(Fallback) 행동(예: 제자리 호버링 또는 차상위 우선순위 웨이포인트 스위칭)으로 우회시키는 장애 허용(Fault Tolerance) 알고리즘을 즉각 구동해야 한다.</p>
+<h2>3.  로컬 클라이언트 핸들(Goal Handle)의 상태 동기화 및 메모리 무결성</h2>
+<p>서버가 목표를 정상 승인(Accept)했을 때, 서버 측 엑시큐터는 고유 식별자(UUID)가 포함된 클라이언트 액션 핸들(Client Goal Handle) 포인터를 클라이언트로 반환한다. 이 핸들 객체는 이후 발생하는 모든 피드백 수신과 로컬 취소(Cancel) 요청을 위한 유일한 인증 통로(Channel)로 작용한다.</p>
+<p>장기 실행 태스크의 속성 상, 이 핸들 객체는 수십 초 내지 수 분간 메모리에 억류되어야 하므로 스마트 포인터(예: <code>std::shared_ptr</code>)를 접목한 참조 카운트(Reference Count) 관리가 필수적이다. 만일 네트워크 전송 지연으로 엑시큐터가 핸들 생명 주기를 조기 소멸시키거나 허상 포인터(Dangling Pointer) 상태로 방치한다면, 진행 중인 미션의 피드백 참조 무결성 오류로 인한 세그멘테이션 결함(Segmentation Fault) 커널 패닉을 유발할 수 있다.</p>
+<h2>4.  비동기 퓨처(Future) 기반 결과 수신 랩핑(Wrapping) 및 블로킹 회피</h2>
+<p>목표가 승인된 상태에서 클라이언트 통신망 최후의 과제는 연산 종료 시점의 비동기 결과(Result) 수확이다. 핸들 객체 내장 함수인 <code>async_get_result()</code>를 호출하면 상태 동기화 퓨처(Future)가 반환되며, 클라이언트는 여기에 최종 결과 콜백을 재차 체이닝하여 엑시큐터 큐에 반환한다.</p>
+<p>이때 소프트웨어 설계 상의 중대한 안티 패턴(Anti-Pattern)은 퓨처가 타결될 때까지 <code>.get()</code> 연산자나 스핀 루프(Spin Loop)로 제어 스레드를 동기식 강제 블로킹(Blocking) 시키는 행위이다. 드론 제어 환경에서 메인 스레드 블로킹은 토픽 데이터를 통한 로컬 상태 추정(Odometry) 콜백과 충돌 방지 루틴 전반의 마비를 뜻한다. 따라서, 액션 모델을 관통하는 지상 과제는 클라이언트 측 제어 루틴이 호출 즉각성을 보장하는 완전한 이벤트 루프 복귀(Yield) 형식으로 코딩되는 비동기적 동시성(Asynchronous Concurrency) 디자인 원칙에 그 존재 가치가 있다.</p>
 
             </article>
             <footer>

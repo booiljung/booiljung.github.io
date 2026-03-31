@@ -110,11 +110,24 @@
             <header>
                 <div class="header-content">
                     <h1>29.4 서비스 서버 콜백 처리 프로세스 및 멀티스레딩 동적 자원 할당</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">자율 에이전트 드론</a> / <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> / <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> / <a href="index.html">Chapter 29. 클라이언트-서버(Service) 프로토콜 및 비동기 요청(Async Request) 응답 구조</a> / <span>29.4 서비스 서버 콜백 처리 프로세스 및 멀티스레딩 동적 자원 할당</span></nav>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> <span class="separator">/</span> <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> <span class="separator">/</span> <a href="index.html">Chapter 29. 클라이언트-서버(Service) 프로토콜 및 비동기 요청(Async Request) 응답 구조</a> <span class="separator">/</span> <span>29.4 서비스 서버 콜백 처리 프로세스 및 멀티스레딩 동적 자원 할당</span></nav>
                 </div>
             </header>
             <article>
                 <h1>29.4 서비스 서버 콜백 처리 프로세스 및 멀티스레딩 동적 자원 할당</h1>
+<p>ROS2의 클라이언트-서버(Service) 통신 아키텍처에서 서비스 서버(Service Server)는 클라이언트의 비동기 요청(Request)을 수신하고 특정 비즈니스 로직(Business Logic)을 수행한 후, 결정론적인 결과값(Response)을 반환하는 수동적(Passive) 연산 주체이다. 서버 노드의 반응성(Responsiveness)과 처리량(Throughput)은 시스템 전체 성능에 직결되므로, 동시 다발적으로 유입되는 다중 클라이언트 요청을 효율적으로 스케줄링하고 자원을 배분하는 콜백(Callback) 연산 처리 프로세스의 이해가 필수적이다. 본 절에서는 서비스 서버의 기본 콜백 동작 원리와 고부하 환경 방어를 위한 멀티스레딩 동적 자원 할당 메커니즘을 상세히 다룬다.</p>
+<h2>1.  서비스 서버 콜백 런타임 진입점 및 실행 파이프라인</h2>
+<p>서비스 서버 인스턴스(예: <code>rclcpp::create_service</code>)가 생성되어 미들웨어에 등록되면, 노드는 할당된 네트워크 소켓 및 버퍼를 통해 대상 인터페이스의 요청 패킷을 감청한다. 미들웨어 계층(RMW) 트리거에 의해 유효한 서비스 요청 트래픽이 수신되어 Wait Set을 통과하면, 엑시큐터(Executor)는 서버 생성 시 바인딩된 서비스 콜백 함수(Service Callback Function)를 런타임 스케줄링 큐(Queue)에 추가한다.</p>
+<p>서버 콜백 함수의 시그니처(Signature)는 통상적으로 수신된 요청(<code>request</code>) 구조체의 포인터와, 연산의 결과값을 담아 미들웨어로 반환하기 위해 사전에 할당된 빈 응답(<code>response</code>) 구조체의 포인터를 매개변수로 요구한다. 개발자는 이 콜백 영역 내에 센서 제어, 경로 탐색, 데이터베이스 쿼리 등의 실질적인 연산을 작성한다. 연산이 완료되고 콜백 스코프(Scope)를 정상적으로 탈출하면, 반환된 응답 구조체 객체는 직렬화(Serialization)를 거쳐 다시 클라이언트의 네트워크 스택으로 송신된다.</p>
+<h2>2.  단일 스레드(Single-Threaded) 환경에서의 블로킹 병목 현상</h2>
+<p>기본 엑시큐터 구현체인 <code>SingleThreadedExecutor</code> 환경에서 작동하는 서버는 한 번에 단 하나의 콜백 함수만을 순차적으로 처리한다. 만약 서비스 연산에 대규모 행렬 계산, 하드웨어 접근 대기(I/O Wait), 무한 루프 등 장기 실행(Long-running) 조건이 포함될 경우, 해당 연산이 완료될 때까지 단일 스레드를 점유하는 콜백 블로킹(Callback Blocking) 현상이 발생한다.</p>
+<p>이러한 블로킹 지속 시간 동안, 새로 유입되는 서비스 요청들이나 동일 노드 내의 다른 토픽 수신(Subscription), 타이머(Timer) 연산은 실행 준비(Ready) 상태임에도 불구하고 스레드 점유권을 얻지 못하여 응답 지연(Latency Peak) 및 큐 오버플로우(Queue Overflow)의 잠재적 위험에 직면하게 된다. 따라서 단일 스레드 기반의 서비스 서버 블록 내부에는 동기화된 지연(Sleep) 호출이나 블로킹 시스템 콜을 배제하는 것이 학술적인 ROS2 시스템 튜닝의 기초이다.</p>
+<h2>3.  <code>MultiThreadedExecutor</code> 기반 스레드 풀링 및 부하 분산 전략</h2>
+<p>장기 및 병렬 처리가 요구되는 고부하(High-load) 환경의 문제를 타개하기 위해 ROS2 체계는 <code>MultiThreadedExecutor</code>를 통해 노드에 동적 멀티스레딩(Multi-threading) 자원 할당 아키텍처를 지원한다. 멀티스레디드 엑시큐터는 운영체제(OS)로부터 할당받은 스레드 풀(Thread Pool)을 중앙에서 관리한다. CPU 코어 수에 비례하거나 사용자가 명시한 개수의 스레드를 워커(Worker) 스레드로 상주시키고, 대기 큐에 쌓인 서비스 콜백들을 가용 워커 스레드로 즉각 위임(Dispatch)하여 동시 실행을 보장한다.</p>
+<p>이러한 동적 자원 풀링(Pooling) 구조는 동일한 서비스 인터페이스로의 여러 클라이언트 요청 파이프라인이 병렬적으로 전개되도록 허용함으로써(Concurrent Service Requests), 응답 대기 시간을 비약적으로 단축하고 분산 시스템 노드의 총 처리량(Throughput)을 최적화하는 아키텍처상 이점을 확보한다.</p>
+<h2>4.  콜백 그룹(Callback Group) 설정과 동시성 무결성(Concurrency Integrity) 제어</h2>
+<p>멀티스레딩 환경에서 발생할 수 있는 데이터 레이스(Data Race)와 상호 배제(Mutual Exclusion)의 충돌 위험은 콜백 그룹(Callback Group)이라는 논리적 그룹핑 툴을 통해 정책적으로 제어된다. 서비스 서버를 생성할 때 할당할 수 있는 콜백 그룹은 ‘상호 배타적(Mutually Exclusive)’ 정책과 ‘재진입 가능(Reentrant)’ 정책으로 분류된다.</p>
+<p>상호 배타적 콜백 그룹에 속한 서비스 콜백은 전체 시스템에 다수의 스레드가 존재하더라고 동시에 오직 하나의 스레드에서만 실행되도록 락(Lock)이 보장된다. 이는 내부 멤버 변수나 물리적 액추에이터 등 스레드 세이프티(Thread-safety)가 담보되지 않은 공유 자원을 보호할 때 설정한다. 반면 재진입 가능 콜백 그룹으로 서비스가 할당되면, 동일한 콜백 함수가 여러 워커 스레드에서 시공간적으로 중첩되어 자유롭게 병렬 매핑 연산을 수행할 수 있다. 이 경우 개발자는 클래스의 멤버 변수 조작 시 <code>std::mutex</code>나 <code>std::atomic</code>과 같은 OS 레벨 락업 메커니즘을 명시적으로 도입하여, 메모리 포인터 접근 충돌 위반으로 인한 세그멘테이션 결함(Segmentation Fault)을 완벽하게 방어하여야 한다.</p>
 
             </article>
             <footer>

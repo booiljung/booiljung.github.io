@@ -110,11 +110,21 @@
             <header>
                 <div class="header-content">
                     <h1>28.6 타이머 기반 주기적 구동 디스패칭 모듈 설계</h1>
-                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> / <a href="../../../../index.html">자율 에이전트 드론</a> / <a href="../../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> / <a href="../../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> / <a href="../index.html">Chapter 28. ROS2 노드(Node) 아키텍처 및 퍼블리셔-서브스크라이버 콜백 시스템 기초</a> / <a href="index.html">28.6 타이머 기반 주기적 구동 디스패칭 모듈 설계</a> / <span>28.6 타이머 기반 주기적 구동 디스패칭 모듈 설계</span></nav>
+                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> <span class="separator">/</span> <a href="../../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> <span class="separator">/</span> <a href="../index.html">Chapter 28. ROS2 노드(Node) 아키텍처 및 퍼블리셔-서브스크라이버 콜백 시스템 기초</a> <span class="separator">/</span> <a href="index.html">28.6 타이머 기반 주기적 구동 디스패칭 모듈 설계</a> <span class="separator">/</span> <span>28.6 타이머 기반 주기적 구동 디스패칭 모듈 설계</span></nav>
                 </div>
             </header>
             <article>
                 <h1>28.6 타이머 기반 주기적 구동 디스패칭 모듈 설계</h1>
+<p>자율 에이전트 드론을 구동하는 소프트웨어 구조에서 서브스크립션(Subscription) 메커니즘이 외부 데이터 유입에 반응하는 수동적(Passive) 이벤트 핸들러(Handler)라면, 능동적으로(Actively) 시스템의 상태를 갱신하고 제어 명령을 하달하는 행위는 고빈도(High Frequency)의 정주기적(Periodic) 실행을 강제하는 타이머(Timer) 디스패칭 모듈을 통하여 실현된다. 이러한 타이머 모듈은 단순히 일정 시간 동안 스레드를 정지시키는 레거시 시스템의 직렬적 지연(e.g., <code>sleep</code>) 함수와는 본질적으로 다른, 이벤트 주도형(Event-Driven) 비동기 스케줄링 아키텍처를 취한다.</p>
+<h2>1. 시스템 클록(System Clock) 인프라와 단조 증가 시간 역학</h2>
+<p>ROS2 타이머 객체의 생명주기와 트리거 타이밍은 철저하게 미들웨어 내부에 추상화된 클록(Clock) 인프라스트럭처에 종속된다. 로보틱스 제어 이론에서는 시간의 흐름이 절대로 역행(Backward)하거나 시스템 시간 동기화(NTP 오차 등) 현상에 의해 불규칙하게 도약(Jumping)해서는 안 되므로, 타이머는 기본적으로 운영체제의 정상 클록(Steady Clock) 또는 단조 증가(Monotonic Increase) 시계를 참조하여 구동된다.</p>
+<p>개발자가 <code>create_wall_timer()</code> 팩토리 메서드를 호출하여 시간 단위(예: <code>10ms</code>)와 콜백 함수를 매핑하면, RCL 계층 내의 타이머 관리자(Timer Manager)는 해당 타이머 객체를 큐에 등록한다. 시스템 클록과 객체에 저장된 이전 구동 타임스탬프(Timestamp) 간의 누적된 델타 타임(Delta Time) 오차가 목표 주기를 초과하는 순간, 클록 매니저는 인터럽트에 준하는 ’주기 만료 이벤트(Period Expiry Event)’를 발생시킨다.</p>
+<h2>2. 논블로킹(Non-blocking) 이벤트 디스패칭과 실행자 스케줄링</h2>
+<p>타이머 기반 모듈 설계의 가장 핵심적인 학술적 특징은 논블로킹(Non-blocking) 아키텍처에 있다. 타이머 이벤트가 발동될지라도, 해당 콜백 로직이 하드웨어 인터럽트(IRQ)처럼 CPU의 제어권을 즉각적으로 탈취(Preempt)하지 않는다. 대신, 서브스크립션이나 서비스(Service) 요청과 동일한 지위를 갖는 비동기 이벤트 형태로 시스템의 <code>WaitSet</code> 대기열에 삽입(Enqueue)될 뿐이다.</p>
+<p>이후 런타임 실행자(Executor)가 순차적 또는 병렬적으로 큐를 비워나가는 과정에서 이 타이머 콜백이 디스패칭(Dispatching)되어 실제 연산이 수행된다. 이 메커니즘은 매우 복잡한 연산이 뒤섞인 비행 제어기 내부에서도 상호 배제(Mutual Exclusion) 오류나 교착 상태(Deadlock)를 원천 차단하는 안전판 역할을 수행한다. 그러나 동시에 단일 스레드 실행자 하에서는 타 서브스크립션의 콜백 연산이 길어질 경우 타이머의 구동 주파수가 지터(Jitter, 지연 변동)를 동반하며 하락할 수 있는 구조적 한계 또한 내포하므로, 임계 제어 루프(Critical Control Loop) 설계 시에는 연산 복잡도(Computational Complexity)에 대한 엄밀한 사전 제한이 필수적이다.</p>
+<h2>3. 자율 비행 동역학 제어에서의 학술적 응용과 주기적 퍼블리싱</h2>
+<p>타이머 디스패칭 모듈은 비례-적분-미분(PID) 제어기 센서 융합을 위한 확장 칼만 필터(EKF, Extended Kalman Filter), 또는 모터 변속기(ESC)로 구동 신호를 전송하는 로우 레벨(Low-level) 컨트롤러 등 거의 모든 비행 핵심 구성 요소의 근간(Backbone)으로 작동한다.</p>
+<p>예를 들어 드론의 자세 제어기(Attitude Controller)는 일정한 <code>dt(Delta Time)</code> 적분값이 보장되어야만 동역학적 수학 모델이 발산(Diverge)하지 않으므로, 이 모듈은 반드시 400Hz 수준의 초고속 타이머 모듈에 캡슐화되어 동작한다. 또한 시스템 진단(Diagnostics), 현재 GPS 텔레메트리 브로드캐스팅, 하트비트(Heartbeat) 신호 발송과 같이 네트워크를 향한 능동적 정보 살포 행위 역시 이러한 정주기성(Periodicity) 타이머 콜백 내부에서 <code>publish()</code> 메서드를 순차 호출하는 객체 지향적 패턴으로 안전하게 렌더링되며, 거시적 분산 협동 에이전트망의 맥박을 규정하는 핵심 아키텍처로 기능하게 된다.</p>
 
             </article>
             <footer>

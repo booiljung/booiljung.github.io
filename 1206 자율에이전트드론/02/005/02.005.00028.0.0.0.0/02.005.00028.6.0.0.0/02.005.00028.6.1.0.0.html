@@ -110,11 +110,21 @@
             <header>
                 <div class="header-content">
                     <h1>28.6.1 월 클럭 인터럽트 스케줄링 대역폭 및 정기적 실행 제어 메커니즘</h1>
-                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> / <a href="../../../../index.html">자율 에이전트 드론</a> / <a href="../../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> / <a href="../../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> / <a href="../index.html">Chapter 28. ROS2 노드(Node) 아키텍처 및 퍼블리셔-서브스크라이버 콜백 시스템 기초</a> / <a href="index.html">28.6 타이머 기반 주기적 구동 디스패칭 모듈 설계</a> / <span>28.6.1 월 클럭 인터럽트 스케줄링 대역폭 및 정기적 실행 제어 메커니즘</span></nav>
+                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> <span class="separator">/</span> <a href="../../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> <span class="separator">/</span> <a href="../index.html">Chapter 28. ROS2 노드(Node) 아키텍처 및 퍼블리셔-서브스크라이버 콜백 시스템 기초</a> <span class="separator">/</span> <a href="index.html">28.6 타이머 기반 주기적 구동 디스패칭 모듈 설계</a> <span class="separator">/</span> <span>28.6.1 월 클럭 인터럽트 스케줄링 대역폭 및 정기적 실행 제어 메커니즘</span></nav>
                 </div>
             </header>
             <article>
                 <h1>28.6.1 월 클럭 인터럽트 스케줄링 대역폭 및 정기적 실행 제어 메커니즘</h1>
+<p>자율 비행 시스템에 할당된 런타임 제어 소프트웨어에서 타이머(Timer)는 외부 센서 이벤트가 부재한 상황에서도 시스템의 동맥경화를 방지하고 내부 상태를 정기적으로 순환시키는 인공 심장 펌프와 같다. ROS2 아키텍처는 이를 구현하기 위해 운영체제(OS)가 제공하는 물리적 월 클럭(Wall Clock)과 타이머 인터럽트(Timer Interrupt) 자원을 래핑(Wrapping)하여 제어 루프 스케줄링 대역폭(Scheduling Bandwidth)으로 변환하는 정기적 실행 제어 메커니즘을 내장한다.</p>
+<h2>1. 월 클럭(Wall Clock)과 단조 증가 시간(Steady Clock) 역학</h2>
+<p><code>rclcpp</code> 및 <code>rclpy</code>에서 제공하는 월 타이머(<code>create_wall_timer</code>)는 기본적으로 실세계의 시간 흐름을 관장하는 시스템의 하드웨어 타이머 틱(Timer Tick)에 의존한다. 그러나 자율 드론이 4G/5G나 위성 통신망에 연결되어 NTP(Network Time Protocol) 동기화를 수행할 때, 절대 시간(System Time)이 일시적으로 과거로 도약하거나 미래로 급속히 보정되는 시간 왜곡(Time Leap) 현상이 빈번하게 발생할 수 있다.</p>
+<p>비행 동역학을 제어하는 PID 루프나 센서 융합 모듈에 있어서 <span class="math math-inline">\Delta t</span> 값의 음수화(Negative Value)나 불연속적 도약은 발산(Divergence)을 초래하는 치명적 치명타이다. 이에 시스템은 월 클럭 인터럽트를 직접 수용하는 대신 내부적으로 단조 증가 클록(Steady Clock, Monotonic Clock)을 참조점(Reference Point)으로 활용하여 스케줄링을 통제한다. 즉, NTP 보정에 영향을 받지 않고 오직 CPU의 하드웨어 사이클 부팅 시점으로부터 일정하게 누적된 시간축만을 기준으로 다음 콜백의 만료 시간(Expiration Time)을 트리거함으로써 결정론적(Deterministic) 정기성을 추구한다.</p>
+<h2>2. 하드웨어 인터럽트의 소프트웨어 릴레이 및 WaitSet 캡슐화</h2>
+<p>물리적인 시간이 만료되면 OS 커널(Kernel)은 ROS2 프로세스로 타이머 시그널을 전송한다. 기저 <code>rcl</code> (ROS Client Library) 계층은 이 시그널을 수신하여 해당 타이머 객체를 활성화 상태(Ready State)로 태깅(Tagging)하고 멘타(Ament) 계층의 <code>WaitSet</code>에 인터럽트를 발생시킨다.</p>
+<p>이 과정에서 타이머 이벤트는 서브스크립션 네트워크 이벤트와 완전히 동등한 지위의 객체로 취급되어 실행자(Executor)의 스케줄링 대역폭으로 인계된다. 즉, 월 클럭 인터럽트 자체가 사용자의 콜백 코드를 강제로 선점(Preemption)하여 실행하는 하드웨어 IRQ 모델이 아니라, 운영체제의 스레드 경합에서 안전 하도록 설계된 이벤트 큐 구동(Event Queue Driven) 아키텍처로 필터링되는 형상이다.</p>
+<h2>3. 스케줄링 대역폭 제한과 타이머 지터(Jitter) 억제 원리</h2>
+<p>실행자가 콜백 큐를 비워나가는 과정에서, 정기적 실행 제어 메커니즘이 맞닥뜨리는 최대의 학술적 난제는 지터(Jitter)이다. 만약 100Hz(10ms 주기)로 설정된 타이머 콜백 A가 실행 대기열에 진입했음에도 불구하고, 직전에 실행을 시작한 이미지 처리 콜백 B가 20ms의 스케줄링 대역폭(CPU 처리 시간)을 낭비해버린다면 콜백 A의 실제 실행 주기는 심각하게 지연된다.</p>
+<p>따라서 단일 지상 통제소 앱이나 단순 미들웨어 통신 실험과 달리, 딥러닝과 복잡한 센서 모듈이 혼재하는 자율 비행 인프라스트럭처에서는 콜백별로 허용되는 최대 처리 대역폭(Maximum Computation Bandwidth)을 엄격한 역학적 모델 하에서 제한하여야 한다. 타이머 기반 모듈 설계자는 다중 스레드 실행자(Multi-threaded Executor) 분배를 통한 연산 차단 해소 또는 상호 배타적 뮤텍스 제약 없는 락프리(Lock-free) 데이터 아키텍처를 도입하여 타이머 만료 시점과 실제 스레드 구동 시점 간의 지터 편차를 제어 모형의 오차 범위 내로 압축시키는 시스템 공학적 과업을 수행하게 된다.</p>
 
             </article>
             <footer>

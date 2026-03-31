@@ -110,11 +110,25 @@
             <header>
                 <div class="header-content">
                     <h1>30.2 목표(Goal), 결과(Result), 피드백(Feedback) 3상태 통신 아키텍처 구조</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">자율 에이전트 드론</a> / <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> / <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> / <a href="index.html">Chapter 30. 장기 실행(Long-Running) 테스크 제어를 위한 액션(Action) 서버-클라이언트 통신망</a> / <span>30.2 목표(Goal), 결과(Result), 피드백(Feedback) 3상태 통신 아키텍처 구조</span></nav>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> <span class="separator">/</span> <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> <span class="separator">/</span> <a href="index.html">Chapter 30. 장기 실행(Long-Running) 테스크 제어를 위한 액션(Action) 서버-클라이언트 통신망</a> <span class="separator">/</span> <span>30.2 목표(Goal), 결과(Result), 피드백(Feedback) 3상태 통신 아키텍처 구조</span></nav>
                 </div>
             </header>
             <article>
                 <h1>30.2 목표(Goal), 결과(Result), 피드백(Feedback) 3상태 통신 아키텍처 구조</h1>
+<p>ROS2 액션(Action) 통신망은 단일한 네트워크 개체가 아니라, 장기 실행 태스크(Long-Running Task)의 생명주기를 완벽하게 통제하기 위해 조립된 복합 아키텍처이다. 개발자 인터페이스(API) 수준에서는 단일한 액션 클라이언트-서버 객체로 추상화되지만, 미들웨어 하단(RMW) 수준에서는 2개의 서비스(Service) 프로토콜과 1개의 토픽(Topic) 프로토콜(상태 토픽과 취소 서비스 포함시 총 5개 이상)이 유기적으로 조합된 삼원체(Tripartite) 결합 모델로 작동한다. 본 절에서는 액션의 핵심을 이루는 목표(Goal), 결과(Result), 피드백(Feedback) 통신 컴포넌트의 역할적 책임과 이들의 상호 통신 파이프라인 구조를 학술적으로 모델링한다.</p>
+<h2>1.  목표(Goal) 서비스 컴포넌트와 허가(Acceptance) 프로토콜</h2>
+<p>액션 파이프라인의 첫 번째 시퀀스는 클라이언트가 서버로 비동기 목적 함수를 하달하는 목표(Goal) 전송 단계이다. 이는 내부적으로 <code>SendGoal</code> 이라는 명칭의 비동기 서비스 프로토콜로 컴파일된다. 클라이언트가 네비게이션 좌표와 같은 목표 페이로드를 담아 <code>async_send_goal()</code>을 호출하면, 서버의 콜백 엑시큐터는 이 패킷을 수신하여 즉각적인 로직 처리가 아닌 ’목표 수락(Acceptance) 평가’를 우선적으로 지시받는다.</p>
+<p>서버는 내부 스케줄링 대기열(Queue)과 현재 가동 중인 엑추에이터 리소스를 검토하여, 클라이언트가 요구한 목표를 실행할 수 있는 상태인지 검증한다. 검증에 통과하면 ‘수락(Accept)’ 플래그, 초과된 부하나 물리적 불가능 상태이면 ‘거절(Reject)’ 플래그를 담은 <code>GoalResponse</code> 메시지를 즉시 서비스 응답 패킷으로 반환한다. 이때 서버가 목표를 수락하게 되면, 해당 태스크를 독립적으로 식별할 수 있는 고유한 목표 핸들(Goal Handle) 객체가 생성되어 향후 트랜잭션의 인증 수단(Token)으로 양단 프로세스 메모리에 적재된다.</p>
+<h2>2.  반환 지연을 허용하는 결과(Result) 서비스 통신망</h2>
+<p>목표 연산이 수락된 후 서버의 제어권이 백그라운드 워커 스레드로 위임되면, 서버는 연산이 최종 종결되는 시점에 반환할 결과 데이터 트랜잭션을 준비한다. 이는 하부 구조상 <code>GetResult</code> 라는 독립적인 서비스 통신 채널로 맵핑된다.</p>
+<p>클라이언트 노드는 목표가 수락(Accept)된 것을 확인한 직후, 발급받은 목표 핸들을 매개변수로 삼아 서버 측에 <code>GetResult</code> 서비스 요청을 비동기 발송한다. 그러나 이 서비스 요청에 대한 서버의 응답은 연산이 완전히 완료될 때까지 지연(Deferred)된다.<br />
+최종적으로 연산이 만료될 때, 결과 페이로드에는 연산 결과물과 함께 상태 코드(Status Code)가 동봉된다. 상태 코드는 정상 수렴을 나타내는 <code>SUCCEEDED(4)</code>, 사용자 강제 개입에 의한 <code>CANCELED(5)</code>, 내부 시스템 오류 및 궤적 이탈로 인한 <code>ABORTED(6)</code> 등 결정론적 상태 집합을 명시하여 로컬 상태 머신(Local State Machine)의 예외 처리(Exception Handling) 구성을 논리적으로 보조한다.</p>
+<h2>3.  피드백(Feedback) 토픽 기반 연속 모니터링 체계</h2>
+<p>목표를 하달하고 결과를 기다리는 블라인드 존(Blind Zone) 동안, 클라이언트와 서버 간의 제어 상황(Context) 동기화를 보장하는 것이 피드백(Feedback) 컴포넌트의 역할이다. 피드백 통신망은 일회성 응답이 아닌 지속적인 데이터 스트리밍이 필요하므로 내부적으로 퍼블리셔-서브스크라이버(Topic) 모델을 차용한다.</p>
+<p>워커 스레드나 루프 연산 도중, 액션 서버는 간헐적으로 <code>publish_feedback()</code> 핸들러를 호출하여 드론의 현재 회전 오차(Yaw Error), 전방 잔여 거리 등의 부분 달성 지표를 브로드캐스트 패킷으로 네트워크에 살포한다. 이 피드백 토픽은 비연결(Stateless) 지향적 특성을 지니므로, 수신 클라이언트가 엑시큐터 과부하로 일부 피드백 패킷을 놓치더라도 전체 시스템 트랜잭션의 무결성(Integrity) 파괴나 데드락(Deadlock)을 야기하지 않는다.</p>
+<h2>4.  삼원 통신 아키텍처의 의의 및 제어의 투명성 수립</h2>
+<p>목표 설정의 ‘동기적 인가(Authorization)’, 잔여 시간의 ‘스트리밍(Topic) 가시화’, 그리고 ’지연 비동기 응답(Deferred Response)’이라는 3가지 비대칭 통신 스펙트럼의 합성체인 ROS2 액션 아키텍처는 제어 공학에서 추구하는 완벽한 관측 가능성(Observability) 모델을 대변한다.</p>
+<p>각각 분리된 3상태 통신 채널은 하나의 동일한 엑시큐터 스레드 풀 안에서도 서로 다른 우선순위(Priority)로 처리될 수 있다. 예컨대 피드백 토픽 수신 콜백은 스레드를 양보하여 폐기시키더라도, 결과 수신 콜백은 상호 배제(Mutex) 잠금을 통해 엄격히 보호될 수 있는 다계층 프로파일링 편의를 제공한다. 이러한 복합 아키텍처 구조는 로봇 에이전트가 단일 스레딩 병목의 제약에서 벗어나, 독립되고 투명한 채널 환경에서 협업 AI(Collaborative AI) 모델 연산을 지휘할 수 있는 통신 기저 체계를 확립해 준다.</p>
 
             </article>
             <footer>

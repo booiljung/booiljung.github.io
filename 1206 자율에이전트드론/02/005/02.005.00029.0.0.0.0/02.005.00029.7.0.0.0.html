@@ -110,11 +110,24 @@
             <header>
                 <div class="header-content">
                     <h1>29.7 노드 블로킹 현상 억제를 위한 이벤트 루프 독립 동시성 연산 설계</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> / <a href="../../../index.html">자율 에이전트 드론</a> / <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> / <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> / <a href="index.html">Chapter 29. 클라이언트-서버(Service) 프로토콜 및 비동기 요청(Async Request) 응답 구조</a> / <span>29.7 노드 블로킹 현상 억제를 위한 이벤트 루프 독립 동시성 연산 설계</span></nav>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../index.html">Volume 2. ROS2 소프트웨어 개발 기초 및 프로그래밍 입문</a> <span class="separator">/</span> <a href="../index.html">Part 5. ROS2 미들웨어 핵심 통신 구조 기초</a> <span class="separator">/</span> <a href="index.html">Chapter 29. 클라이언트-서버(Service) 프로토콜 및 비동기 요청(Async Request) 응답 구조</a> <span class="separator">/</span> <span>29.7 노드 블로킹 현상 억제를 위한 이벤트 루프 독립 동시성 연산 설계</span></nav>
                 </div>
             </header>
             <article>
                 <h1>29.7 노드 블로킹 현상 억제를 위한 이벤트 루프 독립 동시성 연산 설계</h1>
+<p>ROS2 분산 시스템 내에서 개별 노드는 수많은 토픽 퍼블리셔, 서브스크라이버, 서비스 로직, 액션 서버 등을 복합적으로 운용하는 컨테이너 역할을 수행한다. 노드의 핵심 제어 루틴인 엑시큐터(Executor) 이벤트 루프는 등록된 콜백(Callback) 연산들을 스케줄링하고 순차적으로 혹은 병렬적으로 실행시킴으로써 시스템 반응성을 유지한다. 그러나 제어 과정에서 과도한 연산이나 I/O 블로킹이 수반될 경우, 엑시큐터의 런타임 제어권이 박탈되어 전체 드론의 메트릭 수집 및 물리 엔진 갱신이 중단되는 치명적 블로킹(Blocking) 결함이 유발될 수 있다. 본 절에서는 이러한 노드 블로킹 현상을 원천적으로 억제하기 위하여, 블로킹 연산을 메인 이벤트 루프에서 물리적 혹은 논리적으로 격리(Isolation)하는 독립 동시성(Concurrency) 연산 설계 기법을 학술적으로 다룬다.</p>
+<h2>1.  엑시큐터 이벤트 루프 스케줄링 간섭과 데드락 메커니즘</h2>
+<p>ROS2 노드의 생명 주기는 통상적으로 <code>rclcpp::spin()</code>이나 이와 유사한 이벤트 대기 루틴의 호출로 이어진다. 엑시큐터 루프는 하위 미들웨어에서 트리거되는 이벤트를 감지(Wait Set)하고 활성화된 콜백 함수에 제어 흐름을 인계한다. 이때 해당 콜백 내부 연산 시간에 상한(Bound)이 보장되지 않는다면, 즉 데이터베이스 트랜잭션 수신 대기, 영상 버퍼 처리 루프, 타 서비스로의 동기화된 클라이언트 요청(Synchronous Request) 등이 포함될 경우 스레드 컨텍스트(Thread Context)가 즉시 대기(Suspend) 상태에 빠지게 된다.</p>
+<p>만약 이 콜백이 단일 스레드 메커니즘 하에서 구동 중이거나 다른 콜백과 상호 배타적 락(Mutual Exclusion Lock) 관계를 형성하고 있다면, 스레드 제어권을 회수하지 못한 엑시큐터 스케줄러는 후속 네트워크 패킷을 디스패치(Dispatch)하지 못하는 병목 붕괴에 이른다. 심각한 경우, 단일 스레드 내에서 내부 서비스를 재귀적으로 호출하며 스스로의 응답을 무한정 대기하는 스핀-락(Spin-Lock) 기반의 자가 데드락(Self-Deadlock) 현상을 초래하게 된다.</p>
+<h2>2.  독립 워커 스레드(Worker Thread) 분리 및 작업 위임 계층도</h2>
+<p>이러한 블로킹 위험성을 배제하는 구조적 접근 모델은, 무거운 비즈니스 로직(Heavy Business Logic)을 ROS2의 시스템 관장 엑시큐터 영역 밖으로 밀어내는 워커 스레드(Worker Thread) 분리 체계에 기반한다. C++ 아키텍처에서는 표준 라이브러리의 <code>std::thread</code> 또는 <code>std::async</code> 포크 메커니즘을 활용하여 노드 프로세스의 백그라운드 스레드를 명시적으로 인스턴스화한다.</p>
+<p>특정 서비스 또는 토픽 콜백이 호출되면, 메인 이벤트 루프의 스레드는 I/O 인텐시브(I/O Intensive)한 연산을 직접 실행하지 않고 백그라운드의 워커 스레드나 태스크 풀(Task Pool) 객체로 파라미터 컨텍스트를 위임(Delegate)한 뒤 즉시에 함수 스코프를 반환(Return)한다. 생성된 백그라운드 워커 스레드는 자체 스케줄링을 통해 동기식(Synchronous) 웹 API 호출이나 고비용 추론 모델 연산 등을 독립적으로 수행하며 메인 노드의 엑시큐터 폴링(Polling) 대역폭을 전적으로 보호한다.</p>
+<h2>3.  태스크 동기화 기법과 스레드 세이프(Thread-Safe) 커뮤니케이션 제어</h2>
+<p>엑시큐터와 분리된 워커 스레드 간에 데이터 교환이 필요할 경우, 스레드 안전성(Thread Safety) 결여로 인한 메모리 세그멘테이션 오류(Segmentation Fault)를 방어하는 명확한 디자인 패턴이 요구된다. 데이터 교환은 주로 동시 접근이 보호되는 스레드 세이프 큐(Thread-Safe Queue) 자료구조에 기반한 생산자-소비자(Producer-Consumer) 파이프라인으로 설계된다.</p>
+<p>메인 콜백 함수(생산자)는 뮤텍스(Mutex) 락을 단기 점유한 상태에서 태스크 매개변수를 큐에 삽입하고 조건 변수(Condition Variable)를 통지(Notify)한다. 워커 스레드(소비자)는 자신의 독립적인 루프에서 블로킹 대기를 수행하다가 조건 변수 시그널에 반응하여 연산을 개시한다. 연산이 완료된 결과값은 다시 반향(Echo) 큐에 적재되거나 시스템 독립적인 인터럽트로 감싸여 엑시큐터에 전달된다. 이를 통해 락(Lock) 점유 시간을 마이크로초 단위로 극소화함으로써 공유 메모리 충돌 변수를 차단한다.</p>
+<h2>4.  코루틴(Coroutine) 기반 협력적 멀티태스킹 최적화 원리</h2>
+<p>파이썬(Python) 환경을 위시한 고수준 언어 스택에서는 콜스택 공간 구조를 분리하는 <code>std::thread</code>의 방식보다 오버헤드가 적은 코루틴(Coroutine) 기반의 협력적 멀티태스킹(Cooperative Multitasking) 전략이 시스템 블로킹 억제 기법으로 활용된다. <code>rclpy</code> 엑시큐터는 내부적으로 <code>asyncio</code> 라이브러리의 하위 이벤트 루프와 강력하게 연계된다.</p>
+<p>개발자가 특정 콜백을 <code>async def</code> 형태로 식별하면, 엑시큐터 스레드가 단일 스레드 컨텍스트 환경이라 할지라도 외부 대기가 필수적인 구간(예: <code>await future</code>)에서 코루틴의 실행 제어권을 운영체제가 아닌 이벤트 루프에게 명시적으로 반환(Yield)한다. 이 과정에서 현재까지의 콜백 상태 머신(State Machine)은 메모리에 보존되며, 이벤트 루프는 다른 코루틴 태스크를 재개(Resume)하여 연산 공백 없이 하드웨어 자원을 가상 동시성(Virtual Concurrency)으로 극대화하여 활용할 수 있다. 이는 명시적인 다중 스레드 할당에 따른 컨텍스트 스위칭(Context Switching) 코스트를 우회하는 논블로킹 최적화 모델에 해당한다.</p>
 
             </article>
             <footer>
