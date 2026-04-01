@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:19.2.1 Multi-Threaded Executor의 콜백 기아 현상 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>19.2.1 Multi-Threaded Executor의 콜백 기아 현상 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../../index.html">Volume 1. ROS2 자율 드론 아키텍처 및 메타 시스템</a> <span class="separator">/</span> <a href="../../index.html">Part 3. 비행 및 임무 제어 소프트웨어 아키텍처</a> <span class="separator">/</span> <a href="../index.html">Chapter 19. 다중 노드 분산 처리를 위한 이그제큐터(Executor) 최적화</a> <span class="separator">/</span> <a href="index.html">19.2 임무 병행 환경의 스레드 경합 문제</a> <span class="separator">/</span> <span>19.2.1 Multi-Threaded Executor의 콜백 기아 현상 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>19.2.1 Multi-Threaded Executor의 콜백 기아 현상 분석</h1>
+<p>ROS2(Robot Operating System 2) 시스템 아키텍처 내에서 Multi-Threaded Executor를 활용한 다중 콜백 병렬 처리 시, 특정 콜백 함수의 실행이 지연되거나 무한정 대기하는 콜백 기아(Callback Starvation) 현상이 발생할 수 있다. 이는 특히 실시간성을 요구하는 비행 제어 및 임무 컴퓨팅 환경에서 치명적인 시스템 제어권 상실을 초래할 수 있으므로, 해당 현상의 발생 기작과 스케줄링 특성을 명확히 분석해야 한다.</p>
+<h2>1. ROS2 Default Executor의 큐잉 모델 및 스케줄링 특성</h2>
+<p>ROS2 기본(Default) Executor 시스템, 특히 <code>rclcpp::executors::MultiThreadedExecutor</code>는 라운드 로빈(Round-Robin) 방식과 유사한 폴링(Polling) 루프를 통해 통신 미들웨어(DDS) 계층으로부터 수신된 메시지를 스케줄링한다. 이 과정에서 콜백(Callback) 이벤트들은 Ready Set으로 구성되며, 스레드 풀(Thread Pool)에 속한 워커 스레드(Worker Thread)들이 큐에 존재하는 대기열에서 가용한 콜백을 가져와(Fetch) 실행한다.</p>
+<p>Executor 내부의 디스패칭(Dispatching) 메커니즘은 콜백의 명시적인 실행 우선순위(Priority)를 기본적으로 구분하지 않는다. 모든 구독(Subscription), 타이머(Timer), 서비스(Service), 클라이언트(Client), 액션(Action) 콜백은 활성화 순서에 기반하는 선입선출(FIFO) 방식의 처리 구조에 의존한다. 이러한 비선점형(Non-preemptive) 실행 모델은 스레드가 콜백을 인가받아 완료하기 전까지 다른 콜백이 해당 스레드를 사용할 수 없음을 의미한다.</p>
+<h2>2. 콜백 기아(Callback Starvation) 현상의 발생 기작</h2>
+<p>Multi-Threaded Executor 환경에서 콜백 기아 현상이 유발되는 핵심적인 원인은 이질적인 실행 주기를 갖는 콜백 간의 스레드 점유 불균형에 있다. 구체적인 발생 기작은 다음과 같이 분류할 수 있다.</p>
+<ol>
+<li><strong>장기 실행 콜백의 스레드 독점 (Thread Monopolization by Long-Running Callbacks):</strong> 연산 비용이 매우 높거나 블로킹(Blocking) I/O 작업이 포함된 콜백이 다수의 스레드를 장시간 점유할 경우, 가용한 잉여 워커 스레드가 고갈된다. 이로 인해 높은 빈도와 실시간 응답이 요구되는 고주파 센서 콜백(예: 관성측정장치(IMU) 데이터 수신)이 Ready Set에서 처리되지 못하고 지속적으로 지연된다.</li>
+<li><strong>타이머 및 구독 콜백 간의 불균형적 폴링 (Asymmetric Polling across Callback Entities):</strong> DDS 계층에서 폭증하는 토픽 메시지를 처리하는 구독 콜백 큐가 포화 상태에 이르면, Executor의 WaitSet 갱신 오버헤드가 증가한다. Executor 루프가 구독 큐를 비우는 데 과도한 자원을 소모함에 따라, 정해진 주기마다 트리거되어야 하는 타이머 콜백이 제시간에 스레드를 할당받지 못하는 지터(Jitter) 및 기아 현상에 직면한다.</li>
+<li><strong>상호 배제 및 락 경합에 의한 데드락/라이브락 무한 대기 (Wait States from Mutex Contention):</strong> 다중 스레드 상호 작용을 위해 공유 자원에 동기화 락(Mutex, Spinlock 등)을 적용해야 하는 Mutually Exclusive Callback Group에서는, 우선순위 역전(Priority Inversion)과 유사한 형태의 무한 대기가 락 획득 실패 시 발생할 수 있다. 이로 인해 콜백 실행 시간이 기하급수적으로 팽창하여 전체 Executor의 처리 능력을 마비시킨다.</li>
+</ol>
+<h2>3. Multi-Threaded Executor에서의 큐(Queue) 용량 초과와 메시지 드롭</h2>
+<p>콜백 기아 현상이 즉각적으로 해소되지 않을 경우 시스템은 2차적인 데이터 손실을 겪게 된다.<br />
+작업 큐에 대기하는 콜백의 양이 <code>rclcpp::QoS</code> (Quality of Service) 설정에서 정의된 History 큐의 크기(<code>depth</code>)를 초과하게 되면, 새로운 메시지는 수신되지 못하고 폐기(Drop)된다.</p>
+<p>특히 <code>keep_last</code> History 정책을 사용하는 실시간 데이터 스트림 영역에서는 최신 메시지를 유지하기 위해 오래된 메시지를 순차적으로 버리지만, 콜백 기아 현상으로 인해 처리 자체를 수행하지 못하면 제어 알고리즘에 심각한 에일리어싱(Aliasing) 효과나 제어 루프 지연(Control Loop Latency)을 초래하여 자율 드론의 비행 안정성이 붕괴된다.</p>
+<h2>4. 기아 현상 해결을 위한 학술적 접근 한계성</h2>
+<p><code>MultiThreadedExecutor</code>는 동시성을 제공하지만 설계상 모든 노드와 콜백의 우선순위가 동일한 평면형 모델을 취하기 때문에 운영체제(OS) 수준의 코어 친화성(Core Affinity)이나 FIFO/RR과 같은 실시간 스케줄링 클래스(POSIX <code>SCHED_FIFO</code>)의 이점을 소프트웨어 레벨의 콜백에 개별적으로 부여하는 데 근본적인 한계가 있다.</p>
+<p>따라서 이러한 구조적 문제를 회피하기 위해, 단일 Multi-Threaded Executor에 전원을 위임하기보다, 시스템 자원 분석을 통해 콜백 실행 파이프라인의 격리 및 Executor 분산 할당을 통해서만 특정 하위 시스템이 겪을 수 있는 잠재적 기아 현상을 억제할 수 있다는 사실이 제어 공학 시스템 설계 시 중요하게 고려되어야 한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

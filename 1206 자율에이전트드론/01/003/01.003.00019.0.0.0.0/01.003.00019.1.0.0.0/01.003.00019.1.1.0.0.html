@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:19.1.1 단일 스레드 및 다중 스레드 이그제큐터 구조 분석</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>19.1.1 단일 스레드 및 다중 스레드 이그제큐터 구조 분석</h1>
+                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../../index.html">Volume 1. ROS2 자율 드론 아키텍처 및 메타 시스템</a> <span class="separator">/</span> <a href="../../index.html">Part 3. 비행 및 임무 제어 소프트웨어 아키텍처</a> <span class="separator">/</span> <a href="../index.html">Chapter 19. 다중 노드 분산 처리를 위한 이그제큐터(Executor) 최적화</a> <span class="separator">/</span> <a href="index.html">19.1 ROS2 콜백 디스패칭 모델과 이그제큐터 아키텍처</a> <span class="separator">/</span> <span>19.1.1 단일 스레드 및 다중 스레드 이그제큐터 구조 분석</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>19.1.1 단일 스레드 및 다중 스레드 이그제큐터 구조 분석</h1>
+<p>ROS2(Robot Operating System 2) 애플리케이션의 핵심 구동 엔진인 이그제큐터(Executor)는 노드의 큐(Queue)에 적재된 콜백(Callback) 함수들을 운영체제의 스레드 자원에 매핑하는 역할을 담당한다. Rclcpp 라이브러리에서 기본적으로 제공하는 디스패칭 스케줄러는 스레드 풀(Thread Pool)의 크기에 따라 단일 스레드 이그제큐터(Single-Threaded Executor)와 다중 스레드 이그제큐터(Multi-Threaded Executor)로 분류되며, 이 구조적 차이는 자율 에이전트 소프트웨어의 실시간성(Real-Time)과 동시성(Concurrency) 제어에 결정적인 영향을 미친다.</p>
+<h2>1.  단일 스레드 이그제큐터(Single-Threaded Executor)의 직렬화(Serialization) 구조</h2>
+<p>단일 스레드 이그제큐터는 생성 시 오직 하나의 워커 스레드(Worker Thread)만을 할당받아 디스패칭 루프를 구동한다. 어플리케이션이 <code>spin()</code> 함수를 호출하면, 이그제큐터는 대기 집합(Wait Set)으로부터 수집된 모든 실행 가능 엔티티(Executable Entity)를 큐에 나열하고 엄격한 순차적(Sequential) 방식으로 처리한다.</p>
+<p>이 아키텍처의 가장 큰 이점은 데이터 레이스(Data Race)에 대한 완전한 면역성이다. 노드 인스턴스 내의 멤버 변수나 전역 자원(Global Resource)을 접근할 때 뮤텍스(Mutex)나 아토믹(Atomic) 연산에 의한 락킹(Locking) 오버헤드가 발생하지 않는다. 따라서 논리적 흐름의 가시성이 극대화되며 제어 지연의 상한선 예측이 비교적 단순해진다.</p>
+<p>그러나 이러한 직렬화 구조는 콜백의 ‘런-투-컴플리션(Run-to-Completion)’ 특성과 결합되어 선점 불가능(Non-preemptive) 스케줄링의 고질적인 문제를 유발한다. 만약 단일 스레드 이그제큐터 내에 바운딩 박스를 추출하는 100ms 지연의 비전(Vision) 콜백과 10ms 주기 내에 완료되어야 하는 고속 역학 제어 코어 콜백이 공존한다면, 비전 연산이 끝날 때까지 제어 콜백은 큐에 블로킹(Blocking)된다. 이는 이그제큐터 자체가 병목 지점이 되는 이른바 ‘헤드 오브 라인 블로킹(Head-of-Line Blocking)’ 현상으로서, 자율 드론의 비행 안정성을 파괴하는 치명적인 원인이 된다.</p>
+<h2>2.  다중 스레드 이그제큐터(Multi-Threaded Executor)의 스레드 풀 할당 패턴</h2>
+<p>이러한 블로킹 한계를 완화하기 위해 설계된 장치가 다중 스레드 이그제큐터이다. 이 클래스는 운영체제가 허용하는 프로세서의 물리적, 논리적 코어 수(일반적으로 <code>std::thread::hardware_concurrency</code> 반환값)와 일치하거나 개발자가 명시한 개수만큼의 스레드 풀(Thread Pool)을 사전 생성한다.</p>
+<p>디스패치 단계에서 큐에 다수의 콜백 인스턴스가 활성화되어 있을 경우, 다중 스레드 이그제큐터는 유휴 상태의 스레드를 동원하여 콜백들을 분산 배치하고 병렬로 실행(Parallel Execution)한다. 이로 인해 무거운 연산을 수행하는 콜백이 하나의 스레드를 점유하더라도, 나머지 스레드들이 타이머 및 긴급 제어 콜백을 지속적으로 서비스할 수 있어 시스템의 총 처리율(Throughput)이 크게 향상된다.</p>
+<h2>3.  동시성 제어의 복잡성 및 트레이드오프(Trade-off)</h2>
+<p>다중 스레드 이그제큐터를 채택하면 병행성(Parallelism) 이점을 얻는 대신 극심한 데이터 동기화 책임이 뒤따른다. 여러 스레드가 동시에 노드 객체의 내부 메모리 공간에 재진입(Reentrant)하게 되므로, 임계 영역(Critical Section) 보호를 위해 명시적인 락(Lock) 메커니즘을 설계해야 한다. 뮤텍스 남용으로 인한 교착 상태(Deadlock)나 스레드 컨텍스트 스위칭(Context Switching) 오버헤드는 오히려 단일 스레드 모델보다 레이턴시 지터를 악화시킬 수 있다.</p>
+<p>따라서 자율 드론 시스템에서는 단순히 다중 스레드 이그제큐터를 전역(Global)에 적용하는 것을 지양하고, 시스템 토폴로지를 분석하여 I/O 바운드(Bound) 노드와 CPU 코어 바운드 노드를 독립적인 단위로 격리하는 설계 기법을 결합해야만 다중 스레드 모델의 이론적 성능 한계치를 달성할 수 있다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>

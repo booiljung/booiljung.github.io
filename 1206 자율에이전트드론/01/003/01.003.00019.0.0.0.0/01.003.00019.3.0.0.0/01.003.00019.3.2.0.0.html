@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIJUNG:19.3.2 공유 데이터 동시 접근 제어를 위한 락 프리 비동기 버퍼 설계</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Global site tag (gtag.js) - Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-117607984-2"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'UA-117607984-2');
+    </script>
+
+    <script>
+      MathJax = {
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          processEscapes: true,
+          processEnvironments: true
+        },
+        options: {
+          skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre']
+        },
+        startup: {
+          ready: () => {
+            // pulldown-cmark 출력을 MathJax 형식으로 변환
+            document.querySelectorAll('.math-inline').forEach(node => {
+              node.outerHTML = '$' + node.innerText + '$';
+            });
+            document.querySelectorAll('.math-display').forEach(node => {
+              node.outerHTML = '$$' + node.innerText + '$$';
+            });
+            MathJax.startup.defaultReady();
+          }
+        }
+      };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.12.2/dist/mermaid.esm.mjs';
+        let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+        mermaid.initialize({ startOnLoad: false, theme: theme });
+        
+        document.addEventListener("DOMContentLoaded", function() {
+            var mermaidBlocks = document.querySelectorAll("pre > code.language-mermaid");
+            mermaidBlocks.forEach(function(block) {
+                var pre = block.parentElement;
+                var div = document.createElement("div");
+                div.className = "mermaid";
+                div.textContent = block.textContent.trim();
+                pre.replaceWith(div);
+            });
+            mermaid.run({
+                querySelector: '.mermaid'
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            var toggler = document.getElementsByClassName("caret");
+            for (var i = 0; i < toggler.length; i++) {
+                toggler[i].addEventListener("click", function() {
+                    this.parentElement.querySelector(".nested").classList.toggle("active");
+                    this.classList.toggle("caret-down");
+                });
+            }
+            
+            // 활성 경로 자동 확장
+            var activeLink = document.querySelector(".sidebar .active");
+            if (activeLink) {
+                var parents = [];
+                var el = activeLink;
+                while (el) {
+                    if (el.classList && el.classList.contains("nested")) {
+                        el.classList.add("active");
+                        // 이 중첩된 목록의 캐럿 찾기
+                        // 중첩된 목록은 캐럿이 있는 li 안에 있습니다
+                        var li = el.parentElement;
+                        if (li) {
+                            var caret = li.querySelector(".caret");
+                            if (caret) {
+                                caret.classList.add("caret-down");
+                            }
+                        }
+                    }
+                    el = el.parentElement;
+                    if (el && el.classList.contains("sidebar")) break;
+                }
+            }
+
+
+        });
+    </script>
+    <link rel="stylesheet" href="../../../../../style.css">
+</head>
+<body>
+    <div class="container">
+        <main class="content">
+            <header>
+                <div class="header-content">
+                    <h1>19.3.2 공유 데이터 동시 접근 제어를 위한 락 프리 비동기 버퍼 설계</h1>
+                    <nav class="breadcrumbs"><a href="../../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../../index.html">자율 에이전트 드론</a> <span class="separator">/</span> <a href="../../../index.html">Volume 1. ROS2 자율 드론 아키텍처 및 메타 시스템</a> <span class="separator">/</span> <a href="../../index.html">Part 3. 비행 및 임무 제어 소프트웨어 아키텍처</a> <span class="separator">/</span> <a href="../index.html">Chapter 19. 다중 노드 분산 처리를 위한 이그제큐터(Executor) 최적화</a> <span class="separator">/</span> <a href="index.html">19.3 비행 제어 분산 스케줄링 정밀 튜닝 전략</a> <span class="separator">/</span> <span>19.3.2 공유 데이터 동시 접근 제어를 위한 락 프리 비동기 버퍼 설계</span></nav>
+                </div>
+            </header>
+            <article>
+                <h1>19.3.2 공유 데이터 동시 접근 제어를 위한 락 프리 비동기 버퍼 설계</h1>
+<p>자율 드론의 비행 제어기 소프트웨어 아키텍처에서는 고주파수(High-frequency)의 센서 데이터 획득(Acquisition) 스레드와 해당 데이터를 융합(Fusion)하여 제어 명령을 산출하는 상태 추정(State Estimation) 스레드가 빈번하게 동일한 메모리 영역에 접근한다. 이러한 다중 스레드 환경에서 데이터 무결성을 보장하기 위해 전통적인 상호 배제(Mutual Exclusion, Mutex) 메커니즘을 적용할 경우, 실시간성(Real-time property)을 파괴하는 구조적 결함을 야기한다. 이를 극복하기 위해 락 프리(Lock-free) 기반의 비동기 버퍼(Asynchronous Buffer) 설계가 필수적이다.</p>
+<h2>1. 동기화 락(Mutex)의 한계와 우선순위 역전</h2>
+<p>가장 보편적인 동기화 객체인 뮤텍스(Mutex) 단위의 락킹(Locking)은 스레드의 실행 흐름을 운영체제(OS)의 커널 공간으로 전이시켜 컨텍스트 스위칭(Context Switching) 오버헤드를 유발한다. 더 큰 문제는 우선순위 역전(Priority Inversion) 현상이다.</p>
+<p>저우선순위의 로깅 스레드가 임계 구역(Critical Section)의 락을 획득한 상태에서 OS 스케줄러에 의해 선점당할 경우, 최우선순위의 관성측정장치(IMU) 제어 루프 스레드가 락을 획득하지 못하고 무한정 대기(Blocking)하는 현상이 발생할 수 있다. 비록 우선순위 상속 프로토콜(Priority Inheritance Protocol)을 통해 이를 완화할 수 있으나, 변동성 높은 차단 시간(Blocking Time) 지터(Jitter) 자체를 제거하지는 못하므로, 결정론적 대기 시간이 필수적인 비행 제어 논리에는 적합하지 않다.</p>
+<h2>2. 하드웨어 원자적 연산(Atomic Operations) 기반 접근</h2>
+<p>락 프리 자료 구조는 운영체제의 스케줄러 개입 없이, 중앙처리장치(CPU) 명령어 세트(ISA)가 하드웨어 수준에서 제공하는 원자적 기계어 병호를 통해 동시성 제어를 수행한다. <code>std::atomic</code> 라이브러리를 통해 접근할 수 있는 비교-교환(CAS: Compare-and-Swap) 또는 테스트-및-설정(TAS: Test-and-Set) 인스트럭션이 그 핵심이다.</p>
+<p>이러한 원자적 연산은 다른 스레드의 스케줄링 상태와 무관하게 시스템 버스(System Bus) 레벨에서 독점적 메모리 접근을 보장하므로, 특정 스레드의 지연이 다른 스레드의 대기로 전파되지 않는 논 블로킹(Non-blocking) 특성을 제공한다.</p>
+<h2>3. 락 프리 링 버퍼(Lock-free Ring Buffer)의 토폴로지 구조</h2>
+<p>비행 제어 환경에 특화된 락 프리 자료 구조로서 가장 널리 도입되는 형태는 단일 생산자-단일 소비자(Single-Producer Single-Consumer, SPSC) 패턴 기반의 락 프리 링 버퍼(환형 큐, Circular Queue)이다.</p>
+<ul>
+<li><strong>스핀락 배제:</strong> 생산자(센서 콜백)는 <code>head</code> 인덱스를, 소비자(제어 루프)는 <code>tail</code> 인덱스를 원자적(Atomic)으로 갱신하며 동작한다. 두 스레드가 서로 다른 인덱스를 조작하므로 락 획득을 위한 스핀락(Spinlock)이 필요하지 않다.</li>
+<li><strong>캐시 라인 격리 우회 (False Sharing 방지):</strong> <code>head</code> 래퍼런스와 <code>tail</code> 래퍼런스가 동일한 CPU 캐시 라인(Cache Line)에 위치할 경우 발생하는 성능 저하(False Sharing)를 방지하기 위해, 패딩(Padding)을 삽입하여 메모리 토폴로지를 격리한다.</li>
+<li><strong>트리플 버퍼링 (Triple Buffering):</strong> 더 복잡한 MPSC(Multi-Producer Single-Consumer) 환경에서는 메시지 유실(Drop)을 방지하고 최신 데이터 획득의 대기 시간을 <span class="math math-inline">O(1)</span>로 제한하기 위해, 세 개의 버퍼 포인터(읽기, 쓰기, 예비)를 CAS 명령어 하나로 원자적 교환(Swap)하는 트리플 버퍼링 기법을 적용한다.</li>
+</ul>
+<h2>4. 제어 시스템 관점의 도입 효과</h2>
+<p>안전 필수(Safety-Critical) 등급에 해당하는 자율 에이전트 드론의 스케줄러 계층에서 락 프리 비동기 버퍼의 채택은, 이론적으로 <strong>제한된 실행 시간(Bounded Execution Time)</strong> 을 수리적으로 증명 가능하게 해준다. 이는 소프트웨어가 운영체제의 블로킹 인터럽트에 종속되지 않고 시스템의 최악 응답 시간(WCET: Worst-Case Execution Time)을 정확히 산출하게 만듦으로써, 고주파 다이내믹스의 안정성 여유(Stability Margin)를 보장하는 중추적인 역할을 수행한다.</p>
+
+            </article>
+            <footer>
+                <p>Generated by Rust Site Gen</p>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
