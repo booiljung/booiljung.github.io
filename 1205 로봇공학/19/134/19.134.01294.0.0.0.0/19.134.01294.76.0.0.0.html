@@ -115,6 +115,127 @@
             </header>
             <article>
                 <h1>1294.76 자식 Failure 시 Sequence의 동작</h1>
+<h2>1. 자식 FAILURE에 대한 Sequence의 기본 응답</h2>
+<p>Sequence 노드는 자식이 FAILURE를 반환하면 즉시 자체적으로 FAILURE를 반환한다. 이 동작은 Sequence의 AND 의미론에서 비롯되며, “모든 자식이 성공해야 전체가 성공한다“는 규칙의 논리적 귀결이다. 자식의 FAILURE는 Sequence에게 “순차적 작업 체인이 중단되었다“는 신호이다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. FAILURE 발생 위치에 따른 동작 차이</h2>
+<h3>2.1 첫 번째 자식에서의 FAILURE</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="Child_0"/&gt;    &lt;!-- FAILURE --&gt;
+    &lt;Action ID="Child_1"/&gt;
+    &lt;Action ID="Child_2"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick: Child_0→F → Sequence: FAILURE
+     Child_1→(미실행), Child_2→(미실행)
+</code></pre>
+<p>첫 번째 자식의 FAILURE는 나머지 모든 자식의 실행을 차단한다. 전제 조건 검사에서 FAILURE가 발생하면 어떤 행동도 수행되지 않고 시퀀스가 종료된다.</p>
+<h3>2.2 중간 자식에서의 FAILURE</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="Child_0"/&gt;    &lt;!-- SUCCESS --&gt;
+    &lt;Action ID="Child_1"/&gt;    &lt;!-- FAILURE --&gt;
+    &lt;Action ID="Child_2"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick: Child_0→S, Child_1→F → Sequence: FAILURE
+     Child_2→(미실행)
+</code></pre>
+<p>Child_0의 부수 효과(모터 이동, 데이터 변경 등)는 이미 발생한 상태이다. Child_1의 FAILURE로 시퀀스가 중단되지만, Child_0의 부수 효과는 롤백되지 않는다.</p>
+<h3>2.3 마지막 자식에서의 FAILURE</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="Child_0"/&gt;    &lt;!-- SUCCESS --&gt;
+    &lt;Action ID="Child_1"/&gt;    &lt;!-- SUCCESS --&gt;
+    &lt;Action ID="Child_2"/&gt;    &lt;!-- FAILURE --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick: Child_0→S, Child_1→S, Child_2→F → Sequence: FAILURE
+</code></pre>
+<p>모든 이전 자식이 성공했음에도, 마지막 자식의 FAILURE로 전체 시퀀스가 FAILURE를 반환한다. Child_0과 Child_1의 부수 효과는 이미 완료된 상태이다.</p>
+<h2>3. Sequence 변형별 FAILURE 후 동작</h2>
+<h3>3.1 기본 Sequence의 FAILURE 후 재시작</h3>
+<p>기본 Sequence(비상태적)는 매 Tick 첫 번째 자식부터 시작하므로, FAILURE 후 다음 Tick에서 자연스럽게 Child_0부터 재실행된다.</p>
+<pre><code>Tick 1: Child_0→S, Child_1→F → FAILURE
+Tick 2: Child_0→S, Child_1→? → (Child_0 재실행)
+</code></pre>
+<h3>3.2 SequenceWithMemory의 FAILURE 후 동작</h3>
+<pre><code>Tick 1: Child_0→S, Child_1→R (idx=1)
+Tick 2: Child_1→R             (idx=1, Child_0 건너뜀)
+Tick 3: Child_1→F             → FAILURE (idx=0으로 초기화)
+Tick 4: Child_0→?             (idx=0, 처음부터 재시작)
+</code></pre>
+<p>SequenceWithMemory에서 자식이 FAILURE를 반환하면, <code>current_child_idx</code>가 0으로 초기화된다. 이전에 성공한 자식의 기억이 모두 소멸되며, 다음 Tick에서 첫 번째 자식부터 다시 시작한다. 이는 “작업 체인이 실패했으므로 처음부터 다시 시작해야 한다“는 의미를 가진다.</p>
+<h3>3.3 ReactiveSequence의 FAILURE 후 동작</h3>
+<pre><code>Tick 1: IsSafe→S, Action→R → RUNNING
+Tick 2: IsSafe→F            → FAILURE (Action Halt)
+Tick 3: IsSafe→S, Action→R → RUNNING (Action onStart() 재호출)
+</code></pre>
+<p>ReactiveSequence는 항상 첫 번째 자식부터 시작하므로, FAILURE 후 별도의 초기화 없이 다음 Tick에서 재평가가 시작된다. FAILURE 시점에 RUNNING이었던 액션은 Halt되어 IDLE 상태로 전이하며, 다음에 Tick될 때 <code>onStart()</code>부터 새로 시작한다.</p>
+<h2>4. FAILURE 시 후속 자식에 대한 처리</h2>
+<h3>4.1 미실행 자식의 상태</h3>
+<p>FAILURE가 발생하면 FAILURE를 반환한 자식 이후의 모든 자식은 실행되지 않는다. 이 자식들은 IDLE 상태를 유지하며, <code>tick()</code> 메서드가 호출되지 않는다.</p>
+<pre><code>Children: [Child_0, Child_1, Child_2, Child_3]
+Result:   [SUCCESS, FAILURE, (미실행), (미실행)]
+                               IDLE      IDLE
+</code></pre>
+<h3>4.2 RUNNING 자식의 Halt (ReactiveSequence)</h3>
+<p>ReactiveSequence에서 앞쪽 조건 노드가 FAILURE를 반환하면, 뒤쪽에 RUNNING 상태인 액션 노드가 Halt된다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="Cond_0"/&gt;     &lt;!-- Tick K: FAILURE --&gt;
+    &lt;Condition ID="Cond_1"/&gt;     &lt;!-- Tick K: 미평가 --&gt;
+    &lt;Action ID="Action_0"/&gt;      &lt;!-- Tick K-1: RUNNING → Halt --&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<pre><code>Tick K-1: Cond_0→S, Cond_1→S, Action_0→R    → RUNNING
+Tick K:   Cond_0→F                            → FAILURE
+          Cond_1→(미평가)
+          Action_0→Halt (RUNNING→IDLE)
+</code></pre>
+<p>Halt는 동일 Tick 내에서 동기적으로 수행된다. <code>onHalted()</code> 메서드가 호출되어 액션의 상태 정리가 이루어진다.</p>
+<h2>5. FAILURE 발생 시의 상태 전이 요약</h2>
+<table><thead><tr><th>Sequence 변형</th><th>FAILURE 시 동작</th><th>idx 초기화</th><th>다음 Tick 시작 위치</th></tr></thead><tbody>
+<tr><td>Sequence (기본)</td><td>즉시 FAILURE 반환</td><td>해당 없음</td><td>항상 idx=0</td></tr>
+<tr><td>SequenceWithMemory</td><td>즉시 FAILURE 반환, idx=0</td><td>예</td><td>idx=0 (재시작)</td></tr>
+<tr><td>ReactiveSequence</td><td>RUNNING 자식 Halt, FAILURE 반환</td><td>해당 없음</td><td>항상 idx=0</td></tr>
+</tbody></table>
+<h2>6. 로봇 공학에서의 FAILURE 시나리오</h2>
+<h3>6.1 네비게이션 시퀀스에서의 FAILURE</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="ComputePath"/&gt;     &lt;!-- SUCCESS --&gt;
+    &lt;Action ID="FollowPath"/&gt;      &lt;!-- FAILURE: 경로 차단 --&gt;
+    &lt;Action ID="ArriveAtGoal"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>경로 계산은 성공했으나 경로 추종 중 장애물에 의해 차단되면, FollowPath가 FAILURE를 반환한다. 시퀀스 전체가 FAILURE를 반환하며, <code>current_child_idx</code>가 0으로 초기화되어 다음 시도에서 경로 계산부터 다시 시작한다.</p>
+<h3>6.2 매니퓰레이터 시퀀스에서의 FAILURE</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="OpenGripper"/&gt;       &lt;!-- SUCCESS --&gt;
+    &lt;Action ID="MoveToGraspPose"/&gt;   &lt;!-- SUCCESS --&gt;
+    &lt;Action ID="CloseGripper"/&gt;      &lt;!-- SUCCESS --&gt;
+    &lt;Condition ID="IsObjectGrasped"/&gt;  &lt;!-- FAILURE: 파지 실패 --&gt;
+    &lt;Action ID="LiftObject"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>파지 검증이 실패하면 시퀀스가 FAILURE를 반환한다. 그리퍼 개방, 이동, 폐쇄의 부수 효과는 이미 발생한 상태이며, 그리퍼는 폐쇄 상태로 남아 있다. 상위 트리의 복구 행동에서 그리퍼를 다시 개방하고 재시도해야 한다.</p>
+<h2>7. FAILURE 처리의 설계 지침</h2>
+<ol>
+<li>
+<p><strong>부수 효과의 인지</strong>: FAILURE가 발생하기 전에 성공한 자식의 부수 효과는 자동으로 롤백되지 않는다. 복구가 필요한 경우 상위 트리에서 명시적으로 처리해야 한다.</p>
+</li>
+<li>
+<p><strong>FAILURE 원인 기록</strong>: 블랙보드에 FAILURE의 원인을 기록하여, 상위 트리의 복구 행동이 적절한 대응을 선택할 수 있도록 한다.</p>
+</li>
+<li>
+<p><strong>ForceSuccess 활용</strong>: 특정 자식의 실패가 전체 시퀀스를 중단시키지 않아야 하는 경우, ForceSuccess 데코레이터로 해당 자식을 감싸서 FAILURE를 SUCCESS로 변환할 수 있다.</p>
+</li>
+<li>
+<p><strong>Fallback 연계</strong>: Sequence의 FAILURE를 처리하기 위해 상위에 Fallback을 배치하여 대안 행동을 제공하는 것이 일반적인 오류 처리 패턴이다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

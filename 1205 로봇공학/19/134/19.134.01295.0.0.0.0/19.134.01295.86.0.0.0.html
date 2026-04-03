@@ -115,6 +115,240 @@
             </header>
             <article>
                 <h1>1295.86 디버깅 전략</h1>
+<h2>1. Parallel 및 Reactive 노드 디버깅의 난이도</h2>
+<p>Parallel 노드와 Reactive 노드(ReactiveSequence, ReactiveFallback)는 행동 트리에서 디버깅이 가장 어려운 노드 범주에 속한다. 그 이유는 다음과 같다.</p>
+<ol>
+<li>
+<p><strong>다중 자식의 동시 상태 관리</strong>: Parallel 노드는 모든 자식의 상태를 동시에 추적하여야 하므로, 단일 경로를 따르는 Sequence/Fallback에 비해 상태 공간이 기하급수적으로 증가한다.</p>
+</li>
+<li>
+<p><strong>매 Tick 재평가</strong>: Reactive 노드는 매 Tick마다 자식을 처음부터 재평가하므로, 특정 Tick에서 어떤 자식이 어떤 순서로 평가되었는지를 추적하여야 한다.</p>
+</li>
+<li>
+<p><strong>Halt의 비가시성</strong>: Halt 전파는 노드의 반환값에 직접 반영되지 않으므로, 로그나 시각화 도구 없이는 Halt가 정확히 수행되었는지를 확인하기 어렵다.</p>
+</li>
+<li>
+<p><strong>정책의 복합성</strong>: 성공/실패 정책의 충족 여부가 다수 자식의 상태 조합에 의존하므로, 개별 자식의 상태만으로는 Parallel의 결과를 즉시 판단하기 어렵다.</p>
+</li>
+</ol>
+<h2>2. BehaviorTree.CPP의 내장 디버깅 기능</h2>
+<h3>2.1 로거(Logger) 인프라</h3>
+<p>BehaviorTree.CPP는 <code>BT::StatusChangeLogger</code> 기반의 로거 인프라를 제공한다. 노드의 상태 변화가 발생할 때마다 콜백이 호출되어 로그를 기록한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/loggers/bt_cout_logger.h"
+#include "behaviortree_cpp/loggers/bt_file_logger2.h"
+#include "behaviortree_cpp/loggers/bt_minitrace_logger.h"
+
+BT::Tree tree = factory.createTreeFromText(xml_text);
+
+// 콘솔 로거: 상태 변화를 표준 출력에 기록
+BT::StdCoutLogger cout_logger(tree);
+
+// 파일 로거: 상태 변화를 바이너리 파일에 기록 (Groot2 호환)
+BT::FileLogger2 file_logger(tree, "bt_trace.btlog");
+
+// MiniTrace 로거: Chrome Tracing 형식으로 기록
+BT::MinitraceLogger minitrace_logger(tree, "bt_trace.json");
+</code></pre>
+<h3>2.2 콘솔 로거의 출력 형식</h3>
+<p><code>StdCoutLogger</code>는 노드의 상태 변화를 다음 형식으로 출력한다.</p>
+<pre><code>[ParallelAll] IDLE -&gt; RUNNING
+  [NavigateToGoal] IDLE -&gt; RUNNING
+  [MonitorBattery] IDLE -&gt; RUNNING
+  [MonitorBattery] RUNNING -&gt; SUCCESS
+  [NavigateToGoal] RUNNING -&gt; SUCCESS
+[ParallelAll] RUNNING -&gt; SUCCESS
+</code></pre>
+<p>Parallel 노드의 경우 모든 자식의 상태 변화가 순차적으로 기록되므로, 어떤 자식이 어떤 순서로 상태를 변경하였는지를 추적할 수 있다.</p>
+<h3>2.3 Groot2를 활용한 실시간 시각화</h3>
+<p>Groot2는 BehaviorTree.CPP의 공식 시각화 도구이다. <code>BT::Groot2Publisher</code>를 트리에 연결하면 실행 중인 트리의 상태를 실시간으로 시각화할 수 있다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/loggers/groot2_publisher.h"
+
+BT::Tree tree = factory.createTreeFromText(xml_text);
+
+// Groot2 퍼블리셔: TCP 소켓을 통해 Groot2에 상태 전송
+BT::Groot2Publisher groot_publisher(tree, 1667);
+</code></pre>
+<p>Groot2에서 Parallel 노드를 시각화하면, 각 자식 노드의 현재 상태가 색상으로 표시된다. RUNNING은 노란색, SUCCESS는 녹색, FAILURE는 빨간색, IDLE은 회색으로 표현된다. Reactive 노드에서 우선순위 전환이 발생하면, 이전 분기의 색상이 IDLE로 전환되고 새 분기가 활성화되는 과정을 시각적으로 확인할 수 있다.</p>
+<h2>3. 커스텀 디버깅 로거의 구현</h2>
+<p>내장 로거가 제공하는 정보가 충분하지 않은 경우, 커스텀 로거를 구현하여 Parallel 및 Reactive 노드에 특화된 디버깅 정보를 수집할 수 있다.</p>
+<pre><code class="language-cpp">class ParallelDebugLogger : public BT::StatusChangeLogger
+{
+public:
+    ParallelDebugLogger(const BT::Tree&amp; tree)
+        : StatusChangeLogger(tree.rootNode()) {}
+
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev_status,
+                  BT::NodeStatus status) override
+    {
+        // Parallel 노드의 자식 상태 변화 추적
+        auto* parent = node.getParent();
+        if (parent &amp;&amp; parent-&gt;type() == BT::NodeType::CONTROL)
+        {
+            std::cout &lt;&lt; "[" &lt;&lt; timestamp.count() &lt;&lt; "us] "
+                      &lt;&lt; parent-&gt;name() &lt;&lt; "/" &lt;&lt; node.name()
+                      &lt;&lt; ": " &lt;&lt; toStr(prev_status) 
+                      &lt;&lt; " -&gt; " &lt;&lt; toStr(status) &lt;&lt; std::endl;
+        }
+
+        // Halt 감지
+        if (status == BT::NodeStatus::IDLE &amp;&amp; 
+            prev_status == BT::NodeStatus::RUNNING)
+        {
+            std::cout &lt;&lt; "  ** HALT detected: " &lt;&lt; node.name() 
+                      &lt;&lt; std::endl;
+        }
+    }
+
+    void flush() override {}
+};
+</code></pre>
+<p>이 커스텀 로거는 부모-자식 관계를 함께 출력하여 Parallel 노드의 어떤 자식이 상태를 변경하였는지를 명확히 식별하고, RUNNING에서 IDLE로의 전이를 감지하여 Halt 발생을 명시적으로 표시한다.</p>
+<h2>4. 디버깅 접근 방법</h2>
+<h3>4.1 상태 스냅샷 기법</h3>
+<p>매 Tick에서 Parallel 노드의 모든 자식 상태를 스냅샷으로 기록하는 기법이다.</p>
+<pre><code class="language-cpp">class ParallelStateSnapshot
+{
+public:
+    struct Snapshot
+    {
+        int tick_number;
+        std::vector&lt;std::pair&lt;std::string, BT::NodeStatus&gt;&gt; child_states;
+        BT::NodeStatus parallel_result;
+    };
+
+    void capture(int tick, const BT::ControlNode* parallel_node)
+    {
+        Snapshot snap;
+        snap.tick_number = tick;
+        snap.parallel_result = parallel_node-&gt;status();
+
+        for (size_t i = 0; i &lt; parallel_node-&gt;childrenCount(); i++)
+        {
+            auto* child = parallel_node-&gt;child(i);
+            snap.child_states.emplace_back(
+                child-&gt;name(), child-&gt;status());
+        }
+
+        snapshots_.push_back(snap);
+    }
+
+    void printAll() const
+    {
+        for (const auto&amp; snap : snapshots_)
+        {
+            std::cout &lt;&lt; "Tick " &lt;&lt; snap.tick_number 
+                      &lt;&lt; " [Parallel=" &lt;&lt; toStr(snap.parallel_result)
+                      &lt;&lt; "]:" &lt;&lt; std::endl;
+            for (const auto&amp; [name, status] : snap.child_states)
+            {
+                std::cout &lt;&lt; "  " &lt;&lt; name &lt;&lt; ": " 
+                          &lt;&lt; toStr(status) &lt;&lt; std::endl;
+            }
+        }
+    }
+
+private:
+    std::vector&lt;Snapshot&gt; snapshots_;
+};
+</code></pre>
+<p>이 스냅샷을 매 Tick에서 수집하면, Parallel 노드의 자식 상태가 Tick에 따라 어떻게 변화하는지를 시계열로 분석할 수 있다.</p>
+<h3>4.2 조건부 중단점 기법</h3>
+<p>특정 조건이 충족될 때만 실행을 중단하는 디버깅 기법이다. BehaviorTree.CPP 자체는 중단점을 지원하지 않으나, 커스텀 데코레이터를 통해 유사한 기능을 구현할 수 있다.</p>
+<pre><code class="language-cpp">class DebugBreakpoint : public BT::DecoratorNode
+{
+public:
+    DebugBreakpoint(const std::string&amp; name, 
+                    const BT::NodeConfig&amp; config)
+        : DecoratorNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("break_on", "SUCCESS",
+                "중단 조건 (SUCCESS, FAILURE, RUNNING)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto child_status = child_node_-&gt;executeTick();
+
+        std::string break_condition;
+        getInput("break_on", break_condition);
+
+        if (toStr(child_status) == break_condition)
+        {
+            std::cerr &lt;&lt; "[BREAKPOINT] " &lt;&lt; name() 
+                      &lt;&lt; ": child returned " &lt;&lt; break_condition
+                      &lt;&lt; std::endl;
+            // 디버거 연결 시 여기에 실제 중단점 설정
+            // __builtin_debugtrap(); // 또는 raise(SIGTRAP);
+        }
+
+        return child_status;
+    }
+};
+</code></pre>
+<h3>4.3 블랙보드 상태 덤프 기법</h3>
+<p>Parallel 자식 간 블랙보드 데이터 충돌을 진단하기 위해, 매 Tick에서 블랙보드의 관련 키-값 쌍을 덤프한다.</p>
+<pre><code class="language-cpp">void dumpBlackboard(const BT::Blackboard&amp; bb,
+                    const std::vector&lt;std::string&gt;&amp; keys,
+                    int tick_number)
+{
+    std::cout &lt;&lt; "=== Blackboard Dump (Tick " 
+              &lt;&lt; tick_number &lt;&lt; ") ===" &lt;&lt; std::endl;
+    for (const auto&amp; key : keys)
+    {
+        auto entry = bb.getEntry(key);
+        if (entry)
+        {
+            std::cout &lt;&lt; "  " &lt;&lt; key &lt;&lt; " = " 
+                      &lt;&lt; entry-&gt;value.type().name() &lt;&lt; std::endl;
+        }
+        else
+        {
+            std::cout &lt;&lt; "  " &lt;&lt; key &lt;&lt; " = &lt;not set&gt;" &lt;&lt; std::endl;
+        }
+    }
+}
+</code></pre>
+<h2>5. 일반적 결함 유형과 진단 방법</h2>
+<h3>5.1 Parallel이 예상과 다른 결과를 반환하는 경우</h3>
+<p><strong>증상</strong>: Parallel이 SUCCESS를 반환하여야 하는데 FAILURE를 반환하거나, 그 반대이다.</p>
+<p><strong>진단 절차</strong>:</p>
+<ol>
+<li>상태 스냅샷을 활성화하여 정책 판정 시점의 자식 상태를 확인한다.</li>
+<li>성공/실패 정책의 매개변수(<code>max_failures</code> 등)가 올바르게 설정되었는지 확인한다.</li>
+<li>자식의 완료 순서가 예상과 다른지 확인한다.</li>
+</ol>
+<h3>5.2 Reactive 노드에서 선점이 발생하지 않는 경우</h3>
+<p><strong>증상</strong>: 상위 조건이 활성화되었으나 하위 분기가 계속 실행된다.</p>
+<p><strong>진단 절차</strong>:</p>
+<ol>
+<li>조건 노드가 실제로 매 Tick마다 재평가되는지 로그로 확인한다.</li>
+<li>조건 노드가 <code>SyncActionNode</code>가 아닌 <code>ConditionNode</code>로 올바르게 구현되었는지 확인한다.</li>
+<li>ReactiveFallback 대신 일반 Fallback이 사용되지 않았는지 XML을 확인한다.</li>
+</ol>
+<h3>5.3 Halt가 전파되지 않는 경우</h3>
+<p><strong>증상</strong>: 정책 충족 후에도 자식이 계속 RUNNING 상태를 유지한다.</p>
+<p><strong>진단 절차</strong>:</p>
+<ol>
+<li>커스텀 노드의 <code>halt()</code> 메서드가 올바르게 구현되었는지 확인한다. <code>ControlNode::halt()</code>를 호출하였는지, <code>haltChildren()</code>을 호출하였는지 확인한다.</li>
+<li><code>StatefulActionNode</code>의 <code>onHalted()</code>가 구현되었는지 확인한다.</li>
+<li>로거에서 RUNNING → IDLE 전이가 기록되는지 확인한다.</li>
+</ol>
+<h2>6. 디버깅 도구 선택 기준</h2>
+<table><thead><tr><th>디버깅 도구</th><th>적합한 상황</th><th>장점</th><th>제한</th></tr></thead><tbody>
+<tr><td>StdCoutLogger</td><td>개발 초기 단계</td><td>설정이 간단</td><td>대량 로그 시 가독성 저하</td></tr>
+<tr><td>FileLogger2</td><td>사후 분석</td><td>Groot2 재생 가능</td><td>실시간 확인 불가</td></tr>
+<tr><td>Groot2Publisher</td><td>실시간 모니터링</td><td>시각적 직관성</td><td>네트워크 오버헤드</td></tr>
+<tr><td>MinitraceLogger</td><td>타이밍 분석</td><td>Chrome DevTools 호환</td><td>상태 정보 제한</td></tr>
+<tr><td>커스텀 로거</td><td>특정 노드 심층 분석</td><td>맞춤 정보 수집</td><td>구현 비용</td></tr>
+<tr><td>상태 스냅샷</td><td>정책 판정 진단</td><td>상태 조합 전체 기록</td><td>메모리 사용량</td></tr>
+</tbody></table>
+<p>개발 단계에서는 <code>StdCoutLogger</code>와 Groot2를 병용하는 것이 효율적이며, 운영 환경에서의 사후 분석에는 <code>FileLogger2</code>를 활용한다. Parallel 자식의 상태 조합에 대한 심층 분석이 필요한 경우 커스텀 로거와 상태 스냅샷을 조합하여 사용한다.</p>
 
             </article>
             <footer>

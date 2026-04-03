@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1296.12 비동기 액션 노드의 Running 반환 특성</title>
+    <title>BIJUNG:1296.12 비동기 액션 노드의 RUNNING 반환 특성</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,175 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1296.12 비동기 액션 노드의 Running 반환 특성</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html">Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)</a> <span class="separator">/</span> <a href="../index.html">Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)</a> <span class="separator">/</span> <a href="index.html">Chapter 1296. 액션 노드 설계와 구현 (Action Node Design and Implementation)</a> <span class="separator">/</span> <span>1296.12 비동기 액션 노드의 Running 반환 특성</span></nav>
+                    <h1>1296.12 비동기 액션 노드의 RUNNING 반환 특성</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html">Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)</a> <span class="separator">/</span> <a href="../index.html">Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)</a> <span class="separator">/</span> <a href="index.html">Chapter 1296. 액션 노드 설계와 구현 (Action Node Design and Implementation)</a> <span class="separator">/</span> <span>1296.12 비동기 액션 노드의 RUNNING 반환 특성</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1296.12 비동기 액션 노드의 Running 반환 특성</h1>
+                <h1>1296.12 비동기 액션 노드의 RUNNING 반환 특성</h1>
+<h2>1. RUNNING 반환의 의미</h2>
+<p><code>StatefulActionNode</code>에서 RUNNING 반환은 “행동이 시작되었으나 아직 완료되지 않았으며, 후속 Tick에서 진행 상태를 재확인하여야 한다“는 것을 의미한다. RUNNING은 행동 트리의 세 가지 반환 상태(SUCCESS, FAILURE, RUNNING) 중 비동기 행동에 고유한 상태로, 행동의 시간적 확장(temporal extension)을 표현하는 메커니즘이다.</p>
+<p>Colledanchise와 Ögren(2018)의 형식적 정의에 따르면, RUNNING 상태는 행동 노드가 “아직 결과를 결정하지 못한 상태“이며, 이 상태에서 노드는 부모 제어 노드에 “다음 Tick에서 다시 확인하라“는 신호를 전달한다.</p>
+<h2>2. RUNNING 반환의 발생 시점</h2>
+<p><code>StatefulActionNode</code>에서 RUNNING이 반환되는 시점은 두 가지이다.</p>
+<h3>2.1 onStart()에서의 RUNNING 반환</h3>
+<p><code>onStart()</code>가 RUNNING을 반환하는 것은 “행동이 성공적으로 시작되었으며, 완료까지 추가 시간이 필요하다“는 것을 의미한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus NavigateToGoal::onStart()
+{
+    geometry_msgs::msg::PoseStamped goal;
+    if (!getInput("goal", goal))
+        return BT::NodeStatus::FAILURE;
+
+    // 목표 전송
+    auto goal_msg = nav2_msgs::action::NavigateToPose::Goal();
+    goal_msg.pose = goal;
+    goal_handle_future_ = action_client_-&gt;async_send_goal(goal_msg);
+
+    // 행동 시작됨, 완료 대기 필요
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>onStart()</code>에서 RUNNING을 반환하면, 다음 Tick부터 <code>onRunning()</code>이 호출된다. 이는 행동의 시작과 완료가 서로 다른 Tick에서 발생하는 비동기 실행 모델의 시작점이다.</p>
+<p><code>onStart()</code>가 SUCCESS 또는 FAILURE를 반환하는 경우도 허용된다. 이 경우 행동이 단일 Tick 내에서 완료되며, <code>onRunning()</code>은 호출되지 않는다.</p>
+<h3>2.2 onRunning()에서의 RUNNING 반환</h3>
+<p><code>onRunning()</code>이 RUNNING을 반환하는 것은 “행동이 여전히 진행 중이며, 다음 Tick에서 다시 확인하여야 한다“는 것을 의미한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus NavigateToGoal::onRunning()
+{
+    // 비차단 방식으로 완료 확인
+    if (isGoalReached())
+        return BT::NodeStatus::SUCCESS;
+
+    if (hasNavigationFailed())
+        return BT::NodeStatus::FAILURE;
+
+    // 아직 진행 중
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>onRunning()</code>은 RUNNING 상태가 유지되는 한 매 Tick마다 반복적으로 호출된다. 이 반복 호출을 통해 행동의 진행 상태를 주기적으로 폴링(polling)한다.</p>
+<h2>3. RUNNING 반환이 트리 실행에 미치는 영향</h2>
+<h3>3.1 Sequence에서의 영향</h3>
+<p>Sequence 내에서 자식 노드가 RUNNING을 반환하면, Sequence는 그 자식에서 실행을 멈추고 RUNNING을 부모에 전달한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;SetSpeed value="0.5"/&gt;       &lt;!-- SUCCESS (동기) --&gt;
+    &lt;NavigateToGoal goal="{g}"/&gt;  &lt;!-- RUNNING (비동기) --&gt;
+    &lt;PlaySound file="done.wav"/&gt;  &lt;!-- 아직 실행되지 않음 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>Tick 1에서 <code>SetSpeed</code>가 SUCCESS를 반환하고, <code>NavigateToGoal</code>이 RUNNING을 반환하면, Sequence도 RUNNING을 반환한다. <code>PlaySound</code>는 Tick되지 않는다. Tick 2부터 Sequence는 <code>NavigateToGoal</code>을 다시 Tick하며, SUCCESS가 반환될 때까지 대기한다.</p>
+<h3>3.2 Fallback에서의 영향</h3>
+<p>Fallback 내에서 자식 노드가 RUNNING을 반환하면, Fallback도 RUNNING을 부모에 전달한다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;NavigateToGoal goal="{primary}"/&gt;  &lt;!-- RUNNING --&gt;
+    &lt;NavigateToGoal goal="{backup}"/&gt;   &lt;!-- 아직 실행되지 않음 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>첫 번째 자식이 RUNNING을 반환하는 동안 두 번째 자식은 Tick되지 않는다. 첫 번째 자식이 FAILURE를 반환하면 비로소 두 번째 자식이 Tick된다.</p>
+<h3>3.3 ReactiveSequence에서의 영향</h3>
+<p>ReactiveSequence에서 RUNNING은 특별한 의미를 가진다. ReactiveSequence는 매 Tick마다 첫 번째 자식부터 재평가하므로, RUNNING 상태의 자식 앞에 있는 조건 노드가 FAILURE를 반환하면, RUNNING 상태의 자식이 Halt된다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;IsBatteryOK/&gt;              &lt;!-- 조건: 매 Tick 재평가 --&gt;
+    &lt;NavigateToGoal goal="{g}"/&gt;&lt;!-- RUNNING 유지 중 --&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><code>NavigateToGoal</code>이 RUNNING 상태에서 <code>IsBatteryOK</code>가 FAILURE를 반환하면, ReactiveSequence는 <code>NavigateToGoal</code>을 Halt하고 FAILURE를 반환한다. 이 메커니즘은 RUNNING 상태의 비동기 행동에 대한 안전 감시(safety monitoring)의 기반이다.</p>
+<h3>3.4 Parallel에서의 영향</h3>
+<p>Parallel 노드에서 자식 노드가 RUNNING을 반환하면, 성공/실패 정책에 따라 Parallel의 반환값이 결정된다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;MoveArm/&gt;      &lt;!-- RUNNING --&gt;
+    &lt;MoveBase/&gt;     &lt;!-- SUCCESS --&gt;
+    &lt;MonitorForce/&gt; &lt;!-- RUNNING --&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>Parallel은 매 Tick에서 모든 자식을 Tick한다. 성공 정책에 의해 지정된 수의 자식이 SUCCESS를 반환하거나, 실패 정책에 의해 지정된 수의 자식이 FAILURE를 반환할 때까지 RUNNING을 반환한다.</p>
+<h2>4. RUNNING 반환과 상태 전이</h2>
+<p>RUNNING 반환은 <code>StatefulActionNode</code>의 상태 전이 모델에서 핵심적인 역할을 수행한다.</p>
+<pre><code>           onStart() → RUNNING
+IDLE ─────────────────────────→ RUNNING
+                                    │
+           onRunning() → RUNNING    │ (매 Tick 반복)
+RUNNING ←───────────────────────────┘
+    │
+    │      onRunning() → SUCCESS
+    └─────────────────────────→ SUCCESS → IDLE (부모에 의한 초기화)
+    │
+    │      onRunning() → FAILURE
+    └─────────────────────────→ FAILURE → IDLE (부모에 의한 초기화)
+    │
+    │      halt() → onHalted()
+    └─────────────────────────→ IDLE
+</code></pre>
+<p>RUNNING 상태에서의 전이 경로는 세 가지이다.</p>
+<ol>
+<li><strong>RUNNING → RUNNING</strong>: <code>onRunning()</code>이 RUNNING을 반환하면 상태가 유지된다.</li>
+<li><strong>RUNNING → SUCCESS/FAILURE</strong>: <code>onRunning()</code>이 SUCCESS 또는 FAILURE를 반환하면 행동이 완료된다.</li>
+<li><strong>RUNNING → IDLE</strong>: 외부에서 <code>halt()</code>가 호출되면 <code>onHalted()</code>를 거쳐 IDLE로 전이한다.</li>
+</ol>
+<h2>5. RUNNING 반환의 비차단 조건</h2>
+<p><code>StatefulActionNode</code>의 <code>onStart()</code>와 <code>onRunning()</code>은 메인 스레드에서 실행되므로, RUNNING을 반환하기 전에 차단 호출을 수행하면 안 된다. 콜백의 실행 시간은 Tick 주기 내에서 완료되어야 한다.</p>
+<pre><code class="language-cpp">// 올바른 패턴: 비차단 폴링
+BT::NodeStatus onRunning() override
+{
+    // wait_for(0)은 즉시 반환
+    if (future_.wait_for(std::chrono::milliseconds(0)) 
+        == std::future_status::ready)
+    {
+        auto result = future_.get();
+        return result.success ? BT::NodeStatus::SUCCESS 
+                              : BT::NodeStatus::FAILURE;
+    }
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<pre><code class="language-cpp">// 잘못된 패턴: 차단 대기
+BT::NodeStatus onRunning() override
+{
+    // 차단 호출: 트리 전체의 Tick이 지연됨
+    auto result = future_.get();  // 완료까지 대기
+    return result.success ? BT::NodeStatus::SUCCESS 
+                          : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>비차단 조건의 핵심은 <code>onRunning()</code>이 “확인하고 즉시 반환“하는 폴링 모델을 따르는 것이다. 외부 시스템의 완료를 차단적으로 대기하는 것은 <code>StatefulActionNode</code>의 설계 원칙에 위배된다.</p>
+<h2>6. RUNNING 상태의 지속 시간</h2>
+<p>RUNNING 상태의 지속 시간은 행동의 특성에 따라 결정되며, Tick 수로 측정된다.</p>
+<p><span class="math math-display">T_{\text{running}} = N_{\text{ticks}} \times T_{\text{tick\_period}}</span></p>
+<p>여기서 <span class="math math-inline">N_{\text{ticks}}</span>는 RUNNING 상태가 유지되는 Tick 수이고, <span class="math math-inline">T_{\text{tick\_period}}</span>는 트리의 Tick 주기이다. 예를 들어, 10 Hz(100 ms 주기)의 Tick에서 5초간 지속되는 내비게이션 행동은 약 50회의 Tick 동안 RUNNING을 반환한다.</p>
+<p>RUNNING 상태의 지속 시간이 무한정 길어지는 것은 설계적 결함의 징후일 수 있다. 타임아웃 메커니즘을 통해 RUNNING 상태의 최대 지속 시간을 제한하는 것이 권장된다.</p>
+<h2>RUNNING 반환과 피드백 전달</h2>
+<p>RUNNING 상태에서 행동의 진행 상태를 다른 노드에 전달하려면, 출력 포트를 통해 피드백 정보를 기록한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    if (feedback_received_)
+    {
+        // 진행률을 출력 포트에 기록
+        setOutput("progress", current_progress_);
+        setOutput("distance_remaining", remaining_distance_);
+    }
+
+    if (isCompleted())
+        return BT::NodeStatus::SUCCESS;
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>이 패턴은 RUNNING 상태에서도 출력 포트를 갱신할 수 있음을 활용한다. 다른 노드가 이 포트를 입력으로 참조하면, RUNNING 상태의 행동의 진행 상태를 실시간으로 관찰할 수 있다.</p>
+<h2>RUNNING 반환의 설계적 함의</h2>
+<p>RUNNING 반환 특성은 <code>StatefulActionNode</code>의 설계에 다음의 함의를 가진다.</p>
+<ol>
+<li>
+<p><strong>상태 유지의 필요성</strong>: RUNNING을 반환한 후 다음 Tick에서 <code>onRunning()</code>이 호출되므로, 행동의 진행 상태를 멤버 변수에 보존하여야 한다. 이는 <code>SyncActionNode</code>의 무상태적 설계와 대비되는 특성이다.</p>
+</li>
+<li>
+<p><strong>Halt 처리의 필수성</strong>: RUNNING 상태에서 외부에 의한 Halt가 발생할 수 있으므로, <code>onHalted()</code>에서 진행 중인 행동의 안전한 중단과 자원 정리를 구현하여야 한다.</p>
+</li>
+<li>
+<p><strong>멱등성(Idempotency) 고려</strong>: <code>onRunning()</code>은 RUNNING이 반환되는 한 반복적으로 호출되므로, 각 호출이 부작용 없이 진행 상태를 확인하는 멱등적 연산이어야 한다.</p>
+</li>
+<li>
+<p><strong>제어 노드와의 상호 작용</strong>: RUNNING 반환은 부모 제어 노드의 동작에 직접적인 영향을 미친다. Sequence는 RUNNING에서 대기하고, ReactiveSequence는 RUNNING 상태의 자식에 대해 조건 재평가를 수행하며, Parallel은 RUNNING 자식의 수에 따라 정책을 평가한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

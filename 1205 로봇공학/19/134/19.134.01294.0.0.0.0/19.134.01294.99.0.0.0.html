@@ -115,6 +115,182 @@
             </header>
             <article>
                 <h1>1294.99 자식 수 증가에 따른 Tick 시간 영향</h1>
+<h2>1. 자식 수와 Tick 실행 시간의 관계</h2>
+<p>Sequence와 Fallback 제어 노드의 Tick 실행 시간은 자식 노드의 수에 직접적으로 의존한다. 단일 Tick에서 제어 노드는 자식을 순차적으로 평가하며, 조기 종료(short-circuit)가 발생하지 않는 최악의 경우 모든 자식을 평가해야 한다. 자식 수가 N일 때 단일 Tick의 실행 시간 T_tick은 다음과 같이 모델링된다(Colledanchise &amp; Ogren, 2018):</p>
+<pre><code>T_tick = T_control + Σ(i=1 to k) T_child(i)
+</code></pre>
+<p>여기서 T_control은 제어 노드 자체의 오버헤드(상태 확인, 루프 제어 등), k는 실제로 평가된 자식의 수(1 ≤ k ≤ N), T_child(i)는 i번째 자식의 실행 시간이다. T_control은 수 마이크로초 수준으로 무시할 수 있는 반면, T_child(i)는 센서 조회, 경로 계산 등에 따라 밀리초에서 수십 밀리초에 이를 수 있다.</p>
+<h2>2. 변형별 자식 평가 패턴 분석</h2>
+<h3>2.1 SequenceNode(WithMemory)의 평가 패턴</h3>
+<p>SequenceNode는 <code>current_child_idx_</code>에 의해 이전에 완료된 자식을 건너뛴다. 따라서 단일 Tick에서 평가되는 자식 수는 다음과 같다:</p>
+<pre><code>첫 번째 Tick: 최대 N개 (모든 자식이 동기적 SUCCESS인 경우)
+후속 Tick: 1개 (RUNNING 자식만 재평가)
+</code></pre>
+<p>다중 Tick에 걸친 총 평가 횟수는 자식 수 N에 선형적으로 비례한다:</p>
+<pre><code>C_total(SequenceNode) = N + Σ(i=1 to N) (T_running(i) - 1)
+</code></pre>
+<p>T_running(i)는 i번째 자식이 RUNNING 상태를 유지하는 Tick 수이다.</p>
+<h3>2.2 ReactiveSequence의 평가 패턴</h3>
+<p>ReactiveSequence는 매 Tick 첫 번째 자식부터 재평가하므로, RUNNING 자식의 위치에 따라 평가되는 자식 수가 달라진다:</p>
+<pre><code>자식 j가 RUNNING일 때:
+  평가 자식 수 = j + 1  (인덱스 0부터 j까지)
+</code></pre>
+<p>j번째 자식이 T_running Tick 동안 RUNNING을 유지하면, 그 기간 동안 매 Tick j+1개의 자식이 평가된다:</p>
+<pre><code>C_total(ReactiveSequence) = Σ(j=0 to N-1) [(j+1) × T_running(j)]
+</code></pre>
+<p>자식 수 N이 증가하면 뒤쪽 자식이 RUNNING인 동안의 Tick당 평가 횟수가 N에 비례하여 증가한다. 전체 실행에 걸친 총 평가 횟수는 O(N²)에 근접할 수 있다.</p>
+<h3>2.3 수치 비교 예시</h3>
+<p>자식 5개, 각 자식이 평균 3 Tick 동안 RUNNING인 시나리오:</p>
+<pre><code>[SequenceNode]
+Tick 1: child[0] 평가 (1회)
+Tick 2: child[0] 평가 (1회)
+Tick 3: child[0] S, child[1] 평가 (2회)
+Tick 4: child[1] 평가 (1회)
+...
+총 평가: 5 + 5×(3-1) = 15회
+
+[ReactiveSequence]
+Tick 1: child[0] 평가 (1회)
+Tick 2: child[0] 평가 (1회)
+Tick 3: child[0], child[1] 평가 (2회)
+Tick 4: child[0], child[1] 평가 (2회)
+Tick 5: child[0], child[1] 평가 (2회)
+Tick 6: child[0], child[1], child[2] 평가 (3회)
+...
+총 평가: 3×1 + 3×2 + 3×3 + 3×4 + 3×5 = 45회
+</code></pre>
+<p>동일 시나리오에서 ReactiveSequence의 총 평가 횟수가 SequenceNode의 3배이다. 자식 수가 증가할수록 이 비율은 더 커진다.</p>
+<h2>3. Fallback 변형의 자식 수 영향</h2>
+<h3>3.1 FallbackNode(WithMemory)</h3>
+<p>Fallback에서는 FAILURE를 반환한 자식을 건너뛴다. 최악의 경우(모든 대안이 순차적으로 실패)에만 N개 자식을 모두 평가한다:</p>
+<pre><code>최선: 1회 (첫 대안 SUCCESS)
+최악: N회 (모든 대안 FAILURE)
+평균: 대안의 성공 확률에 의존
+</code></pre>
+<h3>3.2 ReactiveFallback</h3>
+<p>ReactiveFallback에서 k번째 대안이 RUNNING이면 매 Tick k+1개의 자식이 평가된다. 하위 대안으로 갈수록 Tick당 평가 비용이 증가하며, ReactiveSequence와 동일한 O(N²) 특성을 보인다.</p>
+<h2>4. 자식 수 증가의 실시간 영향</h2>
+<h3>4.1 Tick 주기 초과 위험</h3>
+<pre><code>Tick 주기: P (ms)
+자식 i의 평가 시간: t(i) (ms)
+안전 마진: M (ms)
+
+제약 조건: Σ(i=1 to k) t(i) + T_control &lt; P - M
+</code></pre>
+<p>자식 수가 증가하면 최악의 경우 T_tick이 Tick 주기 P를 초과할 위험이 커진다. Tick 주기를 초과하면 다음 Tick이 지연되어 행동 트리의 반응성이 저하되고, 실시간 시스템에서는 데드라인 위반이 발생한다.</p>
+<h3>4.2 자식 수에 따른 최악 Tick 시간 예시</h3>
+<pre><code>조건 노드 평가: 0.1ms
+동기 액션 노드: 1ms
+비동기 액션 노드 (onRunning): 0.5ms
+
+자식 5개 (조건 2 + 액션 3):
+  ReactiveSequence 최악: 2×0.1 + 3×0.5 = 1.7ms
+
+자식 10개 (조건 4 + 액션 6):
+  ReactiveSequence 최악: 4×0.1 + 6×0.5 = 3.4ms
+
+자식 20개 (조건 8 + 액션 12):
+  ReactiveSequence 최악: 8×0.1 + 12×0.5 = 6.8ms
+</code></pre>
+<p>자식 수가 2배로 증가하면 최악 Tick 시간도 약 2배로 증가한다. Tick 주기가 10ms인 시스템에서 자식 20개의 ReactiveSequence는 최악의 경우 Tick 주기의 68%를 소비한다.</p>
+<h2>5. 깊이 방향의 자식 수 영향</h2>
+<h3>5.1 중첩 제어 노드에서의 누적</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;                          &lt;!-- 자식 3개 --&gt;
+    &lt;Fallback&gt;                      &lt;!-- 자식 4개 --&gt;
+        &lt;Sequence&gt;                  &lt;!-- 자식 3개 --&gt;
+            &lt;Action ID="..."/&gt;
+        &lt;/Sequence&gt;
+        ...
+    &lt;/Fallback&gt;
+    ...
+&lt;/Sequence&gt;
+</code></pre>
+<p>중첩 구조에서 최악의 Tick 시간은 각 계층의 최악 평가 횟수의 곱에 비례한다:</p>
+<pre><code>최악 평가 횟수 = N_1 × N_2 × ... × N_D
+(N_i: i번째 계층의 자식 수, D: 깊이)
+</code></pre>
+<p>그러나 실제로는 조기 종료에 의해 이 최악 경우에 도달하는 일은 드물다. 각 계층에서 평균적으로 평가되는 자식 수는 최악의 절반 이하이다.</p>
+<h2>6. 자식 수 최적화 전략</h2>
+<h3>6.1 서브트리 분해</h3>
+<p>자식 수가 과도한 경우 서브트리로 분해하여 각 제어 노드의 자식 수를 줄인다:</p>
+<pre><code class="language-xml">&lt;!-- 분해 전: 자식 9개 --&gt;
+&lt;Sequence&gt;
+    &lt;Action ID="A1"/&gt;&lt;Action ID="A2"/&gt;&lt;Action ID="A3"/&gt;
+    &lt;Action ID="A4"/&gt;&lt;Action ID="A5"/&gt;&lt;Action ID="A6"/&gt;
+    &lt;Action ID="A7"/&gt;&lt;Action ID="A8"/&gt;&lt;Action ID="A9"/&gt;
+&lt;/Sequence&gt;
+
+&lt;!-- 분해 후: 각 노드 자식 3개 --&gt;
+&lt;Sequence&gt;
+    &lt;SubTree ID="Phase1"/&gt;  &lt;!-- A1, A2, A3 --&gt;
+    &lt;SubTree ID="Phase2"/&gt;  &lt;!-- A4, A5, A6 --&gt;
+    &lt;SubTree ID="Phase3"/&gt;  &lt;!-- A7, A8, A9 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>서브트리 분해는 총 평가 횟수를 줄이지 않지만, SequenceNode(WithMemory)에서는 완료된 서브트리를 건너뛸 수 있어 Memory 효과를 계층적으로 활용할 수 있다.</p>
+<h3>6.2 ReactiveSequence에서의 조건 집약</h3>
+<p>ReactiveSequence에서 다수의 조건 노드가 매 Tick 재평가되는 경우, 조건들을 단일 복합 조건으로 집약하여 평가 횟수를 줄일 수 있다:</p>
+<pre><code class="language-xml">&lt;!-- 집약 전: 조건 5개 매 Tick 평가 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Condition ID="Cond1"/&gt;
+    &lt;Condition ID="Cond2"/&gt;
+    &lt;Condition ID="Cond3"/&gt;
+    &lt;Condition ID="Cond4"/&gt;
+    &lt;Condition ID="Cond5"/&gt;
+    &lt;Action ID="MainAction"/&gt;
+&lt;/ReactiveSequence&gt;
+
+&lt;!-- 집약 후: 복합 조건 1개 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Condition ID="AllConditionsMet"/&gt;
+    &lt;Action ID="MainAction"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>5개 조건의 개별 평가를 단일 복합 조건으로 집약하면, 제어 노드가 처리하는 자식 수가 6에서 2로 감소한다. 단, 복합 조건 내부에서 5개 조건을 모두 평가하므로 총 연산량은 동일하지만, 제어 노드의 루프 오버헤드와 상태 관리 비용이 감소한다.</p>
+<h3>6.3 Fallback의 대안 수 제한</h3>
+<p>Fallback에서 대안 수가 지나치게 많으면, 모든 대안이 실패하는 최악의 경우 Tick 시간이 길어진다:</p>
+<pre><code>권장: 대안 2-5개
+비권장: 대안 10개 이상
+</code></pre>
+<p>대안이 많은 경우 중첩 Fallback으로 범주화하여 조기 종료의 이점을 활용한다:</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Fallback name="software_recovery"&gt;
+        &lt;Action ID="Alt1"/&gt;&lt;Action ID="Alt2"/&gt;&lt;Action ID="Alt3"/&gt;
+    &lt;/Fallback&gt;
+    &lt;Fallback name="hardware_recovery"&gt;
+        &lt;Action ID="Alt4"/&gt;&lt;Action ID="Alt5"/&gt;&lt;Action ID="Alt6"/&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="SafeStop"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>소프트웨어 복구 대안 중 하나가 SUCCESS를 반환하면 hardware_recovery 전체를 건너뛸 수 있다.</p>
+<h2>7. 측정 기반 최적화</h2>
+<h3>7.1 자식 수와 Tick 시간의 실측</h3>
+<p>자식 수 변경이 실제 Tick 시간에 미치는 영향을 측정하려면, 프로파일링을 통해 각 자식의 실행 시간 분포를 수집하고, 자식 수에 따른 Tick 시간의 변화를 관찰해야 한다:</p>
+<pre><code class="language-cpp">// 자식 수별 Tick 시간 측정
+for (int n = 2; n &lt;= 20; n += 2) {
+    auto tree = createTreeWithNChildren(n);
+    
+    auto start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i &lt; 1000; i++) {
+        tree.tickOnce();
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    auto avg_us = std::chrono::duration_cast&lt;
+        std::chrono::microseconds&gt;(end - start).count() / 1000;
+    
+    std::cout &lt;&lt; "N=" &lt;&lt; n &lt;&lt; ": avg tick = "
+              &lt;&lt; avg_us &lt;&lt; " us" &lt;&lt; std::endl;
+}
+</code></pre>
+<p>측정 결과를 기반으로, Tick 주기의 50% 이내에 최악 Tick 시간이 유지되도록 자식 수를 조정하는 것이 안전한 설계 지침이다(Faconti, 2022).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

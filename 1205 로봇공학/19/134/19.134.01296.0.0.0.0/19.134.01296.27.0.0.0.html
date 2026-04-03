@@ -115,6 +115,199 @@
             </header>
             <article>
                 <h1>1296.27 액션 노드의 설계 원칙</h1>
+<h2>1. 설계 원칙의 필요성</h2>
+<p>행동 트리의 액션 노드는 로봇 시스템의 실제 행동을 구현하는 단위이다. 액션 노드의 설계 품질은 행동 트리 전체의 재사용성, 유지 보수성, 확장성에 직접적으로 영향을 미친다. 설계 원칙이 부재한 상태에서 액션 노드를 구현하면, 노드 간의 과도한 결합(coupling), 행동의 불명확한 경계, 테스트의 곤란, 트리 구조 변경 시의 연쇄적 수정 등의 문제가 발생한다.</p>
+<p>Colledanchise와 Ögren(2018)은 행동 트리의 모듈성(modularity)을 핵심 속성으로 제시하며, 각 노드가 독립적으로 이해, 테스트, 재사용될 수 있어야 함을 강조하였다. 이 모듈성의 실현을 위해 액션 노드의 설계에 적용되어야 하는 원칙을 체계적으로 정리한다.</p>
+<h2>2. 단일 책임 원칙</h2>
+<p>단일 책임 원칙(Single Responsibility Principle)은 하나의 액션 노드가 하나의 명확히 정의된 행동만을 수행하여야 한다는 원칙이다. 이 원칙은 소프트웨어 공학의 SOLID 원칙 중 첫 번째에 해당하며, 행동 트리의 컨텍스트에서는 각 리프 노드가 하나의 원자적 행동(atomic action)을 캡슐화하여야 함을 의미한다.</p>
+<p>단일 책임 원칙을 위반하는 경우와 준수하는 경우를 대비한다.</p>
+<h3>2.1 위반 사례</h3>
+<pre><code class="language-cpp">// 하나의 노드에서 다수의 행동을 수행
+class NavigateAndPickup : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        sendNavigationGoal(target_pose_);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (!navigation_complete_)
+            return BT::NodeStatus::RUNNING;
+
+        // 내비게이션 완료 후 집어올리기까지 수행
+        if (!pickup_started_)
+        {
+            sendPickupCommand();
+            pickup_started_ = true;
+        }
+
+        return pickup_complete_
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override { /* ... */ }
+};
+</code></pre>
+<p>이 구현은 내비게이션과 집어올리기라는 두 개의 독립적 행동을 단일 노드에 결합하고 있다. 내비게이션만 필요한 경우에도 이 노드를 사용할 수 없으며, 집어올리기 로직의 변경이 내비게이션 로직에 영향을 미칠 수 있다.</p>
+<h3>2.2 준수 사례</h3>
+<pre><code class="language-cpp">class NavigateToPose : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        Pose target;
+        getInput("target_pose", target);
+        sendNavigationGoal(target);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        return isNavigationComplete()
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override { cancelNavigation(); }
+};
+
+class PickupObject : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        std::string object_id;
+        getInput("object_id", object_id);
+        sendPickupCommand(object_id);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        return isPickupComplete()
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override { cancelPickup(); }
+};
+</code></pre>
+<p>두 행동이 분리됨으로써 각각 독립적으로 재사용, 테스트, 수정이 가능하다. 트리 구조에서 Sequence 노드를 통해 두 행동을 순차적으로 조합할 수 있다.</p>
+<h2>3. 최소 부작용 원칙</h2>
+<p>최소 부작용 원칙(Minimal Side Effect Principle)은 액션 노드가 자신의 명시된 역할 이외의 부작용(side effect)을 최소화하여야 한다는 원칙이다. 부작용이란 노드의 주된 행동 이외에 시스템 상태에 미치는 추가적 변경을 의미한다.</p>
+<p>행동 트리에서 부작용이 과도한 액션 노드는 다음의 문제를 유발한다.</p>
+<ol>
+<li><strong>예측 불가능성</strong>: 노드의 실행 결과를 노드의 명칭과 포트만으로 예측할 수 없다.</li>
+<li><strong>디버깅 곤란</strong>: 트리 실행 중 예기치 않은 상태 변경의 원인을 추적하기 어렵다.</li>
+<li><strong>재사용 제약</strong>: 부작용에 의존하는 암묵적 계약이 형성되어, 노드를 다른 컨텍스트에서 재사용하기 어렵다.</li>
+</ol>
+<h3>3.1 부작용의 구분</h3>
+<table><thead><tr><th>부작용 유형</th><th style="text-align: center">허용 여부</th><th>예시</th></tr></thead><tbody>
+<tr><td>명시된 출력 포트 기록</td><td style="text-align: center">허용</td><td><code>setOutput("result", value)</code></td></tr>
+<tr><td>ROS2 인터페이스 호출</td><td style="text-align: center">허용 (주된 역할)</td><td>액션 목표 전송, 토픽 발행</td></tr>
+<tr><td>블랙보드 비명시 키 수정</td><td style="text-align: center">지양</td><td>포트에 선언하지 않은 키 수정</td></tr>
+<tr><td>전역 변수 수정</td><td style="text-align: center">금지</td><td>정적 변수, 싱글턴 상태 변경</td></tr>
+<tr><td>파일 시스템 변경</td><td style="text-align: center">제한적 허용</td><td>로깅은 허용, 설정 파일 수정은 지양</td></tr>
+</tbody></table>
+<h2>4. 블랙보드 인터페이스의 명시성</h2>
+<p>액션 노드의 입출력은 블랙보드 포트를 통해 명시적으로 선언되어야 한다. <code>providedPorts()</code> 메서드에서 선언된 포트는 노드의 외부 인터페이스를 구성하며, 이를 통해 노드가 어떤 데이터를 필요로 하고 어떤 데이터를 생성하는지가 명확히 드러난다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;Pose&gt;("target_pose",
+            "목표 위치와 자세"),
+        BT::InputPort&lt;double&gt;("tolerance",
+            "위치 허용 오차 (미터)"),
+        BT::OutputPort&lt;bool&gt;("goal_reached",
+            "목표 도달 여부"),
+        BT::OutputPort&lt;double&gt;("final_distance",
+            "최종 거리 (미터)")
+    };
+}
+</code></pre>
+<p>포트 선언은 다음의 설계적 이점을 제공한다.</p>
+<ol>
+<li><strong>자기 문서화(self-documenting)</strong>: 포트 선언이 노드의 인터페이스 문서 역할을 한다.</li>
+<li><strong>XML 검증</strong>: 트리 정의 XML에서 포트 연결의 유효성을 검증할 수 있다.</li>
+<li><strong>의존성 가시화</strong>: 노드 간의 데이터 의존성이 명시적으로 드러난다.</li>
+<li><strong>타입 안전성</strong>: 포트의 타입 정보에 의해 데이터 불일치가 조기에 검출된다.</li>
+</ol>
+<h2>5. 적절한 기반 클래스 선택</h2>
+<p>액션 노드의 설계에서 적절한 기반 클래스의 선택은 구현의 복잡도, 스레드 안전성, Halt 처리에 직접적으로 영향을 미친다. 기반 클래스 선택의 판단 기준을 정리한다.</p>
+<table><thead><tr><th>판단 기준</th><th style="text-align: center">SyncActionNode</th><th style="text-align: center">StatefulActionNode</th><th style="text-align: center">ThreadedAction</th><th style="text-align: center">CoroActionNode</th></tr></thead><tbody>
+<tr><td>단일 Tick 완료</td><td style="text-align: center">적합</td><td style="text-align: center">부적합</td><td style="text-align: center">부적합</td><td style="text-align: center">부적합</td></tr>
+<tr><td>다중 Tick 실행</td><td style="text-align: center">불가</td><td style="text-align: center">적합</td><td style="text-align: center">해당 없음</td><td style="text-align: center">적합</td></tr>
+<tr><td>차단 호출 포함</td><td style="text-align: center">불가</td><td style="text-align: center">불가</td><td style="text-align: center">적합</td><td style="text-align: center">불가</td></tr>
+<tr><td>스레드 안전성 부담</td><td style="text-align: center">없음</td><td style="text-align: center">없음</td><td style="text-align: center">있음</td><td style="text-align: center">없음</td></tr>
+<tr><td>순차적 코드 선호</td><td style="text-align: center">해당 없음</td><td style="text-align: center">해당 없음</td><td style="text-align: center">해당 없음</td><td style="text-align: center">적합</td></tr>
+<tr><td>Halt 제어 세밀도</td><td style="text-align: center">없음</td><td style="text-align: center">높음</td><td style="text-align: center">중간</td><td style="text-align: center">낮음</td></tr>
+</tbody></table>
+<p>기반 클래스 선택의 우선순위는 다음과 같다.</p>
+<ol>
+<li><strong>SyncActionNode</strong>: 행동이 단일 Tick 내에 완료되는 경우 최우선으로 선택한다.</li>
+<li><strong>StatefulActionNode</strong>: 다중 Tick에 걸친 비동기 행동의 기본 선택지이다.</li>
+<li><strong>CoroActionNode</strong>: 복잡한 다단계 순차 행동에서 <code>StatefulActionNode</code>의 상태 기계적 복잡도를 회피하려는 경우에 선택한다.</li>
+<li><strong>ThreadedAction</strong>: 차단 호출이 불가피하고 다른 기반 클래스로 구현할 수 없는 경우에만 제한적으로 선택한다.</li>
+</ol>
+<p>Faconti(2022)는 <code>StatefulActionNode</code>를 비동기 행동의 기본 선택지로 권장하며, <code>ThreadedAction</code>의 사용을 차단 호출이 불가피한 경우로 제한할 것을 제안하였다.</p>
+<h2>6. Halt 처리의 완전성</h2>
+<p>모든 비동기 액션 노드는 Halt 시 자원을 적절히 정리하여야 한다. Halt는 외부에서 언제든지 발생할 수 있으므로, 노드가 RUNNING 상태에 있는 동안의 모든 시점에서 Halt가 발생하더라도 자원 누수나 시스템 상태의 불일치가 발생하지 않아야 한다.</p>
+<p>Halt 처리에서 고려하여야 하는 항목은 다음과 같다.</p>
+<ol>
+<li><strong>진행 중인 외부 작업의 취소</strong>: ROS2 액션 목표, 서비스 요청 등의 취소</li>
+<li><strong>하드웨어 상태의 안전 전이</strong>: 모터 정지, 그리퍼 안전 위치 복귀 등</li>
+<li><strong>할당된 자원의 해제</strong>: 메모리, 파일 핸들, 네트워크 연결 등</li>
+<li><strong>내부 상태 변수의 초기화</strong>: 다음 실행을 위한 상태 정리</li>
+</ol>
+<h2>7. 멱등성(Idempotency)</h2>
+<p>비동기 액션 노드의 콜백은 멱등성을 가져야 한다. 멱등성이란 동일한 입력에 대해 콜백이 여러 번 호출되더라도 부작용이 중복되지 않는 성질이다. 특히 <code>onRunning()</code> 콜백은 매 Tick마다 반복 호출되므로, 호출 횟수에 무관하게 동일한 효과를 산출하여야 한다.</p>
+<pre><code class="language-cpp">// 멱등적이지 않은 구현
+BT::NodeStatus onRunning() override
+{
+    counter_++;  // 매 Tick마다 증가 → Tick 빈도에 의존
+    publisher_-&gt;publish(msg_);  // 매 Tick마다 발행
+    return BT::NodeStatus::RUNNING;
+}
+
+// 멱등적 구현
+BT::NodeStatus onRunning() override
+{
+    if (isComplete())
+    {
+        return BT::NodeStatus::SUCCESS;
+    }
+    // 상태 확인만 수행, 부작용 없음
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>8. 비차단성(Non-blocking)</h2>
+<p>메인 스레드에서 실행되는 콜백(<code>SyncActionNode</code>의 <code>tick()</code>, <code>StatefulActionNode</code>의 <code>onStart()</code>/<code>onRunning()</code>/<code>onHalted()</code>, <code>CoroActionNode</code>의 yield 구간)은 비차단적이어야 한다. 차단 호출은 메인 스레드를 점유하여 트리의 Tick 주기를 위반하고, 다른 노드의 실행을 지연시킨다.</p>
+<p>비차단성을 달성하기 위한 패턴은 다음과 같다.</p>
+<ol>
+<li><strong>비동기 호출 후 폴링</strong>: 비동기 API로 작업을 시작한 후, 이후 콜백에서 완료 여부를 폴링한다.</li>
+<li><strong>타임아웃 제한</strong>: 대기가 불가피한 경우 짧은 타임아웃(수 밀리초)을 설정한다.</li>
+<li><strong>별도 스레드 위임</strong>: 차단 호출이 불가피하면 <code>ThreadedAction</code>을 사용하여 별도 스레드에서 수행한다.</li>
+</ol>
+<h2>9. 테스트 용이성</h2>
+<p>액션 노드는 행동 트리의 나머지 부분과 독립적으로 단위 테스트가 가능하도록 설계되어야 한다. 테스트 용이성을 향상시키는 설계 지침은 다음과 같다.</p>
+<ol>
+<li><strong>외부 의존성의 주입</strong>: ROS2 노드 핸들, 액션 클라이언트 등의 외부 의존성을 생성자 또는 블랙보드를 통해 주입한다.</li>
+<li><strong>포트 기반 입출력</strong>: 하드코딩된 값 대신 포트를 통해 입출력을 수행하여, 테스트 시 다양한 입력을 제공할 수 있게 한다.</li>
+<li><strong>행동의 원자성</strong>: 단일 책임 원칙의 준수에 의해 개별 행동의 테스트 범위가 명확해진다.</li>
+</ol>
+<h2>10. 설계 원칙의 요약</h2>
+<table><thead><tr><th>원칙</th><th>핵심 내용</th><th>위반 시 결과</th></tr></thead><tbody>
+<tr><td>단일 책임</td><td>하나의 노드, 하나의 행동</td><td>재사용성 저하, 결합도 증가</td></tr>
+<tr><td>최소 부작용</td><td>명시된 역할 외 상태 변경 최소화</td><td>예측 불가능성, 디버깅 곤란</td></tr>
+<tr><td>인터페이스 명시성</td><td>포트를 통한 입출력 선언</td><td>의존성 은닉, 검증 불가</td></tr>
+<tr><td>기반 클래스 적합성</td><td>행동 특성에 맞는 기반 클래스 선택</td><td>불필요한 복잡도</td></tr>
+<tr><td>Halt 완전성</td><td>모든 RUNNING 시점에서 안전한 정리</td><td>자원 누수, 상태 불일치</td></tr>
+<tr><td>멱등성</td><td>반복 호출에 무관한 효과</td><td>Tick 빈도 의존적 동작</td></tr>
+<tr><td>비차단성</td><td>메인 스레드 콜백의 즉시 반환</td><td>Tick 주기 위반, 반응성 저하</td></tr>
+<tr><td>테스트 용이성</td><td>독립적 단위 테스트 가능</td><td>결함 검출 지연</td></tr>
+</tbody></table>
+<p>이 원칙들은 독립적으로 적용되는 것이 아니라 상호 보완적으로 작용한다. 단일 책임 원칙은 테스트 용이성을 향상시키며, 인터페이스의 명시성은 최소 부작용 원칙의 실현을 지원한다. 이러한 원칙의 체계적 적용은 로봇 시스템의 행동 트리가 요구하는 신뢰성과 유지 보수성의 달성에 필수적이다(Colledanchise &amp; Ögren, 2018; Faconti, 2022).</p>
 
             </article>
             <footer>

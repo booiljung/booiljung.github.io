@@ -115,6 +115,86 @@
             </header>
             <article>
                 <h1>1295.28 행동과 모니터링의 동시 실행 패턴</h1>
+<h2>1. 패턴의 개요</h2>
+<p>행동과 모니터링의 동시 실행 패턴은 로봇이 특정 행동(action)을 수행하는 동안 해당 행동의 실행 상태 또는 환경 상태를 지속적으로 모니터링(monitoring)하는 일반적인 설계 패턴이다. 이 패턴은 이동에 국한되지 않으며, 매니퓰레이션, 센서 데이터 수집, 통신 송수신 등 로봇의 모든 종류의 행동에 범용적으로 적용된다.</p>
+<p>이 패턴의 핵심은 주 행동의 실행과 모니터링 로직이 서로 독립적으로 매 Tick마다 실행되되, 모니터링 결과에 따라 주 행동의 지속 여부가 결정된다는 것이다. Parallel 노드는 이러한 독립적 동시 실행과 조건부 종료 메커니즘을 단일 구조 내에서 자연스럽게 표현할 수 있게 한다.</p>
+<h2>2. 이동-감시 패턴과의 차별점</h2>
+<p>이동과 감시의 동시 실행 패턴이 주행(navigation)이라는 특정 행동에 초점을 맞추는 반면, 행동과 모니터링의 동시 실행 패턴은 임의의 행동에 대해 적용 가능한 범용 구조이다. 모니터링 대상 또한 안전 조건에 국한되지 않으며, 행동의 진행률(progress), 자원 소비량, 출력 품질, 외부 이벤트 등 다양한 측면을 포괄한다.</p>
+<h2>3. 기본 구조와 정책 설정</h2>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── PerformAction     →  주 행동 실행 (RUNNING 유지, 완료 시 SUCCESS)
+└── MonitorStatus     →  상태 정상 시 RUNNING, 이상 시 FAILURE
+</code></pre>
+<p>이 구조에서 <code>FAILURE_ONE</code> 정책은 모니터링 노드가 이상을 감지하여 <code>FAILURE</code>를 반환하는 즉시 전체 Parallel 노드를 실패로 종료시킨다. 주 행동이 정상 완료되어 <code>SUCCESS</code>를 반환하더라도, <code>SUCCESS_ALL</code> 정책에 의해 모니터링 노드의 상태까지 함께 평가된다.</p>
+<h2>4. 적용 시나리오</h2>
+<h3>4.1 매니퓰레이션 행동과 힘 모니터링</h3>
+<p>산업용 로봇 팔(manipulator)이 물체를 파지(grasp)하거나 조립 작업을 수행하는 동안, 엔드 이펙터(end effector)에 가해지는 힘과 토크를 지속적으로 모니터링하는 패턴이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteGrasp
+│   input: "grasp_pose", "grasp_force"
+│   output: "grasp_result"
+└── MonitorContactForce
+    input: "max_force_threshold"
+</code></pre>
+<p><code>MonitorContactForce</code> 노드는 힘/토크 센서(force/torque sensor)로부터 매 Tick마다 접촉력 데이터를 읽어, 힘의 크기가 사전 설정된 최대 허용 힘 임계값을 초과하면 <code>FAILURE</code>를 반환한다. 이를 통해 과도한 힘이 가해져 물체가 파손되거나 로봇 관절에 손상이 발생하는 것을 방지한다.</p>
+<h3>4.2 데이터 전송과 연결 상태 모니터링</h3>
+<p>로봇이 수집한 대용량 센서 데이터를 원격 서버로 전송하는 동안 네트워크 연결 상태를 모니터링하는 패턴이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── UploadSensorData
+│   input: "data_buffer", "server_address"
+│   output: "upload_progress"
+└── MonitorNetworkConnection
+    input: "min_bandwidth", "max_latency"
+</code></pre>
+<p><code>MonitorNetworkConnection</code> 노드는 네트워크 대역폭(bandwidth)과 지연 시간(latency)을 매 Tick마다 측정하여, 최소 대역폭 이하로 감소하거나 최대 허용 지연 시간을 초과하면 <code>FAILURE</code>를 반환한다. 이를 통해 불안정한 네트워크 환경에서의 무의미한 전송 시도를 조기에 중단하고, 대안적 행동(데이터 로컬 저장 등)으로 전환할 수 있다.</p>
+<h3>4.3 작업 실행과 진행률 모니터링</h3>
+<p>장시간 소요되는 작업의 진행률을 모니터링하여, 진행이 정체(stall)된 경우 작업을 중단하는 패턴이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteLongTask
+│   output: "task_progress"
+└── MonitorProgress
+    input: "task_progress", "stall_timeout"
+</code></pre>
+<p><code>MonitorProgress</code> 노드는 블랙보드의 <code>task_progress</code> 값을 매 Tick마다 읽어 변화량을 추적한다. 일정 시간(<code>stall_timeout</code>) 동안 진행률에 변화가 없으면 작업이 정체된 것으로 판정하여 <code>FAILURE</code>를 반환한다. 이 패턴은 교착 상태(deadlock)나 무한 대기 상태에 빠진 행동을 감지하는 데 유용하다.</p>
+<h3>4.4 환경 조건 모니터링</h3>
+<p>로봇이 특정 행동을 수행하는 동안 환경 조건(온도, 습도, 조도, 풍속 등)이 허용 범위 내에 있는지를 모니터링하는 패턴이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── PerformOutdoorSurvey
+│   input: "survey_waypoints"
+└── MonitorWeatherConditions
+    input: "max_wind_speed", "min_visibility"
+</code></pre>
+<p>옥외 조사(survey) 작업 중 풍속이 과도하게 증가하거나 시정(visibility)이 최소 허용치 이하로 감소하면, 모니터링 노드가 <code>FAILURE</code>를 반환하여 작업을 중단시킨다. 이는 특히 드론이나 옥외 이동 로봇의 운용에서 중요한 안전 메커니즘이다.</p>
+<h2>5. 모니터링 노드의 반환값 설계</h2>
+<p>행동과 모니터링의 동시 실행 패턴에서 모니터링 노드의 반환값 설계는 전체 패턴의 동작 특성을 결정하는 핵심 요소이다.</p>
+<table><thead><tr><th>모니터링 상태</th><th>반환값</th><th>Parallel 노드 동작</th></tr></thead><tbody>
+<tr><td>조건 정상, 행동 계속</td><td>RUNNING</td><td>RUNNING 유지 (행동 계속)</td></tr>
+<tr><td>이상 감지, 행동 중단 필요</td><td>FAILURE</td><td>FAILURE 반환 (행동 Halt)</td></tr>
+<tr><td>모니터링 완료 (더 이상 감시 불필요)</td><td>SUCCESS</td><td>SUCCESS_ALL 정책에 기여</td></tr>
+</tbody></table>
+<p>모니터링 노드가 <code>SUCCESS</code>를 반환하는 경우는 모니터링 자체가 완료된 특수한 상황에 해당한다. 예를 들어, 초기 진단(diagnostic) 단계에서만 모니터링이 필요하고 이후에는 불필요한 경우, 진단이 완료되면 <code>SUCCESS</code>를 반환하여 더 이상 Tick을 소비하지 않도록 할 수 있다.</p>
+<h2>6. 다중 모니터링 노드의 조합</h2>
+<p>실제 로봇 시스템에서는 하나의 행동에 대해 복수의 모니터링 관점이 요구되는 경우가 일반적이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteManipulation
+├── MonitorJointLimits
+├── MonitorContactForce
+├── MonitorMotorTemperature
+└── MonitorTaskProgress
+</code></pre>
+<p>이 구조에서 관절 한계 감시, 접촉력 감시, 모터 온도 감시, 작업 진행률 감시가 동시에 수행된다. 각 모니터링 노드는 서로 독립적인 조건을 감시하며, 어느 하나라도 이상을 감지하면 전체 행동이 즉시 중단된다.</p>
+<p>다중 모니터링 노드 적용 시, 각 모니터링 노드가 이상 감지 시 블랙보드에 실패 원인(failure reason)을 기록하도록 설계하면, 상위 행동 트리에서 실패 원인에 따른 차별화된 복구 전략을 수립할 수 있다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteManipulation
+│   output: "manipulation_result"
+├── MonitorContactForce
+│   output: "failure_reason"    →  "EXCESSIVE_FORCE"
+└── MonitorMotorTemperature
+    output: "failure_reason"    →  "OVERHEATED"
+</code></pre>
+<h2>7. ROS2 연동 시 고려 사항</h2>
+<p>ROS2 기반 시스템에서 모니터링 노드는 일반적으로 토픽 구독(topic subscription)을 통해 센서 데이터를 수신한다. 모니터링 노드의 Tick 호출 시점과 센서 데이터의 발행(publish) 시점이 비동기적이므로, 모니터링 노드는 가장 최근에 수신된 데이터를 기반으로 판정을 수행한다.</p>
+<p>센서 데이터의 수신이 지연되거나 중단되는 경우, 모니터링 노드는 데이터의 타임스탬프(timestamp)를 확인하여 데이터의 유효성(freshness)을 판정하여야 한다. 유효 기간이 경과한 데이터에 기반한 판정은 신뢰할 수 없으므로, 데이터 타임아웃 시 <code>FAILURE</code>를 반환하여 안전한 방향으로 동작하는 것이 권장된다.</p>
 
             </article>
             <footer>

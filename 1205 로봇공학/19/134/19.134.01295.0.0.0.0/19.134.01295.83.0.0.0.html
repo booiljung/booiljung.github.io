@@ -115,6 +115,371 @@
             </header>
             <article>
                 <h1>1295.83 Parallel 노드의 정책별 테스트 케이스</h1>
+<h2>1. SUCCESS_ALL 정책 테스트</h2>
+<p>SUCCESS_ALL 정책(BehaviorTree.CPP 4.x의 <code>ParallelAll</code>에서 <code>max_failures="0"</code>)은 모든 자식이 SUCCESS를 반환하여야 Parallel이 SUCCESS를 반환하는 정책이다. 이 정책에 대한 테스트 케이스는 다음과 같이 구성한다.</p>
+<h3>1.1 기본 성공 케이스</h3>
+<p>모든 자식이 SUCCESS를 반환하는 경우이다.</p>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessAll_AllChildrenSucceed)
+{
+    // 자식 3개, max_failures = 0
+    auto tree = createParallelTree(3, /*max_failures=*/0);
+    auto children = getAsyncChildren(tree, 3);
+
+    // Tick 1: 모든 자식 RUNNING
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // 모든 자식을 SUCCESS로 전이
+    for (auto* child : children)
+        child-&gt;setStatus(BT::NodeStatus::SUCCESS);
+
+    // Tick 2: Parallel SUCCESS
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>1.2 단일 실패 케이스</h3>
+<p>하나의 자식이 FAILURE를 반환하면 즉시 FAILURE를 반환하여야 한다.</p>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessAll_OneChildFails)
+{
+    auto tree = createParallelTree(3, 0);
+    auto children = getAsyncChildren(tree, 3);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    children[0]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[1]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    // children[2]는 여전히 RUNNING
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::FAILURE);
+
+    // RUNNING이었던 children[2]에 Halt가 전파되었는지 확인
+    EXPECT_GE(children[2]-&gt;haltCount(), 1);
+}
+</code></pre>
+<h3>1.3 점진적 완료 케이스</h3>
+<p>자식이 여러 Tick에 걸쳐 순차적으로 완료되는 시나리오이다.</p>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessAll_GradualCompletion)
+{
+    auto tree = createParallelTree(3, 0);
+    auto children = getAsyncChildren(tree, 3);
+
+    // Tick 1: 모든 자식 RUNNING
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // Tick 2: 첫 번째 자식만 SUCCESS
+    children[0]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // Tick 3: 두 번째 자식도 SUCCESS
+    children[1]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // Tick 4: 세 번째 자식도 SUCCESS → Parallel SUCCESS
+    children[2]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h2>2. max_failures 기반 실패 정책 테스트</h2>
+<p>BehaviorTree.CPP 4.x의 <code>ParallelAll</code> 노드는 <code>max_failures</code> 매개변수로 허용 가능한 실패 수를 지정한다. <code>max_failures = M</code>이면 M개까지의 자식 실패를 허용하고, M+1번째 실패 시 FAILURE를 반환한다.</p>
+<h3>2.1 실패 허용 범위 내 성공</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, MaxFailures_WithinThreshold)
+{
+    // max_failures = 1: 실패 1개까지 허용
+    auto tree = createParallelTree(4, /*max_failures=*/1);
+    auto children = getAsyncChildren(tree, 4);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    children[0]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[1]-&gt;setStatus(BT::NodeStatus::FAILURE);  // 허용 범위 내
+    children[2]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[3]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+
+    // 실패 1개 ≤ max_failures(1) → SUCCESS
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>2.2 실패 허용 범위 초과</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, MaxFailures_ExceedsThreshold)
+{
+    auto tree = createParallelTree(4, 1);
+    auto children = getAsyncChildren(tree, 4);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    children[0]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[1]-&gt;setStatus(BT::NodeStatus::FAILURE);  // 2번째 실패 → 초과
+
+    // 실패 2개 &gt; max_failures(1) → FAILURE
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h3>2.3 경계값 테스트</h3>
+<p><code>max_failures</code>의 경계값에서의 동작을 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, MaxFailures_BoundaryValues)
+{
+    // max_failures = N-1 (전체 자식 수 - 1)
+    // → 모든 자식이 실패하여도 N-1개까지 허용, N번째에서 실패
+    auto tree = createParallelTree(3, /*max_failures=*/2);
+    auto children = getAsyncChildren(tree, 3);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // 2개 실패, 1개 성공 → 허용 범위 내 → SUCCESS
+    children[0]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[1]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[2]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+
+TEST_F(ParallelPolicyTest, MaxFailures_AllFail)
+{
+    auto tree = createParallelTree(3, 2);
+    auto children = getAsyncChildren(tree, 3);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // 3개 모두 실패 → 3 &gt; max_failures(2) → FAILURE
+    children[0]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[1]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[2]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h2>3. SUCCESS_ONE 정책 테스트</h2>
+<p>SUCCESS_ONE 정책은 커스텀 Parallel 변형으로, 하나의 자식이 SUCCESS를 반환하면 즉시 전체가 SUCCESS를 반환하는 정책이다.</p>
+<h3>3.1 첫 번째 자식 성공</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessOne_FirstChildSucceeds)
+{
+    auto tree = createParallelOneTree(3);
+    auto children = getAsyncChildren(tree, 3);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    children[0]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+
+    // 나머지 자식에 Halt 전파 확인
+    EXPECT_GE(children[1]-&gt;haltCount(), 1);
+    EXPECT_GE(children[2]-&gt;haltCount(), 1);
+}
+</code></pre>
+<h3>3.2 중간 자식 성공</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessOne_MiddleChildSucceeds)
+{
+    auto tree = createParallelOneTree(3);
+    auto children = getAsyncChildren(tree, 3);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    children[0]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[1]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>3.3 모든 자식 실패</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessOne_AllChildrenFail)
+{
+    auto tree = createParallelOneTree(3);
+    auto children = getAsyncChildren(tree, 3);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    for (auto* child : children)
+        child-&gt;setStatus(BT::NodeStatus::FAILURE);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h2>4. SUCCESS_COUNT(N) 정책 테스트</h2>
+<p>SUCCESS_COUNT(N) 정책은 N개 이상의 자식이 SUCCESS를 반환하면 전체가 SUCCESS를 반환하는 정책이다.</p>
+<h3>4.1 임계값 정확 도달</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessCount_ExactThreshold)
+{
+    // 자식 5개, 성공 임계값 3
+    auto tree = createParallelCountTree(5, /*threshold=*/3, /*max_fail=*/2);
+    auto children = getAsyncChildren(tree, 5);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    children[0]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[1]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[2]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[3]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[4]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+
+    // 성공 3개 ≥ threshold(3) → SUCCESS
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>4.2 임계값 미달</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessCount_BelowThreshold)
+{
+    auto tree = createParallelCountTree(5, 3, 2);
+    auto children = getAsyncChildren(tree, 5);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    children[0]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[1]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[2]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[3]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[4]-&gt;setStatus(BT::NodeStatus::FAILURE);
+
+    // 성공 2개 &lt; threshold(3), 실패 3개 &gt; max_fail(2) → FAILURE
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h3>4.3 조기 종료 검증</h3>
+<p>남은 RUNNING 자식이 모두 성공하더라도 임계값에 도달할 수 없는 경우, 조기에 FAILURE를 반환하는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SuccessCount_EarlyTermination)
+{
+    // 자식 4개, 성공 임계값 3
+    auto tree = createParallelCountTree(4, 3, 1);
+    auto children = getAsyncChildren(tree, 4);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // 2개 실패 → 남은 2개가 모두 성공하여도 2 &lt; 3
+    children[0]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    children[1]-&gt;setStatus(BT::NodeStatus::FAILURE);
+
+    // 성공 0 + 남은 RUNNING 2 = 2 &lt; threshold(3) → 조기 FAILURE
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::FAILURE);
+
+    // RUNNING이었던 자식에 Halt 전파 확인
+    EXPECT_GE(children[2]-&gt;haltCount(), 1);
+    EXPECT_GE(children[3]-&gt;haltCount(), 1);
+}
+</code></pre>
+<h2>5. 매개변수화 테스트를 활용한 체계적 검증</h2>
+<p>다수의 상태 조합을 효율적으로 테스트하기 위해 매개변수화 테스트를 활용한다.</p>
+<pre><code class="language-cpp">struct PolicyTestCase
+{
+    std::string description;
+    int child_count;
+    int max_failures;
+    std::vector&lt;BT::NodeStatus&gt; final_statuses;
+    BT::NodeStatus expected_result;
+};
+
+class ParallelAllPolicyTest 
+    : public ::testing::TestWithParam&lt;PolicyTestCase&gt;
+{
+protected:
+    BT::BehaviorTreeFactory factory_;
+    void SetUp() override { /* 노드 등록 */ }
+};
+
+TEST_P(ParallelAllPolicyTest, PolicyVerification)
+{
+    auto param = GetParam();
+    auto tree = createTree(param.child_count, param.max_failures);
+    auto children = getChildren(tree, param.child_count);
+
+    // 첫 Tick: RUNNING
+    tree-&gt;tickOnce();
+
+    // 자식 상태 설정
+    for (size_t i = 0; i &lt; param.final_statuses.size(); i++)
+        children[i]-&gt;setStatus(param.final_statuses[i]);
+
+    // 결과 검증
+    EXPECT_EQ(tree-&gt;tickOnce(), param.expected_result)
+        &lt;&lt; "Failed: " &lt;&lt; param.description;
+}
+
+using S = BT::NodeStatus;
+
+INSTANTIATE_TEST_SUITE_P(
+    ParallelAllTests,
+    ParallelAllPolicyTest,
+    ::testing::Values(
+        // max_failures = 0 (SUCCESS_ALL)
+        PolicyTestCase{"3 SUCCESS, mf=0 → SUCCESS", 
+            3, 0, {S::SUCCESS, S::SUCCESS, S::SUCCESS}, S::SUCCESS},
+        PolicyTestCase{"2S+1F, mf=0 → FAILURE", 
+            3, 0, {S::SUCCESS, S::SUCCESS, S::FAILURE}, S::FAILURE},
+        PolicyTestCase{"1S+2F, mf=0 → FAILURE", 
+            3, 0, {S::SUCCESS, S::FAILURE, S::FAILURE}, S::FAILURE},
+        PolicyTestCase{"3F, mf=0 → FAILURE", 
+            3, 0, {S::FAILURE, S::FAILURE, S::FAILURE}, S::FAILURE},
+
+        // max_failures = 1
+        PolicyTestCase{"3S, mf=1 → SUCCESS", 
+            3, 1, {S::SUCCESS, S::SUCCESS, S::SUCCESS}, S::SUCCESS},
+        PolicyTestCase{"2S+1F, mf=1 → SUCCESS", 
+            3, 1, {S::SUCCESS, S::SUCCESS, S::FAILURE}, S::SUCCESS},
+        PolicyTestCase{"1S+2F, mf=1 → FAILURE", 
+            3, 1, {S::SUCCESS, S::FAILURE, S::FAILURE}, S::FAILURE},
+
+        // max_failures = 2
+        PolicyTestCase{"1S+2F, mf=2 → SUCCESS", 
+            3, 2, {S::SUCCESS, S::FAILURE, S::FAILURE}, S::SUCCESS},
+        PolicyTestCase{"3F, mf=2 → FAILURE", 
+            3, 2, {S::FAILURE, S::FAILURE, S::FAILURE}, S::FAILURE}
+    )
+);
+</code></pre>
+<h2>6. 단일 자식 및 경계 조건 테스트</h2>
+<h3>6.1 자식이 1개인 경우</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, SingleChild_Success)
+{
+    auto tree = createParallelTree(1, 0);
+    auto children = getAsyncChildren(tree, 1);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+    children[0]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+
+TEST_F(ParallelPolicyTest, SingleChild_Failure)
+{
+    auto tree = createParallelTree(1, 0);
+    auto children = getAsyncChildren(tree, 1);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+    children[0]-&gt;setStatus(BT::NodeStatus::FAILURE);
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h3>6.2 모든 자식이 동시에 완료하는 경우</h3>
+<pre><code class="language-cpp">TEST_F(ParallelPolicyTest, AllChildrenCompleteSimultaneously)
+{
+    auto tree = createParallelTree(4, 1);
+    auto children = getAsyncChildren(tree, 4);
+
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // 동일 Tick에서 모든 자식 완료
+    children[0]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[1]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[2]-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    children[3]-&gt;setStatus(BT::NodeStatus::FAILURE);
+
+    // 실패 1개 ≤ max_failures(1) → SUCCESS
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h2>7. 테스트 케이스 요약</h2>
+<p>Parallel 노드의 정책별 테스트 케이스를 정리하면 다음과 같다.</p>
+<table><thead><tr><th>정책</th><th>테스트 범주</th><th>검증 내용</th></tr></thead><tbody>
+<tr><td>SUCCESS_ALL (mf=0)</td><td>전체 성공</td><td>모든 자식 SUCCESS → Parallel SUCCESS</td></tr>
+<tr><td>SUCCESS_ALL (mf=0)</td><td>단일 실패</td><td>하나의 자식 FAILURE → 즉시 Parallel FAILURE</td></tr>
+<tr><td>SUCCESS_ALL (mf=0)</td><td>점진적 완료</td><td>다중 Tick에 걸친 순차적 완료</td></tr>
+<tr><td>max_failures=M</td><td>범위 내</td><td>실패 수 ≤ M → SUCCESS</td></tr>
+<tr><td>max_failures=M</td><td>범위 초과</td><td>실패 수 &gt; M → FAILURE</td></tr>
+<tr><td>max_failures=M</td><td>경계값</td><td>실패 수 = M, M+1에서의 동작</td></tr>
+<tr><td>SUCCESS_ONE</td><td>즉시 성공</td><td>첫 SUCCESS에서 즉시 반환</td></tr>
+<tr><td>SUCCESS_ONE</td><td>전체 실패</td><td>모든 자식 FAILURE → FAILURE</td></tr>
+<tr><td>SUCCESS_COUNT(N)</td><td>임계값 도달</td><td>성공 수 ≥ N → SUCCESS</td></tr>
+<tr><td>SUCCESS_COUNT(N)</td><td>임계값 미달</td><td>성공 수 &lt; N → FAILURE</td></tr>
+<tr><td>SUCCESS_COUNT(N)</td><td>조기 종료</td><td>달성 불가 시 즉시 FAILURE</td></tr>
+<tr><td>공통</td><td>단일 자식</td><td>자식 1개에서의 정상 동작</td></tr>
+<tr><td>공통</td><td>동시 완료</td><td>모든 자식 동일 Tick 완료</td></tr>
+</tbody></table>
+<p>각 테스트 케이스는 정책의 명세를 직접적으로 검증하는 것이므로, 정책 구현의 정확성에 대한 신뢰를 제공한다. 매개변수화 테스트를 통해 새로운 정책을 추가할 때에도 테스트 케이스를 체계적으로 확장할 수 있다.</p>
 
             </article>
             <footer>

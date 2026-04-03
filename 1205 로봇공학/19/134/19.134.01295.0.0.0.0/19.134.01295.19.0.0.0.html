@@ -115,6 +115,86 @@
             </header>
             <article>
                 <h1>1295.19 Parallel 노드에서의 Halt 전파 순서</h1>
+<h2>1. Halt 전파 순서의 정의</h2>
+<p>Parallel 노드가 성공 또는 실패 정책의 충족으로 인해 자식 노드를 중단해야 할 때, <code>halt()</code> 호출이 자식 노드들에 전파되는 순서를 Halt 전파 순서(halt propagation order)라 한다. 이 순서는 행동 트리의 결정론적(deterministic) 실행을 보장하고, 자식 간 리소스 해제의 순서 의존성 문제를 방지하기 위해 명확하게 정의되어야 한다.</p>
+<h2>2. 기본 전파 순서</h2>
+<p>BehaviorTree.CPP에서 Parallel 노드의 Halt 전파는 자식의 정의 순서(declaration order)를 따른다. 즉, XML이나 코드에서 먼저 정의된 자식이 먼저 <code>halt()</code>를 수신한다.</p>
+<p><span class="math math-display">
+\text{halt}(C_1) \rightarrow \text{halt}(C_2) \rightarrow \cdots \rightarrow \text{halt}(C_N)
+</span></p>
+<p>단, 이미 완료된 자식(SUCCESS 또는 FAILURE를 반환한 자식)은 Halt 대상에서 제외되므로, 실제로는 RUNNING 상태인 자식에 대해서만 정의 순서에 따라 <code>halt()</code>가 호출된다.</p>
+<pre><code>Procedure: haltRunningChildren()
+1   for i ← 1 to N do
+2       if completed[i] = false then
+3           children[i].haltNode()
+4       end if
+5   end for
+</code></pre>
+<h2>3. 전파 순서의 결정론성</h2>
+<p>Halt 전파 순서가 결정론적으로 고정되어 있다는 것은 다음을 의미한다.</p>
+<ol>
+<li><strong>재현성</strong>: 동일한 상태에서 동일한 순서로 Halt가 전파되므로, 테스트와 디버깅에서의 재현성이 보장된다.</li>
+<li><strong>예측 가능성</strong>: 자식 간 Halt 순서가 명확하므로, 순서 의존적인 리소스 해제 로직을 안전하게 설계할 수 있다.</li>
+<li><strong>부작용 관리</strong>: 특정 자식의 Halt가 다른 자식의 상태에 영향을 미치는 경우, 전파 순서에 따른 영향을 정확히 분석할 수 있다.</li>
+</ol>
+<h2>4. 순서 의존적 Halt의 사례</h2>
+<h3>4.1 공유 리소스 해제</h3>
+<p>두 자식이 동일한 하드웨어 리소스(예: 동일 시리얼 포트, 동일 액추에이터)를 사용하는 경우, Halt 순서에 따라 리소스 해제의 순서가 결정된다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="1"&gt;
+    &lt;ControlLeftArm/&gt;     &lt;!-- C1: 먼저 halt --&gt;
+    &lt;ControlRightArm/&gt;    &lt;!-- C2: 나중에 halt --&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p><code>ControlLeftArm</code>이 먼저 <code>halt()</code>를 수신하므로, 좌측 팔의 모터 제어가 먼저 중단되고, 이후 우측 팔의 모터 제어가 중단된다.</p>
+<h3>4.2 ROS2 토픽 발행 순서</h3>
+<p>두 자식이 동일한 ROS2 토픽에 메시지를 발행하는 경우, Halt 시 최종 발행 메시지의 순서가 Halt 전파 순서에 의해 결정된다.</p>
+<h2>5. 재귀적 Halt 전파</h2>
+<p>자식 노드가 서브트리(subtree)인 경우, <code>halt()</code> 호출은 서브트리 내부로 재귀적으로 전파된다.</p>
+<pre><code>ParallelNode::halt()
+  ├── C1 (서브트리)::halt()
+  │     ├── C1.1::halt()
+  │     ├── C1.2::halt()
+  │     └── C1.3::halt()
+  ├── C2 (액션 노드)::halt()
+  └── C3 (서브트리)::halt()
+        ├── C3.1::halt()
+        └── C3.2::halt()
+</code></pre>
+<p>이 재귀적 전파에서 각 수준의 노드는 자신의 자식에 대해 동일한 정의 순서 기반의 Halt 전파를 수행한다. 전체 트리에서의 Halt 순서는 깊이 우선 탐색(DFS) 순서를 따른다.</p>
+<h2>6. 외부 Halt와 내부 Halt의 구분</h2>
+<h3>6.1 내부 Halt (정책 충족에 의한 Halt)</h3>
+<p>Parallel 노드가 자체적으로 성공 또는 실패 정책을 충족하여 RUNNING 자식을 중단하는 경우이다. 이때 Parallel 노드 자체의 상태는 SUCCESS 또는 FAILURE로 전환된다.</p>
+<h3>6.2 외부 Halt (상위 노드에 의한 Halt)</h3>
+<p>상위 노드가 Parallel 노드에 <code>halt()</code>를 호출하는 경우이다. 예를 들어, Parallel 노드가 RUNNING을 반환한 상태에서 상위 Fallback 노드가 다른 자식으로 전환하면, Parallel 노드에 <code>halt()</code>가 호출된다.</p>
+<pre><code>Procedure: ParallelNode::halt()
+1   for i ← 1 to N do
+2       children[i].haltNode()    // 모든 자식에 무조건 halt
+3   end for
+4   resetCompletedFlags()
+5   setStatus(IDLE)
+</code></pre>
+<p>외부 Halt에서는 완료 여부와 무관하게 <strong>모든</strong> 자식에 <code>halt()</code>가 전파된다. 이미 완료된 자식에 대해서도 <code>halt()</code>를 호출하여 상태를 IDLE로 재설정한다.</p>
+<h2>7. Halt 전파 순서의 역순 변형</h2>
+<p>일부 시스템에서는 Halt를 역순으로 전파하는 것이 적절한 경우가 있다. 초기화가 정의 순서로 이루어진 경우, 해제는 역순으로 수행하는 것이 스택(stack) 기반의 리소스 관리 관례에 부합한다.</p>
+<pre><code>// 역순 Halt 전파 (커스텀 구현)
+for i ← N downto 1 do
+    if completed[i] = false then
+        children[i].haltNode()
+    end if
+end for
+</code></pre>
+<p>그러나 BehaviorTree.CPP의 기본 구현은 정순서 전파를 채택하고 있으므로, 역순 전파가 필요한 경우에는 커스텀 Parallel 노드를 구현해야 한다.</p>
+<h2>8. Halt 전파의 원자성</h2>
+<p>Halt 전파 과정은 원자적(atomic)으로 실행되어야 한다. 즉, Halt 전파가 진행되는 동안 다른 틱이 개입하지 않아야 한다. 행동 트리가 단일 스레드에서 실행되므로, 이 원자성은 자연스럽게 보장된다. 멀티스레드 환경에서 행동 트리를 실행하는 경우에는 적절한 동기화 메커니즘이 필요하다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

@@ -115,6 +115,107 @@
             </header>
             <article>
                 <h1>1295.41 ReactiveFallback의 조건 변경 시 동작</h1>
+<h2>1. 조건 변경의 정의</h2>
+<p>조건 변경(condition change)이란, ReactiveFallback의 자식으로 배치된 조건 노드의 반환값이 이전 Tick과 현재 Tick 사이에 달라지는 것을 의미한다. 조건 변경에는 두 가지 방향이 있다.</p>
+<ul>
+<li><strong>조건 성립(activation)</strong>: 이전 Tick에서 <code>FAILURE</code>였던 조건이 현재 Tick에서 <code>SUCCESS</code>를 반환하는 변화이다.</li>
+<li><strong>조건 해소(deactivation)</strong>: 이전 Tick에서 <code>SUCCESS</code>였던 조건이 현재 Tick에서 <code>FAILURE</code>를 반환하는 변화이다.</li>
+</ul>
+<p>ReactiveFallback의 매 Tick 재평가 원칙에 의해, 조건 변경이 발생한 바로 그 Tick에서 즉각적으로 행동 트리의 실행 흐름이 조정된다.</p>
+<h2>2. 상위 조건 성립 시 동작</h2>
+<p>상위 우선순위 조건이 새롭게 성립되면, 현재 실행 중인 하위 행동이 Halt되고 상위 행동으로 전환된다.</p>
+<pre><code>ReactiveFallback
+├── Sequence [우선순위 1]
+│   ├── ConditionA
+│   └── ActionA
+├── Sequence [우선순위 2]
+│   ├── ConditionB
+│   └── ActionB
+└── DefaultAction [우선순위 3]
+</code></pre>
+<p><strong>Tick 1</strong>: ConditionA = FAILURE, ConditionB = FAILURE → DefaultAction 실행 (RUNNING)<br />
+<strong>Tick 2</strong>: ConditionA = FAILURE, ConditionB = <strong>SUCCESS</strong> → ActionB 실행 시작, DefaultAction에 Halt 전파<br />
+<strong>Tick 3</strong>: ConditionA = <strong>SUCCESS</strong> → ActionA 실행 시작, ActionB에 Halt 전파</p>
+<p>Tick 2에서 ConditionB가 성립하자, 이전에 실행 중이던 DefaultAction이 Halt되고 ActionB가 시작되었다. Tick 3에서 더 높은 우선순위의 ConditionA가 성립하자, ActionB가 Halt되고 ActionA가 시작되었다. 각 조건 변경이 발생한 바로 그 Tick에서 행동 전환이 이루어짐을 확인할 수 있다.</p>
+<h2>3. 상위 조건 해소 시 동작</h2>
+<p>상위 조건이 해소되면, 해당 행동이 더 이상 선택되지 않고, 차순위 조건이 평가되어 새로운 행동이 선택된다.</p>
+<p><strong>Tick 4</strong> (Tick 3에서 이어짐): ConditionA = <strong>FAILURE</strong> → ConditionB 평가, ConditionB = SUCCESS → ActionB 재시작<br />
+<strong>Tick 5</strong>: ConditionA = FAILURE, ConditionB = <strong>FAILURE</strong> → DefaultAction 재시작</p>
+<p>Tick 4에서 ConditionA가 해소되자, ActionA의 Sequence가 <code>FAILURE</code>를 반환하고 ConditionB가 재평가된다. ConditionB가 여전히 성립하므로 ActionB가 새로 시작된다. 주의할 점은, ActionB가 이전에 Halt된 후 새로 시작되는 것이므로, ActionB의 내부 상태는 초기화된 상태에서 실행이 재개된다는 것이다.</p>
+<h2>4. 조건 변경에 따른 상태 전이 다이어그램</h2>
+<p>ReactiveFallback의 세 자식 구조에서 활성 행동의 상태 전이를 다이어그램으로 표현하면 다음과 같다.</p>
+<pre><code>                    ConditionA 성립
+DefaultAction  ─────────────────────→  ActionA
+      ↑                                   │
+      │                                   │ ConditionA 해소
+      │ ConditionB 해소                    │ ConditionB 성립 시
+      │                                   ↓
+      ←──────────────────────────  ActionB
+                    ConditionB 해소
+</code></pre>
+<p>각 전이에서 이전 행동에는 Halt가 전파되고, 새 행동은 초기 상태에서 시작된다.</p>
+<h2>5. 동일 Tick 내 다중 조건 변경</h2>
+<p>단일 Tick 내에서 복수의 조건이 동시에 변경되는 경우, ReactiveFallback의 순차적 평가 순서에 의해 결과가 결정론적으로 결정된다.</p>
+<p><strong>예시</strong>: Tick <span class="math math-inline">t</span>에서 ConditionA와 ConditionB가 동시에 FAILURE → SUCCESS로 변경</p>
+<pre><code>Tick t:
+  ConditionA.tick() → SUCCESS  (변경됨)
+  → Sequence [우선순위 1]이 비실패 → Tick 전파 중단
+  → ConditionB는 평가되지 않음
+  → ActionA 실행
+</code></pre>
+<p>ConditionA가 먼저 평가되므로, ConditionA와 ConditionB가 동시에 성립하더라도 더 높은 우선순위인 ConditionA의 행동이 선택된다. ConditionB의 변경은 사실상 무시된다. 이는 ReactiveFallback의 순차 평가 순서가 우선순위 체계를 자연스럽게 보장함을 보여준다.</p>
+<h2>6. 조건 변경에 의한 행동 중단과 재시작의 영향</h2>
+<h3>6.1 행동 진행 상태의 유실</h3>
+<p>조건 변경에 의해 행동이 Halt되면, 해당 행동의 내부 진행 상태가 유실된다. 예를 들어, ActionB가 목표의 70%까지 진행된 상태에서 ConditionA가 성립하여 ActionB가 Halt되면, 이후 ConditionA가 해소되어 ActionB가 재시작될 때 0%부터 다시 시작한다.</p>
+<p>이 문제를 완화하기 위해, 장시간 소요되는 행동 노드는 진행 상태를 블랙보드에 기록하고, 재시작 시 블랙보드에서 이전 진행 상태를 복원하는 로직을 구현할 수 있다.</p>
+<pre><code>function ActionB.tick():
+    if first_tick:
+        // 블랙보드에서 이전 진행 상태 복원 시도
+        saved_progress ← blackboard.get("actionB_progress")
+        if saved_progress is valid:
+            resumeFrom(saved_progress)
+        first_tick ← false
+    
+    // 행동 실행
+    progress ← executeStep()
+    blackboard.set("actionB_progress", progress)
+    
+    if isComplete():
+        return SUCCESS
+    return RUNNING
+
+function ActionB.halt():
+    // 현재 진행 상태를 블랙보드에 보존
+    blackboard.set("actionB_progress", getCurrentProgress())
+    cleanup()
+</code></pre>
+<h3>6.2 빈번한 전환에 의한 불안정성</h3>
+<p>상위 조건이 빠르게 성립과 해소를 반복하면, 하위 행동이 반복적으로 시작되고 중단되어 유의미한 진행을 이루지 못할 수 있다. 이러한 상황을 방지하기 위해 조건 노드에 히스테리시스를 적용하거나, 최소 유지 시간(minimum hold time)을 설정하여 조건이 일정 시간 이상 유지된 후에만 상태 변경을 인정하는 방법을 사용할 수 있다.</p>
+<pre><code>function ConditionWithMinHold.tick():
+    current_state ← evaluateCondition()
+    
+    if current_state ≠ previous_state:
+        state_change_time ← current_time()
+        previous_state ← current_state
+    
+    elapsed ← current_time() - state_change_time
+    
+    if elapsed &gt;= min_hold_time:
+        confirmed_state ← current_state
+    
+    if confirmed_state:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<h2>7. 조건 변경 시 Tick 실행 흐름 요약</h2>
+<table><thead><tr><th>변경 유형</th><th>이전 활성 행동</th><th>변경 후 동작</th></tr></thead><tbody>
+<tr><td>상위 조건 성립</td><td>하위 행동 실행 중</td><td>하위 행동 Halt, 상위 행동 시작</td></tr>
+<tr><td>상위 조건 해소</td><td>상위 행동 실행 중</td><td>상위 행동의 Sequence FAILURE, 차순위 평가</td></tr>
+<tr><td>하위 조건 성립</td><td>더 하위 행동 실행 중</td><td>더 하위 행동 Halt, 해당 행동 시작</td></tr>
+<tr><td>하위 조건 해소</td><td>해당 행동 실행 중</td><td>해당 Sequence FAILURE, 차순위 평가</td></tr>
+<tr><td>다중 조건 동시 성립</td><td>임의 행동 실행 중</td><td>최상위 성립 조건의 행동 선택</td></tr>
+</tbody></table>
+<p>모든 경우에서 조건 변경이 발생한 바로 그 Tick 내에서 행동 전환이 완료된다. 이것이 ReactiveFallback의 “반응형” 특성의 핵심이다.</p>
 
             </article>
             <footer>

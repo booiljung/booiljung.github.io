@@ -115,6 +115,213 @@
             </header>
             <article>
                 <h1>1294.66 안전 위반 시 즉각 반응 패턴</h1>
+<h2>1. 즉각 반응 패턴의 정의</h2>
+<p>안전 위반 시 즉각 반응 패턴(Immediate Response to Safety Violation Pattern)은 ReactiveSequence의 매 Tick 재평가 특성을 활용하여, 안전 조건이 위반되는 즉시 진행 중인 모든 작업을 Halt하고 사전에 정의된 비상 대응 행동을 자동으로 실행하는 설계 패턴이다. 이 패턴은 안전 위반의 감지와 대응을 단일 Tick 내에서 처리하여, 위반 감지에서 대응까지의 지연 시간을 최소화한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 기본 구조</h2>
+<h3>2.1 감지-중단-대응 3단계 구조</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 정상 운영: 안전 조건 감시 하에 임무 수행 --&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsSafe"/&gt;
+        &lt;SubTree ID="NormalMission"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;!-- 즉각 대응: 안전 위반 시 실행 --&gt;
+    &lt;Action ID="EmergencyResponse"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조의 동작 원리는 다음과 같다:</p>
+<ol>
+<li><strong>감지</strong>: ReactiveSequence가 매 Tick마다 IsSafe를 재평가한다.</li>
+<li><strong>중단</strong>: IsSafe가 FAILURE를 반환하면 NormalMission이 즉시 Halt된다.</li>
+<li><strong>대응</strong>: ReactiveSequence 전체가 FAILURE를 반환하고, 외부 Fallback이 EmergencyResponse를 실행한다.</li>
+</ol>
+<h2>3. 동작 흐름의 상세 분석</h2>
+<h3>3.1 정상 운영에서 안전 위반까지</h3>
+<pre><code>Tick 1: IsSafe→S, NormalMission→R  → Fallback: RUNNING (정상 운영)
+Tick 2: IsSafe→S, NormalMission→R  → Fallback: RUNNING (정상 운영)
+Tick 3: IsSafe→F                   → ReactiveSequence: FAILURE
+        NormalMission→Halt          (즉시 중단)
+        EmergencyResponse→R         → Fallback: RUNNING (비상 대응)
+Tick 4: IsSafe→F                   → ReactiveSequence: FAILURE
+        EmergencyResponse→R         → Fallback: RUNNING (대응 진행)
+Tick 5: IsSafe→F                   → ReactiveSequence: FAILURE
+        EmergencyResponse→S         → Fallback: SUCCESS (대응 완료)
+</code></pre>
+<p>Tick 3에서 안전 위반이 감지되면, 동일 Tick 내에서 NormalMission의 Halt와 EmergencyResponse의 시작이 모두 이루어진다.</p>
+<h3>3.2 안전 복구 시 정상 운영 복귀</h3>
+<p>ReactiveFallback을 사용하면, 비상 대응 중에도 안전 상태가 복구되었는지 매 Tick 감시할 수 있다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsSafe"/&gt;
+        &lt;SubTree ID="NormalMission"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;Action ID="EmergencyResponse"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<pre><code>Tick 3: IsSafe→F → EmergencyResponse→R    (비상 대응 시작)
+Tick 4: IsSafe→F → EmergencyResponse→R    (대응 진행)
+Tick 5: IsSafe→S → NormalMission→R        (EmergencyResponse Halt, 정상 복귀)
+        EmergencyResponse→Halt
+</code></pre>
+<p>ReactiveFallback은 매 Tick마다 첫 번째 자식부터 재평가하므로, 안전 상태가 복구되면 비상 대응을 중단하고 정상 운영으로 즉시 전환한다.</p>
+<h2>4. 다중 안전 위반 유형별 대응</h2>
+<h3>4.1 위반 유형에 따른 분기 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 정상 운영 --&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsNotEmergency"/&gt;
+        &lt;Condition ID="IsBatteryOK"/&gt;
+        &lt;Condition ID="IsTemperatureNormal"/&gt;
+        &lt;SubTree ID="NormalMission"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;!-- 위반 유형별 대응 --&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsEmergency"/&gt;
+            &lt;Action ID="EmergencyStop"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsBatteryLow"/&gt;
+            &lt;Action ID="ReturnToCharge"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsOverheated"/&gt;
+            &lt;Action ID="CooldownAndWait"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="GeneralSafeStop"/&gt;
+    &lt;/Fallback&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조는 안전 위반의 원인에 따라 적절한 대응 행동을 선택한다. 비상 상황이면 즉시 정지하고, 배터리 부족이면 충전소로 복귀하며, 과열이면 냉각 후 대기한다. 어떤 유형에도 해당하지 않으면 일반 안전 정지를 수행한다.</p>
+<h3>4.2 심각도 기반 단계적 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsFullySafe"/&gt;
+        &lt;SubTree ID="NormalMission"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;!-- 경미한 위반: 기능 축소 운영 --&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsNotCritical"/&gt;
+        &lt;SubTree ID="DegradedMission"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;!-- 심각한 위반: 비상 대응 --&gt;
+    &lt;Action ID="EmergencyStop"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>정상 상태:     IsFullySafe→S → NormalMission 수행
+경미한 위반:   IsFullySafe→F, IsNotCritical→S → DegradedMission 수행
+심각한 위반:   IsFullySafe→F, IsNotCritical→F → EmergencyStop 실행
+</code></pre>
+<p>이 구조는 점진적 퇴화(Graceful Degradation) 전략을 구현한다. 안전 위반의 심각도에 따라 완전한 정상 운영, 기능 축소 운영, 비상 정지의 3단계로 대응한다.</p>
+<h2>5. Halt 메커니즘과 즉각 반응</h2>
+<h3>5.1 Halt의 역할</h3>
+<p>안전 위반이 감지되면 ReactiveSequence는 RUNNING 상태의 자식 노드에 <code>halt()</code> 메서드를 호출한다. 이 과정에서 다음이 보장되어야 한다:</p>
+<ol>
+<li><strong>상태 정리</strong>: 진행 중인 모터 명령 취소, 통신 중단 등</li>
+<li><strong>안전 상태 전이</strong>: 액추에이터를 안전한 위치 또는 상태로 전환</li>
+<li><strong>자원 해제</strong>: 점유한 자원을 적절히 반환</li>
+<li><strong>즉시 완료</strong>: <code>halt()</code> 메서드는 블로킹 없이 즉시 반환해야 한다</li>
+</ol>
+<h3>5.2 halt() 구현의 중요성</h3>
+<pre><code class="language-cpp">class SafeAction : public BT::StatefulActionNode {
+public:
+    void onHalted() override {
+        // 모터 즉시 정지
+        motor_controller_.emergencyStop();
+        // 안전 상태로 전이
+        setOutput("status", "halted_safely");
+    }
+};
+</code></pre>
+<p><code>onHalted()</code> 메서드가 적절히 구현되지 않으면, 안전 위반이 감지되더라도 물리적 행동이 즉시 중단되지 않을 수 있다. 따라서 안전 우선 패턴에서 사용되는 모든 액션 노드는 반드시 안전한 <code>halt()</code> 동작을 구현해야 한다(Faconti, 2022).</p>
+<h2>6. 로봇 공학에서의 적용 사례</h2>
+<h3>6.1 사례 1: 협동 로봇의 인체 감지 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsHumanDistanceSafe"/&gt;
+        &lt;Condition ID="IsForceWithinLimit"/&gt;
+        &lt;Action ID="CollaborativeTask"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsHumanTooClose"/&gt;
+            &lt;Action ID="ReduceSpeedAndContinue"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsContactDetected"/&gt;
+            &lt;Action ID="ImmediateStop"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="SafeRetract"/&gt;
+    &lt;/Fallback&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>사람이 가까이 접근하면 속도를 줄이고, 접촉이 감지되면 즉시 정지하며, 그 외의 안전 위반 시에는 안전 위치로 후퇴한다.</p>
+<h3>6.2 사례 2: 자율 주행 로봇의 장애물 긴급 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsPathClear"/&gt;
+        &lt;Condition ID="IsSensorHealthy"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsObstacleDetected"/&gt;
+            &lt;Action ID="EmergencyBrakeAndReplan"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsSensorFailed"/&gt;
+            &lt;Action ID="StopAndRequestHelp"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="SafeStop"/&gt;
+    &lt;/Fallback&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h3>6.3 사례 3: 수술 로봇의 이상 감지 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsVitalSignStable"/&gt;
+        &lt;Condition ID="IsInstrumentCalibrated"/&gt;
+        &lt;Condition ID="IsForceWithinSurgicalLimit"/&gt;
+        &lt;Action ID="PerformSurgicalProcedure"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsForceExcessive"/&gt;
+            &lt;Action ID="RetractInstrument"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsCalibrationLost"/&gt;
+            &lt;Action ID="PauseAndRecalibrate"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="EmergencyWithdraw"/&gt;
+    &lt;/Fallback&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>수술 중 과도한 힘이 감지되면 기구를 후퇴시키고, 교정이 상실되면 일시 정지 후 재교정하며, 그 외의 이상에서는 비상 철수한다.</p>
+<h2>7. 즉각 반응 패턴의 설계 원칙</h2>
+<ol>
+<li>
+<p><strong>단일 Tick 내 대응</strong>: 안전 위반의 감지와 대응 행동의 시작이 동일 Tick 내에서 이루어져야 한다. 감지와 대응 사이에 지연 Tick이 존재하면 안전 보장이 훼손된다.</p>
+</li>
+<li>
+<p><strong>halt()의 완전한 구현</strong>: 안전 감시 하에 수행되는 모든 액션 노드는 <code>halt()</code> 메서드에서 물리적 행동을 즉시 안전하게 중단해야 한다.</p>
+</li>
+<li>
+<p><strong>대응 행동의 완결성</strong>: 비상 대응 행동은 외부 조건에 의존하지 않고 독립적으로 완료될 수 있어야 한다.</p>
+</li>
+<li>
+<p><strong>최후 수단의 포함</strong>: 대응 행동의 Fallback 체인 마지막에 항상 성공하는 안전 행동(비상 정지 등)을 배치하여, 모든 대응이 실패하는 상황을 방지한다.</p>
+</li>
+<li>
+<p><strong>점진적 퇴화의 고려</strong>: 가능한 경우, 즉시 정지보다는 심각도에 따른 단계적 대응을 설계하여 시스템의 가용성을 최대화한다(Colledanchise &amp; Ogren, 2018).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

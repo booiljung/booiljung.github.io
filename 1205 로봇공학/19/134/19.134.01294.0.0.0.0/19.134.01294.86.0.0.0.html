@@ -115,6 +115,144 @@
             </header>
             <article>
                 <h1>1294.86 BehaviorTree.CPP의 ReactiveFallback 클래스</h1>
+<h2>1. ReactiveFallback 클래스의 개요</h2>
+<p>BehaviorTree.CPP v4에서 <code>ReactiveFallback</code> 클래스는 매 Tick마다 첫 번째 자식부터 재평가하는 비상태적 Fallback을 구현한다. <code>ReactiveSequence</code>와 대칭적 구조를 가지며, SUCCESS와 FAILURE의 역할이 교환되어 있다. 이 클래스는 주로 우선순위 기반 대안 전환 패턴에서 사용된다(Faconti, 2022).</p>
+<h2>2. 클래스 선언</h2>
+<pre><code class="language-cpp">namespace BT {
+
+class ReactiveFallback : public ControlNode {
+public:
+    ReactiveFallback(const std::string&amp; name,
+                     const NodeConfig&amp; config);
+    
+    virtual ~ReactiveFallback() override = default;
+    
+    static PortsList providedPorts() { return {}; }
+
+private:
+    virtual BT::NodeStatus tick() override;
+};
+
+}  // namespace BT
+</code></pre>
+<p><code>ReactiveSequence</code>와 동일하게 <code>current_child_idx_</code> 멤버 변수가 없으며, <code>halt()</code> 메서드를 별도로 오버라이드하지 않는다.</p>
+<h2>3. tick() 메서드의 상세 분석</h2>
+<h3>3.1 전체 구현</h3>
+<pre><code class="language-cpp">NodeStatus ReactiveFallback::tick() {
+    bool all_skipped = true;
+    setStatus(NodeStatus::RUNNING);
+    
+    for (size_t index = 0; index &lt; childrenCount(); index++) {
+        TreeNode* current_child = children_nodes_[index];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status) {
+            case NodeStatus::RUNNING: {
+                for (size_t j = index + 1; j &lt; childrenCount(); j++) {
+                    haltChild(j);
+                }
+                return NodeStatus::RUNNING;
+            }
+            case NodeStatus::SUCCESS: {
+                resetChildren();
+                return NodeStatus::SUCCESS;
+            }
+            case NodeStatus::FAILURE: {
+                all_skipped = false;
+            } break;
+            
+            case NodeStatus::SKIPPED: {
+            } break;
+        }
+    }
+    
+    resetChildren();
+    return all_skipped ? NodeStatus::SKIPPED : NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.2 ReactiveSequence와의 대칭적 관계</h3>
+<table><thead><tr><th>자식 반환 상태</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>SUCCESS</td><td>다음 자식으로 진행</td><td>즉시 SUCCESS 반환</td></tr>
+<tr><td>FAILURE</td><td>즉시 FAILURE 반환</td><td>다음 자식으로 진행</td></tr>
+<tr><td>RUNNING</td><td>후속 자식 Halt, RUNNING 반환</td><td>후속 자식 Halt, RUNNING 반환</td></tr>
+</tbody></table>
+<h3>3.3 동작 분석</h3>
+<ol>
+<li>
+<p><strong>항상 인덱스 0부터 시작</strong>: 매 Tick마다 첫 번째 자식부터 재평가한다. 앞쪽 대안이 SUCCESS 또는 RUNNING을 반환하면, 뒤쪽에서 RUNNING이었던 대안이 Halt된다.</p>
+</li>
+<li>
+<p><strong>SUCCESS의 조기 종료</strong>: 앞쪽 자식이 SUCCESS를 반환하면 모든 자식을 초기화하고 즉시 SUCCESS를 반환한다. 뒤쪽에 RUNNING이었던 자식이 있으면 <code>resetChildren()</code>에 의해 Halt된다.</p>
+</li>
+<li>
+<p><strong>RUNNING 이후 자식 Halt</strong>: RUNNING을 반환한 자식 이후의 모든 자식을 Halt한다. 이전 Tick에서 더 뒤쪽 자식이 RUNNING이었을 수 있기 때문이다.</p>
+</li>
+<li>
+<p><strong>전체 FAILURE</strong>: 모든 자식이 FAILURE를 반환하면 FAILURE를 반환한다.</p>
+</li>
+</ol>
+<h2>4. 우선순위 전환 메커니즘</h2>
+<h3>4.1 상위 우선순위 대안으로의 자동 전환</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPrimaryOK"/&gt;        &lt;!-- 1순위 --&gt;
+        &lt;Action ID="PrimaryAction"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="FallbackAction"/&gt;            &lt;!-- 2순위 --&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<pre><code>Tick 1: IsPrimaryOK→F → FallbackAction→R     (2순위 수행)
+Tick 2: IsPrimaryOK→F → FallbackAction→R     (2순위 계속)
+Tick 3: IsPrimaryOK→S, PrimaryAction→R       (1순위 복귀)
+        FallbackAction→Halt                   (2순위 중단)
+</code></pre>
+<p>Tick 3에서 1순위 조건이 충족되면, FallbackAction이 Halt되고 PrimaryAction으로 전환된다. 이 전환은 ReactiveFallback의 매 Tick 재평가에 의해 자동으로 이루어진다.</p>
+<h3>4.2 FallbackNode(WithMemory)와의 차이</h3>
+<pre><code>[FallbackNode]
+Tick 1: IsPrimaryOK→F → FallbackAction→R     (idx=1)
+Tick 2: FallbackAction→R                      (IsPrimaryOK 건너뜀!)
+Tick 3: FallbackAction→R                      (1순위 변화 미감지)
+
+[ReactiveFallback]
+Tick 1: IsPrimaryOK→F → FallbackAction→R     (매 Tick 재평가)
+Tick 2: IsPrimaryOK→F → FallbackAction→R     (1순위 재확인)
+Tick 3: IsPrimaryOK→S → PrimaryAction→R      (1순위 복귀!)
+        FallbackAction→Halt
+</code></pre>
+<p>FallbackNode는 메모리에 의해 IsPrimaryOK를 건너뛰므로 1순위 복귀를 감지하지 못하지만, ReactiveFallback은 매 Tick 재평가하므로 즉시 감지한다.</p>
+<h2>5. XML에서의 사용</h2>
+<pre><code class="language-xml">&lt;BehaviorTree ID="PriorityBasedBehavior"&gt;
+    &lt;ReactiveFallback name="priority_selector"&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsHighPriority"/&gt;
+            &lt;Action ID="HighPriorityTask"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsMediumPriority"/&gt;
+            &lt;Action ID="MediumPriorityTask"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="DefaultTask"/&gt;
+    &lt;/ReactiveFallback&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>6. 사용 시 주의 사항</h2>
+<ol>
+<li>
+<p><strong>Halt 빈도</strong>: ReactiveFallback에서는 상위 대안의 가용 상태가 변할 때마다 현재 대안이 Halt된다. 빈번한 Halt-재시작이 발생할 수 있으므로, 모든 액션 노드의 <code>onHalted()</code> 구현이 안전하고 경량이어야 한다.</p>
+</li>
+<li>
+<p><strong>조건 노드의 경량성</strong>: 매 Tick 앞쪽 자식이 재평가되므로, 조건 노드의 평가 비용이 전체 성능에 직접 영향을 미친다.</p>
+</li>
+<li>
+<p><strong>무한 전환 방지</strong>: 조건이 매 Tick 변동하면 대안 간 무한 전환이 발생할 수 있다. 히스테리시스(hysteresis)를 적용하여 안정적인 전환을 보장해야 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,105 @@
             </header>
             <article>
                 <h1>1296.3 액션 노드의 리프 노드 특성</h1>
+<h2>1. 리프 노드의 정의</h2>
+<p>행동 트리(Behavior Tree)는 방향 비순환 트리(directed acyclic tree) 구조를 형성한다. 이 트리에서 자식 노드를 갖지 않는 노드를 리프 노드(leaf node) 또는 단말 노드(terminal node)라 한다. 액션 노드는 리프 노드의 한 유형이며, 이 특성이 액션 노드의 설계와 동작에 근본적인 제약과 특성을 부여한다.</p>
+<h2>2. 리프 노드 특성의 함의</h2>
+<h3>2.1 자식 노드 부재</h3>
+<p>액션 노드는 자식 노드를 가질 수 없다. BehaviorTree.CPP에서 <code>BT::ActionNodeBase</code>는 자식 관리 기능을 포함하지 않으며, 자식 추가 시도 시 컴파일 에러 또는 런타임 에러가 발생한다.</p>
+<pre><code class="language-cpp">// ActionNodeBase는 자식 관리 메서드를 제공하지 않음
+class ActionNodeBase : public TreeNode
+{
+public:
+    // addChild(), childrenCount() 등이 존재하지 않음
+    // ...
+};
+</code></pre>
+<p>이 제약은 행동 트리의 구조적 무결성을 보장한다. 행동(액션)은 더 이상 분해되지 않는 원자적 단위이며, 행동의 조합은 제어 노드에 의해 수행된다.</p>
+<h3>2.2 Tick 전파의 종착점</h3>
+<p>Tick은 루트 노드에서 시작하여 내부 노드를 따라 전파되며, 리프 노드에서 종료된다. 액션 노드가 Tick을 받으면, 더 이상 하위 노드로 전파할 대상이 없으므로 자신의 <code>tick()</code> 메서드를 실행하고 결과를 부모 노드에 반환한다.</p>
+<pre><code>Root → Sequence → Fallback → ActionNode (Tick 종착)
+                                 ↑
+                            tick() 실행 후
+                            상태 반환 (↑)
+</code></pre>
+<p>이 구조에서 액션 노드의 반환 상태가 전체 트리의 실행 흐름을 결정하는 기점이 된다.</p>
+<h3>2.3 Halt 전파의 종착점</h3>
+<p>Halt 신호 역시 리프 노드에서 종료된다. 부모 제어 노드가 <code>haltChildren()</code>을 호출하면 Halt가 자식으로 전파되며, 액션 노드에서 Halt가 수신되면 <code>halt()</code> 메서드(또는 <code>onHalted()</code> 콜백)가 호출되어 진행 중인 행동이 취소된다.</p>
+<pre><code class="language-cpp">// StatefulActionNode의 halt 처리
+void StatefulActionNode::halt()
+{
+    if (status() == NodeStatus::RUNNING)
+    {
+        onHalted();  // 사용자 구현 콜백
+    }
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<p>액션 노드가 Halt를 올바르게 처리하지 않으면, 진행 중인 외부 요청(ROS2 액션, 모터 명령 등)이 취소되지 않아 로봇이 의도하지 않은 행동을 지속하는 안전 문제가 발생할 수 있다.</p>
+<h2>3. 리프 노드로서의 설계 제약</h2>
+<h3>3.1 행동의 분해는 트리 구조로</h3>
+<p>액션 노드는 자식을 가질 수 없으므로, 복합적인 행동을 하나의 액션 노드 내부에서 분해할 수 없다. 대신 복합 행동은 다수의 액션 노드를 제어 노드로 조합하여 구현한다.</p>
+<pre><code class="language-xml">&lt;!-- 모범: 제어 노드를 통한 행동 분해 --&gt;
+&lt;Sequence&gt;
+    &lt;ApproachObject target="{object}"/&gt;
+    &lt;GraspObject gripper="left"/&gt;
+    &lt;LiftObject height="0.3"/&gt;
+&lt;/Sequence&gt;
+
+&lt;!-- 안티패턴: 단일 액션 내부에서 복합 행동 수행 --&gt;
+&lt;PickAndPlace target="{object}" height="0.3"/&gt;
+</code></pre>
+<p>전자는 각 단계가 독립적인 액션 노드로 분해되어, 단계별 실패 처리와 재조합이 가능하다. 후자는 단일 액션 내부에서 모든 단계를 수행하므로, 개별 단계의 실패 처리가 어렵고 재사용성이 낮다.</p>
+<h3>3.2 상태 관리의 자기 완결성</h3>
+<p>리프 노드는 외부 자식에 상태 관리를 위임할 수 없으므로, 자신의 상태를 자기 완결적으로 관리하여야 한다. 비동기 액션 노드의 경우, <code>onStart()</code>에서 시작된 행동의 진행 상태를 내부 멤버 변수로 추적하고, <code>onRunning()</code>에서 이를 확인하여 결과를 반환한다.</p>
+<pre><code class="language-cpp">class WaitForDuration : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        double seconds;
+        getInput("duration", seconds);
+        deadline_ = std::chrono::steady_clock::now() + 
+                    std::chrono::duration&lt;double&gt;(seconds);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (std::chrono::steady_clock::now() &gt;= deadline_)
+            return BT::NodeStatus::SUCCESS;
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override {}
+
+private:
+    std::chrono::steady_clock::time_point deadline_;
+};
+</code></pre>
+<p><code>deadline_</code>은 액션 노드 내부에서 관리되는 상태이며, 외부 노드와 공유되지 않는다.</p>
+<h2>4. 리프 노드의 테스트 용이성</h2>
+<p>리프 노드는 자식이 없으므로 독립적으로 테스트할 수 있다. 액션 노드의 단위 테스트는 노드를 트리 컨텍스트에서 분리하여, 블랙보드에 입력 값을 설정하고 <code>tick()</code>을 호출하여 반환 상태와 출력 값을 검증하는 형태로 수행한다.</p>
+<pre><code class="language-cpp">TEST(ActionNodeTest, WaitForDuration_CompletesAfterTimeout)
+{
+    BT::BehaviorTreeFactory factory;
+    factory.registerNodeType&lt;WaitForDuration&gt;("WaitForDuration");
+    
+    auto tree = factory.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;WaitForDuration duration="0.1"/&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<p>이 테스트 패턴은 리프 노드의 독립성 덕분에, 상위 제어 노드나 다른 리프 노드의 영향 없이 순수하게 해당 액션 노드의 동작만을 검증한다.</p>
 
             </article>
             <footer>

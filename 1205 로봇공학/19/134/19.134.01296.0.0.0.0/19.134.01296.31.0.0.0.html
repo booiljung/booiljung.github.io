@@ -115,6 +115,288 @@
             </header>
             <article>
                 <h1>1296.31 파라미터화된 액션 노드 설계</h1>
+<h2>1. 파라미터화의 개념</h2>
+<p>파라미터화된 액션 노드(parameterized action node)는 행동의 구체적 값을 코드 내부에 고정하지 않고, 블랙보드 포트를 통해 외부에서 주입받도록 설계된 노드이다. 파라미터화는 동일한 노드 클래스가 다양한 입력 조합에 의해 서로 다른 구체적 행동을 수행할 수 있게 하며, 이는 액션 노드의 재사용성을 실현하는 핵심 메커니즘이다.</p>
+<p>BehaviorTree.CPP 라이브러리에서 파라미터화는 <code>providedPorts()</code> 정적 메서드에 의한 포트 선언과, <code>getInput()</code>/<code>setOutput()</code>에 의한 포트 접근으로 구현된다. 포트에 의해 파라미터화된 값은 XML 트리 정의에서 정적 값(리터럴) 또는 블랙보드 키 참조({key})로 지정된다(Faconti, 2022).</p>
+<h2>2. 파라미터의 분류</h2>
+<p>액션 노드의 파라미터를 성격에 따라 분류한다.</p>
+<h3>2.1 행동 파라미터</h3>
+<p>행동의 목표, 대상, 범위 등 행동의 내용을 결정하는 파라미터이다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+            "goal_pose", "내비게이션 목표 위치"),
+        BT::InputPort&lt;double&gt;(
+            "speed", "이동 속도 (m/s)"),
+        BT::InputPort&lt;std::string&gt;(
+            "frame_id", "map", "좌표계 프레임")
+    };
+}
+</code></pre>
+<h3>2.2 구성 파라미터</h3>
+<p>행동의 수행 방식, 타임아웃, 허용 오차 등 행동의 실행 조건을 제어하는 파라미터이다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;double&gt;(
+            "timeout_sec", "30.0", "타임아웃 (초)"),
+        BT::InputPort&lt;double&gt;(
+            "tolerance", "0.1", "위치 허용 오차 (미터)"),
+        BT::InputPort&lt;int&gt;(
+            "max_retries", "3", "최대 재시도 횟수")
+    };
+}
+</code></pre>
+<h3>2.3 인터페이스 파라미터</h3>
+<p>ROS2 통신 인터페이스의 이름, 서비스 품질(QoS) 설정 등 통신 구성을 제어하는 파라미터이다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;std::string&gt;(
+            "action_server", "navigate_to_pose",
+            "액션 서버 이름"),
+        BT::InputPort&lt;std::string&gt;(
+            "topic_name", "/cmd_vel",
+            "발행 대상 토픽 이름")
+    };
+}
+</code></pre>
+<h2>3. 포트 선언에 의한 파라미터화</h2>
+<h3>3.1 providedPorts() 메서드</h3>
+<p><code>providedPorts()</code>는 정적 메서드로, 노드의 입출력 포트를 선언한다. 이 메서드의 반환값은 노드의 외부 인터페이스를 정의하며, 트리의 XML 정의에서 참조된다.</p>
+<pre><code class="language-cpp">class FollowPath : public BT::StatefulActionNode
+{
+public:
+    FollowPath(const std::string&amp; name,
+                const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            // 행동 파라미터
+            BT::InputPort&lt;nav_msgs::msg::Path&gt;(
+                "path", "추종할 경로"),
+
+            // 구성 파라미터
+            BT::InputPort&lt;std::string&gt;(
+                "controller_id", "",
+                "사용할 컨트롤러 플러그인 이름"),
+            BT::InputPort&lt;double&gt;(
+                "goal_checker_tolerance", "0.25",
+                "목표 도달 판정 허용 오차 (미터)"),
+
+            // 인터페이스 파라미터
+            BT::InputPort&lt;std::string&gt;(
+                "server_name", "follow_path",
+                "액션 서버 이름"),
+
+            // 출력
+            BT::OutputPort&lt;int&gt;(
+                "error_code", "오류 코드")
+        };
+    }
+    // ...
+};
+</code></pre>
+<h3>3.2 XML에서의 파라미터 지정</h3>
+<pre><code class="language-xml">&lt;!-- 정적 값 지정 --&gt;
+&lt;FollowPath path="{computed_path}"
+            controller_id="FollowPath"
+            goal_checker_tolerance="0.25"
+            server_name="follow_path" /&gt;
+
+&lt;!-- 블랙보드 키 참조 --&gt;
+&lt;FollowPath path="{path}"
+            controller_id="{selected_controller}"
+            goal_checker_tolerance="{tolerance}"
+            server_name="{server}" /&gt;
+
+&lt;!-- 기본값 사용 (생략 가능) --&gt;
+&lt;FollowPath path="{path}" /&gt;
+</code></pre>
+<p>정적 값은 XML 속성에 직접 기입되며, 블랙보드 키 참조는 <code>{키명}</code> 형식으로 지정된다. 기본값이 설정된 파라미터는 XML에서 생략할 수 있다.</p>
+<h2>4. 기본값의 설계</h2>
+<p>기본값(default value)은 파라미터가 XML에서 명시적으로 지정되지 않은 경우에 사용되는 값이다. 기본값의 설정은 파라미터화와 사용 편의성 간의 균형을 달성하는 수단이다.</p>
+<h3>4.1 기본값 설정 패턴</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // 기본값 없음: 필수 파라미터
+        BT::InputPort&lt;Pose&gt;("target_pose",
+            "목표 위치 (필수)"),
+
+        // 기본값 있음: 선택적 파라미터
+        BT::InputPort&lt;double&gt;("timeout_sec", "30.0",
+            "타임아웃 (초, 기본: 30.0)"),
+        BT::InputPort&lt;std::string&gt;("server_name",
+            "navigate_to_pose",
+            "액션 서버 이름 (기본: navigate_to_pose)")
+    };
+}
+</code></pre>
+<h3>4.2 기본값 설계의 원칙</h3>
+<ol>
+<li>
+<p><strong>안전한 기본값</strong>: 기본값은 시스템의 안전을 해치지 않는 보수적인 값이어야 한다. 예를 들어, 속도의 기본값은 최대 속도가 아닌 안전한 저속이어야 한다.</p>
+</li>
+<li>
+<p><strong>일반적 사용 사례의 반영</strong>: 기본값은 가장 빈번한 사용 사례에 적합한 값이어야 한다.</p>
+</li>
+<li>
+<p><strong>단위의 명시</strong>: 포트의 설명에 파라미터의 단위를 명시하여 혼동을 방지한다.</p>
+</li>
+</ol>
+<table><thead><tr><th>파라미터</th><th style="text-align: center">권장 기본값</th><th>이유</th></tr></thead><tbody>
+<tr><td>타임아웃</td><td style="text-align: center">30.0 초</td><td>대부분의 행동이 완료되기에 충분</td></tr>
+<tr><td>위치 허용 오차</td><td style="text-align: center">0.1 미터</td><td>일반적 내비게이션 정밀도</td></tr>
+<tr><td>최대 재시도</td><td style="text-align: center">3 회</td><td>과도한 재시도 방지</td></tr>
+<tr><td>선속도</td><td style="text-align: center">0.5 m/s</td><td>안전한 실내 이동 속도</td></tr>
+<tr><td>각속도</td><td style="text-align: center">0.5 rad/s</td><td>안전한 회전 속도</td></tr>
+</tbody></table>
+<h2>5. 파라미터 유효성 검증</h2>
+<p>입력 포트를 통해 전달된 값의 유효성을 노드 내부에서 검증하여야 한다. 유효하지 않은 파라미터에 의한 오동작을 방지하기 위함이다.</p>
+<h3>5.1 필수 파라미터 검증</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    Pose target;
+    if (!getInput("target_pose", target))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "필수 입력 'target_pose'가 설정되지 않음");
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+</code></pre>
+<h3>5.2 범위 검증</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    double speed;
+    getInput("speed", speed);
+
+    if (speed &lt;= 0.0 || speed &gt; max_allowed_speed_)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "속도 값 %.2f이 허용 범위(0, %.2f]를 벗어남",
+            speed, max_allowed_speed_);
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+</code></pre>
+<h3>5.3 타입 검증</h3>
+<p>BehaviorTree.CPP 4.x는 포트의 타입 정보를 통해 컴파일 시점에 타입 불일치를 검출한다. 그러나 문자열로부터의 변환이 필요한 경우(XML에서 정적 값 지정 시), 변환 실패를 런타임에 처리하여야 한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    double timeout;
+    auto result = getInput("timeout_sec", timeout);
+    if (!result)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "timeout_sec 변환 실패: %s",
+            result.error().c_str());
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+</code></pre>
+<h2>6. 정적 파라미터와 동적 파라미터</h2>
+<h3>6.1 정적 파라미터</h3>
+<p>XML에서 리터럴 값으로 지정되는 파라미터이다. 트리의 생성 시점에 값이 결정되며, 실행 중에 변경되지 않는다.</p>
+<pre><code class="language-xml">&lt;NavigateToPose target_pose="3.5;2.1;0.0"
+                timeout_sec="30.0" /&gt;
+</code></pre>
+<h3>6.2 동적 파라미터</h3>
+<p>블랙보드 키를 참조하는 파라미터이다. 값이 블랙보드에 의해 실행 시점에 결정되며, 트리의 다른 노드에 의해 동적으로 변경될 수 있다.</p>
+<pre><code class="language-xml">&lt;NavigateToPose target_pose="{computed_goal}"
+                timeout_sec="{adjusted_timeout}" /&gt;
+</code></pre>
+<p>동적 파라미터는 노드 간의 데이터 흐름을 형성하며, 행동 트리의 반응적(reactive) 특성을 지원한다. 이전 노드의 출력이 후속 노드의 입력으로 전달되어, 트리의 실행 중에 행동이 동적으로 조정된다.</p>
+<h3>6.3 정적/동적 혼합</h3>
+<p>동일한 노드의 서로 다른 파라미터를 정적과 동적으로 혼합하여 지정할 수 있다.</p>
+<pre><code class="language-xml">&lt;!-- 목표는 동적, 타임아웃과 서버명은 정적 --&gt;
+&lt;NavigateToPose target_pose="{goal}"
+                timeout_sec="30.0"
+                server_name="navigate_to_pose" /&gt;
+</code></pre>
+<h2>7. 생성자 파라미터와 포트 파라미터의 구분</h2>
+<p>BehaviorTree.CPP에서 노드에 값을 전달하는 방법은 크게 두 가지이다: 생성자 파라미터와 포트 파라미터. 이 둘의 적절한 구분이 필요하다.</p>
+<h3>7.1 생성자 파라미터</h3>
+<p>노드의 생성 시점에 한 번 전달되며, 이후 변경할 수 없는 값이다. ROS2 노드 핸들, 공유 자원, 하드웨어 인터페이스 등 노드의 생명주기 전반에 걸쳐 고정되는 의존성에 적합하다.</p>
+<pre><code class="language-cpp">class ActionClientNode : public BT::StatefulActionNode
+{
+public:
+    ActionClientNode(const std::string&amp; name,
+                      const BT::NodeConfig&amp; config,
+                      rclcpp::Node::SharedPtr ros_node)
+        : StatefulActionNode(name, config),
+          ros_node_(ros_node) {}  // 생성자 파라미터
+};
+</code></pre>
+<h3>7.2 포트 파라미터</h3>
+<p>트리의 매 실행(또는 매 Tick)에서 블랙보드를 통해 동적으로 전달되는 값이다. 행동의 목표, 구성, 조건 등 실행마다 달라질 수 있는 값에 적합하다.</p>
+<table><thead><tr><th>구분 기준</th><th style="text-align: center">생성자 파라미터</th><th style="text-align: center">포트 파라미터</th></tr></thead><tbody>
+<tr><td>전달 시점</td><td style="text-align: center">노드 생성 시</td><td style="text-align: center">매 실행 시</td></tr>
+<tr><td>변경 가능성</td><td style="text-align: center">불변</td><td style="text-align: center">동적</td></tr>
+<tr><td>적합한 데이터</td><td style="text-align: center">ROS2 노드 핸들, 하드웨어 인터페이스</td><td style="text-align: center">목표 위치, 속도, 타임아웃</td></tr>
+<tr><td>XML에서 지정</td><td style="text-align: center">불가</td><td style="text-align: center">가능</td></tr>
+<tr><td>블랙보드 연동</td><td style="text-align: center">불가</td><td style="text-align: center">가능</td></tr>
+</tbody></table>
+<h2>8. 파라미터 조합의 설계</h2>
+<p>복합적 파라미터를 개별 포트로 분해할 것인지, 단일 복합 타입으로 전달할 것인지는 설계 결정이다.</p>
+<h3>8.1 개별 포트 분해</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;double&gt;("x", "목표 X 좌표"),
+        BT::InputPort&lt;double&gt;("y", "목표 Y 좌표"),
+        BT::InputPort&lt;double&gt;("theta", "목표 방향 (라디안)")
+    };
+}
+</code></pre>
+<p>개별 포트 분해는 XML에서의 직관성이 높으나, 포트 수가 과도하게 증가할 수 있다.</p>
+<h3>8.2 복합 타입 전달</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+            "goal_pose", "목표 위치와 자세")
+    };
+}
+</code></pre>
+<p>복합 타입 전달은 포트 수를 절감하나, XML에서 정적 값을 지정하기 위해 문자열-타입 변환 함수의 등록이 필요하다.</p>
+<h3>8.3 선택 기준</h3>
+<table><thead><tr><th>기준</th><th style="text-align: center">개별 포트</th><th style="text-align: center">복합 타입</th></tr></thead><tbody>
+<tr><td>XML 직관성</td><td style="text-align: center">높음</td><td style="text-align: center">낮음</td></tr>
+<tr><td>포트 수</td><td style="text-align: center">많음</td><td style="text-align: center">적음</td></tr>
+<tr><td>부분 지정 가능성</td><td style="text-align: center">가능</td><td style="text-align: center">불가</td></tr>
+<tr><td>타입 안전성</td><td style="text-align: center">기본 타입</td><td style="text-align: center">등록 필요</td></tr>
+<tr><td>블랙보드 연동</td><td style="text-align: center">개별 키</td><td style="text-align: center">단일 키</td></tr>
+</tbody></table>
+<p>일반적으로 파라미터의 수가 3~4개 이하이고 독립적으로 의미를 가지는 경우 개별 포트를, 파라미터가 논리적으로 하나의 단위를 구성하는 경우(예: PoseStamped, Path) 복합 타입을 선택한다.</p>
+<h2>9. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>가변 값의 완전한 포트화</strong>: 실행마다 달라질 수 있는 모든 값을 입력 포트로 노출한다.</p>
+</li>
+<li>
+<p><strong>합리적 기본값 제공</strong>: 빈번히 사용되는 구성 파라미터에 안전하고 일반적인 기본값을 설정한다.</p>
+</li>
+<li>
+<p><strong>필수/선택의 구분</strong>: 기본값 없는 포트는 필수, 기본값 있는 포트는 선택으로 구분하여, XML에서의 지정을 간소화한다.</p>
+</li>
+<li>
+<p><strong>유효성 검증 수행</strong>: 입력 파라미터의 존재 여부, 범위, 타입을 <code>onStart()</code> 또는 <code>tick()</code>의 시작부에서 검증한다.</p>
+</li>
+<li>
+<p><strong>단위와 범위 문서화</strong>: 포트의 설명(description)에 파라미터의 단위, 허용 범위, 기본값을 명시한다.</p>
+</li>
+<li>
+<p><strong>생성자/포트 적절한 구분</strong>: 노드 생명주기 전반에 걸쳐 고정되는 의존성은 생성자 파라미터로, 실행마다 달라지는 값은 포트 파라미터로 전달한다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

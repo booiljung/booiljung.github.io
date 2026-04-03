@@ -115,6 +115,205 @@
             </header>
             <article>
                 <h1>1294.50 ReactiveFallback의 의사 코드</h1>
+<h2>1. 기본 의사 코드</h2>
+<p>ReactiveFallback의 <code>tick()</code> 함수는 매 호출 시 항상 첫 번째 자식부터 순차적으로 평가하며, 내부에 재진입 인덱스를 유지하지 않는다(Colledanchise &amp; Ogren, 2018).</p>
+<pre><code>function ReactiveFallback.tick():
+    for i ← 0 to N-1:
+        status ← children[i].executeTick()
+        if status == SUCCESS:
+            resetChildren()
+            return SUCCESS
+        else if status == RUNNING:
+            // i 이후의 RUNNING 자식을 Halt
+            for j ← i+1 to N-1:
+                if children[j].status() != IDLE:
+                    children[j].halt()
+            return RUNNING
+    // 모든 자식이 FAILURE
+    resetChildren()
+    return FAILURE
+</code></pre>
+<h2>2. ReactiveSequence 의사 코드와의 대칭적 비교</h2>
+<pre><code>// ReactiveSequence                    // ReactiveFallback
+function tick():                       function tick():
+    for i ← 0 to N-1:                     for i ← 0 to N-1:
+        s ← child[i].tick()                   s ← child[i].tick()
+        if s == RUNNING:                       if s == RUNNING:
+            haltAfter(i)                           haltAfter(i)
+            return RUNNING                         return RUNNING
+        if s == FAILURE:                       if s == SUCCESS:
+            haltAfter(i)                           resetChildren()
+            return FAILURE                         return SUCCESS
+    return SUCCESS                         return FAILURE
+</code></pre>
+<p>두 의사 코드의 구조는 동일하며, SUCCESS와 FAILURE를 교환하면 하나에서 다른 하나를 얻을 수 있다.</p>
+<h2>3. FallbackWithMemory 의사 코드와의 대조</h2>
+<pre><code>// FallbackWithMemory
+function tick():
+    for i ← current_child_idx to N-1:    // ← 기억된 인덱스부터 시작
+        status ← children[i].executeTick()
+        if status == SUCCESS:
+            current_child_idx ← 0        // ← 인덱스 초기화
+            return SUCCESS
+        else if status == RUNNING:
+            current_child_idx ← i        // ← 인덱스 기억
+            return RUNNING
+    current_child_idx ← 0
+    return FAILURE
+
+// ReactiveFallback
+function tick():
+    for i ← 0 to N-1:                    // ← 항상 0부터 시작
+        status ← children[i].executeTick()
+        if status == SUCCESS:
+            resetChildren()
+            return SUCCESS
+        else if status == RUNNING:
+            haltChildrenAfter(i)          // ← 후속 RUNNING 자식 Halt
+            return RUNNING
+    resetChildren()
+    return FAILURE
+</code></pre>
+<p>핵심 차이는 시작 인덱스(항상 0 vs. 기억된 값)와 RUNNING 시 후속 자식 Halt 처리이다.</p>
+<h2>4. Halt 처리를 포함한 확장 의사 코드</h2>
+<pre><code>function ReactiveFallback.tick():
+    for i ← 0 to N-1:
+        status ← children[i].executeTick()
+
+        switch status:
+            case FAILURE:
+                continue                     // 다음 자식으로 진행
+
+            case SUCCESS:
+                resetAllChildren()
+                return SUCCESS
+
+            case RUNNING:
+                haltChildrenAfter(i)
+                return RUNNING
+
+            case IDLE:
+                throw LogicError
+
+    resetAllChildren()
+    return FAILURE
+
+function haltChildrenAfter(index):
+    for j ← index+1 to N-1:
+        if children[j].status() != IDLE:
+            children[j].halt()
+            children[j].setStatus(IDLE)
+</code></pre>
+<h2>5. SKIPPED 상태를 포함한 BehaviorTree.CPP v4 의사 코드</h2>
+<p>BehaviorTree.CPP v4에서는 SKIPPED 상태가 추가된다(Faconti, 2022).</p>
+<pre><code>function ReactiveFallback.tick():
+    all_skipped ← true
+
+    for i ← 0 to N-1:
+        status ← children[i].executeTick()
+
+        switch status:
+            case SUCCESS:
+                resetChildren()
+                return SUCCESS
+
+            case RUNNING:
+                for j ← i+1 to N-1:
+                    haltChild(j)
+                return RUNNING
+
+            case FAILURE:
+                all_skipped ← false
+                continue
+
+            case SKIPPED:
+                continue
+
+            case IDLE:
+                throw LogicError("Child returned IDLE")
+
+    resetChildren()
+    if all_skipped:
+        return SKIPPED
+    return FAILURE
+</code></pre>
+<p>SKIPPED 처리 규칙:</p>
+<ul>
+<li>SKIPPED를 반환한 자식은 전조건에 의해 실행이 건너뛰어진 것이다.</li>
+<li>SKIPPED는 조기 종료를 유발하지 않으며, FAILURE와 유사하게 다음 자식으로 진행한다.</li>
+<li>모든 자식이 SKIPPED인 경우 SKIPPED를 반환하고, 그렇지 않으면 FAILURE를 반환한다.</li>
+</ul>
+<h2>6. 의사 코드의 실행 추적</h2>
+<h3>6.1 시나리오 1: 첫 번째 자식 즉시 성공</h3>
+<pre><code>자식: [CondA, AsyncActB, ActC]
+
+tick():
+  i=0: CondA.executeTick() → SUCCESS
+  resetAllChildren()
+  → return SUCCESS
+</code></pre>
+<h3>6.2 시나리오 2: 비동기 대안 진행 중</h3>
+<pre><code>자식: [CondA, CondB, AsyncAct]
+
+tick():
+  i=0: CondA.executeTick() → FAILURE → continue
+  i=1: CondB.executeTick() → FAILURE → continue
+  i=2: AsyncAct.executeTick() → RUNNING
+       haltChildrenAfter(2): (더 이상 자식 없음)
+  → return RUNNING
+</code></pre>
+<h3>6.3 시나리오 3: 우선순위 전환</h3>
+<pre><code>자식: [CondA, AsyncActB]
+(이전 Tick에서 AsyncActB가 RUNNING 상태)
+
+tick():
+  i=0: CondA.executeTick() → SUCCESS    (이전 FAILURE에서 SUCCESS로 변화)
+  resetAllChildren():
+    children[1](AsyncActB): RUNNING → halt(), setStatus(IDLE)
+  → return SUCCESS
+</code></pre>
+<h3>6.4 시나리오 4: RUNNING 자식의 변경</h3>
+<pre><code>자식: [CondA, AsyncAct1, AsyncAct2]
+
+Tick N:
+  i=0: CondA → FAILURE → continue
+  i=1: AsyncAct1 → RUNNING
+       haltChildrenAfter(1):
+         children[2](AsyncAct2): IDLE → 건너뜀
+  → return RUNNING
+
+Tick N+1 (AsyncAct1 실패):
+  i=0: CondA → FAILURE → continue
+  i=1: AsyncAct1 → FAILURE → continue
+  i=2: AsyncAct2 → RUNNING
+       haltChildrenAfter(2): (더 이상 자식 없음)
+  → return RUNNING
+</code></pre>
+<h3>6.5 시나리오 5: 모든 대안 소진</h3>
+<pre><code>자식: [CondA, ActB, ActC]
+
+tick():
+  i=0: CondA → FAILURE → continue
+  i=1: ActB → FAILURE → continue
+  i=2: ActC → FAILURE → continue
+  resetAllChildren()
+  → return FAILURE
+</code></pre>
+<h2>7. 네 가지 Fallback 의사 코드의 종합 비교</h2>
+<table><thead><tr><th>요소</th><th>FallbackWithMemory</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>시작 인덱스</td><td><code>current_child_idx</code></td><td><code>0</code></td></tr>
+<tr><td>FAILURE 처리</td><td><code>continue</code> (다음 자식)</td><td><code>continue</code> (다음 자식)</td></tr>
+<tr><td>SUCCESS 처리</td><td>인덱스 초기화, SUCCESS 반환</td><td>자식 초기화, SUCCESS 반환</td></tr>
+<tr><td>RUNNING 처리</td><td>인덱스 기억, RUNNING 반환</td><td>후속 Halt, RUNNING 반환</td></tr>
+<tr><td>전체 FAILURE</td><td>인덱스 초기화, FAILURE 반환</td><td>자식 초기화, FAILURE 반환</td></tr>
+<tr><td>상태 변수</td><td><code>current_child_idx</code></td><td>없음</td></tr>
+</tbody></table>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

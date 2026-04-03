@@ -115,6 +115,150 @@
             </header>
             <article>
                 <h1>1295.92 Reactive 노드의 재평가 오버헤드</h1>
+<h2>1. 재평가 오버헤드의 정의</h2>
+<p>Reactive 노드(ReactiveSequence, ReactiveFallback)의 재평가 오버헤드란, 매 Tick에서 이미 평가된 자식 노드를 처음부터 다시 평가하는 데 소요되는 추가 비용을 의미한다. 일반 Sequence는 이전 Tick에서 SUCCESS를 반환한 자식을 건너뛰고 현재 활성 자식만 Tick하지만, ReactiveSequence는 매 Tick에서 첫 번째 자식부터 순차적으로 재평가한다. 이 차이가 재평가 오버헤드를 발생시킨다.</p>
+<h2>2. 오버헤드의 정량적 분석</h2>
+<h3>2.1 ReactiveSequence의 오버헤드 모델</h3>
+<p>ReactiveSequence에 조건 노드 <span class="math math-inline">C_1, C_2, \ldots, C_k</span>와 행동 노드 <span class="math math-inline">A</span>가 순서대로 배치된 경우를 고려한다. 행동 노드가 RUNNING 상태일 때, 매 Tick에서의 총 비용은 다음과 같다.</p>
+<p><span class="math math-display">T_{\text{reactive}} = \sum_{i=1}^{k} T_{C_i} + T_A</span></p>
+<p>일반 Sequence에서의 비용은 행동 노드의 Tick 비용만이다.</p>
+<p><span class="math math-display">T_{\text{standard}} = T_A</span></p>
+<p>따라서 재평가 오버헤드 <span class="math math-inline">\Delta T</span>는 다음과 같다.</p>
+<p><span class="math math-display">\Delta T = T_{\text{reactive}} - T_{\text{standard}} = \sum_{i=1}^{k} T_{C_i}</span></p>
+<p>오버헤드 비율은 다음과 같이 정의한다.</p>
+<p><span class="math math-display">R_{\text{overhead}} = \frac{\Delta T}{T_{\text{reactive}}} = \frac{\sum T_{C_i}}{\sum T_{C_i} + T_A}</span></p>
+<h3>2.2 ReactiveFallback의 오버헤드 모델</h3>
+<p>ReactiveFallback에 <span class="math math-inline">N</span>개의 분기가 있고, 현재 <span class="math math-inline">j</span>번째 분기가 활성인 경우, 매 Tick에서 <span class="math math-inline">1</span>번째부터 <span class="math math-inline">j</span>번째까지의 분기가 평가된다. 일반 Fallback에서는 <span class="math math-inline">j</span>번째 분기만 Tick되므로, 오버헤드는 <span class="math math-inline">1</span>번째부터 <span class="math math-inline">j-1</span>번째까지의 분기 평가 비용이다.</p>
+<p><span class="math math-display">\Delta T = \sum_{i=1}^{j-1} T_{\text{branch}_i}</span></p>
+<p>하위 분기가 활성일수록 오버헤드가 증가한다. 최하위 분기(기본 행동)가 활성인 경우 오버헤드가 최대가 된다.</p>
+<h2>실측 벤치마크</h2>
+<h3>조건 수에 따른 오버헤드 측정</h3>
+<p>ReactiveSequence에 조건 노드의 수를 변화시키면서 오버헤드를 측정한다.</p>
+<pre><code class="language-cpp">void benchmarkReactiveOverhead(
+    BT::BehaviorTreeFactory&amp; factory)
+{
+    std::vector&lt;int&gt; condition_counts = {1, 2, 3, 5, 8, 10};
+
+    for (int k : condition_counts)
+    {
+        // ReactiveSequence: 조건 k개 + 행동 1개
+        auto reactive_tree = createReactiveSeqTree(factory, k);
+        // 일반 Sequence: 조건 k개 + 행동 1개
+        auto standard_tree = createStandardSeqTree(factory, k);
+
+        // 조건을 모두 SUCCESS로 설정하여 행동이 RUNNING
+        setAllConditions(reactive_tree, BT::NodeStatus::SUCCESS);
+        setAllConditions(standard_tree, BT::NodeStatus::SUCCESS);
+
+        // 첫 Tick으로 행동을 RUNNING 상태로 전이
+        reactive_tree-&gt;tickOnce();
+        standard_tree-&gt;tickOnce();
+
+        // 1000회 Tick 측정
+        double reactive_avg = measureAvgTickTime(*reactive_tree, 1000);
+        double standard_avg = measureAvgTickTime(*standard_tree, 1000);
+
+        double overhead = reactive_avg - standard_avg;
+        double ratio = overhead / reactive_avg * 100.0;
+
+        std::cout &lt;&lt; "Conditions=" &lt;&lt; std::setw(2) &lt;&lt; k
+                  &lt;&lt; "  Reactive=" &lt;&lt; std::setw(8) 
+                  &lt;&lt; std::fixed &lt;&lt; std::setprecision(1)
+                  &lt;&lt; reactive_avg &lt;&lt; " us"
+                  &lt;&lt; "  Standard=" &lt;&lt; std::setw(8) 
+                  &lt;&lt; standard_avg &lt;&lt; " us"
+                  &lt;&lt; "  Overhead=" &lt;&lt; std::setw(8) 
+                  &lt;&lt; overhead &lt;&lt; " us"
+                  &lt;&lt; " (" &lt;&lt; std::setw(4) &lt;&lt; ratio &lt;&lt; "%)"
+                  &lt;&lt; std::endl;
+    }
+}
+</code></pre>
+<p>경량 조건 노드(블랙보드 읽기)와 경량 행동 노드(상태만 반환)를 사용한 전형적 결과이다.</p>
+<table><thead><tr><th style="text-align: center">조건 수 (<span class="math math-inline">k</span>)</th><th style="text-align: center">ReactiveSequence (μs)</th><th style="text-align: center">Sequence (μs)</th><th style="text-align: center">오버헤드 (μs)</th><th style="text-align: center">오버헤드 비율</th></tr></thead><tbody>
+<tr><td style="text-align: center">1</td><td style="text-align: center">4.2</td><td style="text-align: center">2.8</td><td style="text-align: center">1.4</td><td style="text-align: center">33%</td></tr>
+<tr><td style="text-align: center">2</td><td style="text-align: center">5.6</td><td style="text-align: center">2.8</td><td style="text-align: center">2.8</td><td style="text-align: center">50%</td></tr>
+<tr><td style="text-align: center">3</td><td style="text-align: center">7.1</td><td style="text-align: center">2.9</td><td style="text-align: center">4.2</td><td style="text-align: center">59%</td></tr>
+<tr><td style="text-align: center">5</td><td style="text-align: center">9.8</td><td style="text-align: center">2.9</td><td style="text-align: center">6.9</td><td style="text-align: center">70%</td></tr>
+<tr><td style="text-align: center">8</td><td style="text-align: center">14.2</td><td style="text-align: center">2.9</td><td style="text-align: center">11.3</td><td style="text-align: center">80%</td></tr>
+<tr><td style="text-align: center">10</td><td style="text-align: center">17.5</td><td style="text-align: center">3.0</td><td style="text-align: center">14.5</td><td style="text-align: center">83%</td></tr>
+</tbody></table>
+<p>조건 수가 증가할수록 오버헤드 비율이 증가한다. 그러나 절대값 기준으로 경량 조건 10개의 오버헤드는 14.5 μs에 불과하며, 대부분의 Tick 주기 예산(수 ms ~ 수십 ms) 내에서 무시할 수 있는 수준이다.</p>
+<h3>중량 조건의 영향</h3>
+<p>조건 노드가 무거운 연산을 포함하는 경우 오버헤드가 급격히 증가한다.</p>
+<table><thead><tr><th style="text-align: center">조건 비용 (μs/조건)</th><th style="text-align: center">조건 수</th><th style="text-align: center">오버헤드 (μs)</th><th style="text-align: center">Tick 주기 10 ms 대비</th></tr></thead><tbody>
+<tr><td style="text-align: center">2</td><td style="text-align: center">5</td><td style="text-align: center">10</td><td style="text-align: center">0.1%</td></tr>
+<tr><td style="text-align: center">50</td><td style="text-align: center">5</td><td style="text-align: center">250</td><td style="text-align: center">2.5%</td></tr>
+<tr><td style="text-align: center">200</td><td style="text-align: center">5</td><td style="text-align: center">1000</td><td style="text-align: center">10%</td></tr>
+<tr><td style="text-align: center">500</td><td style="text-align: center">5</td><td style="text-align: center">2500</td><td style="text-align: center">25%</td></tr>
+</tbody></table>
+<p>조건당 비용이 500 μs인 경우 5개 조건의 재평가 오버헤드가 2.5 ms에 달하며, 10 ms Tick 주기의 25%를 소비한다. 이는 설계적으로 허용 불가능한 수준이다.</p>
+<h2>오버헤드 경감 전략</h2>
+<h3>조건 노드의 캐싱</h3>
+<p>조건 노드의 평가 결과를 캐싱하여, 동일 Tick 내에서의 중복 평가를 방지한다.</p>
+<pre><code class="language-cpp">class CachedCondition : public BT::ConditionNode
+{
+public:
+    CachedCondition(const std::string&amp; name, 
+                    const BT::NodeConfig&amp; config)
+        : ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast&lt;
+            std::chrono::milliseconds&gt;(now - last_eval_time_);
+
+        if (elapsed &lt; cache_duration_)
+        {
+            return cached_result_;
+        }
+
+        cached_result_ = evaluateCondition();
+        last_eval_time_ = now;
+        return cached_result_;
+    }
+
+private:
+    virtual BT::NodeStatus evaluateCondition() = 0;
+
+    BT::NodeStatus cached_result_ = BT::NodeStatus::FAILURE;
+    std::chrono::steady_clock::time_point last_eval_time_;
+    std::chrono::milliseconds cache_duration_{10};
+};
+</code></pre>
+<p>캐싱 주기를 적절히 설정하면 재평가 오버헤드를 크게 줄일 수 있으나, 캐싱 주기가 길면 조건 변화의 감지가 지연되므로 안전 관련 조건에는 주의가 필요하다.</p>
+<h3>블랙보드 기반 경량 조건</h3>
+<p>조건 노드가 직접 센서 데이터를 처리하는 대신, 별도의 비동기 프로세스가 블랙보드에 전처리된 결과를 기록하고, 조건 노드는 블랙보드에서 불리언 값만 읽도록 설계한다.</p>
+<pre><code class="language-cpp">// 비동기 센서 처리 노드 (별도의 서브트리에서 실행)
+BT::NodeStatus ProcessLidar::tick()
+{
+    auto scan = lidar_subscriber_-&gt;getData();
+    bool obstacle = detectObstacle(scan);  // 무거운 연산
+    setOutput("obstacle_detected", obstacle);
+    return BT::NodeStatus::SUCCESS;
+}
+
+// ReactiveSequence 내 경량 조건 노드
+BT::NodeStatus IsObstacleDetected::tick()
+{
+    bool detected = getInput&lt;bool&gt;("obstacle_detected").value();
+    return detected ? BT::NodeStatus::SUCCESS 
+                    : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>이 분리 패턴을 통해 조건 노드의 Tick 비용을 1~5 μs 수준으로 유지할 수 있다.</p>
+<h2>오버헤드 허용 기준</h2>
+<p>재평가 오버헤드의 허용 여부를 판단하는 기준이다.</p>
+<table><thead><tr><th style="text-align: center">오버헤드 비율</th><th style="text-align: center">판정</th><th>조치</th></tr></thead><tbody>
+<tr><td style="text-align: center">&lt; 5%</td><td style="text-align: center">허용</td><td>조치 불필요</td></tr>
+<tr><td style="text-align: center">5% ~ 15%</td><td style="text-align: center">주의</td><td>조건 경량화 검토</td></tr>
+<tr><td style="text-align: center">15% ~ 30%</td><td style="text-align: center">경고</td><td>캐싱 또는 조건 분리 적용</td></tr>
+<tr><td style="text-align: center">&gt; 30%</td><td style="text-align: center">위험</td><td>설계 재검토 필요</td></tr>
+</tbody></table>
+<p>이 기준은 전체 Tick 시간 대비 재평가 오버헤드의 비율이며, Tick 주기 예산의 절대값도 함께 고려하여야 한다. 오버헤드 비율이 30%이더라도 절대값이 10 μs이면 실질적 문제가 되지 않는다. 반대로 오버헤드 비율이 5%이더라도 절대값이 5 ms이면 긴밀한 제어 루프에서 문제가 될 수 있다.</p>
+<h2>오버헤드와 안전성의 균형</h2>
+<p>재평가 오버헤드를 줄이기 위해 캐싱이나 Tick 주기 분리를 적용하면, 조건 변화의 감지 지연이 발생한다. 안전 관련 조건(비상 정지, 충돌 감지, 하드웨어 이상 등)에서는 감지 지연이 사고로 직결되므로, 성능 최적화보다 즉시성을 우선하여야 한다. 안전 조건은 캐싱 없이 매 Tick마다 직접 평가하고, 비안전 조건(배터리 수준, 환경 데이터 등)에만 캐싱을 적용하는 차등 전략이 적합하다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,68 @@
             </header>
             <article>
                 <h1>1295.2 Parallel 노드의 동시 실행 모델</h1>
+<h2>1. 동시 실행 모델의 개요</h2>
+<p>Parallel 노드의 동시 실행 모델(concurrent execution model)은 행동 트리 프레임워크에서 복수의 자식 노드가 동일한 틱(tick) 주기 내에서 모두 실행 기회를 갖는 방식을 형식적으로 규정한다. 이 모델은 운영체제의 프로세스 스케줄링이나 멀티스레드 프로그래밍과는 근본적으로 상이한 실행 패러다임을 따르며, 행동 트리의 결정론적(deterministic) 특성을 유지하면서도 동시적 행동 표현을 가능하게 한다(Colledanchise &amp; Ögren, 2018).</p>
+<h2>2. 인터리빙 실행 모델</h2>
+<p>Parallel 노드의 동시 실행은 인터리빙(interleaving) 실행 모델에 기반한다. 인터리빙 실행이란, 복수의 실행 단위가 물리적으로 동시에 수행되는 것이 아니라, 단일 실행 흐름 내에서 각 실행 단위에 교대로 실행 기회를 부여하는 방식을 의미한다.</p>
+<p>Parallel 노드 <span class="math math-inline">P</span>가 <span class="math math-inline">N</span>개의 자식 <span class="math math-inline">C_1, C_2, \ldots, C_N</span>을 보유하는 경우, 단일 틱 주기에서의 실행 순서는 다음과 같이 결정론적으로 고정된다.</p>
+<p><span class="math math-display">
+\text{tick}(P) \rightarrow \text{tick}(C_1) \rightarrow \text{tick}(C_2) \rightarrow \cdots \rightarrow \text{tick}(C_N) \rightarrow \text{aggregate}
+</span></p>
+<p>여기서 <span class="math math-inline">\text{aggregate}</span>는 모든 자식의 반환 상태를 수집하여 Parallel 노드의 최종 상태를 결정하는 단계이다. 각 자식은 이전 자식의 틱이 완전히 종료된 후에 틱을 수신하므로, 실행 순서에 따른 암묵적 의존성이 존재할 수 있다.</p>
+<h2>3. 협력적 동시성</h2>
+<p>Parallel 노드의 실행 모델은 선점형 동시성(preemptive concurrency)이 아닌 협력적 동시성(cooperative concurrency)을 따른다. 협력적 동시성에서는 각 실행 단위가 자발적으로 제어권을 양보하며, 외부에 의한 강제적 실행 중단이 발생하지 않는다.</p>
+<p>행동 트리에서 이 원리가 적용되는 방식은 다음과 같다.</p>
+<ol>
+<li>각 자식 노드는 틱을 수신하면 자신의 로직을 실행한다.</li>
+<li>실행이 완료되면 SUCCESS, FAILURE, 또는 RUNNING 상태를 반환하고 제어권을 Parallel 노드에 양보한다.</li>
+<li>Parallel 노드는 다음 자식에 틱을 전달한다.</li>
+<li>모든 자식이 상태를 반환하면 정책에 따라 최종 상태를 결정한다.</li>
+</ol>
+<p>이 모델에서 각 자식 노드의 <code>tick()</code> 호출은 비차단(non-blocking)적이어야 한다. 즉, 자식 노드가 장시간 실행을 요구하는 경우 RUNNING을 반환하고 즉시 제어권을 반환해야 한다. 자식 노드가 <code>tick()</code> 내부에서 차단(blocking) 연산을 수행하면 후속 자식 노드의 틱이 지연되어 전체 행동 트리의 반응성이 저하된다.</p>
+<h2>4. 시간 모델과 틱 주기</h2>
+<p>Parallel 노드의 동시 실행 모델은 이산 시간(discrete time) 모델에 기반한다. 행동 트리는 연속적으로 실행되는 것이 아니라 주기적인 틱에 의해 구동되며, 각 틱은 논리적으로 단일 시점(instant)에 해당한다.</p>
+<p>틱 주기를 <span class="math math-inline">\Delta t</span>라 하면, 시각 <span class="math math-inline">t_k = k \cdot \Delta t</span>에서 Parallel 노드의 모든 자식이 동일 시점의 상태 정보를 기반으로 판단을 수행하는 것이 이상적이다. 그러나 실제 구현에서는 <span class="math math-inline">C_1</span>의 틱 실행이 <span class="math math-inline">C_2</span>보다 먼저 완료되므로, <span class="math math-inline">C_1</span>의 결과가 블랙보드를 통해 <span class="math math-inline">C_2</span>에 영향을 미칠 수 있다. 이러한 암묵적 순서 의존성은 설계 시 주의가 필요하다.</p>
+<p><span class="math math-display">
+t_k: \quad \underbrace{C_1 \rightarrow C_2 \rightarrow \cdots \rightarrow C_N}_{\text{단일 틱 주기 내 순차 실행}} \quad \rightarrow \quad t_{k+1}: \quad C_1 \rightarrow C_2 \rightarrow \cdots \rightarrow C_N
+</span></p>
+<p>위 다이어그램은 연속된 두 틱 주기에서의 실행 흐름을 보여준다. 각 틱 주기 내에서 자식들은 순차적으로 실행되지만, 틱 주기 간에는 모든 자식이 동등하게 진행 기회를 가지므로 논리적 동시성이 성립한다.</p>
+<h2>5. 코루틴 유사 패턴</h2>
+<p>Parallel 노드의 동시 실행 모델은 프로그래밍 언어의 코루틴(coroutine) 패턴과 구조적 유사성을 갖는다. 코루틴은 실행을 중단(suspend)하고 나중에 재개(resume)할 수 있는 일반화된 서브루틴으로, 협력적 멀티태스킹의 기본 단위이다.</p>
+<table><thead><tr><th>특성</th><th>코루틴</th><th>Parallel 노드 자식</th></tr></thead><tbody>
+<tr><td>실행 중단 메커니즘</td><td><code>yield</code> 문</td><td>RUNNING 반환</td></tr>
+<tr><td>실행 재개 메커니즘</td><td>스케줄러 호출</td><td>다음 틱에서 재틱</td></tr>
+<tr><td>상태 보존</td><td>지역 변수 유지</td><td>노드 내부 상태 유지</td></tr>
+<tr><td>동시성 유형</td><td>협력적</td><td>협력적</td></tr>
+<tr><td>종료 시점</td><td><code>return</code> 문</td><td>SUCCESS 또는 FAILURE 반환</td></tr>
+</tbody></table>
+<p>행동 트리의 자식 노드가 RUNNING을 반환하는 것은 코루틴이 <code>yield</code>를 호출하여 실행을 일시 중단하는 것과 동치이다. Parallel 노드는 스케줄러의 역할을 수행하여 매 틱마다 모든 자식에 재개 기회를 부여한다. 이 관점에서 Parallel 노드는 라운드 로빈(round-robin) 스케줄링을 수행하는 협력적 멀티태스킹 스케줄러로 해석할 수 있다.</p>
+<h2>6. 실행 모델의 형식적 성질</h2>
+<p>Parallel 노드의 인터리빙 실행 모델은 다음의 형식적 성질을 보장한다.</p>
+<h3>6.1 결정론성</h3>
+<p>동일한 입력 상태에서 동일한 순서의 자식 노드 배치는 항상 동일한 실행 결과를 산출한다. 이는 자식의 실행 순서가 정의 순서에 의해 결정론적으로 고정되기 때문이다. 멀티스레드 병렬 실행에서 발생하는 비결정론적(non-deterministic) 경합 조건(race condition)이 원천적으로 배제된다.</p>
+<h3>6.2 공정성</h3>
+<p>매 틱마다 모든 자식이 실행 기회를 가지므로, 특정 자식이 기아(starvation) 상태에 빠지지 않는다. 이는 Sequence나 Fallback 노드와의 핵심적 차이이다. Sequence에서는 첫 번째 자식이 RUNNING을 반환하면 후속 자식이 틱을 수신하지 못하지만, Parallel에서는 모든 자식이 매 틱마다 틱을 수신한다.</p>
+<h3>6.3 진행 보장</h3>
+<p>각 자식 노드가 유한 시간 내에 SUCCESS 또는 FAILURE를 반환한다면, Parallel 노드 역시 유한 시간 내에 최종 상태를 결정할 수 있다. 자식 노드가 무한히 RUNNING을 반환하는 경우, Parallel 노드도 무한히 RUNNING을 반환하게 되므로, 개별 자식의 종료 보장이 전체 Parallel 노드의 종료 보장에 대한 전제 조건이 된다.</p>
+<h2>7. 다른 동시성 모델과의 비교</h2>
+<table><thead><tr><th>동시성 모델</th><th>실행 방식</th><th>결정론성</th><th>경합 조건 가능성</th><th>적용 분야</th></tr></thead><tbody>
+<tr><td>멀티스레드 병렬</td><td>물리적 동시 실행</td><td>비결정론적</td><td>있음</td><td>범용 컴퓨팅</td></tr>
+<tr><td>이벤트 루프</td><td>단일 스레드, 이벤트 구동</td><td>결정론적</td><td>없음</td><td>I/O 집약적 시스템</td></tr>
+<tr><td>코루틴</td><td>단일 스레드, 협력적</td><td>결정론적</td><td>없음</td><td>비동기 프로그래밍</td></tr>
+<tr><td>행동 트리 Parallel</td><td>단일 스레드, 틱 구동</td><td>결정론적</td><td>없음</td><td>로봇 행동 제어</td></tr>
+</tbody></table>
+<p>행동 트리의 Parallel 실행 모델은 이벤트 루프 및 코루틴 모델과 유사한 단일 스레드 동시성 패러다임에 속하며, 멀티스레드 병렬 모델과는 근본적으로 구분된다. 로봇 행동 제어에서 결정론적 실행이 중시되는 이유는, 행동의 재현성(reproducibility)과 안전성 검증이 비결정론적 시스템에서는 극히 어렵기 때문이다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Colledanchise, M., &amp; Ögren, P. (2017). “How Behavior Trees Modularize Hybrid Control Systems and Generalize Sequential Behavior Compositions, the Subsumption Architecture, and Decision Trees.” <em>IEEE Transactions on Robotics</em>, 33(2), 372–389.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

@@ -115,6 +115,123 @@
             </header>
             <article>
                 <h1>1295.67 Parallel 내부의 ReactiveSequence 중첩</h1>
+<h2>1. 중첩 구조의 의미</h2>
+<p>Parallel 노드의 자식으로 ReactiveSequence를 배치하면, 동시에 수행되는 각 행동에 개별적인 전제 조건을 적용할 수 있다. Parallel은 모든 자식에게 매 Tick에서 Tick을 전파하므로, 각 ReactiveSequence는 독립적으로 자신의 조건을 재평가하고, 조건 위반 시 자신의 행동만을 Halt한다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>Parallel (success_policy, failure_policy)
+├── ReactiveSequence [행동 A: 조건부 실행]
+│   ├── ConditionA
+│   └── ActionA
+├── ReactiveSequence [행동 B: 조건부 실행]
+│   ├── ConditionB
+│   └── ActionB
+└── ReactiveSequence [행동 C: 조건부 실행]
+    ├── ConditionC
+    └── ActionC
+</code></pre>
+<p>이 구조의 의미론: “A, B, C를 동시에 수행하되, A는 ConditionA가 참인 동안만, B는 ConditionB가 참인 동안만, C는 ConditionC가 참인 동안만 수행하라.”</p>
+<h2>3. Tick 흐름의 상세 추적</h2>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ReactiveSequence [이동]
+│   ├── IsPathClear
+│   └── MoveForward
+└── ReactiveSequence [촬영]
+    ├── IsLightingOK
+    └── CaptureImage
+</code></pre>
+<h3>3.1 Tick 1: 두 조건 모두 충족</h3>
+<pre><code>Parallel.tick():
+  ReactiveSequence[이동].tick():
+    IsPathClear → SUCCESS
+    MoveForward → RUNNING
+    → RUNNING
+  ReactiveSequence[촬영].tick():
+    IsLightingOK → SUCCESS
+    CaptureImage → RUNNING
+    → RUNNING
+  → Parallel → RUNNING (두 자식 모두 RUNNING)
+</code></pre>
+<h3>3.2 Tick 2: 촬영 조건만 위반</h3>
+<pre><code>Parallel.tick():
+  ReactiveSequence[이동].tick():
+    IsPathClear → SUCCESS
+    MoveForward → RUNNING
+    → RUNNING
+  ReactiveSequence[촬영].tick():
+    IsLightingOK → FAILURE
+    → CaptureImage.halt()
+    → FAILURE
+  → Parallel → FAILURE (FAILURE_ONE 정책: 하나가 FAILURE)
+</code></pre>
+<p>촬영 조건이 위반되면 <code>ReactiveSequence[촬영]</code>이 <code>FAILURE</code>를 반환하고, FAILURE_ONE 정책에 의해 Parallel이 <code>FAILURE</code>를 반환한다. 이 시점에서 <code>ReactiveSequence[이동]</code>에도 Halt가 전파된다.</p>
+<h3>3.3 FAILURE_ONE 정책의 영향</h3>
+<p>FAILURE_ONE 정책을 사용하면, 하나의 ReactiveSequence의 조건 위반이 전체 Parallel을 실패시킨다. 이는 모든 조건이 동시에 충족되어야 동시 행동이 허용된다는 의미이다.</p>
+<p>개별 조건의 독립적 처리가 필요하면, FAILURE_ALL 정책이나 커스텀 정책을 사용하여야 한다.</p>
+<h2>4. 정책에 따른 동작 변화</h2>
+<h3>4.1 FAILURE_ALL 정책</h3>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ALL)
+├── ReactiveSequence [이동]  → RUNNING
+└── ReactiveSequence [촬영]  → FAILURE (조건 위반)
+</code></pre>
+<p>FAILURE_ALL 정책에서는 모든 자식이 <code>FAILURE</code>가 되어야 Parallel이 <code>FAILURE</code>를 반환한다. 따라서 촬영 조건이 위반되어도 이동은 계속 수행된다. Parallel은 <code>RUNNING</code>을 반환한다.</p>
+<p>이 구성에서 각 행동은 자신의 조건에 의해서만 제어되고, 다른 행동의 조건 상태에 영향을 받지 않는다.</p>
+<h3>4.2 SUCCESS_ONE 정책</h3>
+<pre><code>Parallel (success_policy: SUCCESS_ONE)
+├── ReactiveSequence [작업 A]  → SUCCESS
+└── ReactiveSequence [작업 B]  → RUNNING
+</code></pre>
+<p>하나의 ReactiveSequence가 <code>SUCCESS</code>를 반환하면 Parallel이 <code>SUCCESS</code>를 반환하고, 나머지 ReactiveSequence에 Halt가 전파된다.</p>
+<h2>5. 적용 사례</h2>
+<h3>5.1 다중 센서 기반 동시 탐사</h3>
+<p>복수의 센서를 활용한 동시 탐사에서, 각 센서의 가용 조건을 개별적으로 관리한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ALL)
+├── ReactiveSequence [카메라 탐사]
+│   ├── IsCameraFunctional
+│   └── VisualSurvey
+├── ReactiveSequence [LiDAR 탐사]
+│   ├── IsLidarFunctional
+│   └── LidarMapping
+└── ReactiveSequence [열화상 탐사]
+    ├── IsThermalCameraFunctional
+    └── ThermalSurvey
+</code></pre>
+<p>각 센서가 정상인 동안에만 해당 센서의 탐사가 수행된다. 한 센서가 장애 상태가 되어도 다른 센서의 탐사는 계속된다(FAILURE_ALL 정책). 모든 센서 탐사가 완료되면 Parallel이 <code>SUCCESS</code>를 반환한다.</p>
+<h3>5.2 협업 로봇의 동시 작업</h3>
+<p>복수의 로봇 팔이 동시에 작업을 수행하되, 각 팔의 힘 조건을 개별적으로 감시한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ReactiveSequence [좌측 팔]
+│   ├── IsLeftArmForceOK
+│   └── LeftArmTask
+└── ReactiveSequence [우측 팔]
+    ├── IsRightArmForceOK
+    └── RightArmTask
+</code></pre>
+<p>한 팔에 과도한 힘이 감지되면 해당 팔의 작업만 중단되는 것이 아니라, FAILURE_ONE 정책에 의해 양쪽 팔 모두 중단된다. 이는 양팔 협업 작업에서 한쪽이 중단되면 다른 쪽도 중단되어야 하는 안전 요구 사항을 표현한다.</p>
+<h2>6. Halt 전파의 경로</h2>
+<p>Parallel 수준에서의 Halt와 ReactiveSequence 수준에서의 Halt는 독립적인 경로로 발생한다.</p>
+<ol>
+<li>
+<p><strong>ReactiveSequence 내부 Halt</strong>: 개별 조건 위반 시, 해당 ReactiveSequence 내의 행동만 Halt된다. 다른 ReactiveSequence는 영향을 받지 않는다(정책에 따라 Parallel 수준의 Halt가 추가 발생할 수 있음).</p>
+</li>
+<li>
+<p><strong>Parallel 수준 Halt</strong>: 정책 충족 시, Parallel이 모든 <code>RUNNING</code> 자식에 Halt를 전파한다. 이 Halt는 ReactiveSequence를 거쳐 내부 행동에까지 전파된다.</p>
+</li>
+<li>
+<p><strong>부모로부터의 Halt</strong>: Parallel의 부모가 Halt를 전파하면, Parallel이 모든 자식에 Halt를 전파하고, 각 ReactiveSequence가 자신의 자식에 Halt를 전파한다.</p>
+</li>
+</ol>
+<h2>7. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>정책의 신중한 선택</strong>: FAILURE_ONE과 FAILURE_ALL의 선택은 “하나의 조건 위반이 전체 동시 행동을 중단하여야 하는가“에 대한 답변에 기반하여야 한다.</p>
+</li>
+<li>
+<p><strong>조건 노드의 독립성</strong>: 각 ReactiveSequence의 조건 노드는 서로 독립적이어야 한다. 한 조건 노드가 다른 조건 노드의 블랙보드 데이터를 변경하면 예기치 않은 상호 작용이 발생한다.</p>
+</li>
+<li>
+<p><strong>Tick 시간 예산</strong>: Parallel이 모든 ReactiveSequence를 순차적으로 Tick하므로, ReactiveSequence의 수가 증가하면 Tick 시간이 비례하여 증가한다. 실시간 제약 내에서 완료되는지를 검증하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

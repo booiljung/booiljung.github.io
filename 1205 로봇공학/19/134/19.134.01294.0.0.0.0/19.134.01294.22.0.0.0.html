@@ -115,6 +115,86 @@
             </header>
             <article>
                 <h1>1294.22 ReactiveSequence의 조건 재검사 기능</h1>
+<h2>1. 조건 재검사의 개념</h2>
+<p>ReactiveSequence의 조건 재검사(condition re-checking)란, 비동기 액션이 RUNNING 상태에서 진행 중인 동안, 앞쪽에 배치된 조건 노드들이 매 Tick마다 재평가되어 현재 환경 상태의 유효성을 지속적으로 확인하는 기능이다. 이 기능은 ReactiveSequence의 “처음부터 재실행” 동작에 의해 자연스럽게 구현되며, 조건이 더 이상 충족되지 않으면 진행 중인 작업을 즉시 중단할 수 있다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 조건 재검사의 동작 구조</h2>
+<h3>2.1 감시-작업 패턴</h3>
+<p>ReactiveSequence에서 조건 노드는 “감시자(monitor)” 역할을, 액션 노드는 “작업자(worker)” 역할을 수행한다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;!-- 감시자: 매 Tick 재검사 --&gt;
+    &lt;Condition ID="IsBatteryAbove15"/&gt;
+    &lt;Condition ID="IsNotCollision"/&gt;
+    &lt;!-- 작업자: 비동기 작업 수행 --&gt;
+    &lt;Action ID="NavigateToGoal"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>매 Tick에서의 동작:</p>
+<ol>
+<li><code>IsBatteryAbove15</code> 평가 → SUCCESS이면 계속</li>
+<li><code>IsNotCollision</code> 평가 → SUCCESS이면 계속</li>
+<li><code>NavigateToGoal</code> 평가 → RUNNING 유지 또는 완료</li>
+</ol>
+<p>감시자 중 하나라도 FAILURE를 반환하면 작업자가 Halt된다.</p>
+<h2>3. 조건 변화 감지의 시나리오</h2>
+<h3>3.1 배터리 소진 감지</h3>
+<pre><code>Tick 1:  Battery=25% → IsBatteryAbove15 → SUCCESS, Navigate → RUNNING
+Tick 2:  Battery=22% → IsBatteryAbove15 → SUCCESS, Navigate → RUNNING
+Tick 3:  Battery=18% → IsBatteryAbove15 → SUCCESS, Navigate → RUNNING
+Tick 4:  Battery=14% → IsBatteryAbove15 → FAILURE → Navigate Halt
+         ReactiveSequence → FAILURE
+</code></pre>
+<p>배터리가 임계값 이하로 떨어지는 즉시(해당 Tick에서) 네비게이션이 중단된다.</p>
+<h3>3.2 장애물 출현 감지</h3>
+<pre><code>Tick 1:  경로 안전 → IsNotCollision → SUCCESS, Navigate → RUNNING
+Tick 2:  경로 안전 → IsNotCollision → SUCCESS, Navigate → RUNNING
+Tick 3:  장애물 감지 → IsNotCollision → FAILURE → Navigate Halt
+         ReactiveSequence → FAILURE
+</code></pre>
+<h3>3.3 통신 두절 감지</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsCommsAlive"/&gt;
+    &lt;Action ID="RemoteOperation"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>원격 조종 중 통신이 두절되면 원격 작업이 즉시 중단된다.</p>
+<h2>4. 다중 조건의 순차적 재검사</h2>
+<p>ReactiveSequence에 다수의 조건이 배치된 경우, 왼쪽에서 오른쪽으로 순차적으로 재검사된다. 앞쪽 조건이 FAILURE를 반환하면 뒤쪽 조건은 평가되지 않는다(조기 종료).</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsSystemHealthy"/&gt;   &lt;!-- 1순위 검사 --&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;       &lt;!-- 2순위 검사 --&gt;
+    &lt;Condition ID="IsLocalized"/&gt;       &lt;!-- 3순위 검사 --&gt;
+    &lt;Action ID="PerformMission"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<pre><code>Tick N:
+  IsSystemHealthy → FAILURE  ← 1순위에서 실패
+  IsBatteryOK     → (미평가)
+  IsLocalized     → (미평가)
+  PerformMission  → Halt
+  → FAILURE
+</code></pre>
+<p>이 순차적 검사에서 조건의 배치 순서는 우선순위를 반영해야 한다. 가장 중요한 안전 조건을 첫 번째에, 덜 긴급한 조건을 뒤에 배치한다.</p>
+<h2>5. 조건 재검사의 빈도와 Tick 주기</h2>
+<p>조건 재검사의 빈도는 Tick 주기와 동일하다. 10 Hz Tick에서는 조건이 초당 10회 재검사되고, 100 Hz에서는 초당 100회 재검사된다. 조건 변화의 감지 지연은 최대 1 Tick 주기이다.</p>
+<p><span class="math math-display">\text{최대 감지 지연} = T_{period}</span></p>
+<p>더 빠른 감지가 필요한 경우 Tick 주기를 줄이거나, 이벤트 기반 즉각 Tick을 병행해야 한다.</p>
+<h2>조건 재검사와 안전 설계</h2>
+<p>조건 재검사 기능은 로봇 안전 설계의 핵심 메커니즘이다. 안전 관련 조건을 ReactiveSequence의 앞쪽에 배치함으로써, 모든 행동이 안전 조건의 지속적 감시 하에 수행되도록 보장한다. 이 패턴은 안전 우선(safety-first) 설계 원칙의 행동 트리 수준 구현이다(Faconti, 2022).</p>
+<pre><code class="language-xml">&lt;!-- 안전 우선 패턴 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Condition ID="EmergencyStopNotPressed"/&gt;
+    &lt;Condition ID="SafetyZoneNotViolated"/&gt;
+    &lt;!-- 모든 행동이 위 조건의 감시 하에 수행됨 --&gt;
+    &lt;SubTree ID="MissionBehavior"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>비상 정지 버튼이 눌리거나 안전 영역이 위반되면, 어떤 임무를 수행 중이든 즉시 중단된다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

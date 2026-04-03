@@ -115,6 +115,174 @@
             </header>
             <article>
                 <h1>1295.72 ParallelNode 클래스의 인터페이스</h1>
+<h2>1. 클래스 계층 구조</h2>
+<p>BehaviorTree.CPP에서 Parallel 노드는 <code>ControlNode</code> 기반 클래스를 상속한다. 행동 트리의 모든 노드는 <code>TreeNode</code>를 최상위 기반 클래스로 가지며, 제어 노드(ControlNode), 행동 노드(ActionNodeBase), 조건 노드(ConditionNode), 데코레이터 노드(DecoratorNode)가 이를 상속한다.</p>
+<pre><code>TreeNode
+├── ControlNode
+│   ├── SequenceNode
+│   ├── FallbackNode
+│   ├── ParallelAll          ← Parallel 노드
+│   ├── ReactiveSequence
+│   └── ReactiveFallback
+├── ActionNodeBase
+├── ConditionNode
+└── DecoratorNode
+</code></pre>
+<h2>2. ControlNode 기반 클래스의 인터페이스</h2>
+<p><code>ParallelAll</code>이 상속하는 <code>ControlNode</code>는 자식 노드의 관리를 위한 기본 인터페이스를 제공한다.</p>
+<pre><code class="language-cpp">class ControlNode : public TreeNode
+{
+public:
+    ControlNode(const std::string&amp; name, const NodeConfig&amp; config);
+    virtual ~ControlNode() override = default;
+    
+    // 자식 노드 추가
+    void addChild(TreeNode* child);
+    
+    // 자식 노드 수 반환
+    size_t childrenCount() const;
+    
+    // 인덱스로 자식 노드 접근
+    const TreeNode* child(size_t index) const;
+    TreeNode* child(size_t index);
+    
+    // 모든 자식에 Halt 전파
+    void haltChildren();
+    
+    // 특정 인덱스 이후의 자식에 Halt 전파
+    void haltChildren(size_t first);
+
+protected:
+    std::vector&lt;TreeNode*&gt; children_nodes_;
+};
+</code></pre>
+<p><code>haltChildren()</code> 메서드는 <code>RUNNING</code> 상태인 모든 자식에 <code>halt()</code>를 호출하고 상태를 <code>IDLE</code>로 초기화한다. <code>haltChildren(size_t first)</code>는 <code>first</code> 인덱스부터 마지막 자식까지를 대상으로 한다.</p>
+<h2>3. ParallelAll 클래스의 인터페이스</h2>
+<p>BehaviorTree.CPP 4.x의 <code>ParallelAll</code> 클래스의 공개 인터페이스를 분석한다.</p>
+<pre><code class="language-cpp">class ParallelAll : public ControlNode
+{
+public:
+    ParallelAll(const std::string&amp; name, const NodeConfig&amp; config);
+    
+    // 포트 정의: max_failures 파라미터
+    static PortsList providedPorts()
+    {
+        return {InputPort&lt;int&gt;("max_failures", 0,
+                "허용되는 최대 실패 자식 수. "
+                "0이면 하나의 실패로 전체 실패.")};
+    }
+    
+    ~ParallelAll() override = default;
+
+private:
+    int max_failures_;
+    
+    // 핵심 실행 메서드
+    NodeStatus tick() override;
+    
+    // Halt 처리
+    void halt() override;
+};
+</code></pre>
+<h3>3.1 providedPorts() 정적 메서드</h3>
+<p><code>providedPorts()</code>는 노드가 수용하는 입출력 포트를 선언한다. <code>ParallelAll</code>은 <code>max_failures</code>라는 하나의 입력 포트를 가지며, 이 포트의 기본값은 0이다.</p>
+<table><thead><tr><th>포트명</th><th>방향</th><th>타입</th><th>기본값</th><th>의미</th></tr></thead><tbody>
+<tr><td>max_failures</td><td>입력</td><td>int</td><td>0</td><td>허용되는 최대 실패 자식 수</td></tr>
+</tbody></table>
+<h3>3.2 tick() 메서드</h3>
+<p><code>tick()</code>은 매 Tick에서 호출되며, Parallel 노드의 핵심 실행 로직을 담당한다. 모든 자식에게 Tick을 전파하고, 성공/실패 수를 집계하여 정책에 따라 반환값을 결정한다.</p>
+<h3>3.3 halt() 메서드</h3>
+<p><code>halt()</code>는 부모로부터 Halt가 전파될 때 호출된다. 모든 <code>RUNNING</code> 상태의 자식에 Halt를 전파하고, 내부 상태를 초기화한다.</p>
+<h2>4. TreeNode 기반 클래스의 핵심 메서드</h2>
+<p><code>ParallelAll</code>이 간접적으로 상속하는 <code>TreeNode</code>의 핵심 메서드는 다음과 같다.</p>
+<pre><code class="language-cpp">class TreeNode
+{
+public:
+    // 노드의 현재 상태 반환
+    NodeStatus status() const;
+    
+    // 상태 설정
+    void setStatus(NodeStatus new_status);
+    
+    // Tick 실행 (tick()을 래핑하며, 상태 변경 콜백을 처리)
+    virtual NodeStatus executeTick();
+    
+    // 블랙보드에서 입력 포트 값 읽기
+    template &lt;typename T&gt;
+    Result getInput(const std::string&amp; key, T&amp; destination) const;
+    
+    // 블랙보드에 출력 포트 값 쓰기
+    template &lt;typename T&gt;
+    Result setOutput(const std::string&amp; key, const T&amp; value);
+    
+    // 노드 이름 반환
+    const std::string&amp; name() const;
+    
+    // 노드의 고유 ID 반환
+    uint16_t UID() const;
+    
+    // 노드 설정(포트, 블랙보드 등) 반환
+    const NodeConfig&amp; config() const;
+
+protected:
+    // 실제 Tick 로직 (서브클래스에서 구현)
+    virtual NodeStatus tick() = 0;
+    
+    // Halt 처리 (서브클래스에서 구현)
+    virtual void halt() = 0;
+};
+</code></pre>
+<p><code>executeTick()</code> 메서드는 <code>tick()</code>을 호출하기 전후로 상태 변경 콜백과 로깅을 처리한다. 외부에서 노드를 Tick할 때는 <code>tick()</code>이 아닌 <code>executeTick()</code>을 호출한다.</p>
+<h2>5. NodeStatus 열거형</h2>
+<pre><code class="language-cpp">enum class NodeStatus
+{
+    IDLE,       // 초기 상태, 아직 Tick되지 않음
+    RUNNING,    // 실행 중
+    SUCCESS,    // 성공 완료
+    FAILURE,    // 실패 완료
+    SKIPPED     // 건너뜀 (4.x에서 추가)
+};
+</code></pre>
+<p><code>SKIPPED</code> 상태는 BehaviorTree.CPP 4.x에서 도입된 것으로, 사전 조건(pre-condition)이나 사후 조건(post-condition)에 의해 노드의 실행이 건너뛰어진 경우를 나타낸다.</p>
+<h2>6. 포트 시스템과의 상호 작용</h2>
+<p><code>ParallelAll</code>의 <code>max_failures</code> 포트는 블랙보드와 연결될 수 있다. XML에서 상수를 지정하거나, 블랙보드 키를 참조하여 런타임에 동적으로 값을 변경할 수 있다.</p>
+<pre><code class="language-xml">&lt;!-- 상수 지정 --&gt;
+&lt;ParallelAll max_failures="1"&gt;
+    ...
+&lt;/ParallelAll&gt;
+
+&lt;!-- 블랙보드 키 참조 --&gt;
+&lt;ParallelAll max_failures="{allowed_failures}"&gt;
+    ...
+&lt;/ParallelAll&gt;
+</code></pre>
+<p>블랙보드 키를 참조하는 경우, <code>max_failures</code> 값이 런타임에 변경될 수 있으므로 Parallel 노드의 정책이 동적으로 조정된다.</p>
+<h2>7. 사용 예시</h2>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+int main()
+{
+    BT::BehaviorTreeFactory factory;
+    
+    // 커스텀 노드 등록
+    factory.registerNodeType&lt;NavigateToGoal&gt;("NavigateToGoal");
+    factory.registerNodeType&lt;MonitorBattery&gt;("MonitorBattery");
+    
+    // XML에서 트리 생성
+    auto tree = factory.createTreeFromFile("parallel_tree.xml");
+    
+    // Tick 루프
+    BT::NodeStatus status = BT::NodeStatus::RUNNING;
+    while (status == BT::NodeStatus::RUNNING)
+    {
+        status = tree.tickOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    return 0;
+}
+</code></pre>
+<p><code>tree.tickOnce()</code>가 호출될 때마다 루트 노드부터 Tick이 전파되며, <code>ParallelAll</code> 노드에 도달하면 모든 자식에게 Tick이 전파된다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,65 @@
             </header>
             <article>
                 <h1>1294.7 Sequence 노드의 자식 실행 순서 (좌→우)</h1>
+<h2>1. 좌에서 우 실행 순서의 정의</h2>
+<p>Sequence 노드에서 자식 노드의 실행 순서는 트리의 시각적 배치에서 왼쪽에서 오른쪽으로(left-to-right) 결정된다. XML 정의에서는 위에서 아래로 기술된 순서가 이에 해당한다. 이 순서는 트리 정의 시 확정되며, 실행 중에 변경되지 않는다. 인덱스 0의 자식이 가장 먼저 Tick을 수신하고, 그 다음 인덱스 1, 인덱스 2의 순서로 진행한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 실행 순서의 의미론적 중요성</h2>
+<h3>2.1 의존 관계의 표현</h3>
+<p>좌에서 우 순서는 자식 노드 간의 논리적 의존 관계를 자연스럽게 표현한다. 앞의 자식이 성공한 후에야 뒤의 자식이 실행되므로, 전제 조건을 앞에, 의존적 작업을 뒤에 배치하는 패턴이 가능하다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 1. 전제 조건 확인 (좌) --&gt;
+    &lt;Condition ID="IsArmCalibrated"/&gt;
+    &lt;!-- 2. 의존적 작업 수행 (우) --&gt;
+    &lt;Action ID="PickObject"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p><code>IsArmCalibrated</code>가 FAILURE를 반환하면 <code>PickObject</code>는 실행되지 않는다. 이는 보정되지 않은 팔로 물체를 집는 위험한 동작을 방지하는 안전 메커니즘이다.</p>
+<h3>2.2 우선순위의 암묵적 표현</h3>
+<p>좌에서 우 순서는 실행의 우선순위를 암묵적으로 정의한다. 가장 왼쪽의 자식이 가장 먼저 실행되므로, 중요한 조건이나 작업을 앞에 배치하여 실패 시 후속 작업의 불필요한 실행을 방지한다.</p>
+<h2>3. 순서 결정의 설계 원칙</h2>
+<h3>3.1 비용이 낮은 조건을 앞에 배치</h3>
+<p>평가 비용이 낮은 조건 노드를 앞에 배치하면, 해당 조건이 FAILURE를 반환할 때 비용이 높은 후속 노드의 실행을 회피할 수 있다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Condition ID="IsBatteryAbove20"/&gt;   &lt;!-- 비용 낮음, 블랙보드 읽기 --&gt;
+    &lt;Condition ID="IsPathClear"/&gt;         &lt;!-- 비용 중간, 센서 데이터 분석 --&gt;
+    &lt;Action ID="ComputePath"/&gt;            &lt;!-- 비용 높음, 경로 계산 --&gt;
+    &lt;Action ID="NavigateToGoal"/&gt;         &lt;!-- 비용 높음, 네비게이션 실행 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>3.2 실패 가능성이 높은 조건을 앞에 배치</h3>
+<p>FAILURE를 반환할 확률이 높은 조건을 앞에 배치하면, 대부분의 Tick에서 조기 종료가 발생하여 전체 Tick 실행 시간이 단축된다.</p>
+<h3>3.3 데이터 의존성에 따른 배치</h3>
+<p>뒤의 자식이 앞의 자식이 블랙보드에 기록한 데이터를 필요로 하는 경우, 데이터를 생성하는 자식이 반드시 앞에 위치해야 한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="ComputePath" output_key="planned_path"/&gt;
+    &lt;Action ID="FollowPath" input_key="planned_path"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p><code>ComputePath</code>가 블랙보드에 <code>planned_path</code>를 기록한 후에야, <code>FollowPath</code>가 이를 읽을 수 있다.</p>
+<h2>4. 순서와 Tick 전파의 관계</h2>
+<h3>4.1 단일 Tick 내 순차 전파</h3>
+<p>단일 Tick에서 Sequence의 자식들은 동기적(synchronous)으로 순차 실행된다. 인덱스 <span class="math math-inline">i</span>의 자식이 반환한 후에야 인덱스 <span class="math math-inline">i+1</span>의 자식이 Tick을 수신한다. 이 순차성은 행동 트리의 결정적(deterministic) 실행을 보장한다.</p>
+<pre><code>단일 Tick 내 실행 순서:
+  t₁: children[0].tick() → SUCCESS
+  t₂: children[1].tick() → SUCCESS
+  t₃: children[2].tick() → RUNNING
+  t₄: Sequence 반환: RUNNING
+</code></pre>
+<h3>4.2 다수 Tick에 걸친 순차 실행</h3>
+<p>비동기 작업이 포함된 Sequence에서는 전체 순서가 다수의 Tick에 걸쳐 완료된다. WithMemory 모드에서 각 Tick은 마지막으로 RUNNING이었던 자식부터 재개하므로, 전체적으로 보면 자식이 왼쪽에서 오른쪽으로 순차 완료된다.</p>
+<pre><code>Tick 1: children[0] → SUCCESS, children[1] → RUNNING
+Tick 2: children[1] → SUCCESS, children[2] → RUNNING
+Tick 3: children[2] → SUCCESS → Sequence SUCCESS
+</code></pre>
+<h2>5. 순서의 변경 불가성</h2>
+<p>행동 트리의 표준 의미론에서 Sequence의 자식 순서는 트리 정의 시 고정되며, 실행 중 동적으로 변경할 수 없다. 실행 시 조건에 따라 순서를 변경해야 하는 경우, 별도의 제어 메커니즘(Switch 노드, 동적 서브트리 전환 등)을 사용해야 한다.</p>
+<p>이러한 정적 순서는 트리의 동작을 예측 가능하게 하고, 디버깅과 검증을 용이하게 하는 장점이 있다. 트리의 XML 정의만으로 실행 순서를 완전히 파악할 수 있으므로, 코드를 읽지 않고도 로봇의 행동 논리를 이해할 수 있다(Faconti, 2022).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

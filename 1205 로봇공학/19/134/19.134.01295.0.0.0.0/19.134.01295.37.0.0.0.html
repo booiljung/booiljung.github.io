@@ -115,6 +115,122 @@
             </header>
             <article>
                 <h1>1295.37 ReactiveFallback의 매 Tick 재평가 원칙</h1>
+<h2>1. 재평가 원칙의 정의</h2>
+<p>ReactiveFallback의 매 Tick 재평가 원칙(re-evaluation principle)은 ReactiveFallback 노드가 매 Tick마다 항상 첫 번째 자식 <span class="math math-inline">C_1</span>부터 순차적으로 Tick을 전파한다는 동작 규칙이다. 이전 Tick에서 어떤 자식이 <code>RUNNING</code>을 반환하였는지와 무관하게, 새로운 Tick이 시작되면 자식 리스트의 최상단부터 평가를 재개한다.</p>
+<p>이 원칙은 일반 Fallback 노드의 “기억 기반(memory-based)” 동작과 대비되는 “무기억(memoryless)” 동작이다. 일반 Fallback은 이전에 <code>RUNNING</code>을 반환한 자식의 인덱스를 기억하고 해당 자식부터 재개하지만, ReactiveFallback은 이러한 기억을 유지하지 않는다.</p>
+<h2>2. 재평가 원칙의 동작 과정</h2>
+<p>다음과 같은 ReactiveFallback 구조를 고려하라.</p>
+<pre><code>ReactiveFallback
+├── C_1 (조건 노드)
+├── C_2 (조건-행동 시퀀스)
+└── C_3 (기본 행동)
+</code></pre>
+<h3>2.1 Tick 1: 초기 상태</h3>
+<pre><code>Tick 1:
+  C_1.tick() → FAILURE    (조건 미충족)
+  C_2.tick() → FAILURE    (조건 미충족)
+  C_3.tick() → RUNNING    (기본 행동 실행 중)
+  
+  ReactiveFallback → RUNNING
+</code></pre>
+<p><span class="math math-inline">C_1</span>과 <span class="math math-inline">C_2</span>가 모두 <code>FAILURE</code>를 반환하였으므로, <span class="math math-inline">C_3</span>가 Tick되어 <code>RUNNING</code>을 반환한다. ReactiveFallback은 <code>RUNNING</code>을 반환한다.</p>
+<h3>2.2 Tick 2: 상위 조건 변화 없음</h3>
+<pre><code>Tick 2:
+  C_1.tick() → FAILURE    (조건 여전히 미충족)
+  C_2.tick() → FAILURE    (조건 여전히 미충족)
+  C_3.tick() → RUNNING    (기본 행동 계속 실행)
+  
+  ReactiveFallback → RUNNING
+</code></pre>
+<p>일반 Fallback이었다면 Tick 2에서 <span class="math math-inline">C_1, C_2</span>를 건너뛰고 <span class="math math-inline">C_3</span>부터 Tick하였을 것이다. 그러나 ReactiveFallback은 <span class="math math-inline">C_1</span>부터 다시 평가한다. 조건이 변하지 않았으므로 결과는 동일하지만, 재평가가 수행되었다는 점이 핵심이다.</p>
+<h3>2.3 Tick 3: 상위 조건 변화 발생</h3>
+<pre><code>Tick 3:
+  C_1.tick() → SUCCESS    (조건 충족됨! 환경 변화 감지)
+  
+  [C_1이 SUCCESS → C_3는 RUNNING 상태이므로 Halt 전파]
+  C_3.halt()               (기본 행동 즉시 중단)
+  
+  ReactiveFallback → SUCCESS
+</code></pre>
+<p>Tick 3에서 <span class="math math-inline">C_1</span>의 조건이 성립하여 <code>SUCCESS</code>를 반환한다. ReactiveFallback은 즉시 <code>SUCCESS</code>를 반환하고, 이전에 <code>RUNNING</code> 상태였던 <span class="math math-inline">C_3</span>에 Halt를 전파하여 실행을 중단시킨다. 이것이 매 Tick 재평가 원칙의 핵심 효과이다. <span class="math math-inline">C_1</span>의 조건 변화가 발생한 바로 그 Tick에서 즉각적으로 반영된다.</p>
+<h2>3. 일반 Fallback에서의 동일 시나리오</h2>
+<p>비교를 위해 동일한 시나리오를 일반 Fallback 노드에서 살펴보라.</p>
+<pre><code>Tick 3 (일반 Fallback):
+  [이전 Tick에서 C_3가 RUNNING이었으므로, C_3부터 재개]
+  C_3.tick() → RUNNING    (기본 행동 계속 실행)
+  
+  Fallback → RUNNING
+</code></pre>
+<p>일반 Fallback에서는 <span class="math math-inline">C_1</span>의 조건이 성립하였음에도 <span class="math math-inline">C_1</span>이 재평가되지 않으므로, <span class="math math-inline">C_3</span>가 계속 실행된다. <span class="math math-inline">C_1</span>의 조건 변화는 <span class="math math-inline">C_3</span>가 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 반환하여 일반 Fallback이 초기 상태로 복귀한 후에야 반영된다. 이 지연은 로봇의 환경 변화에 대한 즉각적 반응을 방해한다.</p>
+<h2>4. 재평가에 의한 Halt 전파의 조건</h2>
+<p>매 Tick 재평가에 의해 Halt가 전파되는 조건을 형식적으로 정의하면 다음과 같다. Tick <span class="math math-inline">t</span>에서 자식 <span class="math math-inline">C_i</span>가 <code>SUCCESS</code> 또는 <code>RUNNING</code>을 반환하고, 인덱스 <span class="math math-inline">j &gt; i</span>인 자식 <span class="math math-inline">C_j</span>가 Tick <span class="math math-inline">t-1</span>에서 <code>RUNNING</code> 상태였다면, <span class="math math-inline">C_j</span>에 Halt가 전파된다.</p>
+<p><span class="math math-display">\text{Halt}(C_j) \iff \exists\, i &lt; j : \text{status}(C_i, t) \in \{\text{SUCCESS}, \text{RUNNING}\} \land \text{status}(C_j, t-1) = \text{RUNNING}</span></p>
+<p>이 조건은 “더 높은 우선순위의 자식이 비실패 상태를 반환하면, 더 낮은 우선순위에서 실행 중인 행동이 중단된다“는 의미론을 형식화한 것이다.</p>
+<h2>재평가의 비용과 이점</h2>
+<h3>이점</h3>
+<ol>
+<li>
+<p><strong>즉각적 우선순위 반영</strong>: 상위 조건의 변화가 발생한 바로 그 Tick에서 행동 전환이 이루어진다. 최대 반응 지연은 한 Tick 주기이다.</p>
+</li>
+<li>
+<p><strong>환경 변화 대응</strong>: 동적으로 변화하는 환경에서 로봇이 항상 가장 적절한 행동을 선택하도록 보장한다.</p>
+</li>
+<li>
+<p><strong>안전 조건 즉시 반영</strong>: 안전 관련 조건을 최상위 자식에 배치하면, 안전 조건이 성립하는 즉시 현재 행동이 중단되고 안전 행동이 실행된다.</p>
+</li>
+</ol>
+<h3>비용</h3>
+<ol>
+<li>
+<p><strong>연산 오버헤드</strong>: 매 Tick마다 이미 <code>FAILURE</code>를 반환한 자식도 재평가하므로, 상위 자식의 조건 평가 비용이 매 Tick마다 발생한다. 일반 Fallback에서는 이 비용이 발생하지 않는다.</p>
+</li>
+<li>
+<p><strong>불필요한 Halt 가능성</strong>: 상위 조건이 불안정하게 진동(oscillation)하면, 하위 행동의 반복적인 시작과 중단이 발생할 수 있다. 이는 로봇의 동작을 불안정하게 만들 수 있다.</p>
+</li>
+<li>
+<p><strong>행동 진행 방해</strong>: 장시간 소요되는 하위 행동이 빈번하게 중단되면, 해당 행동이 완료에 도달하지 못할 수 있다.</p>
+</li>
+</ol>
+<h2>조건 노드의 경량 설계 원칙</h2>
+<p>재평가의 연산 비용을 최소화하기 위해, ReactiveFallback의 상위 자식에 배치되는 조건 노드는 경량으로 설계하여야 한다. 조건 노드는 매 Tick마다 재평가되므로, 해당 Tick의 연산 시간에 직접적인 영향을 미친다.</p>
+<p>조건 노드가 수행하여야 하는 연산은 블랙보드 값의 읽기 및 단순 비교, 또는 캐시된 센서 데이터의 임계값 비교 수준으로 제한하는 것이 권장된다. 복잡한 센서 데이터 처리나 계획 연산을 조건 노드 내에서 수행하면 전체 행동 트리의 Tick 주기가 지연된다.</p>
+<pre><code>// 권장: 경량 조건 노드
+function IsObstacleDetected.tick():
+    distance ← blackboard.get("min_obstacle_distance")
+    if distance &lt; threshold:
+        return SUCCESS
+    else:
+        return FAILURE
+
+// 비권장: 중량 조건 노드
+function DetectObstacleFromRawData.tick():
+    pointcloud ← subscribeLidarData()
+    obstacles ← runClusteringAlgorithm(pointcloud)  // 비용 높음
+    if obstacles.count &gt; 0:
+        return SUCCESS
+    else:
+        return FAILURE
+</code></pre>
+<h2>히스테리시스를 통한 진동 방지</h2>
+<p>상위 조건이 임계값 경계에서 빈번하게 참/거짓을 오가면, 하위 행동의 반복적 시작과 중단이 발생한다. 이를 방지하기 위해 히스테리시스(hysteresis)를 적용할 수 있다.</p>
+<p>활성화 임계값 <span class="math math-inline">\theta_{on}</span>과 비활성화 임계값 <span class="math math-inline">\theta_{off}</span>를 <span class="math math-inline">\theta_{on} \neq \theta_{off}</span>로 설정하여, 조건의 활성화와 비활성화에 서로 다른 임계값을 적용한다. 예를 들어, 장애물 거리 감시에서 <span class="math math-inline">\theta_{on} = 1.0\,\text{m}</span> (활성화: 장애물 1.0m 이내 접근 시 회피 행동 개시)과 <span class="math math-inline">\theta_{off} = 1.5\,\text{m}</span> (비활성화: 장애물 1.5m 이상 이격 시 회피 행동 종료)으로 설정하면, 0.5m의 히스테리시스 대역이 형성되어 경계 부근에서의 진동이 억제된다.</p>
+<pre><code>function IsObstacleNear.tick():
+    distance ← blackboard.get("min_obstacle_distance")
+    
+    if was_active:
+        if distance &gt; threshold_off:
+            was_active ← false
+            return FAILURE
+        else:
+            return SUCCESS
+    else:
+        if distance &lt; threshold_on:
+            was_active ← true
+            return SUCCESS
+        else:
+            return FAILURE
+</code></pre>
+<p>이 히스테리시스 기법은 ReactiveFallback의 매 Tick 재평가 환경에서 안정적인 행동 전환을 보장하는 핵심적인 설계 기법이다.</p>
 
             </article>
             <footer>

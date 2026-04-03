@@ -115,6 +115,189 @@
             </header>
             <article>
                 <h1>1296.21 ThreadedAction의 스레드 관리 메커니즘</h1>
+<h2>1. 스레드 관리의 개요</h2>
+<p><code>ThreadedAction</code>의 스레드 관리 메커니즘은 <code>tick()</code> 스레드의 생성, 상태 추적, 합류(join), 정리를 포함하는 생명주기 관리 체계이다. BehaviorTree.CPP 라이브러리(버전 4.x)는 <code>ThreadedAction</code> 내부에서 <code>std::thread</code> 객체를 관리하며, <code>executeTick()</code>과 <code>halt()</code> 메서드를 통해 스레드의 생성과 종료를 자동으로 처리한다.</p>
+<h2>2. 스레드 생명주기</h2>
+<p><code>ThreadedAction</code>의 스레드 생명주기는 다음의 네 단계로 구성된다.</p>
+<h3>2.1 생성 단계</h3>
+<p><code>executeTick()</code>이 IDLE 상태에서 호출되면, 새로운 <code>std::thread</code>가 생성된다.</p>
+<pre><code class="language-cpp">if (status() == NodeStatus::IDLE)
+{
+    setStatus(NodeStatus::RUNNING);
+    halt_requested_.store(false);
+
+    if (thread_.joinable())
+    {
+        thread_.join();
+    }
+
+    thread_ = std::thread([this]()
+    {
+        try
+        {
+            auto result = tick();
+            if (!halt_requested_.load())
+            {
+                setStatus(result);
+            }
+        }
+        catch (...)
+        {
+            setStatus(NodeStatus::FAILURE);
+        }
+    });
+
+    return NodeStatus::RUNNING;
+}
+</code></pre>
+<p>스레드 생성 전에 이전 스레드가 아직 합류되지 않은 경우(<code>joinable()</code>), <code>join()</code>을 호출하여 이전 스레드를 완전히 정리한다. 이는 <code>std::thread</code> 소멸자에서 합류되지 않은 스레드가 존재하면 <code>std::terminate()</code>가 호출되는 것을 방지하기 위한 것이다.</p>
+<h3>2.2 실행 단계</h3>
+<p>스레드가 생성된 후 <code>tick()</code> 메서드가 별도 스레드에서 실행된다. 이 기간 동안 메인 스레드의 <code>executeTick()</code> 호출은 현재 상태(<code>status()</code>)를 반환한다.</p>
+<pre><code class="language-cpp">if (status() == NodeStatus::RUNNING)
+{
+    // 스레드가 실행 중: 현재 상태를 그대로 반환
+    return status();
+}
+</code></pre>
+<p><code>tick()</code> 스레드가 실행 중인 동안 <code>status()</code>는 RUNNING을 반환한다. <code>tick()</code>이 완료되면 스레드 내부에서 <code>setStatus()</code>가 호출되어 상태가 SUCCESS 또는 FAILURE로 변경된다.</p>
+<h3>2.3 완료 단계</h3>
+<p><code>tick()</code> 스레드가 반환하면, 스레드는 종료되나 아직 합류되지 않은 상태이다. 다음 <code>executeTick()</code> 호출에서 변경된 상태(SUCCESS/FAILURE)가 감지되고, 이 값이 부모에 반환된다. 스레드의 합류는 다음 번 스레드 생성 시 또는 소멸자에서 수행된다.</p>
+<h3>2.4 정리 단계</h3>
+<p>노드의 소멸자 또는 다음 실행의 스레드 생성 시에 <code>join()</code>이 호출되어 스레드 자원이 완전히 해제된다.</p>
+<pre><code class="language-cpp">ThreadedAction::~ThreadedAction()
+{
+    halt();
+    if (thread_.joinable())
+    {
+        thread_.join();
+    }
+}
+</code></pre>
+<p>소멸자에서 <code>halt()</code>를 호출하여 실행 중인 스레드의 종료를 요청하고, <code>join()</code>으로 스레드의 완전한 종료를 대기한다.</p>
+<h2>3. halt_requested_ 플래그 메커니즘</h2>
+<p><code>halt_requested_</code> 플래그는 <code>std::atomic&lt;bool&gt;</code> 타입의 멤버 변수로, 메인 스레드와 <code>tick()</code> 스레드 간의 협력적 중단 메커니즘을 구현한다.</p>
+<pre><code class="language-cpp">class ThreadedAction : public ActionNodeBase
+{
+    std::atomic&lt;bool&gt; halt_requested_{false};
+
+public:
+    bool isHaltRequested() const
+    {
+        return halt_requested_.load();
+    }
+
+    void halt() override
+    {
+        halt_requested_.store(true);
+
+        if (thread_.joinable())
+        {
+            thread_.join();
+        }
+
+        setStatus(NodeStatus::IDLE);
+    }
+};
+</code></pre>
+<h3>3.1 플래그의 동작 과정</h3>
+<ol>
+<li><strong>초기화</strong>: <code>executeTick()</code>에서 스레드 생성 전에 <code>halt_requested_</code>를 <code>false</code>로 설정한다.</li>
+<li><strong>설정</strong>: <code>halt()</code>가 호출되면 <code>halt_requested_</code>를 <code>true</code>로 설정한다.</li>
+<li><strong>확인</strong>: <code>tick()</code> 내부에서 <code>isHaltRequested()</code>를 주기적으로 호출하여 플래그를 확인한다.</li>
+<li><strong>응답</strong>: 플래그가 <code>true</code>이면 <code>tick()</code>은 실행을 중단하고 반환한다.</li>
+</ol>
+<p><code>std::atomic&lt;bool&gt;</code>의 사용은 두 스레드 간의 메모리 가시성(memory visibility)을 보장한다. <code>halt_requested_.store(true)</code>에 의한 변경은 <code>halt_requested_.load()</code>에 의해 즉시 관찰된다.</p>
+<h2>4. 스레드 합류(Join) 전략</h2>
+<p><code>std::thread::join()</code>은 호출 스레드를 차단하여 대상 스레드의 종료를 대기한다. <code>ThreadedAction</code>에서 스레드 합류가 발생하는 시점은 다음과 같다.</p>
+<h3>4.1 halt()에서의 합류</h3>
+<pre><code class="language-cpp">void ThreadedAction::halt()
+{
+    halt_requested_.store(true);
+    if (thread_.joinable())
+    {
+        thread_.join();  // tick() 스레드 종료 대기
+    }
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<p><code>halt()</code>에서 <code>join()</code>이 호출되면, 메인 스레드는 <code>tick()</code> 스레드가 완전히 종료될 때까지 차단된다. 이는 Halt 처리의 완전성을 보장하나, <code>tick()</code> 내부의 차단 호출이 장시간 지속되면 메인 스레드도 함께 차단되는 위험이 있다.</p>
+<h3>4.2 재실행 시의 합류</h3>
+<pre><code class="language-cpp">if (status() == NodeStatus::IDLE)
+{
+    if (thread_.joinable())
+    {
+        thread_.join();  // 이전 스레드 정리
+    }
+    // 새 스레드 생성 ...
+}
+</code></pre>
+<p>이전 실행의 스레드가 아직 합류되지 않은 경우, 새 스레드 생성 전에 합류를 수행한다. 이는 이전 스레드의 자원이 완전히 해제된 후에 새 스레드를 생성함을 보장한다.</p>
+<h3>4.3 소멸자에서의 합류</h3>
+<p>노드 객체의 소멸 시, 실행 중인 스레드가 있으면 합류를 수행한다. 이는 합류되지 않은 <code>std::thread</code> 객체의 소멸에 의한 <code>std::terminate()</code> 호출을 방지한다.</p>
+<h2>5. 상태 전이와 스레드의 관계</h2>
+<p>스레드의 상태와 노드의 상태 전이의 관계를 정리한다.</p>
+<table><thead><tr><th style="text-align: center">노드 상태 전이</th><th style="text-align: center">스레드 상태</th><th style="text-align: center">트리거</th></tr></thead><tbody>
+<tr><td style="text-align: center">IDLE → RUNNING</td><td style="text-align: center">생성됨, 실행 중</td><td style="text-align: center">executeTick()</td></tr>
+<tr><td style="text-align: center">RUNNING → RUNNING</td><td style="text-align: center">실행 중</td><td style="text-align: center">executeTick() (후속 Tick)</td></tr>
+<tr><td style="text-align: center">RUNNING → SUCCESS</td><td style="text-align: center">종료됨 (미합류)</td><td style="text-align: center">tick() 반환 (SUCCESS)</td></tr>
+<tr><td style="text-align: center">RUNNING → FAILURE</td><td style="text-align: center">종료됨 (미합류)</td><td style="text-align: center">tick() 반환 (FAILURE)</td></tr>
+<tr><td style="text-align: center">RUNNING → IDLE</td><td style="text-align: center">종료됨 (합류 완료)</td><td style="text-align: center">halt()</td></tr>
+<tr><td style="text-align: center">SUCCESS/FAILURE → IDLE</td><td style="text-align: center">합류 대기</td><td style="text-align: center">부모에 의한 초기화</td></tr>
+</tbody></table>
+<p>스레드의 종료와 노드의 상태 변경은 비동기적으로 발생한다. <code>tick()</code> 스레드가 <code>setStatus(SUCCESS)</code>를 호출하면 노드의 상태가 즉시 변경되나, 스레드 자체의 합류는 나중에 수행된다.</p>
+<h2>6. 스레드 풀 부재와 그 영향</h2>
+<p>BehaviorTree.CPP 4.x의 <code>ThreadedAction</code>은 스레드 풀(thread pool)을 사용하지 않으며, 매 실행마다 새로운 <code>std::thread</code>를 생성한다. 이 설계 선택의 영향을 분석한다.</p>
+<h3>6.1 장점</h3>
+<ol>
+<li><strong>단순성</strong>: 스레드 풀 관리의 복잡성이 없다.</li>
+<li><strong>격리성</strong>: 각 실행이 독립적인 스레드에서 수행되므로, 이전 실행의 잔여 상태에 의한 오염이 없다.</li>
+</ol>
+<h3>6.2 단점</h3>
+<ol>
+<li><strong>생성 비용</strong>: 스레드 생성의 오버헤드가 매 실행마다 발생한다.</li>
+<li><strong>확장성 제한</strong>: 다수의 <code>ThreadedAction</code>이 동시에 실행되면 스레드 수가 증가하여 시스템 자원을 소비한다.</li>
+<li><strong>스택 메모리 소비</strong>: 각 스레드는 기본 스택 크기(통상 1~8 MB)의 메모리를 할당받는다.</li>
+</ol>
+<p>빈번히 실행되는 경량 작업에 <code>ThreadedAction</code>을 사용하면, 스레드 생성과 정리의 반복적 비용이 성능에 영향을 미칠 수 있다. 이러한 경우 <code>StatefulActionNode</code>에서 <code>std::async</code>를 사용하여 스레드를 관리하거나, 외부 스레드 풀을 활용하는 것이 대안이다.</p>
+<h2>7. 다중 ThreadedAction의 동시 실행 관리</h2>
+<p>Parallel 노드의 자식으로 다수의 <code>ThreadedAction</code>이 배치되면, 각각 별도의 스레드를 생성하여 동시에 실행된다.</p>
+<pre><code>Parallel
+├── ThreadedAction_A (스레드 A)
+├── ThreadedAction_B (스레드 B)
+└── ThreadedAction_C (스레드 C)
+
+활성 스레드: 메인 + A + B + C = 4
+</code></pre>
+<p>이 경우 스레드 관리에서 고려하여야 하는 사항은 다음과 같다.</p>
+<ol>
+<li>
+<p><strong>동시 합류</strong>: Parallel의 정책이 충족되면, 나머지 RUNNING 자식이 Halt된다. 각 <code>ThreadedAction</code>의 <code>halt()</code>가 순차적으로 호출되고, 각각 <code>join()</code>에서 스레드 종료를 대기한다. 합류 시간은 가장 오래 차단되는 스레드에 의해 결정된다.</p>
+</li>
+<li>
+<p><strong>블랙보드 경합</strong>: 다수의 <code>tick()</code> 스레드가 동시에 블랙보드에 접근하면 경합이 발생한다. BehaviorTree.CPP의 블랙보드는 내부적으로 뮤텍스로 보호되나, 빈번한 접근은 성능 저하를 유발할 수 있다.</p>
+</li>
+<li>
+<p><strong>시스템 자원 소비</strong>: 활성 스레드 수의 증가는 컨텍스트 스위칭 오버헤드와 메모리 소비를 증가시킨다.</p>
+</li>
+</ol>
+<h2>8. 스레드 관리의 설계 지침</h2>
+<ol>
+<li>
+<p><strong>합류 보장</strong>: 모든 코드 경로에서 스레드가 합류되도록 보장한다. 합류되지 않은 <code>std::thread</code>의 소멸은 프로세스를 종료시킨다.</p>
+</li>
+<li>
+<p><strong>Halt 응답 시간 제한</strong>: <code>tick()</code> 내부에서 <code>isHaltRequested()</code> 확인 간격을 Halt 응답 시간의 상한으로 설정한다. 100 ms 이내의 응답이 권장된다.</p>
+</li>
+<li>
+<p><strong>동시 스레드 수 제한</strong>: Parallel 노드에서 다수의 <code>ThreadedAction</code>을 사용하는 경우, CPU 코어 수를 초과하지 않도록 설계한다.</p>
+</li>
+<li>
+<p><strong>자원 정리의 완전성</strong>: <code>tick()</code> 스레드가 정상 종료 또는 Halt에 의해 종료되는 모든 경우에서 할당된 자원이 적절히 해제되도록 한다.</p>
+</li>
+<li>
+<p><strong>스레드 안전한 상태 전이</strong>: 노드의 상태 변경(<code>setStatus()</code>)은 원자적 연산에 의해 보호된다. 사용자 정의 멤버 변수의 접근에는 별도의 동기화를 적용하여야 한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

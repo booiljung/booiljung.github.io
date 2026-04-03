@@ -115,6 +115,188 @@
             </header>
             <article>
                 <h1>1294.101 Sequence와 Fallback 설계의 모범 사례</h1>
+<h2>1. 변형 선택의 원칙</h2>
+<h3>1.1 Sequence 변형 선택 기준</h3>
+<p>Sequence의 세 가지 변형(SequenceNode, ReactiveSequence, SequenceStar)은 각각 서로 다른 사용 사례에 적합하다. 올바른 변형 선택은 행동 트리 설계의 기초이다(Colledanchise &amp; Ogren, 2018).</p>
+<table><thead><tr><th>요구 사항</th><th>권장 변형</th><th>근거</th></tr></thead><tbody>
+<tr><td>순차 작업 수행, 완료된 단계 건너뛰기</td><td>SequenceNode (WithMemory)</td><td>메모리 기반 재진입으로 중복 실행 방지</td></tr>
+<tr><td>안전 조건의 지속적 감시 하에 작업 수행</td><td>ReactiveSequence</td><td>매 Tick 조건 재평가로 위험 즉시 감지</td></tr>
+<tr><td>실패해도 다음 단계를 계속 진행</td><td>SequenceStar</td><td>실패를 무시하고 다음 자식으로 진행</td></tr>
+</tbody></table>
+<p>기본 원칙으로, 안전 조건의 실시간 감시가 필요하지 않은 순차 작업에는 SequenceNode를 사용하고, 안전 감시가 필요한 경우에만 ReactiveSequence를 사용한다.</p>
+<h3>1.2 Fallback 변형 선택 기준</h3>
+<table><thead><tr><th>요구 사항</th><th>권장 변형</th><th>근거</th></tr></thead><tbody>
+<tr><td>순차적 대안 시도, 비동기 대안 지원</td><td>FallbackNode (WithMemory)</td><td>메모리로 실패 대안 건너뛰기</td></tr>
+<tr><td>상위 대안 가용 시 즉시 전환</td><td>ReactiveFallback</td><td>매 Tick 우선순위 재평가</td></tr>
+</tbody></table>
+<h2>2. 조건-행동 분리 패턴</h2>
+<h3>2.1 조건은 앞, 행동은 뒤</h3>
+<p>Sequence에서 조건 노드를 행동 노드보다 앞에 배치한다. 조건이 FAILURE를 반환하면 비용이 큰 행동의 실행을 방지할 수 있다:</p>
+<pre><code class="language-xml">&lt;!-- 모범 사례: 조건 선행 --&gt;
+&lt;Sequence&gt;
+    &lt;Condition ID="IsTargetReachable"/&gt;    &lt;!-- 경량 검사 --&gt;
+    &lt;Action ID="NavigateToTarget"/&gt;        &lt;!-- 고비용 행동 --&gt;
+    &lt;Action ID="PickUpTarget"/&gt;
+&lt;/Sequence&gt;
+
+&lt;!-- 비권장: 조건 없이 행동 직접 시작 --&gt;
+&lt;Sequence&gt;
+    &lt;Action ID="NavigateToTarget"/&gt;        &lt;!-- 도달 불가 시 무한 시도 --&gt;
+    &lt;Action ID="PickUpTarget"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>조건 선행 패턴은 불필요한 행동 실행을 방지하고, 실패 원인을 명확히 한다.</p>
+<h3>2.2 ReactiveSequence에서의 조건-행동 구조</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;!-- 안전 조건 (경량, 매 Tick 재평가) --&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Condition ID="IsCommsActive"/&gt;
+    
+    &lt;!-- 행동 (WithMemory Sequence로 래핑) --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="Step1"/&gt;
+        &lt;Action ID="Step2"/&gt;
+        &lt;Action ID="Step3"/&gt;
+    &lt;/Sequence&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>외부 ReactiveSequence가 안전 조건을 매 Tick 감시하고, 내부 SequenceNode가 작업을 순차 수행한다. 안전 조건이 FAILURE를 반환하면 내부 Sequence가 Halt된다.</p>
+<h2>3. 최후 수단의 명시적 포함</h2>
+<h3>3.1 Fallback의 마지막 자식에 안전 행동 배치</h3>
+<pre><code class="language-xml">&lt;!-- 모범 사례: 최후 수단 포함 --&gt;
+&lt;Fallback&gt;
+    &lt;Action ID="PrimaryNavigation"/&gt;
+    &lt;Action ID="RecoveryNavigation"/&gt;
+    &lt;Action ID="SafeStop"/&gt;              &lt;!-- 항상 SUCCESS 반환 --&gt;
+&lt;/Fallback&gt;
+
+&lt;!-- 비권장: 최후 수단 미포함 --&gt;
+&lt;Fallback&gt;
+    &lt;Action ID="PrimaryNavigation"/&gt;
+    &lt;Action ID="RecoveryNavigation"/&gt;
+    &lt;!-- 모두 실패 시 FAILURE 전파 → 상위에서 처리 불가 가능 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>안전이 중요한 시스템에서는 Fallback의 마지막 자식에 반드시 성공하는 안전 행동(예: 정지, 홈 복귀)을 배치한다. 이는 모든 대안이 소진되어도 안전한 상태를 보장한다(Faconti, 2022).</p>
+<h2>4. 자식 수의 적정 관리</h2>
+<h3>4.1 권장 자식 수</h3>
+<pre><code>Sequence: 3-7개
+  이유: 과도한 자식은 가독성 저하와 디버깅 어려움 유발
+
+Fallback: 2-5개
+  이유: 대안이 많으면 최악 Tick 시간 증가
+
+ReactiveSequence: 조건 2-3개 + 행동 1개(또는 내부 Sequence 1개)
+  이유: 매 Tick 재평가되므로 조건 수 최소화
+</code></pre>
+<h3>4.2 서브트리 분해</h3>
+<p>자식 수가 권장 범위를 초과하면 논리적 단위로 서브트리를 분해한다:</p>
+<pre><code class="language-xml">&lt;!-- 분해 전 --&gt;
+&lt;Sequence&gt;
+    &lt;Action ID="Init1"/&gt;&lt;Action ID="Init2"/&gt;&lt;Action ID="Init3"/&gt;
+    &lt;Action ID="Nav1"/&gt;&lt;Action ID="Nav2"/&gt;
+    &lt;Action ID="Task1"/&gt;&lt;Action ID="Task2"/&gt;&lt;Action ID="Task3"/&gt;
+    &lt;Action ID="Report"/&gt;
+&lt;/Sequence&gt;
+
+&lt;!-- 분해 후 --&gt;
+&lt;Sequence&gt;
+    &lt;SubTree ID="Initialization"/&gt;    &lt;!-- Init1-3 --&gt;
+    &lt;SubTree ID="Navigation"/&gt;        &lt;!-- Nav1-2 --&gt;
+    &lt;SubTree ID="TaskExecution"/&gt;     &lt;!-- Task1-3 --&gt;
+    &lt;Action ID="Report"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>5. 목표 확인 패턴의 활용</h2>
+<h3>5.1 Fallback으로 중복 실행 방지</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Condition ID="IsAtDestination"/&gt;    &lt;!-- 이미 목적지에 있는가? --&gt;
+    &lt;Action ID="NavigateToDestination"/&gt; &lt;!-- 아니면 이동 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 패턴은 목표가 이미 달성되었으면 행동을 건너뛴다. 반복적으로 Tick되는 행동 트리에서 불필요한 재실행을 방지하는 기본적이면서 중요한 패턴이다.</p>
+<h2>6. 데코레이터의 적절한 활용</h2>
+<h3>6.1 재시도 횟수 제한</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Retry num_attempts="3"&gt;
+        &lt;Action ID="PrimaryMethod"/&gt;
+    &lt;/Retry&gt;
+    &lt;Action ID="AlternativeMethod"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>PrimaryMethod를 최대 3회 재시도하고, 여전히 실패하면 AlternativeMethod로 전환한다. Retry 데코레이터는 동일한 Fallback 대안을 반복하는 것보다 간결하다.</p>
+<h3>6.2 타임아웃 적용</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Timeout msec="10000"&gt;
+        &lt;Action ID="NavigateToPose"/&gt;
+    &lt;/Timeout&gt;
+    &lt;Action ID="PerformTask"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>비동기 행동에 타임아웃을 적용하여, 무한 대기를 방지한다. 타임아웃 초과 시 FAILURE를 반환하고 Sequence가 중단된다.</p>
+<h3>6.3 ForceSuccess를 통한 선택적 단계 처리</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="CriticalStep"/&gt;
+    &lt;ForceSuccess&gt;
+        &lt;Action ID="OptionalLogging"/&gt;    &lt;!-- 실패해도 무시 --&gt;
+    &lt;/ForceSuccess&gt;
+    &lt;Action ID="NextCriticalStep"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>필수가 아닌 단계에 ForceSuccess를 적용하면, 해당 단계의 실패가 Sequence 전체를 중단시키지 않는다.</p>
+<h2>7. 블랙보드 데이터 흐름 설계</h2>
+<h3>7.1 명시적 포트 연결</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="DetectObject"
+            detected_pose="{object_pose}"/&gt;      &lt;!-- 출력 --&gt;
+    &lt;Action ID="NavigateToObject"
+            target_pose="{object_pose}"/&gt;          &lt;!-- 입력 --&gt;
+    &lt;Action ID="GraspObject"
+            grasp_pose="{object_pose}"/&gt;            &lt;!-- 입력 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>Sequence 내 노드 간의 데이터 전달은 블랙보드 포트를 통해 명시적으로 연결한다. 포트 이름을 통해 데이터 흐름이 XML에서 직접 파악 가능하다.</p>
+<h2>8. 네이밍 규칙</h2>
+<h3>8.1 제어 노드의 이름 부여</h3>
+<pre><code class="language-xml">&lt;Sequence name="patrol_sequence"&gt;
+    &lt;Action ID="NavigateToWaypoint"/&gt;
+    &lt;Action ID="InspectArea"/&gt;
+    &lt;Action ID="ReportStatus"/&gt;
+&lt;/Sequence&gt;
+
+&lt;Fallback name="navigation_with_recovery"&gt;
+    &lt;Action ID="NavigateDirectly"/&gt;
+    &lt;Action ID="NavigateWithDetour"/&gt;
+    &lt;Action ID="SafeStop"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>제어 노드의 <code>name</code> 속성에 의미 있는 이름을 부여한다. 이 이름은 로그와 디버깅 도구에서 표시되므로, 노드의 의도를 한눈에 파악할 수 있도록 명명한다.</p>
+<h2>9. 테스트 가능성을 고려한 설계</h2>
+<h3>9.1 모의 노드 교체 가능한 구조</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;SubTree ID="PreConditions"/&gt;    &lt;!-- 테스트 시 모의 서브트리 교체 --&gt;
+    &lt;SubTree ID="MainAction"/&gt;       &lt;!-- 테스트 시 모의 서브트리 교체 --&gt;
+    &lt;SubTree ID="PostProcessing"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>서브트리 단위로 분해된 구조는 단위 테스트에서 특정 서브트리를 모의(Mock) 서브트리로 교체하여 격리된 테스트를 수행할 수 있다.</p>
+<h3>9.2 단일 Tick 테스트 가능한 조건 분리</h3>
+<p>조건 노드를 행동 노드와 분리하면, 조건의 반환 상태만 변경하여 다양한 제어 흐름을 테스트할 수 있다.</p>
+<h2>10. 설계 검토 항목</h2>
+<p>Sequence와 Fallback을 설계한 후 다음 항목을 검토한다:</p>
+<ol>
+<li><strong>변형 적합성</strong>: 선택한 변형(Memory vs Reactive)이 사용 사례에 적합한가.</li>
+<li><strong>조기 종료 경로</strong>: FAILURE 또는 SUCCESS의 조기 종료가 발생하는 모든 경로를 식별하고, 각 경로에서 시스템이 안전한 상태를 유지하는가.</li>
+<li><strong>Halt 안전성</strong>: 모든 자식 노드의 <code>onHalted()</code> 구현이 안전하고 경량인가.</li>
+<li><strong>최후 수단</strong>: 안전 관련 Fallback에 항상 성공하는 최후 수단이 포함되어 있는가.</li>
+<li><strong>자식 순서</strong>: Sequence의 자식 순서가 의존 관계를 올바르게 반영하고, Fallback의 자식 순서가 우선순위를 올바르게 반영하는가(Colledanchise &amp; Ogren, 2018).</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

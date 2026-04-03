@@ -115,6 +115,126 @@
             </header>
             <article>
                 <h1>1295.12 Parallel 노드의 실행 알고리즘</h1>
+<h2>1. 알고리즘 개요</h2>
+<p>Parallel 노드의 실행 알고리즘은 매 틱(tick)마다 모든 자식 노드에 틱을 전파하고, 각 자식의 반환 상태를 수집한 후, 사전에 설정된 성공 정책과 실패 정책에 따라 자신의 최종 상태를 결정하는 절차로 구성된다. 이 알고리즘은 Colledanchise와 Ögren(2018)이 제시한 행동 트리의 형식적 정의에 기반하며, BehaviorTree.CPP의 구현에서는 완료된 자식의 재틱 스킵, 중단(halt) 처리 등의 추가적 최적화가 포함된다.</p>
+<h2>2. 알고리즘의 단계별 절차</h2>
+<p>Parallel 노드 <span class="math math-inline">P</span>가 <span class="math math-inline">N</span>개의 자식 <span class="math math-inline">C_1, C_2, \ldots, C_N</span>을 보유하고, 성공 임계값 <span class="math math-inline">M</span>과 실패 임계값 <span class="math math-inline">K</span>가 설정된 경우, 각 틱에서의 실행 절차는 다음과 같다.</p>
+<h3>2.1 단계 1: 카운터 초기화</h3>
+<p>성공 카운터 <span class="math math-inline">S</span>와 실패 카운터 <span class="math math-inline">F</span>를 0으로 초기화한다.</p>
+<p><span class="math math-display">
+S \leftarrow 0, \quad F \leftarrow 0
+</span></p>
+<h3>2.2 단계 2: 자식 틱 전파 및 상태 수집</h3>
+<p>자식 <span class="math math-inline">C_1</span>부터 <span class="math math-inline">C_N</span>까지 순서대로 틱을 전달하고, 각 자식의 반환 상태에 따라 카운터를 갱신한다.</p>
+<p><span class="math math-display">
+\text{for } i = 1 \text{ to } N:
+</span></p>
+<ul>
+<li><span class="math math-inline">C_i</span>에 틱을 전달하여 상태 <span class="math math-inline">s_i</span>를 수신한다.</li>
+<li><span class="math math-inline">s_i = \text{SUCCESS}</span>이면 <span class="math math-inline">S \leftarrow S + 1</span></li>
+<li><span class="math math-inline">s_i = \text{FAILURE}</span>이면 <span class="math math-inline">F \leftarrow F + 1</span></li>
+<li><span class="math math-inline">s_i = \text{RUNNING}</span>이면 카운터 변동 없음</li>
+</ul>
+<h3>2.3 단계 3: 성공 정책 평가</h3>
+<p><span class="math math-display">
+\text{if } S \geq M: \quad \text{haltRunningChildren}() \rightarrow \text{return SUCCESS}
+</span></p>
+<h3>2.4 단계 4: 실패 정책 평가</h3>
+<p><span class="math math-display">
+\text{if } F \geq K: \quad \text{haltRunningChildren}() \rightarrow \text{return FAILURE}
+</span></p>
+<h3>2.5 단계 5: RUNNING 반환</h3>
+<p>성공 조건도 실패 조건도 충족되지 않은 경우, RUNNING을 반환한다.</p>
+<p><span class="math math-display">
+\text{return RUNNING}
+</span></p>
+<h2>3. 알고리즘의 흐름도</h2>
+<p>전체 알고리즘을 단계별로 도식화하면 다음의 흐름을 따른다.</p>
+<pre><code>[틱 수신]
+    ↓
+[S=0, F=0 초기화]
+    ↓
+[i=1부터 N까지 반복]
+    ├── C_i에 틱 전달
+    ├── SUCCESS → S++
+    ├── FAILURE → F++
+    └── RUNNING → (변동 없음)
+    ↓
+[S ≥ M?] ──YES──→ [RUNNING 자식 halt()] → [SUCCESS 반환]
+    │
+    NO
+    ↓
+[F ≥ K?] ──YES──→ [RUNNING 자식 halt()] → [FAILURE 반환]
+    │
+    NO
+    ↓
+[RUNNING 반환]
+</code></pre>
+<h2>4. 완료된 자식의 처리 변형</h2>
+<p>기본 알고리즘에서는 매 틱마다 모든 자식에 틱을 전달하지만, 실제 구현에서는 이미 완료된 자식(이전 틱에서 SUCCESS 또는 FAILURE를 반환한 자식)의 처리 방식에 따라 두 가지 변형이 존재한다.</p>
+<h3>4.1 변형 A: 완료 자식 스킵</h3>
+<p>이전 틱에서 최종 상태를 반환한 자식은 이후 틱에서 틱을 수신하지 않고, 마지막 반환 상태가 그대로 유지된다. 이 방식은 불필요한 재실행을 방지하여 성능을 향상시킨다.</p>
+<pre><code>for i = 1 to N:
+    if completed[i]:
+        s_i ← last_status[i]   // 이전 상태 유지
+    else:
+        s_i ← tick(C_i)
+        if s_i ≠ RUNNING:
+            completed[i] ← true
+            last_status[i] ← s_i
+</code></pre>
+<h3>4.2 변형 B: 매 틱 재실행</h3>
+<p>모든 자식에 매 틱마다 무조건 틱을 전달한다. 이전에 완료된 자식도 처음부터 다시 실행된다. 이 방식은 조건 노드와 같이 매 틱마다 재평가가 필요한 자식에 적합하다.</p>
+<p>BehaviorTree.CPP 4.x에서는 변형 A가 기본 동작이며, <code>ParallelAll</code> 노드에서 변형 B를 지원한다.</p>
+<h2>5. 중단(Halt) 처리 알고리즘</h2>
+<p>Parallel 노드가 SUCCESS 또는 FAILURE를 반환할 때, RUNNING 상태의 자식 노드에 대한 중단 처리가 필수적이다. <code>haltRunningChildren()</code> 절차는 다음과 같다.</p>
+<pre><code>procedure haltRunningChildren():
+    for i = 1 to N:
+        if status(C_i) = RUNNING:
+            C_i.halt()
+            reset(C_i)
+</code></pre>
+<p><code>halt()</code> 호출은 자식 노드의 내부 상태를 정리하고, ROS2 액션 서버와 연동된 경우 목표 취소(goal cancellation) 요청을 전송하며, 노드 상태를 IDLE로 초기화한다. 이 절차가 올바르게 수행되지 않으면 리소스 누수(resource leak)나 후속 실행에서의 상태 오류가 발생할 수 있다.</p>
+<h2>6. Parallel 노드 자체의 중단 처리</h2>
+<p>상위 노드에 의해 Parallel 노드 자체에 <code>halt()</code>가 호출되는 경우(예: 상위 Fallback 노드가 다른 자식으로 전환하는 경우), Parallel 노드는 모든 자식에 <code>halt()</code>를 전파해야 한다.</p>
+<pre><code>procedure ParallelNode::halt():
+    for i = 1 to N:
+        C_i.halt()
+        reset(C_i)
+    resetSelf()
+</code></pre>
+<p>이 절차는 Parallel 노드의 내부 카운터와 완료 상태 배열도 함께 초기화하여, 다음 번 틱에서 깨끗한 상태로 실행을 재개할 수 있도록 한다.</p>
+<h2>7. 알고리즘의 시간 복잡도 분석</h2>
+<h3>7.1 단일 틱의 시간 복잡도</h3>
+<p>각 틱에서 <span class="math math-inline">N</span>개의 자식에 틱을 전달하므로, 자식 <span class="math math-inline">C_i</span>의 틱 실행 시간을 <span class="math math-inline">t_i</span>라 하면 단일 틱의 시간 복잡도는 다음과 같다.</p>
+<p><span class="math math-display">
+T_{\text{tick}} = \sum_{i=1}^{N} t_i + O(N)
+</span></p>
+<p><span class="math math-inline">O(N)</span>은 카운터 갱신, 정책 평가, 중단 처리 등의 관리 오버헤드이다.</p>
+<h3>7.2 전체 실행의 시간 복잡도</h3>
+<p>Parallel 노드가 최종 상태를 반환하기까지의 최대 틱 수를 <span class="math math-inline">T_{\max}</span>라 하면, 전체 실행 시간은 다음과 같다.</p>
+<p><span class="math math-display">
+T_{\text{total}} = T_{\max} \cdot T_{\text{tick}}
+</span></p>
+<p><span class="math math-inline">T_{\max}</span>는 가장 오래 실행되는 자식의 실행 틱 수에 의해 결정되며, 이는 정책과 자식의 실행 특성에 따라 달라진다.</p>
+<h3>7.3 공간 복잡도</h3>
+<p>Parallel 노드는 각 자식의 상태를 저장하기 위한 <span class="math math-inline">O(N)</span> 크기의 배열과 카운터를 유지해야 하므로, 공간 복잡도는 <span class="math math-inline">O(N)</span>이다.</p>
+<h2>8. 알고리즘의 정확성 보장</h2>
+<h3>8.1 결정론성</h3>
+<p>알고리즘의 모든 단계가 결정론적으로 정의되어 있으므로, 동일한 입력(자식의 상태 반환 시퀀스)에 대해 항상 동일한 출력을 산출한다.</p>
+<h3>8.2 종료 보장</h3>
+<p>각 자식이 유한 시간 내에 SUCCESS 또는 FAILURE를 반환한다면, 유한 틱 내에 성공 또는 실패 임계값에 도달하여 알고리즘이 종료된다. 자식이 무한히 RUNNING을 반환하는 경우에는 Parallel 노드도 무한히 RUNNING을 반환하게 되며, 이는 상위 노드나 외부 타임아웃 메커니즘에 의해 처리되어야 한다.</p>
+<h3>8.3 상호 배타성</h3>
+<p>성공 조건과 실패 조건이 동일 틱에서 동시에 충족되지 않도록 일관성 조건 <span class="math math-inline">M + K \leq N + 1</span>이 만족되어야 한다. 이 조건이 만족되면 단계 3과 단계 4의 평가 순서에 관계없이 올바른 결과가 보장된다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

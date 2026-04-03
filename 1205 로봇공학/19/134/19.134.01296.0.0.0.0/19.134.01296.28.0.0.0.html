@@ -115,6 +115,277 @@
             </header>
             <article>
                 <h1>1296.28 단일 책임 원칙의 적용</h1>
+<h2>1. 단일 책임 원칙의 정의</h2>
+<p>단일 책임 원칙(Single Responsibility Principle, SRP)은 소프트웨어 모듈이 단 하나의 변경 이유(reason to change)만을 가져야 한다는 설계 원칙이다(Martin, 2003). 행동 트리의 액션 노드에 이 원칙을 적용하면, 하나의 액션 노드는 하나의 명확히 정의된 원자적 행동(atomic action)만을 캡슐화하여야 하며, 그 행동의 변경만이 해당 노드의 수정 이유가 되어야 한다.</p>
+<p>행동 트리의 모듈성(modularity)은 각 노드가 독립적인 행동 단위로 기능할 때 달성된다(Colledanchise &amp; Ögren, 2018). 단일 책임 원칙은 이 모듈성의 핵심적 실현 수단이다.</p>
+<h2>2. 행동 트리에서의 단일 책임</h2>
+<p>행동 트리에서 단일 책임의 범위는 “하나의 물리적 행동” 또는 “하나의 논리적 결정“으로 정의된다. 복합적 행동은 제어 노드(Sequence, Fallback, Parallel)에 의한 조합으로 표현되어야 하며, 단일 액션 노드 내부에서 다수의 행동을 순차적으로 수행하는 것은 단일 책임 원칙의 위반에 해당한다.</p>
+<h3>2.1 책임의 경계 판단 기준</h3>
+<p>액션 노드의 책임 경계를 판단하기 위한 기준을 제시한다.</p>
+<ol>
+<li><strong>독립적 실행 가능성</strong>: 해당 행동이 다른 행동과 독립적으로 의미를 가지는가?</li>
+<li><strong>독립적 실패 가능성</strong>: 해당 행동이 다른 행동과 무관하게 독립적으로 실패할 수 있는가?</li>
+<li><strong>독립적 취소 가능성</strong>: 해당 행동이 다른 행동과 무관하게 독립적으로 취소(Halt)될 수 있는가?</li>
+<li><strong>재사용 가능성</strong>: 해당 행동이 다른 트리 구조에서 단독으로 재사용될 수 있는가?</li>
+</ol>
+<p>이 기준 중 하나라도 충족되는 행동은 별도의 액션 노드로 분리하여야 한다.</p>
+<h2>3. 위반 사례 분석</h2>
+<h3>3.1 사례 1: 다중 물리적 행동의 결합</h3>
+<pre><code class="language-cpp">class ScanAndNavigate : public BT::StatefulActionNode
+{
+    enum class Phase { SCANNING, NAVIGATING };
+    Phase phase_;
+
+    BT::NodeStatus onStart() override
+    {
+        startLidarScan();
+        phase_ = Phase::SCANNING;
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (phase_ == Phase::SCANNING)
+        {
+            if (isScanComplete())
+            {
+                auto target = extractTargetFromScan();
+                sendNavigationGoal(target);
+                phase_ = Phase::NAVIGATING;
+            }
+            return BT::NodeStatus::RUNNING;
+        }
+
+        // Phase::NAVIGATING
+        return isNavigationComplete()
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override
+    {
+        if (phase_ == Phase::SCANNING)
+            stopLidarScan();
+        else
+            cancelNavigation();
+    }
+};
+</code></pre>
+<p>이 구현은 다음의 문제를 가진다.</p>
+<ul>
+<li><strong>재사용 불가</strong>: 스캔만 필요한 경우에도 내비게이션 로직이 포함된 노드를 사용하여야 한다.</li>
+<li><strong>테스트 복잡도 증가</strong>: 스캔과 내비게이션의 조합에 의한 상태 공간이 확대된다.</li>
+<li><strong>변경 전파</strong>: 내비게이션 로직의 변경이 스캔 로직에 영향을 미칠 수 있다.</li>
+<li><strong>Halt 처리 복잡화</strong>: 현재 단계에 따라 Halt 처리가 달라진다.</li>
+</ul>
+<h3>3.2 사례 2: 행동과 판단의 혼합</h3>
+<pre><code class="language-cpp">class ConditionalMovement : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        double battery_level;
+        getInput("battery_level", battery_level);
+
+        // 조건 판단과 행동이 혼합
+        if (battery_level &lt; 20.0)
+        {
+            sendNavigationGoal(charging_station_);
+        }
+        else
+        {
+            sendNavigationGoal(next_waypoint_);
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        return isNavigationComplete()
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override { cancelNavigation(); }
+};
+</code></pre>
+<p>이 구현에서 배터리 수준에 따른 목표 결정은 조건 노드(Condition Node)의 책임이며, 내비게이션 행동과 분리되어야 한다.</p>
+<h2>4. 준수 사례</h2>
+<h3>4.1 분리된 행동 노드</h3>
+<p>위의 위반 사례 1을 단일 책임 원칙에 따라 재설계한다.</p>
+<pre><code class="language-cpp">class PerformLidarScan : public BT::StatefulActionNode
+{
+public:
+    PerformLidarScan(const std::string&amp; name,
+                      const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::OutputPort&lt;Pose&gt;("detected_target",
+                "스캔에서 검출된 목표 위치")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        startLidarScan();
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (isScanComplete())
+        {
+            auto target = extractTargetFromScan();
+            setOutput("detected_target", target);
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override { stopLidarScan(); }
+};
+
+class NavigateToTarget : public BT::StatefulActionNode
+{
+public:
+    NavigateToTarget(const std::string&amp; name,
+                      const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;Pose&gt;("target_pose",
+                "내비게이션 목표 위치")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        Pose target;
+        if (!getInput("target_pose", target))
+            return BT::NodeStatus::FAILURE;
+
+        sendNavigationGoal(target);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        return isNavigationComplete()
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override { cancelNavigation(); }
+};
+</code></pre>
+<p>두 노드는 Sequence 제어 노드에 의해 조합된다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;PerformLidarScan detected_target="{target}" /&gt;
+    &lt;NavigateToTarget target_pose="{target}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>4.2 분리의 이점</h3>
+<table><thead><tr><th>비교 항목</th><th style="text-align: center">결합된 노드</th><th style="text-align: center">분리된 노드</th></tr></thead><tbody>
+<tr><td>재사용성</td><td style="text-align: center">낮음</td><td style="text-align: center">높음</td></tr>
+<tr><td>테스트 용이성</td><td style="text-align: center">낮음 (복합 상태)</td><td style="text-align: center">높음 (단일 행동)</td></tr>
+<tr><td>Halt 처리</td><td style="text-align: center">조건부 (단계별)</td><td style="text-align: center">단순 (단일 행동)</td></tr>
+<tr><td>변경 영향 범위</td><td style="text-align: center">광범위</td><td style="text-align: center">국소적</td></tr>
+<tr><td>코드 가독성</td><td style="text-align: center">낮음 (다단계 상태 기계)</td><td style="text-align: center">높음 (단일 목적)</td></tr>
+<tr><td>트리 구조 유연성</td><td style="text-align: center">낮음 (고정된 순서)</td><td style="text-align: center">높음 (제어 노드로 조합)</td></tr>
+</tbody></table>
+<h2>5. 행동의 세분화 수준</h2>
+<p>단일 책임 원칙의 적용에서 행동의 세분화 수준(granularity)은 중요한 설계 결정이다. 과도한 세분화는 트리의 깊이를 증가시키고, 불충분한 세분화는 재사용성을 저하시킨다.</p>
+<h3>5.1 과도한 세분화의 예</h3>
+<pre><code class="language-xml">&lt;!-- 하나의 ROS2 액션 호출을 과도하게 분해 --&gt;
+&lt;Sequence&gt;
+    &lt;CreateGoalMessage goal="{goal}" /&gt;
+    &lt;SendGoalToServer goal="{goal}" handle="{handle}" /&gt;
+    &lt;WaitForGoalAcceptance handle="{handle}" /&gt;
+    &lt;WaitForResult handle="{handle}" result="{result}" /&gt;
+    &lt;ProcessResult result="{result}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>ROS2 액션의 목표 전송, 수락 대기, 결과 대기는 단일 액션 호출의 내부 단계이며, 이를 별도 노드로 분리하는 것은 과도한 세분화이다. 이 단계들은 독립적으로 재사용될 가능성이 낮고, 항상 동일한 순서로 실행되므로 단일 노드로 캡슐화하는 것이 적합하다.</p>
+<h3>5.2 적절한 세분화의 예</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;ComputePathToPose goal="{goal}" path="{path}" /&gt;
+    &lt;FollowPath path="{path}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>경로 계산과 경로 추종은 각각 독립적인 ROS2 액션 서버에 대응하며, 독립적으로 재사용 가능하고, 독립적으로 실패할 수 있으므로 별도 노드로 분리하는 것이 적절하다.</p>
+<h3>5.3 세분화 수준의 판단 지침</h3>
+<table><thead><tr><th>기준</th><th style="text-align: center">분리 권장</th><th style="text-align: center">통합 권장</th></tr></thead><tbody>
+<tr><td>독립적 ROS2 인터페이스 대응</td><td style="text-align: center">O</td><td style="text-align: center">—</td></tr>
+<tr><td>독립적 실패 모드 존재</td><td style="text-align: center">O</td><td style="text-align: center">—</td></tr>
+<tr><td>다른 컨텍스트에서 단독 사용 가능</td><td style="text-align: center">O</td><td style="text-align: center">—</td></tr>
+<tr><td>항상 동일 순서로 실행</td><td style="text-align: center">—</td><td style="text-align: center">O</td></tr>
+<tr><td>단일 ROS2 호출의 내부 단계</td><td style="text-align: center">—</td><td style="text-align: center">O</td></tr>
+<tr><td>분리 시 데이터 전달 복잡도 과도</td><td style="text-align: center">—</td><td style="text-align: center">O</td></tr>
+</tbody></table>
+<h2>6. 제어 노드에 의한 행동 조합</h2>
+<p>단일 책임 원칙에 의해 분리된 액션 노드는 제어 노드에 의해 복합적 행동으로 조합된다. 이 조합은 트리의 XML 정의에서 이루어지므로, 코드의 수정 없이 행동의 순서, 조건, 병렬성을 변경할 수 있다.</p>
+<h3>6.1 Sequence에 의한 순차 조합</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;DetectObject object_id="{id}" /&gt;
+    &lt;NavigateToPose target_pose="{id_pose}" /&gt;
+    &lt;PickupObject object_id="{id}" /&gt;
+    &lt;NavigateToPose target_pose="{drop_pose}" /&gt;
+    &lt;PlaceObject object_id="{id}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>각 노드가 단일 행동만을 수행하므로, 중간에 행동을 삽입하거나 순서를 변경하는 것이 코드 수정 없이 가능하다.</p>
+<h3>6.2 Fallback에 의한 대안 조합</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;NavigateToPose target_pose="{primary_route}" /&gt;
+    &lt;NavigateToPose target_pose="{alternative_route}" /&gt;
+    &lt;BackUp distance="1.0" /&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>동일한 <code>NavigateToPose</code> 노드가 서로 다른 입력으로 재사용된다. 단일 책임 원칙에 의해 노드가 범용적으로 설계되었기 때문에 가능한 재사용이다.</p>
+<h2>7. 단일 책임 원칙과 트리 구조의 관계</h2>
+<p>단일 책임 원칙의 적용은 행동 트리의 구조적 특성에 직접적으로 영향을 미친다.</p>
+<h3>7.1 트리 깊이와 너비의 균형</h3>
+<p>단일 책임 원칙에 의해 행동이 세분화되면 트리의 리프 노드 수가 증가한다. 이에 따라 제어 노드의 수도 증가하여 트리의 깊이 또는 너비가 확대된다. 적절한 세분화 수준의 선택은 트리의 구조적 복잡도를 관리하는 데 필수적이다.</p>
+<h3>7.2 서브트리에 의한 캡슐화</h3>
+<p>빈번히 사용되는 노드 조합은 서브트리(subtree)로 캡슐화하여 재사용할 수 있다. 서브트리는 단일 책임 원칙에 의해 분리된 노드의 특정 조합을 하나의 재사용 가능한 단위로 묶는 메커니즘이다.</p>
+<pre><code class="language-xml">&lt;!-- 서브트리 정의 --&gt;
+&lt;BehaviorTree ID="PickAndPlace"&gt;
+    &lt;Sequence&gt;
+        &lt;DetectObject object_id="{target}" /&gt;
+        &lt;NavigateToPose target_pose="{object_pose}" /&gt;
+        &lt;PickupObject object_id="{target}" /&gt;
+        &lt;NavigateToPose target_pose="{place_pose}" /&gt;
+        &lt;PlaceObject object_id="{target}" /&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+
+&lt;!-- 서브트리 사용 --&gt;
+&lt;SubTree ID="PickAndPlace" target="box_1"
+         place_pose="{destination}" /&gt;
+</code></pre>
+<p>서브트리에 의한 캡슐화는 단일 책임 원칙에 의한 세분화와 사용 편의성 간의 균형을 달성하는 수단이다.</p>
+<h2>8. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>하나의 노드, 하나의 ROS2 인터페이스</strong>: 가능한 한 하나의 액션 노드가 하나의 ROS2 인터페이스(액션, 서비스, 토픽)에 대응하도록 설계한다.</p>
+</li>
+<li>
+<p><strong>조건 판단의 분리</strong>: 행동의 실행 여부를 결정하는 조건 판단은 조건 노드(Condition Node)로 분리하고, 액션 노드에는 행동의 실행만을 담당시킨다.</p>
+</li>
+<li>
+<p><strong>변경 이유의 단일성 검증</strong>: 노드의 수정이 필요한 시나리오를 열거하여, 수정 이유가 둘 이상인 경우 노드를 분리한다.</p>
+</li>
+<li>
+<p><strong>적절한 세분화 수준</strong>: 독립적 재사용, 독립적 실패, 독립적 취소가 의미 있는 경우에만 분리하고, 과도한 세분화를 지양한다.</p>
+</li>
+<li>
+<p><strong>서브트리 활용</strong>: 분리된 노드의 빈번한 조합은 서브트리로 캡슐화하여 재사용성과 사용 편의성을 양립시킨다(Colledanchise &amp; Ögren, 2018).</p>
+</li>
+</ol>
 
             </article>
             <footer>

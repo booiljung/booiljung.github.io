@@ -115,6 +115,213 @@
             </header>
             <article>
                 <h1>1295.81 가중치 기반 Parallel 정책의 구현</h1>
+<h2>1. 가중치 기반 정책의 개념</h2>
+<p>표준 Parallel 정책은 모든 자식 노드를 동등하게 취급한다. SUCCESS_COUNT(N) 정책에서 <span class="math math-inline">N</span>개의 자식이 성공하면 Parallel이 성공하는데, 어떤 자식이 성공하였는지는 고려하지 않는다. 그러나 로봇공학의 실제 적용에서는 자식 노드의 중요도가 상이한 경우가 빈번하다. 가중치 기반 Parallel 정책(Weighted Parallel Policy)은 각 자식 노드에 가중치를 부여하고, 가중치의 합산에 기반하여 Parallel의 성공/실패를 결정하는 정책이다.</p>
+<h2>2. 형식적 정의</h2>
+<p>자식 노드 집합 <span class="math math-inline">\{C_1, C_2, \ldots, C_N\}</span>에 대해 가중치 벡터 <span class="math math-inline">\{w_1, w_2, \ldots, w_N\}</span>이 부여된다. 여기서 <span class="math math-inline">w_i &gt; 0</span>이고 <span class="math math-inline">\sum_{i=1}^{N} w_i = 1</span>로 정규화한다.</p>
+<p><strong>가중치 성공 정책</strong>:</p>
+<p><span class="math math-display">\text{result} = \text{SUCCESS} \iff \sum_{i : S_i = \text{SUCCESS}} w_i \geq \theta_{success}</span></p>
+<p>여기서 <span class="math math-inline">\theta_{success}</span>는 성공 임계값(0과 1 사이)이다.</p>
+<p><strong>가중치 실패 정책</strong>:</p>
+<p><span class="math math-display">\text{result} = \text{FAILURE} \iff \sum_{i : S_i = \text{FAILURE}} w_i \geq \theta_{failure}</span></p>
+<p>여기서 <span class="math math-inline">\theta_{failure}</span>는 실패 임계값이다.</p>
+<h2>3. 표준 정책과의 관계</h2>
+<p>가중치 기반 정책은 표준 정책을 일반화한 것이다.</p>
+<table><thead><tr><th>표준 정책</th><th>가중치 설정</th><th>임계값</th></tr></thead><tbody>
+<tr><td>SUCCESS_ALL</td><td><span class="math math-inline">w_i = 1/N</span></td><td><span class="math math-inline">\theta_{success} = 1.0</span></td></tr>
+<tr><td>SUCCESS_ONE</td><td><span class="math math-inline">w_i = 1/N</span></td><td><span class="math math-inline">\theta_{success} = 1/N</span></td></tr>
+<tr><td>SUCCESS_COUNT(K)</td><td><span class="math math-inline">w_i = 1/N</span></td><td><span class="math math-inline">\theta_{success} = K/N</span></td></tr>
+<tr><td>FAILURE_ONE</td><td><span class="math math-inline">w_i = 1/N</span></td><td><span class="math math-inline">\theta_{failure} = 1/N</span></td></tr>
+</tbody></table>
+<p>모든 가중치를 동일하게 설정하면 표준 정책과 동치가 된다.</p>
+<h2>4. C++ 구현</h2>
+<pre><code class="language-cpp">class WeightedParallelPolicy
+{
+    std::vector&lt;double&gt; weights_;
+    double success_threshold_;
+    double failure_threshold_;
+    
+public:
+    WeightedParallelPolicy(
+        std::vector&lt;double&gt; weights,
+        double success_threshold,
+        double failure_threshold)
+        : weights_(std::move(weights)),
+          success_threshold_(success_threshold),
+          failure_threshold_(failure_threshold)
+    {
+        // 정규화
+        double sum = 0.0;
+        for (auto w : weights_) sum += w;
+        for (auto&amp; w : weights_) w /= sum;
+    }
+    
+    PolicyResult evaluate(
+        const std::vector&lt;BT::NodeStatus&gt;&amp; statuses) const
+    {
+        double success_score = 0.0;
+        double failure_score = 0.0;
+        
+        for (size_t i = 0; i &lt; statuses.size(); i++)
+        {
+            if (statuses[i] == BT::NodeStatus::SUCCESS)
+                success_score += weights_[i];
+            else if (statuses[i] == BT::NodeStatus::FAILURE)
+                failure_score += weights_[i];
+        }
+        
+        if (failure_score &gt;= failure_threshold_)
+            return PolicyResult::FAILURE;
+        if (success_score &gt;= success_threshold_)
+            return PolicyResult::SUCCESS;
+        
+        // 조기 종료: 남은 자식으로 임계값 달성 불가
+        double remaining_weight = 0.0;
+        for (size_t i = 0; i &lt; statuses.size(); i++)
+        {
+            if (statuses[i] == BT::NodeStatus::RUNNING)
+                remaining_weight += weights_[i];
+        }
+        
+        if (success_score + remaining_weight &lt; success_threshold_)
+            return PolicyResult::FAILURE;
+        
+        return PolicyResult::CONTINUE;
+    }
+};
+</code></pre>
+<p>조기 종료 조건은 성공 점수와 나머지 <code>RUNNING</code> 자식의 가중치 합을 더하여도 성공 임계값에 도달할 수 없는 경우, 더 이상의 실행이 무의미하므로 <code>FAILURE</code>를 즉시 반환하는 것이다.</p>
+<h2>5. 가중치 기반 Parallel 노드</h2>
+<p>가중치 기반 정책을 사용하는 Parallel 노드의 구현이다.</p>
+<pre><code class="language-cpp">class WeightedParallel : public BT::ControlNode
+{
+public:
+    WeightedParallel(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : ControlNode(name, config) {}
+    
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("weights", 
+                "쉼표로 구분된 가중치 목록"),
+            BT::InputPort&lt;double&gt;("success_threshold", 0.5, 
+                "성공 임계값 (0.0 ~ 1.0)"),
+            BT::InputPort&lt;double&gt;("failure_threshold", 0.5, 
+                "실패 임계값 (0.0 ~ 1.0)")
+        };
+    }
+    
+    BT::NodeStatus tick() override
+    {
+        // 가중치와 임계값 읽기
+        auto weights = parseWeights();
+        double success_thresh, failure_thresh;
+        getInput("success_threshold", success_thresh);
+        getInput("failure_threshold", failure_thresh);
+        
+        WeightedParallelPolicy policy(weights, success_thresh, failure_thresh);
+        
+        // 모든 자식 Tick
+        std::vector&lt;BT::NodeStatus&gt; statuses(childrenCount());
+        for (size_t i = 0; i &lt; childrenCount(); i++)
+        {
+            if (children_nodes_[i]-&gt;status() == BT::NodeStatus::SUCCESS ||
+                children_nodes_[i]-&gt;status() == BT::NodeStatus::FAILURE)
+            {
+                statuses[i] = children_nodes_[i]-&gt;status();
+                continue;
+            }
+            statuses[i] = children_nodes_[i]-&gt;executeTick();
+        }
+        
+        // 정책 평가
+        auto result = policy.evaluate(statuses);
+        
+        if (result == PolicyResult::SUCCESS)
+        {
+            haltChildren();
+            return BT::NodeStatus::SUCCESS;
+        }
+        if (result == PolicyResult::FAILURE)
+        {
+            haltChildren();
+            return BT::NodeStatus::FAILURE;
+        }
+        
+        return BT::NodeStatus::RUNNING;
+    }
+    
+    void halt() override
+    {
+        haltChildren();
+        ControlNode::halt();
+    }
+
+private:
+    std::vector&lt;double&gt; parseWeights()
+    {
+        std::string weights_str;
+        getInput("weights", weights_str);
+        
+        std::vector&lt;double&gt; weights;
+        std::istringstream stream(weights_str);
+        std::string token;
+        while (std::getline(stream, token, ','))
+        {
+            weights.push_back(std::stod(token));
+        }
+        return weights;
+    }
+};
+</code></pre>
+<h2>6. XML 정의</h2>
+<pre><code class="language-xml">&lt;!-- 가중치 기반 Parallel 사용 --&gt;
+&lt;WeightedParallel weights="0.5,0.3,0.2" 
+                  success_threshold="0.7" 
+                  failure_threshold="0.6"&gt;
+    &lt;PrimarySensor /&gt;    &lt;!-- 가중치 0.5 --&gt;
+    &lt;SecondarySensor /&gt;  &lt;!-- 가중치 0.3 --&gt;
+    &lt;TertiarySensor /&gt;   &lt;!-- 가중치 0.2 --&gt;
+&lt;/WeightedParallel&gt;
+</code></pre>
+<p>이 예시에서 <code>PrimarySensor</code>(0.5)와 <code>SecondarySensor</code>(0.3)가 성공하면 성공 점수가 0.8이 되어 임계값 0.7을 초과하므로 Parallel이 <code>SUCCESS</code>를 반환한다. <code>TertiarySensor</code>의 결과는 무관하다.</p>
+<h2>7. 적용 사례</h2>
+<h3>7.1 다중 센서 융합</h3>
+<p>LiDAR(가중치 0.5), 카메라(가중치 0.3), 초음파(가중치 0.2)의 장애물 감지 결과를 가중치 투표로 융합한다.</p>
+<pre><code class="language-xml">&lt;WeightedParallel weights="0.5,0.3,0.2" 
+                  success_threshold="0.6" 
+                  failure_threshold="0.5"&gt;
+    &lt;LidarObstacleCheck /&gt;
+    &lt;CameraObstacleCheck /&gt;
+    &lt;UltrasonicObstacleCheck /&gt;
+&lt;/WeightedParallel&gt;
+</code></pre>
+<p>LiDAR가 장애물 부재를 확인하면(SUCCESS) 그것만으로 가중치 0.5가 임계값 0.6에 근접한다. LiDAR와 초음파 중 하나라도 추가로 확인하면 임계값을 초과한다. 이는 LiDAR의 신뢰도가 다른 센서보다 높다는 사전 지식을 정책에 반영한 것이다.</p>
+<h3>7.2 다중 로봇 협업 작업</h3>
+<p>주 로봇(가중치 0.6)과 보조 로봇(가중치 0.4)이 협업하는 경우, 주 로봇의 작업 완료가 더 큰 비중을 가진다.</p>
+<pre><code class="language-xml">&lt;WeightedParallel weights="0.6,0.4" 
+                  success_threshold="0.6" 
+                  failure_threshold="0.6"&gt;
+    &lt;PrimaryRobotTask /&gt;
+    &lt;SecondaryRobotTask /&gt;
+&lt;/WeightedParallel&gt;
+</code></pre>
+<p>주 로봇만 성공하여도 가중치 0.6이 임계값 0.6을 충족하므로 전체가 성공한다. 보조 로봇만 성공하면 가중치 0.4로 임계값에 미달하므로 전체가 성공하지 않는다.</p>
+<h2>8. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>가중치의 정규화</strong>: 가중치의 합이 1이 되도록 정규화하여, 임계값이 0과 1 사이의 직관적인 값으로 설정될 수 있도록 하라.</p>
+</li>
+<li>
+<p><strong>가중치의 동적 조정</strong>: 블랙보드를 통해 가중치를 동적으로 변경할 수 있도록 설계하면, 센서 장애 시 해당 센서의 가중치를 0으로 설정하여 자동 적응이 가능하다.</p>
+</li>
+<li>
+<p><strong>임계값의 상호 배타성</strong>: 성공 임계값과 실패 임계값의 합이 1을 초과하면 성공도 실패도 아닌 교착 상태가 발생할 수 있다. <span class="math math-inline">\theta_{success} + \theta_{failure} \leq 1</span>을 보장하라.</p>
+</li>
+<li>
+<p><strong>조기 종료의 정확성</strong>: 남은 <code>RUNNING</code> 자식의 가중치로 임계값 달성이 불가능한 경우를 정확히 판정하여, 불필요한 실행을 조기에 종료하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

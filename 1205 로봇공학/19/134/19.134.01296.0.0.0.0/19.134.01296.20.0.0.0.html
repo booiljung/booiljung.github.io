@@ -115,6 +115,245 @@
             </header>
             <article>
                 <h1>1296.20 ThreadedAction의 tick() 블로킹 실행</h1>
+<h2>1. 블로킹 실행의 정의</h2>
+<p><code>ThreadedAction</code>에서의 블로킹 실행(blocking execution)이란, <code>tick()</code> 메서드 내부에서 차단(blocking) 호출을 수행할 수 있음을 의미한다. 차단 호출은 요청한 작업이 완료될 때까지 호출 스레드의 실행을 일시 정지시키는 호출이다. <code>tick()</code>이 별도 스레드에서 실행되므로, 이 차단은 메인 스레드에 영향을 미치지 않는다.</p>
+<p><code>SyncActionNode</code>와 <code>StatefulActionNode</code>에서는 차단 호출이 메인 스레드를 정지시키므로 금지되나, <code>ThreadedAction</code>에서는 별도 스레드 실행에 의해 차단 호출이 허용된다. 이것이 <code>ThreadedAction</code>의 핵심적 존재 이유이다.</p>
+<h2>2. 블로킹 호출의 유형</h2>
+<p><code>ThreadedAction</code>의 <code>tick()</code> 내부에서 허용되는 블로킹 호출의 유형을 분류한다.</p>
+<h3>2.1 동기적 I/O</h3>
+<pre><code class="language-cpp">BT::NodeStatus SaveMapAction::tick()
+{
+    std::string filename;
+    if (!getInput("filename", filename))
+        return BT::NodeStatus::FAILURE;
+
+    // 동기적 파일 쓰기 (차단 호출)
+    std::ofstream file(filename, std::ios::binary);
+    if (!file.is_open())
+        return BT::NodeStatus::FAILURE;
+
+    file.write(reinterpret_cast&lt;const char*&gt;(map_data_.data()),
+               map_data_.size() * sizeof(int8_t));
+    file.close();
+
+    if (isHaltRequested())
+        return BT::NodeStatus::FAILURE;
+
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>파일 I/O는 디스크 접근 속도에 따라 수 밀리초에서 수백 밀리초까지 소요될 수 있다. 별도 스레드에서 실행되므로 이 대기 시간이 트리의 Tick 주기에 영향을 미치지 않는다.</p>
+<h3>2.2 레거시 동기 API 호출</h3>
+<pre><code class="language-cpp">BT::NodeStatus LegacyPlannerAction::tick()
+{
+    Pose start, goal;
+    if (!getInput("start", start) || !getInput("goal", goal))
+        return BT::NodeStatus::FAILURE;
+
+    // 레거시 경로 계획 라이브러리 (비동기 API 미제공)
+    // 수 초 소요 가능
+    auto path = legacy_planner_-&gt;planPath(start, goal);
+
+    if (isHaltRequested())
+        return BT::NodeStatus::FAILURE;
+
+    if (path.waypoints.empty())
+        return BT::NodeStatus::FAILURE;
+
+    setOutput("path", convertToRosPath(path));
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>비동기 인터페이스를 제공하지 않는 레거시 라이브러리의 동기 API를 래핑하는 전형적인 사용 사례이다. <code>planPath()</code>는 내부적으로 경로 탐색 알고리즘을 실행하며, 환경의 복잡도에 따라 수백 밀리초에서 수 초까지 소요될 수 있다.</p>
+<h3>2.3 CPU 집약적 연산</h3>
+<pre><code class="language-cpp">BT::NodeStatus ProcessImageAction::tick()
+{
+    sensor_msgs::msg::Image image;
+    if (!getInput("image", image))
+        return BT::NodeStatus::FAILURE;
+
+    // CPU 집약적 이미지 처리 (수백 ms 소요 가능)
+    cv::Mat cv_image = convertToCvMat(image);
+
+    // 주기적 Halt 확인
+    cv::Mat filtered;
+    cv::GaussianBlur(cv_image, filtered, cv::Size(5, 5), 0);
+
+    if (isHaltRequested())
+        return BT::NodeStatus::FAILURE;
+
+    cv::Mat edges;
+    cv::Canny(filtered, edges, 50, 150);
+
+    if (isHaltRequested())
+        return BT::NodeStatus::FAILURE;
+
+    auto detections = detectObjects(edges);
+    setOutput("detections", detections);
+
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>이미지 처리, 포인트 클라우드 처리 등의 CPU 집약적 연산은 메인 스레드에서 실행하면 Tick 주기를 초과할 수 있다. 별도 스레드에서 실행하면 메인 스레드의 실시간성이 보존된다.</p>
+<h3>2.4 타임아웃이 있는 동기 대기</h3>
+<pre><code class="language-cpp">BT::NodeStatus WaitForServiceAction::tick()
+{
+    std::string service_name;
+    if (!getInput("service_name", service_name))
+        return BT::NodeStatus::FAILURE;
+
+    double timeout;
+    getInput("timeout", timeout);
+
+    auto client = node_-&gt;create_client&lt;ServiceType&gt;(service_name);
+
+    // 동기적 서비스 대기 (차단 호출)
+    bool available = client-&gt;wait_for_service(
+        std::chrono::duration&lt;double&gt;(timeout));
+
+    if (isHaltRequested())
+        return BT::NodeStatus::FAILURE;
+
+    return available ? BT::NodeStatus::SUCCESS 
+                     : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>3. 블로킹 실행과 isHaltRequested()의 상호 작용</h2>
+<p>블로킹 실행의 핵심 과제는 차단 호출 중에 Halt 요청에 응답하는 것이다. 차단 호출이 진행되는 동안 <code>isHaltRequested()</code>를 확인할 수 없으므로, Halt 응답에 지연이 발생한다.</p>
+<pre><code>tick() 스레드:
+──┬──────────────────┬─────────┬──────
+  │ 차단 호출 (3초)   │ Halt    │ 
+  │                   │ 확인    │ 반환
+──┴──────────────────┴─────────┴──────
+                      ↑
+                      차단 완료 후에야 Halt 확인 가능
+</code></pre>
+<p>이 지연을 최소화하기 위한 전략은 다음과 같다.</p>
+<h3>3.1 차단 호출의 분할</h3>
+<p>장시간 차단 호출을 짧은 단위로 분할하여, 분할 지점에서 <code>isHaltRequested()</code>를 확인한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 3초 대기를 100ms 단위로 분할
+    for (int i = 0; i &lt; 30; ++i)
+    {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(100));
+
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+    }
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>3.2 타임아웃 기반 차단 호출</h3>
+<p>무한 대기 대신 짧은 타임아웃을 반복적으로 적용한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    while (!isHaltRequested())
+    {
+        // 100ms 타임아웃으로 반복 시도
+        if (future_.wait_for(std::chrono::milliseconds(100))
+            == std::future_status::ready)
+        {
+            auto result = future_.get();
+            return result.success ? BT::NodeStatus::SUCCESS
+                                  : BT::NodeStatus::FAILURE;
+        }
+    }
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>이 패턴은 최대 100 ms의 Halt 응답 지연으로 차단 호출의 완료를 대기한다.</p>
+<h2>4. 블로킹 실행과 StatefulActionNode 폴링의 비교</h2>
+<p>동일한 행동을 <code>ThreadedAction</code>의 블로킹 실행과 <code>StatefulActionNode</code>의 비차단 폴링으로 각각 구현하여 비교한다.</p>
+<h3>4.1 ThreadedAction (블로킹)</h3>
+<pre><code class="language-cpp">class ComputePath_Threaded : public BT::ThreadedAction
+{
+    BT::NodeStatus tick() override
+    {
+        Pose start, goal;
+        getInput("start", start);
+        getInput("goal", goal);
+
+        // 차단 호출: 경로 계획 완료까지 대기
+        auto path = planner_-&gt;computePath(start, goal);
+
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+
+        setOutput("path", path);
+        return path.empty() ? BT::NodeStatus::FAILURE
+                            : BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h3>4.2 StatefulActionNode (비차단)</h3>
+<pre><code class="language-cpp">class ComputePath_Stateful : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        Pose start, goal;
+        getInput("start", start);
+        getInput("goal", goal);
+
+        // 비동기 호출: 즉시 반환
+        future_ = std::async(std::launch::async,
+            [this, start, goal]()
+            {
+                return planner_-&gt;computePath(start, goal);
+            });
+
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (future_.wait_for(std::chrono::milliseconds(0))
+            == std::future_status::ready)
+        {
+            auto path = future_.get();
+            setOutput("path", path);
+            return path.empty() ? BT::NodeStatus::FAILURE
+                                : BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override
+    {
+        // future의 완료를 기다리거나 무시
+    }
+};
+</code></pre>
+<table><thead><tr><th>비교 항목</th><th style="text-align: center">ThreadedAction</th><th style="text-align: center">StatefulActionNode</th></tr></thead><tbody>
+<tr><td>코드 복잡도</td><td style="text-align: center">낮음 (단일 함수)</td><td style="text-align: center">높음 (3개 콜백)</td></tr>
+<tr><td>스레드 안전성 부담</td><td style="text-align: center">높음</td><td style="text-align: center">중간 (async 사용 시)</td></tr>
+<tr><td>Halt 응답성</td><td style="text-align: center">지연 가능</td><td style="text-align: center">즉시</td></tr>
+<tr><td>메인 스레드 영향</td><td style="text-align: center">없음</td><td style="text-align: center">없음</td></tr>
+<tr><td>블랙보드 접근</td><td style="text-align: center">경합 가능</td><td style="text-align: center">안전 (onRunning에서)</td></tr>
+</tbody></table>
+<p><code>ThreadedAction</code>은 코드가 단순하나 스레드 안전성 부담이 크다. <code>StatefulActionNode</code>는 코드가 복잡하나 메인 스레드에서의 안전한 실행이 보장된다.</p>
+<h2>5. 블로킹 실행의 구현 지침</h2>
+<ol>
+<li>
+<p><strong>isHaltRequested() 주기적 확인</strong>: 차단 호출 전후 및 장시간 루프의 각 반복에서 <code>isHaltRequested()</code>를 확인한다. 확인 간격은 Halt 응답 지연의 상한을 결정한다.</p>
+</li>
+<li>
+<p><strong>타임아웃 설정</strong>: 무한 차단을 방지하기 위해 모든 차단 호출에 타임아웃을 설정한다. 타임아웃 없는 차단 호출은 Halt 요청을 무한정 지연시킬 수 있다.</p>
+</li>
+<li>
+<p><strong>예외 처리</strong>: 차단 호출에서 발생하는 예외를 <code>tick()</code> 내부에서 포착하여 FAILURE로 변환한다.</p>
+</li>
+<li>
+<p><strong>최소 차단 범위</strong>: 차단 호출의 범위를 최소화한다. 차단이 필요한 연산만 <code>tick()</code> 내부에서 수행하고, 결과의 가공 등은 차단 호출 완료 후에 수행한다.</p>
+</li>
+<li>
+<p><strong>블랙보드 접근 최소화</strong>: <code>tick()</code> 내부에서의 블랙보드 접근은 시작 시(<code>getInput()</code>)와 종료 시(<code>setOutput()</code>)에 한정한다. 차단 호출 중에는 블랙보드에 접근하지 않는다.</p>
+</li>
+<li>
+<p><strong>대안 우선 검토</strong>: <code>ThreadedAction</code>의 블로킹 실행은 최후의 수단으로 사용한다. 비동기 API가 제공되는 경우 <code>StatefulActionNode</code>에서 비차단 폴링으로 구현하는 것이 스레드 안전성과 Halt 응답성 면에서 우월하다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

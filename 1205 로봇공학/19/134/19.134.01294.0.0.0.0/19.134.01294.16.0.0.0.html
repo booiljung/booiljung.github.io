@@ -115,6 +115,92 @@
             </header>
             <article>
                 <h1>1294.16 SequenceWithMemory의 이전 성공 자식 건너뛰기</h1>
+<h2>1. 건너뛰기의 정의</h2>
+<p>SequenceWithMemory에서 “이전 성공 자식 건너뛰기(skipping previously successful children)“란, 이전 Tick에서 SUCCESS를 반환한 자식 노드를 다음 Tick에서 재평가하지 않고 생략하는 동작이다. 이는 RUNNING을 반환한 자식의 인덱스를 기억하고 해당 인덱스부터 실행을 재개하는 메커니즘의 직접적인 결과이다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 건너뛰기의 동작 과정</h2>
+<h3>2.1 상세 실행 흐름</h3>
+<p><span class="math math-inline">N = 4</span>인 Sequence에서 자식 2가 RUNNING을 반환한 경우:</p>
+<pre><code>Tick 1 (current_index = 0):
+  children[0].executeTick() → SUCCESS    ← 평가됨
+  children[1].executeTick() → SUCCESS    ← 평가됨
+  children[2].executeTick() → RUNNING    ← 평가됨, 인덱스 기억
+  children[3]               → (미도달)
+  current_index = 2
+  Sequence → RUNNING
+
+Tick 2 (current_index = 2):
+  children[0]               → (건너뜀)  ← 재평가 없음
+  children[1]               → (건너뜀)  ← 재평가 없음
+  children[2].executeTick() → RUNNING    ← 평가됨
+  children[3]               → (미도달)
+  Sequence → RUNNING
+
+Tick 3 (current_index = 2):
+  children[0]               → (건너뜀)
+  children[1]               → (건너뜀)
+  children[2].executeTick() → SUCCESS    ← 작업 완료
+  children[3].executeTick() → SUCCESS    ← 다음 자식 평가
+  current_index = 0
+  Sequence → SUCCESS
+</code></pre>
+<h2>3. 건너뛰기의 이점</h2>
+<h3>3.1 연산 비용 절감</h3>
+<p>건너뛰어진 자식의 <code>tick()</code> 함수가 호출되지 않으므로, 해당 노드의 연산 비용이 절약된다. 조건 노드의 센서 데이터 확인, 액션 노드의 상태 조회 등의 비용이 제거된다.</p>
+<pre><code>Tick당 방문 노드 수 비교 (자식 5개, 인덱스 3이 RUNNING):
+  ReactiveSequence: 4개 (인덱스 0~3)
+  WithMemory:       1개 (인덱스 3만)
+</code></pre>
+<h3>3.2 부수 효과 방지</h3>
+<p>액션 노드가 재실행되면 의도하지 않은 부수 효과가 발생할 수 있다.</p>
+<pre><code>부수 효과 예:
+  &lt;Action ID="SendNotification"/&gt;  — 이메일 발송
+  재실행 시 동일한 이메일이 중복 발송됨
+
+  &lt;Action ID="IncrementCounter"/&gt;  — 카운터 증가
+  재실행 시 카운터가 의도하지 않게 증가함
+</code></pre>
+<p>건너뛰기에 의해 이러한 재실행이 방지된다.</p>
+<h3>3.3 비동기 작업의 정합성 유지</h3>
+<p>이미 완료된 비동기 작업(예: 특정 위치로 이동 완료)을 다시 시작하면, 로봇의 상태가 비정합적으로 변할 수 있다. 건너뛰기는 완료된 작업의 재시작을 방지하여 임무 실행의 정합성을 유지한다.</p>
+<h2>4. 건너뛰기와 노드 상태의 관계</h2>
+<p>건너뛰어진 자식 노드는 이전 Tick에서의 상태(SUCCESS)를 유지한다. <code>executeTick()</code>이 호출되지 않으므로 상태 전이가 발생하지 않는다. 이 자식의 상태는 Sequence가 최종 반환(SUCCESS/FAILURE)하거나 Halt가 호출될 때 IDLE로 초기화된다.</p>
+<h2>5. 건너뛰기의 위험성</h2>
+<h3>5.1 조건 무효화 미감지</h3>
+<p>건너뛰어진 조건 노드의 결과가 더 이상 유효하지 않을 수 있다. 환경이 변화하여 이전에 충족되었던 조건이 더 이상 충족되지 않는 상황이 발생할 수 있다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Condition ID="IsDoorOpen"/&gt;       &lt;!-- Tick 1에서 SUCCESS --&gt;
+    &lt;Action ID="WalkThroughDoor"/&gt;     &lt;!-- Tick 1에서 RUNNING --&gt;
+&lt;/Sequence&gt;
+
+&lt;!-- Tick 2에서 문이 닫혔지만, IsDoorOpen은 건너뛰어져 감지 못함 --&gt;
+&lt;!-- 로봇이 닫힌 문으로 걸어가는 위험 --&gt;
+</code></pre>
+<h3>5.2 안전 조건의 분리 필요</h3>
+<p>이러한 위험을 방지하기 위해, 지속적으로 재검사해야 하는 안전 조건은 SequenceWithMemory 내부에 배치하지 않고, 상위의 ReactiveSequence에 배치하는 설계 패턴을 사용한다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsDoorOpen"/&gt;       &lt;!-- 매 Tick 재평가 --&gt;
+    &lt;Sequence&gt;                         &lt;!-- WithMemory --&gt;
+        &lt;Action ID="ApproachDoor"/&gt;    &lt;!-- 건너뛰기 대상 --&gt;
+        &lt;Action ID="WalkThrough"/&gt;     &lt;!-- 건너뛰기 대상 --&gt;
+    &lt;/Sequence&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>이 구조에서 <code>IsDoorOpen</code>은 매 Tick마다 재평가되고, 내부 Sequence의 액션은 WithMemory로 순차 실행된다. 문이 닫히면 ReactiveSequence가 FAILURE를 반환하고 내부 Sequence의 RUNNING 액션을 Halt한다.</p>
+<h2>6. 건너뛰기와 ReactiveSequence의 차이 요약</h2>
+<table><thead><tr><th>특성</th><th>SequenceWithMemory</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>SUCCESS 자식 재평가</td><td>건너뜀</td><td>매 Tick 재평가</td></tr>
+<tr><td>조건 변화 감지</td><td>불가</td><td>가능</td></tr>
+<tr><td>Tick당 비용</td><td>낮음</td><td>높음</td></tr>
+<tr><td>부수 효과</td><td>없음</td><td>재실행 가능</td></tr>
+<tr><td>적용 상황</td><td>순차 임무</td><td>안전 조건 감시</td></tr>
+</tbody></table>
+<p>적절한 선택은 자식 노드의 특성과 환경의 동적 변화 빈도에 따라 결정된다(Faconti, 2022).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

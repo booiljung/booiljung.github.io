@@ -115,6 +115,99 @@
             </header>
             <article>
                 <h1>1295.25 Parallel 자식 간 블랙보드 쓰기 충돌 방지 전략</h1>
+<h2>1. 충돌 방지의 필요성</h2>
+<p>Parallel 노드에서 다수의 자식이 동일한 블랙보드 키에 동시에 쓰기 연산을 수행하면 데이터 무결성이 훼손된다. 이러한 충돌을 체계적으로 방지하기 위해서는 설계 단계에서부터 명확한 전략을 수립하고 적용하여야 한다. 본 절에서는 행동 트리 설계에서 실무적으로 활용되는 주요 충돌 방지 전략을 서술한다.</p>
+<h2>2. 키 네임스페이스 분리 전략</h2>
+<p>가장 기본적이고 효과적인 충돌 방지 전략은 각 자식 노드가 사용하는 블랙보드 키의 네임스페이스를 분리하는 것이다. 동일한 종류의 데이터를 기록하더라도, 각 자식에 고유한 접두사(prefix) 또는 접미사(suffix)를 부여하여 키 충돌을 원천적으로 차단한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL)
+├── SensorA_Update  →  writes "sensorA_position"
+├── SensorB_Update  →  writes "sensorB_position"
+└── FusionNode      →  reads "sensorA_position", "sensorB_position"
+</code></pre>
+<p>위 구조에서는 센서 A와 센서 B가 각각 고유한 키에 값을 기록하므로 쓰기-쓰기 충돌이 발생하지 않는다. 별도의 융합(fusion) 노드가 두 키를 모두 읽어 통합 처리를 수행한다. 이 전략은 구현이 단순하고 직관적이며, BehaviorTree.CPP의 포트 리매핑(port remapping) 기능을 활용하면 동일한 노드 클래스를 재사용하면서도 서로 다른 블랙보드 키에 매핑할 수 있다.</p>
+<h3>2.1 포트 리매핑을 통한 키 분리</h3>
+<p>BehaviorTree.CPP에서는 XML 정의 시 포트 리매핑을 통해 노드의 출력 포트를 서로 다른 블랙보드 키에 연결할 수 있다. 이를 통해 동일한 액션 노드 타입의 인스턴스들이 각각 독립적인 블랙보드 키에 기록하도록 설정할 수 있다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;ReadSensor name="sensor_a" output_port="{sensor_a_value}" /&gt;
+    &lt;ReadSensor name="sensor_b" output_port="{sensor_b_value}" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>위 XML에서 동일한 <code>ReadSensor</code> 노드 타입이 두 번 사용되지만, 출력 포트가 <code>sensor_a_value</code>와 <code>sensor_b_value</code>로 각각 리매핑되어 쓰기 충돌이 방지된다.</p>
+<h2>3. 읽기 전용 / 쓰기 전용 역할 분리 전략</h2>
+<p>Parallel 노드의 자식들을 기능적으로 읽기 전용(read-only) 노드와 쓰기 전용(write-only) 노드로 역할을 분리하는 전략이다. 이 전략에서는 특정 블랙보드 키에 대해 단 하나의 자식만이 쓰기 권한을 가지며, 나머지 자식은 해당 키를 읽기만 한다.</p>
+<p>이를 형식적으로 표현하면, 블랙보드 키 <span class="math math-inline">k</span>에 대해 <span class="math math-inline">|\{C_i \mid k \in W_i\}| \leq 1</span>이라는 단일 쓰기자 제약(single-writer constraint)을 부과하는 것이다. 이 제약이 모든 키에 대해 성립하면, 쓰기-쓰기 충돌은 원천적으로 방지된다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL)
+├── MonitorBattery   →  writes "battery_level" (유일한 쓰기자)
+├── NavigateToGoal   →  reads "battery_level", writes "navigation_status"
+└── CheckObstacle    →  reads "battery_level", reads "navigation_status"
+</code></pre>
+<p>위 구조에서 <code>battery_level</code> 키에 대한 쓰기자는 <code>MonitorBattery</code> 노드 하나뿐이므로 쓰기-쓰기 충돌이 발생하지 않는다. 다만 읽기-쓰기 충돌은 여전히 존재할 수 있으므로, 이전 Tick의 값을 읽는 것이 허용 가능한지에 대한 의미론적 분석이 필요하다.</p>
+<h2>4. 이전 Tick 값 참조 패턴</h2>
+<p>읽기-쓰기 충돌이 존재하더라도, 자식 노드들이 이전 Tick에서 기록된 블랙보드 값을 참조하는 것이 의미론적으로 타당한 경우에는 충돌을 허용 가능한 것으로 간주할 수 있다. 로봇공학의 제어 루프에서 센서 데이터는 일반적으로 이전 시간 단계(time step)의 관측값에 기반하여 현재 제어 명령을 산출하므로, 한 Tick의 지연은 시스템 동작에 유의미한 영향을 미치지 않는 경우가 대부분이다.</p>
+<p>이 패턴을 적용하기 위해서는 다음 조건을 검증하여야 한다.</p>
+<ol>
+<li>블랙보드 값의 갱신 주기가 제어 루프의 시간 상수(time constant)에 비해 충분히 짧아야 한다.</li>
+<li>한 Tick의 지연이 시스템의 안정성이나 안전성을 저해하지 않아야 한다.</li>
+<li>값의 변화율이 Tick 주기 대비 충분히 작아야 한다.</li>
+</ol>
+<h2>5. 블랙보드 스냅샷 전략</h2>
+<p>보다 엄밀한 충돌 방지를 위해, Parallel 노드의 Tick 시작 시점에서 블랙보드의 현재 상태를 스냅샷(snapshot)으로 복제하고, 모든 자식이 이 스냅샷에서 읽기를 수행하도록 하는 전략이다. 자식들의 쓰기 결과는 별도의 버퍼에 축적된 후, 모든 자식의 Tick이 완료된 후 원본 블랙보드에 일괄 반영(batch commit)된다.</p>
+<p>이 전략은 데이터베이스의 스냅샷 격리(snapshot isolation) 수준과 유사한 일관성을 제공한다. 모든 자식이 동일한 시점의 데이터를 읽으므로, 읽기-쓰기 충돌로 인한 데이터 불일관성이 완전히 제거된다. 다만 이 전략은 행동 트리 프레임워크 수준에서의 지원이 필요하며, BehaviorTree.CPP의 기본 구현에는 포함되어 있지 않으므로 커스텀 Parallel 노드를 구현하여야 한다.</p>
+<h3>5.1 스냅샷 전략의 의사 코드</h3>
+<pre><code>function ParallelTickWithSnapshot(children):
+    snapshot ← copy(blackboard)
+    write_buffer ← empty_map
+    
+    for each child in children:
+        child.setReadSource(snapshot)
+        child.setWriteTarget(write_buffer)
+        status ← child.tick()
+        collect(status)
+    
+    merge(blackboard, write_buffer)
+    return evaluatePolicy(collected_statuses)
+</code></pre>
+<h2>6. 전용 블랙보드 인스턴스 분리 전략</h2>
+<p>BehaviorTree.CPP에서는 서브트리(subtree)에 독립적인 블랙보드 인스턴스를 할당할 수 있다. Parallel 노드의 각 자식을 서브트리로 감싸고, 각 서브트리에 전용 블랙보드를 부여하면 자식 간의 블랙보드 접근이 물리적으로 격리된다. 서브트리 간 데이터 교환이 필요한 경우에는 블랙보드 포트의 명시적 리매핑을 통해 부모 블랙보드와 자식 블랙보드 간의 데이터 흐름을 제어할 수 있다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;SubTree ID="SensorProcessingA" 
+             _autoremap="false"
+             input_param="{shared_config}" 
+             output_result="{result_a}" /&gt;
+    &lt;SubTree ID="SensorProcessingB" 
+             _autoremap="false"
+             input_param="{shared_config}" 
+             output_result="{result_b}" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>이 구조에서 각 서브트리는 독립적인 블랙보드를 보유하므로, 서브트리 내부에서 어떤 키에 쓰기를 수행하더라도 다른 서브트리에 영향을 미치지 않는다. 부모 블랙보드와의 데이터 교환은 명시적으로 선언된 포트를 통해서만 이루어지므로, 충돌 가능성을 설계 시점에서 완전히 파악할 수 있다.</p>
+<h2>7. 충돌 방지 전략의 비교</h2>
+<table><thead><tr><th>전략</th><th>구현 복잡도</th><th>충돌 방지 수준</th><th>프레임워크 지원</th></tr></thead><tbody>
+<tr><td>키 네임스페이스 분리</td><td>낮음</td><td>쓰기-쓰기 완전 방지</td><td>기본 지원</td></tr>
+<tr><td>단일 쓰기자 제약</td><td>낮음</td><td>쓰기-쓰기 완전 방지</td><td>설계 규율 필요</td></tr>
+<tr><td>이전 Tick 값 참조 허용</td><td>낮음</td><td>읽기-쓰기 충돌 허용</td><td>기본 지원</td></tr>
+<tr><td>블랙보드 스냅샷</td><td>높음</td><td>읽기-쓰기 완전 방지</td><td>커스텀 구현 필요</td></tr>
+<tr><td>서브트리 블랙보드 분리</td><td>중간</td><td>완전 격리</td><td>BehaviorTree.CPP 지원</td></tr>
+</tbody></table>
+<h2>8. 설계 지침</h2>
+<p>Parallel 노드의 블랙보드 쓰기 충돌을 방지하기 위한 설계 지침을 다음과 같이 정리한다.</p>
+<ol>
+<li>
+<p><strong>키 분리 우선 원칙</strong>: 가능한 한 각 자식 노드가 고유한 블랙보드 키에 쓰기를 수행하도록 설계하라. 이는 가장 단순하면서도 효과적인 충돌 방지 전략이다.</p>
+</li>
+<li>
+<p><strong>단일 쓰기자 규율</strong>: 불가피하게 동일한 키를 다수의 노드가 접근해야 하는 경우, 해당 키에 대한 쓰기 권한은 반드시 단 하나의 자식에만 부여하라.</p>
+</li>
+<li>
+<p><strong>포트 선언의 명시성</strong>: BehaviorTree.CPP의 입력 포트와 출력 포트를 명시적으로 선언하고, 자동 리매핑(<code>_autoremap</code>)을 비활성화하여 데이터 흐름을 명확히 통제하라.</p>
+</li>
+<li>
+<p><strong>격리가 필요한 경우 서브트리 활용</strong>: 복잡한 Parallel 구조에서 자식 간 완전한 데이터 격리가 요구되는 경우, 서브트리와 전용 블랙보드를 활용하여 물리적 격리를 달성하라.</p>
+</li>
+<li>
+<p><strong>정적 분석 수행</strong>: 설계 완료 후 각 자식의 읽기 키 집합 <span class="math math-inline">R_i</span>와 쓰기 키 집합 <span class="math math-inline">W_i</span>를 명시적으로 나열하고, 충돌 자유 조건(<span class="math math-inline">\forall i \neq j: W_i \cap W_j = \emptyset</span>)의 성립 여부를 검증하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

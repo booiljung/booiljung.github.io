@@ -115,6 +115,117 @@
             </header>
             <article>
                 <h1>1294.65 안전 조건이 선행하는 ReactiveSequence 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>안전 조건이 선행하는 ReactiveSequence 패턴은 ReactiveSequence의 앞쪽 자식에 안전 관련 조건 노드를 배치하여, 비동기 액션이 RUNNING 상태에서 진행되는 동안에도 안전 조건이 매 Tick마다 재검사되는 구조이다. 안전 조건이 FAILURE를 반환하면, 진행 중인 모든 작업이 즉시 Halt된다. 이 패턴은 안전 우선 패턴의 구체적 구현 형태이다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. SequenceWithMemory와의 차이</h2>
+<h3>2.1 SequenceWithMemory (안전 위험)</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;    &lt;!-- WithMemory --&gt;
+    &lt;Condition ID="IsSafe"/&gt;
+    &lt;Action ID="PerformTask"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick 1: IsSafe→S, PerformTask→R (idx=1)
+Tick 2: PerformTask→R            (IsSafe 건너뜀 — 위험!)
+Tick 3: PerformTask→R            (안전 상태 변화 미감지)
+</code></pre>
+<p>SequenceWithMemory는 IsSafe가 한 번 SUCCESS를 반환한 후 건너뛰므로, 이후 안전 상태가 변하더라도 감지하지 못한다.</p>
+<h3>2.2 ReactiveSequence (안전 보장)</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsSafe"/&gt;
+    &lt;Action ID="PerformTask"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<pre><code>Tick 1: IsSafe→S, PerformTask→R
+Tick 2: IsSafe→S, PerformTask→R (매 Tick 안전 재확인)
+Tick 3: IsSafe→F                 (안전 위반 즉시 감지)
+        PerformTask→Halt
+        → FAILURE
+</code></pre>
+<p>ReactiveSequence는 매 Tick마다 IsSafe를 재평가하므로, 안전 위반을 즉시 감지하고 작업을 중단한다.</p>
+<h2>3. 다중 안전 조건의 배치</h2>
+<h3>3.1 우선순위 기반 안전 조건 체인</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;!-- 최우선 안전 조건 --&gt;
+    &lt;Condition ID="IsEmergencyStopNotPressed"/&gt;
+    &lt;!-- 2순위 안전 조건 --&gt;
+    &lt;Condition ID="IsSafetyPerimeterNotViolated"/&gt;
+    &lt;!-- 3순위 안전 조건 --&gt;
+    &lt;Condition ID="IsBatteryAboveCritical"/&gt;
+    &lt;!-- 4순위 안전 조건 --&gt;
+    &lt;Condition ID="IsTemperatureNormal"/&gt;
+    &lt;!-- 보호되는 행동 --&gt;
+    &lt;Action ID="PerformOperation"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>조기 종료 특성에 의해, 비상 정지가 눌리면 나머지 조건은 평가되지 않고 즉시 작업이 중단된다.</p>
+<h3>3.2 안전 조건의 분류</h3>
+<table><thead><tr><th>범주</th><th>예시</th><th>전형적 우선순위</th></tr></thead><tbody>
+<tr><td>비상 정지</td><td>비상 버튼, 하드웨어 인터록</td><td>최우선</td></tr>
+<tr><td>물리적 안전</td><td>충돌 감지, 안전 구역 위반</td><td>높음</td></tr>
+<tr><td>시스템 건강</td><td>센서 오류, 통신 두절</td><td>중간</td></tr>
+<tr><td>자원 상태</td><td>배터리 부족, 과열</td><td>낮음</td></tr>
+</tbody></table>
+<h2>4. 동작 흐름의 상세 분석</h2>
+<h3>4.1 정상 운영 흐름</h3>
+<pre><code>Tick 1: E-Stop→S, Perimeter→S, Battery→S, Temp→S, Action→R  → RUNNING
+Tick 2: E-Stop→S, Perimeter→S, Battery→S, Temp→S, Action→R  → RUNNING
+...
+Tick N: E-Stop→S, Perimeter→S, Battery→S, Temp→S, Action→S  → SUCCESS
+</code></pre>
+<p>모든 안전 조건이 매 Tick 통과하는 동안 작업이 정상 진행된다.</p>
+<h3>4.2 안전 위반 흐름</h3>
+<pre><code>Tick K: E-Stop→S, Perimeter→F           (안전 구역 위반!)
+        Battery→(미평가), Temp→(미평가)  (조기 종료)
+        Action→Halt                      (작업 즉시 중단)
+        → FAILURE
+</code></pre>
+<h3>4.3 안전 복구 후 재시작 흐름</h3>
+<pre><code>Tick K:   Perimeter→F → FAILURE (Action Halt → IDLE)
+Tick K+1: Perimeter→F → FAILURE (Action 미실행)
+Tick K+2: Perimeter→S, Battery→S, Temp→S → Action→R (onStart() 재시작)
+</code></pre>
+<p>안전 위반이 해소되면, Halt된 액션은 IDLE 상태에서 <code>onStart()</code>부터 다시 시작된다.</p>
+<h2>5. 로봇 공학에서의 적용 사례</h2>
+<h3>5.1 사례 1: 협동 로봇의 안전 감시</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsHumanDistanceAboveThreshold"/&gt;
+    &lt;Condition ID="IsJointVelocityBelowLimit"/&gt;
+    &lt;Condition ID="IsContactForceNormal"/&gt;
+    &lt;Action ID="CollaborativeTask"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>사람과의 거리, 관절 속도, 접촉력 중 하나라도 기준을 초과하면 협동 작업이 중단된다.</p>
+<h3>5.2 사례 2: 자율 주행의 안전 감시</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsLidarOperational"/&gt;
+    &lt;Condition ID="IsCameraOperational"/&gt;
+    &lt;Condition ID="IsLocalizationConfident"/&gt;
+    &lt;Condition ID="IsNoObstacleInPath"/&gt;
+    &lt;Action ID="AutonomousDrive"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<h3>5.3 사례 3: 수중 로봇의 안전 감시</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsDepthWithinLimit"/&gt;
+    &lt;Condition ID="IsHullIntegrityOK"/&gt;
+    &lt;Condition ID="IsTetherTensionNormal"/&gt;
+    &lt;Condition ID="IsBatteryAbove15Percent"/&gt;
+    &lt;Action ID="UnderwaterMission"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<h2>6. 안전 조건 노드의 구현 요구사항</h2>
+<ol>
+<li><strong>즉시 반환</strong>: SUCCESS 또는 FAILURE를 즉시 반환해야 한다. RUNNING을 반환하면 안 된다.</li>
+<li><strong>부수 효과 없음</strong>: 센서 값 읽기와 비교만 수행하며, 상태를 변경하지 않는다.</li>
+<li><strong>경량 구현</strong>: 매 Tick마다 실행되므로, 계산 비용이 최소화되어야 한다.</li>
+<li><strong>결정론적 동작</strong>: 동일한 입력에 대해 항상 동일한 결과를 반환해야 한다(Faconti, 2022).</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

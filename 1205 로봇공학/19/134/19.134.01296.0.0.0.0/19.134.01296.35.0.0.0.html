@@ -115,6 +115,261 @@
             </header>
             <article>
                 <h1>1296.35 양방향 포트 (BidirectionalPort)의 정의와 활용</h1>
+<h2>1. BidirectionalPort의 정의</h2>
+<p><code>BT::BidirectionalPort&lt;T&gt;</code>는 BehaviorTree.CPP 4.x 라이브러리에서 제공하는 포트 유형으로, 단일 포트를 통해 블랙보드의 값을 읽고(<code>getInput()</code>) 쓸 수(<code>setOutput()</code>) 있는 양방향 포트이다. <code>InputPort</code>가 읽기 전용, <code>OutputPort</code>가 쓰기 전용인 것과 달리, <code>BidirectionalPort</code>는 동일한 블랙보드 키에 대한 읽기-수정-쓰기(read-modify-write) 연산을 단일 포트로 지원한다.</p>
+<p>양방향 포트는 노드가 기존의 블랙보드 값을 읽어 수정한 후 갱신된 값을 동일한 키에 다시 기록하여야 하는 경우에 사용된다(Faconti, 2022).</p>
+<h2>2. BidirectionalPort의 선언 형식</h2>
+<pre><code class="language-cpp">BT::BidirectionalPort&lt;T&gt;(포트명, 설명)
+BT::BidirectionalPort&lt;T&gt;(포트명, 기본값, 설명)
+</code></pre>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::BidirectionalPort&lt;int&gt;(
+            "retry_count",
+            "0",
+            "현재 재시도 횟수"),
+        BT::BidirectionalPort&lt;std::vector&lt;std::string&gt;&gt;(
+            "visited_waypoints",
+            "방문 완료된 웨이포인트 목록")
+    };
+}
+</code></pre>
+<p><code>BidirectionalPort</code>는 내부적으로 <code>InputPort</code>와 <code>OutputPort</code>의 특성을 결합한다. 선언 시 포트의 방향이 양방향으로 설정되며, 동일한 포트 명칭에 대해 <code>getInput()</code>과 <code>setOutput()</code> 모두 호출 가능하다.</p>
+<h2>3. BidirectionalPort의 사용 패턴</h2>
+<h3>3.1 읽기-수정-쓰기 패턴</h3>
+<p>양방향 포트의 가장 기본적인 사용 패턴은 읽기-수정-쓰기이다.</p>
+<pre><code class="language-cpp">class IncrementRetryCount : public BT::SyncActionNode
+{
+public:
+    IncrementRetryCount(const std::string&amp; name,
+                         const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::BidirectionalPort&lt;int&gt;(
+                "retry_count", "0",
+                "현재 재시도 횟수")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        int count;
+        if (!getInput("retry_count", count))
+            count = 0;
+
+        count++;  // 수정
+
+        setOutput("retry_count", count);  // 갱신
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p>XML에서의 사용은 다음과 같다.</p>
+<pre><code class="language-xml">&lt;IncrementRetryCount retry_count="{retries}" /&gt;
+</code></pre>
+<p>블랙보드 키 <code>retries</code>에 저장된 값이 읽혀지고, 1이 증가된 후, 동일한 키 <code>retries</code>에 다시 기록된다.</p>
+<h3>3.2 목록 갱신 패턴</h3>
+<p>양방향 포트를 사용하여 블랙보드에 저장된 목록을 갱신하는 패턴이다.</p>
+<pre><code class="language-cpp">class AppendToWaypointList : public BT::SyncActionNode
+{
+public:
+    AppendToWaypointList(const std::string&amp; name,
+                          const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;(
+                "waypoint_id", "추가할 웨이포인트 식별자"),
+            BT::BidirectionalPort&lt;std::vector&lt;std::string&gt;&gt;(
+                "visited_list", "방문 완료 웨이포인트 목록")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string waypoint_id;
+        if (!getInput("waypoint_id", waypoint_id))
+            return BT::NodeStatus::FAILURE;
+
+        std::vector&lt;std::string&gt; visited;
+        getInput("visited_list", visited);  // 기존 목록 읽기
+
+        visited.push_back(waypoint_id);     // 항목 추가
+
+        setOutput("visited_list", visited);  // 갱신된 목록 쓰기
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;NavigateToPose goal_pose="{wp1_pose}" /&gt;
+    &lt;AppendToWaypointList waypoint_id="wp1"
+                           visited_list="{visited}" /&gt;
+    &lt;NavigateToPose goal_pose="{wp2_pose}" /&gt;
+    &lt;AppendToWaypointList waypoint_id="wp2"
+                           visited_list="{visited}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>각 <code>AppendToWaypointList</code> 호출에서 블랙보드 키 <code>visited</code>의 목록이 읽혀지고, 새 웨이포인트가 추가된 후, 갱신된 목록이 다시 기록된다.</p>
+<h3>3.3 누적 계산 패턴</h3>
+<p>양방향 포트를 사용하여 값을 누적하는 패턴이다.</p>
+<pre><code class="language-cpp">class AccumulateDistance : public BT::SyncActionNode
+{
+public:
+    AccumulateDistance(const std::string&amp; name,
+                       const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;(
+                "segment_distance", "구간 이동 거리 (미터)"),
+            BT::BidirectionalPort&lt;double&gt;(
+                "total_distance", "0.0",
+                "누적 총 이동 거리 (미터)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double segment;
+        if (!getInput("segment_distance", segment))
+            return BT::NodeStatus::FAILURE;
+
+        double total;
+        getInput("total_distance", total);
+
+        total += segment;
+
+        setOutput("total_distance", total);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h2>4. InputPort + OutputPort 조합과의 비교</h2>
+<p>양방향 포트의 기능은 동일한 블랙보드 키에 대해 별도의 <code>InputPort</code>와 <code>OutputPort</code>를 선언하는 것으로도 달성할 수 있다. 두 접근법을 비교한다.</p>
+<h3>4.1 별도 InputPort + OutputPort</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;int&gt;("retry_count_in",
+            "현재 재시도 횟수 (입력)"),
+        BT::OutputPort&lt;int&gt;("retry_count_out",
+            "갱신된 재시도 횟수 (출력)")
+    };
+}
+</code></pre>
+<pre><code class="language-xml">&lt;IncrementRetryCount retry_count_in="{retries}"
+                      retry_count_out="{retries}" /&gt;
+</code></pre>
+<h3>4.2 BidirectionalPort</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::BidirectionalPort&lt;int&gt;("retry_count",
+            "재시도 횟수")
+    };
+}
+</code></pre>
+<pre><code class="language-xml">&lt;IncrementRetryCount retry_count="{retries}" /&gt;
+</code></pre>
+<h3>4.3 비교</h3>
+<table><thead><tr><th>비교 항목</th><th style="text-align: center">InputPort + OutputPort</th><th style="text-align: center">BidirectionalPort</th></tr></thead><tbody>
+<tr><td>포트 수</td><td style="text-align: center">2개</td><td style="text-align: center">1개</td></tr>
+<tr><td>XML 속성 수</td><td style="text-align: center">2개</td><td style="text-align: center">1개</td></tr>
+<tr><td>키 불일치 위험</td><td style="text-align: center">있음 (입출력 키가 다를 수 있음)</td><td style="text-align: center">없음</td></tr>
+<tr><td>의미적 명확성</td><td style="text-align: center">입출력이 분리되어 가시적</td><td style="text-align: center">읽기-수정-쓰기가 함축적</td></tr>
+<tr><td>사용 편의성</td><td style="text-align: center">낮음</td><td style="text-align: center">높음</td></tr>
+</tbody></table>
+<p><code>BidirectionalPort</code>는 동일한 데이터를 읽고 쓰는 의도를 단일 포트로 명시적으로 표현하며, XML에서의 실수(입출력 키의 불일치)를 구조적으로 방지한다.</p>
+<h2>5. 원자성의 부재</h2>
+<p>양방향 포트의 읽기-수정-쓰기 연산은 원자적(atomic)이지 않다. <code>getInput()</code>과 <code>setOutput()</code> 사이에 블랙보드의 동일한 키가 다른 노드에 의해 수정될 수 있다. 그러나 행동 트리의 Tick 메커니즘에서 노드의 <code>tick()</code>/콜백은 메인 스레드에서 순차적으로 실행되므로, <code>SyncActionNode</code>와 <code>StatefulActionNode</code>에서는 이 문제가 발생하지 않는다.</p>
+<p><code>ThreadedAction</code>에서 양방향 포트를 사용하는 경우, <code>tick()</code> 스레드와 메인 스레드 간의 동시 접근에 의해 갱신 손실(lost update)이 발생할 수 있다. 이 경우 블랙보드의 내부 뮤텍스가 개별 <code>getInput()</code>과 <code>setOutput()</code> 호출을 보호하나, 두 호출의 조합은 원자적이지 않다.</p>
+<table><thead><tr><th>노드 유형</th><th style="text-align: center">읽기-수정-쓰기 안전성</th><th>이유</th></tr></thead><tbody>
+<tr><td>SyncActionNode</td><td style="text-align: center">안전</td><td>메인 스레드 단독 실행</td></tr>
+<tr><td>StatefulActionNode</td><td style="text-align: center">안전</td><td>메인 스레드 단독 실행</td></tr>
+<tr><td>CoroActionNode</td><td style="text-align: center">안전</td><td>메인 스레드 단독 실행</td></tr>
+<tr><td>ThreadedAction</td><td style="text-align: center">주의 필요</td><td>별도 스레드 실행</td></tr>
+</tbody></table>
+<h2>6. 적용 사례</h2>
+<h3>6.1 재시도 카운터</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;NavigateToPose goal_pose="{target}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IncrementRetryCount retry_count="{nav_retries}" /&gt;
+        &lt;CheckRetryLimit retry_count="{nav_retries}"
+                          max_retries="3" /&gt;
+        &lt;ClearCostmap /&gt;
+        &lt;NavigateToPose goal_pose="{target}" /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h3>6.2 탐색 상태 관리</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;GetNextWaypoint waypoint_index="{wp_idx}"
+                      waypoint_pose="{wp_pose}" /&gt;
+    &lt;NavigateToPose goal_pose="{wp_pose}" /&gt;
+    &lt;IncrementWaypointIndex waypoint_index="{wp_idx}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p><code>waypoint_index</code>가 양방향 포트로 선언되어, <code>IncrementWaypointIndex</code>에서 현재 인덱스를 읽고 증가시킨 후 갱신한다.</p>
+<h3>6.3 임무 진행률 갱신</h3>
+<pre><code class="language-cpp">class UpdateMissionProgress : public BT::SyncActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;int&gt;(
+                "completed_tasks", "완료된 작업 수"),
+            BT::InputPort&lt;int&gt;(
+                "total_tasks", "전체 작업 수"),
+            BT::BidirectionalPort&lt;double&gt;(
+                "progress", "0.0",
+                "임무 진행률 (0.0 ~ 1.0)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        int completed, total;
+        getInput("completed_tasks", completed);
+        getInput("total_tasks", total);
+
+        double progress = (total &gt; 0)
+            ? static_cast&lt;double&gt;(completed) / total
+            : 0.0;
+
+        setOutput("progress", progress);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h2>7. 사용 제한 지침</h2>
+<p>양방향 포트는 편리하나 과도한 사용은 데이터 흐름의 추적을 곤란하게 한다. 다음의 지침을 따른다.</p>
+<ol>
+<li>
+<p><strong>읽기-수정-쓰기에만 사용</strong>: 양방향 포트는 동일한 데이터를 읽고 수정하여 다시 쓰는 경우에만 사용한다. 서로 다른 데이터를 읽고 쓰는 경우에는 별도의 <code>InputPort</code>와 <code>OutputPort</code>를 사용한다.</p>
+</li>
+<li>
+<p><strong>단순 타입 우선</strong>: 양방향 포트의 읽기-수정-쓰기 연산은 단순 타입(정수, 부동 소수점, 문자열)에서 가장 명확하다. 복합 타입에 대한 양방향 포트 사용은 수정 범위의 파악을 곤란하게 할 수 있다.</p>
+</li>
+<li>
+<p><strong>ThreadedAction에서 지양</strong>: <code>ThreadedAction</code>에서 양방향 포트의 읽기-수정-쓰기는 원자적이지 않으므로, 갱신 손실의 위험이 있다.</p>
+</li>
+<li>
+<p><strong>남용 방지</strong>: 양방향 포트의 과도한 사용은 블랙보드 상태의 변경 흐름을 불투명하게 만든다. 가능한 한 입력과 출력을 분리하여 데이터 흐름을 명시적으로 유지한다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

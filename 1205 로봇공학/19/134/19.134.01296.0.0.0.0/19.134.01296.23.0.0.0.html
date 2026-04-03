@@ -115,6 +115,216 @@
             </header>
             <article>
                 <h1>1296.23 ThreadedAction의 스레드 안전성 고려 사항</h1>
+<h2>1. 스레드 안전성 문제의 근원</h2>
+<p><code>ThreadedAction</code>의 <code>tick()</code> 메서드는 별도 스레드에서 실행되므로, 메인 스레드와 동시에 접근하는 공유 자원에 대한 스레드 안전성(thread safety) 문제가 발생한다. <code>SyncActionNode</code>와 <code>StatefulActionNode</code>는 모든 콜백이 메인 스레드에서 실행되므로 이 문제가 원천적으로 배제되나, <code>ThreadedAction</code>에서는 개발자가 스레드 안전성을 직접 관리하여야 한다.</p>
+<p>동시 접근이 발생하는 주요 자원은 다음과 같다.</p>
+<ol>
+<li><strong>블랙보드</strong>: <code>getInput()</code>과 <code>setOutput()</code>을 통한 접근</li>
+<li><strong>노드 상태</strong>: <code>setStatus()</code>와 <code>status()</code>를 통한 접근</li>
+<li><strong>사용자 정의 멤버 변수</strong>: <code>tick()</code> 스레드와 <code>halt()</code> 메서드 간의 공유</li>
+<li><strong>외부 공유 자원</strong>: ROS2 노드 핸들, 발행자, 구독자 등</li>
+</ol>
+<h2>2. 블랙보드 접근의 스레드 안전성</h2>
+<p>BehaviorTree.CPP 4.x의 블랙보드는 내부적으로 <code>std::mutex</code>에 의해 보호된다. 따라서 <code>getInput()</code>과 <code>setOutput()</code> 호출 자체는 스레드 안전하다.</p>
+<pre><code class="language-cpp">// 블랙보드 내부 (개념적)
+template &lt;typename T&gt;
+bool Blackboard::get(const std::string&amp; key, T&amp; value) const
+{
+    std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+    // ... 값 읽기 ...
+}
+
+template &lt;typename T&gt;
+void Blackboard::set(const std::string&amp; key, const T&amp; value)
+{
+    std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+    // ... 값 쓰기 ...
+}
+</code></pre>
+<p>그러나 블랙보드에 대한 복합 연산(읽기-수정-쓰기)은 원자적이지 않다.</p>
+<pre><code class="language-cpp">// 스레드 안전하지 않은 복합 연산
+BT::NodeStatus tick() override
+{
+    int counter;
+    getInput("counter", counter);   // 읽기
+    counter++;                       // 수정
+    setOutput("counter", counter);   // 쓰기
+    // 읽기와 쓰기 사이에 메인 스레드가 값을 변경할 수 있음
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>이 경우 <code>getInput()</code>과 <code>setOutput()</code> 사이에 메인 스레드가 동일한 블랙보드 키를 수정하면 갱신 손실(lost update)이 발생한다.</p>
+<h3>2.1 해결 방안</h3>
+<p>블랙보드 접근을 <code>tick()</code>의 시작과 끝에 한정하여, 복합 연산 중의 경합을 최소화한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 시작 시 입력 읽기
+    int counter;
+    getInput("counter", counter);
+
+    // 차단 호출 수행 (블랙보드 미접근)
+    auto result = performAction(counter);
+
+    if (isHaltRequested())
+        return BT::NodeStatus::FAILURE;
+
+    // 종료 시 출력 쓰기
+    setOutput("result", result);
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h2>3. 노드 상태의 원자적 접근</h2>
+<p>노드의 상태(<code>NodeStatus</code>)는 BehaviorTree.CPP 내부에서 원자적 연산으로 관리된다. <code>setStatus()</code>와 <code>status()</code>는 스레드 안전하게 동작하므로, <code>tick()</code> 스레드에서 <code>setStatus()</code>를 호출하고 메인 스레드에서 <code>status()</code>를 읽는 것은 안전하다.</p>
+<p>그러나 상태와 관련된 복합 논리(예: “상태가 RUNNING이면 특정 작업 수행”)는 원자적이지 않으므로, 경합 조건에 주의하여야 한다.</p>
+<h2>4. 멤버 변수의 동시 접근</h2>
+<p><code>tick()</code> 스레드와 메인 스레드(<code>halt()</code>, <code>executeTick()</code>)가 동일한 멤버 변수에 접근하는 경우, 명시적 동기화가 필요하다.</p>
+<h3>4.1 경합 조건의 예</h3>
+<pre><code class="language-cpp">class UnsafeAction : public BT::ThreadedAction
+{
+    std::vector&lt;double&gt; results_;  // 공유 멤버 변수
+
+    BT::NodeStatus tick() override
+    {
+        results_.clear();  // tick() 스레드에서 수정
+        for (int i = 0; i &lt; 1000; ++i)
+        {
+            results_.push_back(compute(i));
+        }
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    void halt() override
+    {
+        // halt()는 메인 스레드에서 실행
+        // tick() 스레드와 동시에 results_에 접근할 수 있음
+        results_.clear();  // 경합 조건!
+        ThreadedAction::halt();
+    }
+};
+</code></pre>
+<p><code>tick()</code> 스레드가 <code>results_</code>에 데이터를 추가하는 중에 <code>halt()</code>가 호출되어 <code>results_.clear()</code>가 실행되면, <code>std::vector</code>의 내부 상태가 파괴되어 미정의 동작이 발생한다.</p>
+<h3>4.2 뮤텍스를 통한 동기화</h3>
+<pre><code class="language-cpp">class SafeAction : public BT::ThreadedAction
+{
+    std::mutex mutex_;
+    std::vector&lt;double&gt; results_;
+
+    BT::NodeStatus tick() override
+    {
+        {
+            std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+            results_.clear();
+        }
+
+        for (int i = 0; i &lt; 1000; ++i)
+        {
+            if (isHaltRequested())
+                return BT::NodeStatus::FAILURE;
+
+            double value = compute(i);
+            {
+                std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                results_.push_back(value);
+            }
+        }
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    void halt() override
+    {
+        halt_requested_.store(true);
+        // 스레드 합류 후에만 results_에 접근
+        if (thread_.joinable())
+            thread_.join();
+        
+        {
+            std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+            results_.clear();
+        }
+        setStatus(NodeStatus::IDLE);
+    }
+};
+</code></pre>
+<h3>4.3 원자 변수 활용</h3>
+<p>단순 타입의 공유 변수는 <code>std::atomic</code>을 사용하여 뮤텍스 없이 안전하게 접근할 수 있다.</p>
+<pre><code class="language-cpp">class ProgressAction : public BT::ThreadedAction
+{
+    std::atomic&lt;double&gt; progress_{0.0};
+
+    BT::NodeStatus tick() override
+    {
+        for (int i = 0; i &lt; total_steps_; ++i)
+        {
+            if (isHaltRequested())
+                return BT::NodeStatus::FAILURE;
+
+            performStep(i);
+            progress_.store(
+                static_cast&lt;double&gt;(i + 1) / total_steps_);
+        }
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    // 메인 스레드에서 안전하게 진행률 조회 가능
+    double getProgress() const
+    {
+        return progress_.load();
+    }
+};
+</code></pre>
+<h2>5. 교착 상태(Deadlock) 방지</h2>
+<p><code>tick()</code> 스레드와 메인 스레드가 동일한 뮤텍스 집합을 역순으로 획득하면 교착 상태가 발생할 수 있다.</p>
+<pre><code class="language-cpp">// 교착 상태 위험
+// tick() 스레드: mutex_a → mutex_b 순서로 획득
+// halt() (메인 스레드): mutex_b → mutex_a 순서로 획득
+</code></pre>
+<p>교착 상태를 방지하기 위한 원칙은 다음과 같다.</p>
+<ol>
+<li><strong>잠금 순서 통일</strong>: 다수의 뮤텍스를 획득하는 경우, 모든 스레드에서 동일한 순서로 획득한다.</li>
+<li><strong>잠금 범위 최소화</strong>: 뮤텍스의 잠금 범위를 최소화하여 경합 가능성을 줄인다.</li>
+<li><strong><code>std::lock()</code> 사용</strong>: 다수의 뮤텍스를 동시에 획득할 때 <code>std::lock()</code>을 사용하여 교착 상태를 방지한다.</li>
+<li><strong>단일 뮤텍스 원칙</strong>: 가능하면 단일 뮤텍스만 사용하여 잠금 순서 문제를 원천적으로 배제한다.</li>
+</ol>
+<h2>6. ROS2 자원의 스레드 안전성</h2>
+<p><code>tick()</code> 스레드에서 ROS2 자원(노드 핸들, 발행자, 구독자 등)에 접근하는 경우, ROS2의 스레드 안전성 보장을 확인하여야 한다.</p>
+<h3>6.1 발행자(Publisher)</h3>
+<p>ROS2의 발행자는 스레드 안전하다. <code>tick()</code> 스레드에서 <code>publisher_-&gt;publish(msg)</code>를 호출하는 것은 안전하다.</p>
+<h3>6.2 서비스 클라이언트</h3>
+<p>동기적 서비스 호출(<code>call()</code>)은 <code>tick()</code> 스레드에서 수행 가능하다. 그러나 ROS2 executor와의 상호 작용에 주의하여야 한다. <code>SingleThreadedExecutor</code>를 사용하는 경우, <code>tick()</code> 스레드에서의 동기 서비스 호출이 교착 상태를 유발할 수 있다. 이를 방지하기 위해 <code>MultiThreadedExecutor</code>를 사용하거나, 별도의 콜백 그룹(callback group)을 할당한다.</p>
+<h3>6.3 파라미터 클라이언트</h3>
+<p>파라미터 설정 및 조회는 ROS2 노드를 통해 수행되며, 비동기 API를 사용하는 것이 권장된다. <code>tick()</code> 스레드에서 동기적 파라미터 조회를 수행하면 executor와의 교착이 발생할 수 있다.</p>
+<h2>7. 스레드 안전성 검증 도구</h2>
+<h3>7.1 ThreadSanitizer (TSan)</h3>
+<p>ThreadSanitizer는 GCC와 Clang에서 제공하는 스레드 안전성 검증 도구이다. 경합 조건을 런타임에 검출한다.</p>
+<pre><code class="language-bash"># 컴파일 시 TSan 활성화
+g++ -fsanitize=thread -g -O1 my_node.cpp -o my_node
+</code></pre>
+<p>TSan은 <code>ThreadedAction</code>의 <code>tick()</code> 스레드와 메인 스레드 간의 데이터 경합을 검출하는 데 유효하다.</p>
+<h3>7.2 Helgrind</h3>
+<p>Valgrind의 Helgrind 도구는 잠금 순서 위반, 데이터 경합, 교착 상태 가능성을 검출한다.</p>
+<pre><code class="language-bash">valgrind --tool=helgrind ./my_node
+</code></pre>
+<h2>8. 스레드 안전성의 설계 지침</h2>
+<ol>
+<li>
+<p><strong>공유 자원 최소화</strong>: <code>tick()</code> 스레드와 메인 스레드 간의 공유 자원을 최소화한다. 입력은 <code>tick()</code> 시작 시 복사하고, 출력은 <code>tick()</code> 종료 시 기록한다.</p>
+</li>
+<li>
+<p><strong>블랙보드 접근 제한</strong>: 블랙보드 접근을 <code>tick()</code>의 시작(<code>getInput()</code>)과 끝(<code>setOutput()</code>)에 한정한다.</p>
+</li>
+<li>
+<p><strong>원자 변수 우선</strong>: 단순 타입의 공유 변수는 <code>std::atomic</code>을 사용한다.</p>
+</li>
+<li>
+<p><strong>RAII 기반 잠금</strong>: 뮤텍스 잠금에는 <code>std::lock_guard</code> 또는 <code>std::unique_lock</code>을 사용하여 예외 발생 시에도 잠금이 해제되도록 한다.</p>
+</li>
+<li>
+<p><strong>StatefulActionNode 우선 검토</strong>: 스레드 안전성 문제를 회피하기 위해, 가능한 한 <code>StatefulActionNode</code>를 사용한다. <code>ThreadedAction</code>은 차단 호출이 불가피한 경우에만 사용한다(Faconti, 2022).</p>
+</li>
+<li>
+<p><strong>TSan 적용</strong>: 개발 단계에서 ThreadSanitizer를 적용하여 데이터 경합을 조기에 검출한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

@@ -115,6 +115,451 @@
             </header>
             <article>
                 <h1>1296.9 동기 액션 노드의 tick() 메서드 구현</h1>
+<h2>1. tick() 메서드의 구조</h2>
+<p><code>SyncActionNode</code>에서 <code>tick()</code> 메서드는 순수 가상 함수로 선언되어 있으며, 파생 클래스에서 반드시 구현하여야 한다. <code>tick()</code> 메서드는 노드가 수행할 행동의 본체(body)를 정의하며, 반환값으로 <code>NodeStatus::SUCCESS</code> 또는 <code>NodeStatus::FAILURE</code>만을 허용한다.</p>
+<p><code>tick()</code> 메서드의 기본 구조는 다음과 같다.</p>
+<pre><code class="language-cpp">BT::NodeStatus MyAction::tick()
+{
+    // 1. 입력 포트에서 데이터 읽기
+    // 2. 행동 수행
+    // 3. 결과를 출력 포트에 기록 (필요 시)
+    // 4. SUCCESS 또는 FAILURE 반환
+}
+</code></pre>
+<p>이 구조는 입력-처리-출력-판정의 네 단계로 구성되며, 모든 단계가 단일 호출 내에서 완료되어야 한다.</p>
+<h2>2. 입력 포트 데이터 읽기</h2>
+<p><code>tick()</code> 메서드의 첫 번째 단계는 입력 포트에서 필요한 데이터를 읽는 것이다. <code>getInput&lt;T&gt;()</code> 메서드를 사용하여 블랙보드에서 값을 가져온다.</p>
+<pre><code class="language-cpp">BT::NodeStatus SetNavigationGoal::tick()
+{
+    double x, y, theta;
+    if (!getInput("x", x) || !getInput("y", y))
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+    // theta는 선택적 입력 (기본값 0.0)
+    if (!getInput("theta", theta))
+    {
+        theta = 0.0;
+    }
+    // ...
+}
+</code></pre>
+<p><code>getInput()</code>의 반환값은 <code>Expected&lt;T&gt;</code> 타입으로, 포트 연결이 누락되었거나 타입 변환이 실패한 경우 <code>false</code>를 반환한다. 필수 입력의 읽기 실패는 FAILURE를 반환하는 것이 일반적이다. 선택적 입력의 경우 기본값을 사용하여 실행을 계속한다.</p>
+<h3>2.1 getInput() 실패의 원인</h3>
+<p><code>getInput()</code>이 실패하는 원인은 다음과 같다.</p>
+<ol>
+<li><strong>포트 미연결</strong>: XML에서 해당 포트에 값이나 블랙보드 키가 지정되지 않은 경우</li>
+<li><strong>타입 불일치</strong>: 블랙보드에 저장된 값의 타입이 요청한 타입과 호환되지 않는 경우</li>
+<li><strong>블랙보드 키 부재</strong>: 지정된 블랙보드 키에 값이 아직 기록되지 않은 경우</li>
+<li><strong>문자열 변환 실패</strong>: 정적 문자열 값의 타입 변환이 실패한 경우</li>
+</ol>
+<p>이러한 실패를 적절히 처리하는 것은 <code>tick()</code> 메서드의 견고성(robustness)을 결정하는 핵심 요소이다.</p>
+<h2>3. 행동 수행</h2>
+<p>입력 데이터를 성공적으로 읽은 후, <code>tick()</code> 메서드의 본체에서 실제 행동을 수행한다. 동기 액션 노드에서 수행하는 행동은 즉시 완료 가능한 경량 작업이어야 한다.</p>
+<h3>3.1 블랙보드 값 조작</h3>
+<pre><code class="language-cpp">class IncrementCounter : public BT::SyncActionNode
+{
+public:
+    IncrementCounter(const std::string&amp; name,
+                     const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::BidirectionalPort&lt;int&gt;("counter")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        int counter = 0;
+        getInput("counter", counter);
+        counter++;
+        setOutput("counter", counter);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p>블랙보드 값을 읽고, 수정하고, 다시 기록하는 패턴이다. 이 경우 <code>BidirectionalPort</code>를 사용하여 동일한 포트에서 읽기와 쓰기를 수행한다.</p>
+<h3>3.2 조건부 판정과 반환</h3>
+<pre><code class="language-cpp">class IsPathValid : public BT::SyncActionNode
+{
+public:
+    IsPathValid(const std::string&amp; name,
+                const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;nav_msgs::msg::Path&gt;("path")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        nav_msgs::msg::Path path;
+        if (!getInput("path", path))
+            return BT::NodeStatus::FAILURE;
+
+        if (path.poses.empty())
+            return BT::NodeStatus::FAILURE;
+
+        // 경로의 유효성 검증
+        for (size_t i = 1; i &lt; path.poses.size(); ++i)
+        {
+            double dx = path.poses[i].pose.position.x 
+                      - path.poses[i-1].pose.position.x;
+            double dy = path.poses[i].pose.position.y 
+                      - path.poses[i-1].pose.position.y;
+            double dist = std::sqrt(dx * dx + dy * dy);
+
+            if (dist &gt; max_waypoint_distance_)
+                return BT::NodeStatus::FAILURE;
+        }
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    static constexpr double max_waypoint_distance_ = 5.0;
+};
+</code></pre>
+<p>이 예시에서 <code>tick()</code> 메서드는 경로 데이터를 검증하고, 유효하면 SUCCESS, 유효하지 않으면 FAILURE를 반환한다. 조건부 판정 결과에 따라 반환값이 결정되는 전형적인 패턴이다.</p>
+<h3>3.3 ROS2 인터페이스 호출</h3>
+<pre><code class="language-cpp">class SetParameter : public BT::SyncActionNode
+{
+public:
+    SetParameter(const std::string&amp; name,
+                 const BT::NodeConfig&amp; config,
+                 rclcpp::Node::SharedPtr node)
+        : SyncActionNode(name, config), node_(node) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("node_name"),
+            BT::InputPort&lt;std::string&gt;("param_name"),
+            BT::InputPort&lt;double&gt;("param_value")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string node_name, param_name;
+        double param_value;
+
+        if (!getInput("node_name", node_name) ||
+            !getInput("param_name", param_name) ||
+            !getInput("param_value", param_value))
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto param_client = 
+            std::make_shared&lt;rclcpp::AsyncParametersClient&gt;(
+                node_, node_name);
+
+        if (!param_client-&gt;wait_for_service(
+                std::chrono::milliseconds(100)))
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto results = param_client-&gt;set_parameters(
+            {rclcpp::Parameter(param_name, param_value)});
+
+        // 동기적 대기 (짧은 타임아웃)
+        if (rclcpp::spin_until_future_complete(
+                node_, results, 
+                std::chrono::milliseconds(100)) 
+            != rclcpp::FutureReturnCode::SUCCESS)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<p>ROS2 파라미터 설정과 같이 외부 시스템과 상호 작용하는 경우, 대기 시간이 짧고 예측 가능한 작업만 동기 액션 노드에서 수행하여야 한다. 위 예시에서는 100 ms의 짧은 타임아웃을 설정하여 Tick 시간 예산을 초과하지 않도록 제한한다.</p>
+<h2>4. 출력 포트에 결과 기록</h2>
+<p>행동의 결과를 다른 노드에 전달하여야 하는 경우, <code>setOutput&lt;T&gt;()</code> 메서드를 사용하여 출력 포트에 결과를 기록한다.</p>
+<pre><code class="language-cpp">class ComputeQuaternionFromYaw : public BT::SyncActionNode
+{
+public:
+    ComputeQuaternionFromYaw(const std::string&amp; name,
+                              const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("yaw", "요(yaw) 각도 (라디안)"),
+            BT::OutputPort&lt;geometry_msgs::msg::Quaternion&gt;(
+                "quaternion", "변환된 쿼터니언")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double yaw;
+        if (!getInput("yaw", yaw))
+            return BT::NodeStatus::FAILURE;
+
+        geometry_msgs::msg::Quaternion q;
+        q.x = 0.0;
+        q.y = 0.0;
+        q.z = std::sin(yaw / 2.0);
+        q.w = std::cos(yaw / 2.0);
+
+        setOutput("quaternion", q);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p><code>setOutput()</code>은 <code>tick()</code>이 SUCCESS를 반환하기 전에 호출하여야 한다. FAILURE를 반환하는 경우에는 출력 포트에 값을 기록하지 않는 것이 일반적이다. 이는 후속 노드가 실패한 행동의 불완전한 결과를 사용하는 것을 방지한다.</p>
+<h2>5. providedPorts() 정적 메서드</h2>
+<p><code>tick()</code> 메서드에서 사용하는 포트는 <code>providedPorts()</code> 정적 메서드에서 선언하여야 한다. 이 메서드는 BehaviorTree.CPP의 팩토리 시스템이 노드를 등록할 때 호출하며, 노드의 입출력 인터페이스를 정의한다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;std::string&gt;("target_frame", "world",
+            "목표 좌표계"),
+        BT::InputPort&lt;geometry_msgs::msg::Pose&gt;("pose",
+            "변환할 포즈"),
+        BT::OutputPort&lt;geometry_msgs::msg::Pose&gt;("result",
+            "변환 결과")
+    };
+}
+</code></pre>
+<p><code>providedPorts()</code>에서 선언된 포트만 <code>tick()</code> 내부에서 <code>getInput()</code>과 <code>setOutput()</code>을 통해 접근할 수 있다. 선언되지 않은 포트 이름으로 접근을 시도하면 실패한다.</p>
+<h2>6. 생성자를 통한 외부 의존성 주입</h2>
+<p>동기 액션 노드가 ROS2 노드, 발행자(publisher), TF 버퍼 등의 외부 자원을 필요로 하는 경우, 생성자를 통해 주입한다.</p>
+<pre><code class="language-cpp">class PublishMarker : public BT::SyncActionNode
+{
+public:
+    PublishMarker(const std::string&amp; name,
+                  const BT::NodeConfig&amp; config,
+                  rclcpp::Publisher&lt;visualization_msgs::msg::Marker&gt;::SharedPtr pub)
+        : SyncActionNode(name, config), publisher_(pub) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;geometry_msgs::msg::Point&gt;("position"),
+            BT::InputPort&lt;std::string&gt;("frame_id", "map")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        geometry_msgs::msg::Point position;
+        std::string frame_id;
+
+        if (!getInput("position", position))
+            return BT::NodeStatus::FAILURE;
+        getInput("frame_id", frame_id);
+
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = frame_id;
+        marker.header.stamp = rclcpp::Clock().now();
+        marker.type = visualization_msgs::msg::Marker::SPHERE;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.pose.position = position;
+        marker.scale.x = marker.scale.y = marker.scale.z = 0.2;
+        marker.color.r = 1.0;
+        marker.color.a = 1.0;
+
+        publisher_-&gt;publish(marker);
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    rclcpp::Publisher&lt;visualization_msgs::msg::Marker&gt;::SharedPtr publisher_;
+};
+</code></pre>
+<p>팩토리 등록 시 외부 의존성을 바인딩한다.</p>
+<pre><code class="language-cpp">auto marker_pub = ros_node-&gt;create_publisher&lt;visualization_msgs::msg::Marker&gt;(
+    "visualization_marker", 10);
+
+factory.registerNodeType&lt;PublishMarker&gt;(
+    "PublishMarker",
+    marker_pub);
+</code></pre>
+<p><code>BT::NodeBuilder</code>를 사용하면 생성자에 임의의 인자를 전달할 수 있으므로, ROS2 노드 핸들, 공유 자원, 설정 객체 등을 유연하게 주입할 수 있다.</p>
+<h2>7. 예외 처리 패턴</h2>
+<p><code>tick()</code> 메서드 내부에서 발생하는 예외는 메서드 내부에서 포착하여 FAILURE로 변환하여야 한다. 예외가 <code>tick()</code> 외부로 전파되면 트리 전체의 실행이 중단될 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus TransformPose::tick()
+{
+    std::string target_frame;
+    geometry_msgs::msg::PoseStamped input_pose;
+
+    if (!getInput("target_frame", target_frame) ||
+        !getInput("input_pose", input_pose))
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    try
+    {
+        auto transformed = tf_buffer_-&gt;transform(
+            input_pose, target_frame,
+            tf2::durationFromSec(0.1));
+        setOutput("output_pose", transformed);
+        return BT::NodeStatus::SUCCESS;
+    }
+    catch (const tf2::TransformException&amp; ex)
+    {
+        RCLCPP_WARN(logger_, "변환 실패: %s", ex.what());
+        return BT::NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<p><code>try-catch</code> 블록으로 TF 변환 예외를 포착하고, 로그를 남긴 후 FAILURE를 반환한다. 이 패턴은 외부 라이브러리의 예외를 행동 트리의 상태 체계 내로 안전하게 변환하는 표준적 방법이다.</p>
+<h2>8. 순수 함수적 tick() 구현</h2>
+<p>동기 액션 노드의 <code>tick()</code> 메서드는 가능한 한 순수 함수(pure function)에 가깝게 구현하는 것이 권장된다. 순수 함수적 <code>tick()</code>은 입력 포트의 값에만 의존하여 결과를 결정하며, 내부 상태를 유지하지 않는다.</p>
+<pre><code class="language-cpp">class ClampValue : public BT::SyncActionNode
+{
+public:
+    ClampValue(const std::string&amp; name,
+               const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("value"),
+            BT::InputPort&lt;double&gt;("min", 0.0),
+            BT::InputPort&lt;double&gt;("max", 1.0),
+            BT::OutputPort&lt;double&gt;("result")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double value, min_val, max_val;
+        if (!getInput("value", value))
+            return BT::NodeStatus::FAILURE;
+
+        getInput("min", min_val);
+        getInput("max", max_val);
+
+        double result = std::clamp(value, min_val, max_val);
+        setOutput("result", result);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p>이 구현은 멤버 변수를 사용하지 않으며, 동일한 입력에 대해 항상 동일한 결과를 반환한다. 순수 함수적 <code>tick()</code>은 테스트가 용이하고, 반복 실행에서 예측 가능한 동작을 보장하며, 스레드 안전성에 대한 우려가 없다.</p>
+<h2>9. 상태를 유지하는 tick() 구현</h2>
+<p>일부 동기 액션 노드는 멤버 변수를 통해 호출 간 상태를 유지할 수 있다. 이 패턴은 호출 횟수 추적, 캐싱, 마지막 발행 값과의 비교 등에 사용된다.</p>
+<pre><code class="language-cpp">class PublishIfChanged : public BT::SyncActionNode
+{
+public:
+    PublishIfChanged(const std::string&amp; name,
+                     const BT::NodeConfig&amp; config,
+                     rclcpp::Publisher&lt;std_msgs::msg::Float64&gt;::SharedPtr pub)
+        : SyncActionNode(name, config), 
+          publisher_(pub),
+          last_value_(std::numeric_limits&lt;double&gt;::quiet_NaN()) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("value"),
+            BT::InputPort&lt;double&gt;("threshold", 0.01,
+                "변화 감지 임곗값")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double value, threshold;
+        if (!getInput("value", value))
+            return BT::NodeStatus::FAILURE;
+        getInput("threshold", threshold);
+
+        if (std::isnan(last_value_) ||
+            std::abs(value - last_value_) &gt; threshold)
+        {
+            std_msgs::msg::Float64 msg;
+            msg.data = value;
+            publisher_-&gt;publish(msg);
+            last_value_ = value;
+        }
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    rclcpp::Publisher&lt;std_msgs::msg::Float64&gt;::SharedPtr publisher_;
+    double last_value_;
+};
+</code></pre>
+<p>이 노드는 이전 발행 값을 기억하고, 값이 임곗값 이상 변화한 경우에만 발행한다. 상태를 유지하는 <code>tick()</code> 구현은 순수 함수적 구현보다 복잡도가 증가하므로, 상태 유지가 반드시 필요한 경우에만 사용하여야 한다.</p>
+<h2>10. SimpleActionNode를 활용한 경량 구현</h2>
+<p>BehaviorTree.CPP는 <code>SyncActionNode</code>를 상속하지 않고도 동기 액션을 정의할 수 있는 <code>SimpleActionNode</code> 메커니즘을 제공한다. 함수 포인터 또는 람다를 사용하여 노드를 등록한다.</p>
+<pre><code class="language-cpp">// 함수 포인터를 사용한 등록
+BT::NodeStatus logMessage(BT::TreeNode&amp; self)
+{
+    std::string msg;
+    if (!self.getInput("message", msg))
+        return BT::NodeStatus::FAILURE;
+
+    std::cout &lt;&lt; "[LOG] " &lt;&lt; msg &lt;&lt; std::endl;
+    return BT::NodeStatus::SUCCESS;
+}
+
+factory.registerSimpleAction(
+    "LogMessage",
+    logMessage,
+    {BT::InputPort&lt;std::string&gt;("message")});
+</code></pre>
+<pre><code class="language-cpp">// 람다를 사용한 등록
+factory.registerSimpleAction(
+    "SetFlag",
+    [](BT::TreeNode&amp;%20self) -&gt; BT::NodeStatus
+    {
+        std::string key;
+        if (!self.getInput("key", key))
+            return BT::NodeStatus::FAILURE;
+
+        self.config().blackboard-&gt;set(key, true);
+        return BT::NodeStatus::SUCCESS;
+    },
+    {BT::InputPort&lt;std::string&gt;("key", "설정할 플래그 이름")});
+</code></pre>
+<p><code>SimpleActionNode</code>는 클래스 정의 없이 간단한 동기 행동을 신속하게 구현할 수 있는 편의 메커니즘이다. 행동의 복잡도가 증가하거나, 외부 의존성 주입이 필요하거나, 재사용성이 요구되는 경우에는 <code>SyncActionNode</code> 상속을 통한 클래스 기반 구현이 적합하다.</p>
+<h2>11. tick() 구현의 설계 지침</h2>
+<p>동기 액션 노드의 <code>tick()</code> 메서드를 구현할 때 준수하여야 하는 설계 지침을 정리한다.</p>
+<ol>
+<li>
+<p><strong>입력 검증 우선</strong>: <code>tick()</code> 메서드의 첫 번째 작업은 입력 포트의 유효성을 검증하는 것이다. 필수 입력이 누락되면 즉시 FAILURE를 반환한다.</p>
+</li>
+<li>
+<p><strong>단일 책임</strong>: 하나의 <code>tick()</code> 메서드는 하나의 명확한 행동만을 수행한다. 복수의 독립적 행동을 하나의 <code>tick()</code>에 결합하지 않는다.</p>
+</li>
+<li>
+<p><strong>실행 시간 제한</strong>: <code>tick()</code> 메서드의 실행 시간은 Tick 주기의 수% 이내로 제한한다. 10 ms Tick 주기에서 단일 <code>tick()</code>의 실행 시간은 수백 마이크로초를 초과하지 않아야 한다.</p>
+</li>
+<li>
+<p><strong>예외 내부 처리</strong>: 외부 라이브러리 호출이나 데이터 변환에서 발생할 수 있는 예외는 <code>tick()</code> 내부에서 포착하여 FAILURE로 변환한다.</p>
+</li>
+<li>
+<p><strong>RUNNING 반환 금지</strong>: <code>tick()</code> 메서드에서 <code>NodeStatus::RUNNING</code>을 반환하면 런타임 예외(<code>LogicError</code>)가 발생한다. 비동기 실행이 필요한 경우 <code>StatefulActionNode</code>를 사용한다.</p>
+</li>
+<li>
+<p><strong>출력 포트의 조건부 기록</strong>: SUCCESS를 반환하는 경우에만 출력 포트에 값을 기록한다. FAILURE 시에는 출력 포트를 갱신하지 않는다.</p>
+</li>
+<li>
+<p><strong>부작용의 최소화</strong>: <code>tick()</code> 메서드의 부작용(토픽 발행, 파라미터 변경 등)은 최소한으로 유지한다. 부작용이 큰 행동은 Sequence에서의 배치 위치와 실패 시의 영향을 신중히 고려한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

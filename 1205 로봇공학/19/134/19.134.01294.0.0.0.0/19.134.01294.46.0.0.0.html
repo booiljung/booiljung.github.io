@@ -115,6 +115,98 @@
             </header>
             <article>
                 <h1>1294.46 ReactiveFallback의 매 Tick 재평가 규칙</h1>
+<h2>1. 매 Tick 재평가의 정의</h2>
+<p>ReactiveFallback의 매 Tick 재평가(per-tick re-evaluation) 규칙이란, Fallback이 RUNNING 상태인 동안 매번 Tick을 수신할 때마다 첫 번째 자식(인덱스 0)부터 순차적으로 모든 자식을 다시 평가하는 규칙이다. 이전 Tick에서의 자식 반환 결과는 기억되지 않으며, 매 Tick이 독립적인 완전한 평가 주기를 구성한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 재평가 규칙의 상세</h2>
+<h3>2.1 규칙 1: 항상 인덱스 0부터 시작</h3>
+<p>이전 Tick에서 어떤 자식이 RUNNING을 반환했는지와 무관하게, 매 Tick에서 인덱스 0의 자식부터 평가를 시작한다.</p>
+<pre><code>Tick N:   i=0(F) → i=1(F) → i=2(RUNNING) → RUNNING
+Tick N+1: i=0(F) → i=1(F) → i=2(RUNNING) → RUNNING  (0부터 재시작)
+Tick N+2: i=0(S)                           → SUCCESS  (대안 변화 감지)
+</code></pre>
+<h3>2.2 규칙 2: FAILURE 자식도 재평가</h3>
+<p>FallbackWithMemory에서 건너뛰어지는 FAILURE 자식들이 ReactiveFallback에서는 매 Tick마다 다시 평가된다. 이를 통해 이전에 실패했던 대안의 가용성 변화를 지속적으로 확인한다.</p>
+<h3>2.3 규칙 3: SUCCESS 발생 시 RUNNING 자식 Halt</h3>
+<p>재평가 과정에서 이전에 FAILURE였던 자식이 SUCCESS를 반환하면, 현재 RUNNING 상태인 후속 자식에게 Halt를 전달한다.</p>
+<pre><code>Tick N:
+  children[0]: CondA → FAILURE
+  children[1]: ActB  → RUNNING
+  ReactiveFallback → RUNNING
+
+Tick N+1:
+  children[0]: CondA → SUCCESS   ← 재평가에서 변화 감지
+  children[1]: ActB  → Halt      ← RUNNING 자식 중단
+  ReactiveFallback → SUCCESS
+</code></pre>
+<h3>2.4 규칙 4: RUNNING 또는 SUCCESS 이후의 자식은 미평가</h3>
+<p>하나의 자식이 RUNNING 또는 SUCCESS를 반환하면, 그 이후의 자식에게는 Tick이 전달되지 않는다.</p>
+<h2>3. ReactiveSequence 재평가 규칙과의 대칭성</h2>
+<table><thead><tr><th>규칙</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>시작 인덱스</td><td>항상 0</td><td>항상 0</td></tr>
+<tr><td>재평가 대상</td><td>이전 SUCCESS 자식</td><td>이전 FAILURE 자식</td></tr>
+<tr><td>조기 종료 트리거</td><td>FAILURE</td><td>SUCCESS</td></tr>
+<tr><td>RUNNING 자식 Halt 원인</td><td>앞쪽 조건 FAILURE</td><td>앞쪽 조건 SUCCESS</td></tr>
+<tr><td>계속 진행 상태</td><td>SUCCESS</td><td>FAILURE</td></tr>
+</tbody></table>
+<h2>4. 재평가에 의한 우선순위 감시</h2>
+<p>ReactiveFallback의 재평가 규칙은 앞쪽 자식을 우선순위 감시(priority monitor) 역할로 활용하는 패턴을 가능하게 한다. 우선순위가 높은 대안(앞쪽)이 가용해지면, 현재 진행 중인 낮은 우선순위 대안(뒤쪽)을 즉시 중단한다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;!-- 우선순위 감시 조건들 --&gt;
+    &lt;Condition ID="IsGoalAlreadyAchieved"/&gt;
+    &lt;Condition ID="IsFastPathAvailable"/&gt;
+    &lt;!-- 현재 진행 중인 대안 --&gt;
+    &lt;Action ID="UseSlowPath"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>매 Tick마다 목표 달성 여부와 빠른 경로의 가용성이 재평가된다. UseSlowPath 진행 중 빠른 경로가 가용해지면 UseSlowPath가 Halt된다.</p>
+<h2>5. 재평가의 비용 분석</h2>
+<h3>5.1 Tick당 노드 방문 수</h3>
+<p>RUNNING 상태의 자식이 인덱스 <span class="math math-inline">k</span>에 위치할 때, 매 Tick마다 <span class="math math-inline">k+1</span>개의 노드가 방문된다.</p>
+<pre><code>자식 배열: [Cond₁, Cond₂, Cond₃, AsyncAct]
+AsyncAct가 RUNNING일 때:
+  매 Tick 방문: Cond₁, Cond₂, Cond₃, AsyncAct → 4개
+</code></pre>
+<p>FallbackWithMemory에서는 AsyncAct만 방문하므로 1개이다.</p>
+<h3>5.2 총 비용 비교</h3>
+<p>비동기 작업이 <span class="math math-inline">M</span> Tick 동안 RUNNING을 유지하는 경우:</p>
+<ul>
+<li><strong>ReactiveFallback</strong>: <span class="math math-inline">(k+1) \times M</span> 노드 방문</li>
+<li><strong>FallbackWithMemory</strong>: <span class="math math-inline">k + 1 + (M-1) \times 1 = k + M</span> 노드 방문</li>
+</ul>
+<p>이 비용 구조는 ReactiveSequence와 SequenceWithMemory의 비용 구조와 동일하다.</p>
+<h2>6. 재평가와 조건-행동 패턴</h2>
+<p>ReactiveFallback에서 조건 노드를 앞에 배치하는 패턴은 “조건이 충족되면 행동을 중단“하는 의미론을 구현한다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Condition ID="IsAtChargingStation"/&gt;
+    &lt;Action ID="NavigateToChargingStation"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<pre><code>Tick 1: IsAtChargingStation→F, Navigate→R  → RUNNING
+Tick 2: IsAtChargingStation→F, Navigate→R  → RUNNING
+Tick 3: IsAtChargingStation→S              → SUCCESS (Navigate Halt)
+</code></pre>
+<p>네비게이션 중 충전소에 도착하면(다른 요인에 의해 위치가 변경되거나 충전소가 이동해온 경우 등) 네비게이션이 즉시 중단된다.</p>
+<h2>7. 재평가와 액션 노드의 관계</h2>
+<p>ReactiveFallback에서 앞쪽에 배치된 액션 노드는 매 Tick마다 재실행된다. 이미 FAILURE를 반환한 액션이 다시 실행되면, <code>onStart()</code>부터 다시 시작하여 부수 효과가 반복 발생할 수 있다. 따라서 ReactiveFallback에서도 앞쪽에는 조건 노드(부수 효과 없는 순수 평가)만 배치하고, 비동기 액션은 뒤쪽에 배치하는 것이 설계 원칙이다(Faconti, 2022).</p>
+<pre><code class="language-xml">&lt;!-- 권장 패턴: 조건 → 조건 → 액션 --&gt;
+&lt;ReactiveFallback&gt;
+    &lt;Condition ID="CondA"/&gt;
+    &lt;Condition ID="CondB"/&gt;
+    &lt;Action ID="AsyncAction"/&gt;    &lt;!-- 뒤쪽에 배치 --&gt;
+&lt;/ReactiveFallback&gt;
+
+&lt;!-- 비권장 패턴: 액션이 앞에 위치 --&gt;
+&lt;ReactiveFallback&gt;
+    &lt;Action ID="SomeAction"/&gt;     &lt;!-- 매 Tick 재실행 — 위험 --&gt;
+    &lt;Action ID="AnotherAction"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

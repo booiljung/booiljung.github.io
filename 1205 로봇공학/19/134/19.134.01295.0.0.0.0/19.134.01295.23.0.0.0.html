@@ -115,6 +115,84 @@
             </header>
             <article>
                 <h1>1295.23 Parallel 노드의 자식 실행 순서 의존성</h1>
+<h2>1. 실행 순서 의존성의 정의</h2>
+<p>Parallel 노드의 자식 실행 순서 의존성(execution order dependency)이란, 자식 노드의 정의 순서(declaration order)가 실행 결과에 영향을 미치는 현상을 지칭한다. Parallel 노드는 모든 자식에 틱을 전달하지만, 그 전달 순서가 자식의 정의 순서에 의해 결정론적으로 고정되어 있으므로, 자식 간 공유 상태(블랙보드)에 대한 읽기·쓰기가 순서에 의존하게 된다.</p>
+<h2>2. 순서 의존성이 발생하는 원인</h2>
+<h3>2.1 블랙보드를 통한 암묵적 데이터 흐름</h3>
+<p>Parallel 노드의 자식들이 블랙보드(Blackboard)를 통해 데이터를 공유하는 경우, 동일 틱 내에서의 읽기·쓰기 순서가 정의 순서에 의해 결정된다.</p>
+<p><span class="math math-display">
+\text{Tick } k: \quad C_1.\text{tick}() \xrightarrow{\text{write}} \text{BB}[\text{key}] \xrightarrow{\text{read}} C_2.\text{tick}()
+</span></p>
+<p><span class="math math-inline">C_1</span>이 블랙보드 키 <code>obstacle_distance</code>에 값을 기록하면, 동일 틱에서 <span class="math math-inline">C_2</span>는 <span class="math math-inline">C_1</span>이 방금 기록한 최신 값을 읽는다. 반면 <span class="math math-inline">C_1</span>이 <span class="math math-inline">C_2</span> 이후에 정의되어 있었다면, <span class="math math-inline">C_2</span>는 이전 틱의 값을 읽게 된다.</p>
+<h3>2.2 구체적 예시</h3>
+<p>3개의 자식 노드가 블랙보드를 통해 데이터를 교환하는 경우를 분석한다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="3"&gt;
+    &lt;UpdateSensorData/&gt;    &lt;!-- C1: sensor_data 기록 --&gt;
+    &lt;ProcessSensorData/&gt;   &lt;!-- C2: sensor_data 읽기, result 기록 --&gt;
+    &lt;ActOnResult/&gt;         &lt;!-- C3: result 읽기 --&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p><strong>정의 순서 A</strong> (위 순서):</p>
+<ul>
+<li>틱 <span class="math math-inline">k</span>에서 <span class="math math-inline">C_1</span>이 최신 센서 데이터를 기록한다.</li>
+<li>동일 틱에서 <span class="math math-inline">C_2</span>가 <span class="math math-inline">C_1</span>이 방금 기록한 최신 센서 데이터를 읽고 처리 결과를 기록한다.</li>
+<li>동일 틱에서 <span class="math math-inline">C_3</span>가 <span class="math math-inline">C_2</span>의 최신 처리 결과를 읽고 행동한다.</li>
+<li>결과: 모든 단계가 동일 틱의 최신 데이터를 사용한다.</li>
+</ul>
+<p><strong>정의 순서 B</strong> (역순):</p>
+<pre><code class="language-xml">&lt;Parallel success_count="3"&gt;
+    &lt;ActOnResult/&gt;         &lt;!-- C1: result 읽기 (이전 틱 값) --&gt;
+    &lt;ProcessSensorData/&gt;   &lt;!-- C2: sensor_data 읽기 (이전 틱 값) --&gt;
+    &lt;UpdateSensorData/&gt;    &lt;!-- C3: sensor_data 기록 --&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<ul>
+<li>틱 <span class="math math-inline">k</span>에서 <span class="math math-inline">C_1</span>이 이전 틱(<span class="math math-inline">k-1</span>)에서 기록된 result를 읽는다.</li>
+<li><span class="math math-inline">C_2</span>가 이전 틱의 sensor_data를 읽는다.</li>
+<li><span class="math math-inline">C_3</span>가 최신 센서 데이터를 기록하지만, 이는 <span class="math math-inline">C_1</span>과 <span class="math math-inline">C_2</span>에 의해 이미 사용되지 않았다.</li>
+<li>결과: 모든 단계가 한 틱 지연된 데이터를 사용한다.</li>
+</ul>
+<h2>3. 순서 의존성의 유형</h2>
+<h3>3.1 쓰기 후 읽기(Write-After-Read) 의존성</h3>
+<p>선행 자식이 블랙보드에 기록한 값을 후행 자식이 읽는 경우이다. 이는 가장 흔한 순서 의존성 유형이며, 데이터가 동일 틱 내에서 전파되는 효과를 갖는다.</p>
+<h3>3.2 읽기 후 쓰기(Read-After-Write) 의존성</h3>
+<p>선행 자식이 블랙보드에서 값을 읽은 후, 후행 자식이 동일 키에 새로운 값을 기록하는 경우이다. 선행 자식은 이전 틱의 값을 읽고, 후행 자식의 갱신은 다음 틱에서야 선행 자식에 반영된다.</p>
+<h3>3.3 쓰기 후 쓰기(Write-After-Write) 충돌</h3>
+<p>두 자식이 동일 틱에서 동일 블랙보드 키에 값을 기록하는 경우이다. 마지막으로 실행된 자식의 값이 최종적으로 남으며, 이전 자식의 값은 덮어씌워진다.</p>
+<table><thead><tr><th>의존성 유형</th><th><span class="math math-inline">C_1</span> 동작</th><th><span class="math math-inline">C_2</span> 동작</th><th>결과</th></tr></thead><tbody>
+<tr><td>Write → Read</td><td>key에 쓰기</td><td>key에서 읽기</td><td><span class="math math-inline">C_2</span>가 <span class="math math-inline">C_1</span>의 값 사용</td></tr>
+<tr><td>Read → Write</td><td>key에서 읽기</td><td>key에 쓰기</td><td><span class="math math-inline">C_1</span>이 이전 틱 값 사용</td></tr>
+<tr><td>Write → Write</td><td>key에 쓰기</td><td>key에 쓰기</td><td><span class="math math-inline">C_2</span>의 값이 최종</td></tr>
+</tbody></table>
+<h2>4. 순서 의존성의 관리 전략</h2>
+<h3>4.1 전략 1: 독립적 블랙보드 키 사용</h3>
+<p>각 자식이 서로 다른 블랙보드 키를 사용하도록 설계하여, 순서 의존성을 원천적으로 방지한다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2"&gt;
+    &lt;ReadLidar output="{lidar_data}"/&gt;
+    &lt;ReadCamera output="{camera_data}"/&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p><code>lidar_data</code>와 <code>camera_data</code>는 서로 다른 키이므로, 두 자식 간에 순서 의존성이 존재하지 않는다.</p>
+<h3>4.2 전략 2: 의도적 순서 설계</h3>
+<p>순서 의존성을 의도적으로 활용하여, 동일 틱 내에서 데이터 파이프라인을 구성한다. 이 경우 자식의 정의 순서가 데이터 흐름 방향과 일치하도록 배치해야 한다.</p>
+<h3>4.3 전략 3: 이전 틱 값 사용 수용</h3>
+<p>순서에 관계없이 이전 틱의 블랙보드 값을 사용하는 것을 설계에서 수용한다. 틱 주기가 충분히 짧으면(예: 10ms), 한 틱의 지연은 무시할 수 있는 수준이다.</p>
+<h2>5. 순서 독립성의 이상과 현실</h2>
+<p>이상적인 Parallel 노드에서는 자식의 정의 순서가 실행 결과에 영향을 미치지 않아야 한다(순서 독립성). 그러나 블랙보드를 통한 공유 상태가 존재하는 한, 완전한 순서 독립성은 달성하기 어렵다. 실무에서는 다음의 원칙을 준수하여 순서 의존성을 최소화한다.</p>
+<ol>
+<li><strong>최소 공유 원칙</strong>: Parallel 자식 간 블랙보드를 통한 데이터 공유를 최소화한다.</li>
+<li><strong>단방향 흐름 원칙</strong>: 데이터 흐름이 필요한 경우, 항상 정의 순서의 방향으로만 흐르도록 설계한다(선행 자식 → 후행 자식).</li>
+<li><strong>쓰기 배타성 원칙</strong>: 동일 블랙보드 키에 대한 쓰기 권한을 단 하나의 자식에만 부여한다.</li>
+</ol>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

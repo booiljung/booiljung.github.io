@@ -115,6 +115,123 @@
             </header>
             <article>
                 <h1>1294.51 Fallback, FallbackWithMemory, ReactiveFallback의 비교</h1>
+<h2>1. 세 가지 Fallback 변형의 개관</h2>
+<p>BehaviorTree.CPP v4에서 제공하는 두 가지 Fallback 변형—FallbackWithMemory(기본 <code>&lt;Fallback&gt;</code>)와 ReactiveFallback(<code>&lt;ReactiveFallback&gt;</code>)—은 모두 자식 노드를 왼쪽에서 오른쪽으로 순차적으로 평가하며 OR 의미론을 따른다는 공통점을 가진다. 그러나 RUNNING 상태 이후의 재진입 동작, 우선순위 재검사 여부, Halt 처리 방식에서 본질적인 차이를 보인다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 핵심 특성 비교</h2>
+<h3>2.1 재진입 동작</h3>
+<table><thead><tr><th>특성</th><th>FallbackWithMemory</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>Tick 시작 위치</td><td>마지막 RUNNING 자식 인덱스</td><td>항상 인덱스 0</td></tr>
+<tr><td>상태 변수</td><td><code>current_child_idx</code> 유지</td><td>상태 변수 없음</td></tr>
+<tr><td>FAILURE 자식 재평가</td><td>건너뜀</td><td>매 Tick 재평가</td></tr>
+<tr><td>메모리 유무</td><td>있음 (Stateful)</td><td>없음 (Stateless)</td></tr>
+</tbody></table>
+<h3>2.2 우선순위 감시 능력</h3>
+<table><thead><tr><th>특성</th><th>FallbackWithMemory</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>우선 대안 가용성 변화 감지</td><td>불가</td><td>가능</td></tr>
+<tr><td>동적 대안 전환</td><td>부적합</td><td>적합</td></tr>
+<tr><td>조건 변화 반응</td><td>대안 시도 완료 후에만 반응</td><td>즉시 반응</td></tr>
+</tbody></table>
+<h3>2.3 Halt 동작</h3>
+<table><thead><tr><th>특성</th><th>FallbackWithMemory</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>앞쪽 자식 SUCCESS 시 Halt</td><td>해당 없음 (재평가 없음)</td><td>즉시 Halt</td></tr>
+<tr><td>자체 SUCCESS 시 Halt</td><td>Halt 수행</td><td>Halt 수행</td></tr>
+<tr><td>Halt 후 인덱스 초기화</td><td><code>current_child_idx ← 0</code></td><td>상태 없으므로 불필요</td></tr>
+</tbody></table>
+<h2>3. Tick 비용 비교</h2>
+<h3>3.1 Tick당 노드 방문 수</h3>
+<p>자식 배열이 <span class="math math-inline">[C_0, C_1, ..., C_{k-1}, A_k]</span>이고 <span class="math math-inline">A_k</span>가 RUNNING 상태인 경우:</p>
+<table><thead><tr><th>변형</th><th>Tick당 방문 노드 수</th></tr></thead><tbody>
+<tr><td>FallbackWithMemory</td><td>1 (<span class="math math-inline">A_k</span>만 방문)</td></tr>
+<tr><td>ReactiveFallback</td><td><span class="math math-inline">k + 1</span> (모든 자식 방문)</td></tr>
+</tbody></table>
+<h3>3.2 총 노드 방문 수 (<span class="math math-inline">M</span> Tick 동안 RUNNING 유지)</h3>
+<table><thead><tr><th>변형</th><th>초기 평가</th><th>RUNNING 유지 기간</th><th>총 방문 수</th></tr></thead><tbody>
+<tr><td>FallbackWithMemory</td><td><span class="math math-inline">k + 1</span></td><td><span class="math math-inline">(M - 1) \times 1</span></td><td><span class="math math-inline">k + M</span></td></tr>
+<tr><td>ReactiveFallback</td><td><span class="math math-inline">k + 1</span></td><td><span class="math math-inline">(M - 1) \times (k + 1)</span></td><td><span class="math math-inline">(k + 1) \times M</span></td></tr>
+</tbody></table>
+<h2>4. 안전성 및 효율성 비교</h2>
+<h3>4.1 시나리오: 주 서비스 복구 감지</h3>
+<pre><code class="language-xml">&lt;Fallback변형&gt;
+    &lt;Condition ID="IsPrimaryServiceOnline"/&gt;
+    &lt;Action ID="UseBackupService"/&gt;
+&lt;/Fallback변형&gt;
+</code></pre>
+<pre><code>FallbackWithMemory:
+  Tick 1: Primary→F, Backup→R (idx=1)
+  Tick 2: Backup→R             (Primary 건너뜀)
+  ...
+  Tick N: Backup→R             (Primary 복구됐지만 미감지)
+  Tick N+1: Backup→S           (백업 완료)
+  → SUCCESS
+
+ReactiveFallback:
+  Tick 1: Primary→F, Backup→R
+  Tick 2: Primary→F, Backup→R
+  Tick K: Primary→S            (주 서비스 복구 즉시 감지)
+          Backup→Halt
+  → SUCCESS
+</code></pre>
+<p>ReactiveFallback은 주 서비스가 복구되는 즉시 백업 서비스를 중단하고 전환한다.</p>
+<h2>5. 의미론적 비교</h2>
+<h3>5.1 논리적 해석</h3>
+<ul>
+<li><strong>FallbackWithMemory</strong>: “대안을 순서대로 시도한다” — 각 대안의 실패는 한 번만 확인된다.</li>
+<li><strong>ReactiveFallback</strong>: “가용한 최선의 대안을 사용한다” — 더 나은 대안의 가용성이 지속적으로 확인된다.</li>
+</ul>
+<h3>5.2 시간적 해석</h3>
+<ul>
+<li><strong>FallbackWithMemory</strong>: 순차적 시도(sequential try) — 대안 <span class="math math-inline">i</span>의 실패는 대안 <span class="math math-inline">i+1</span>의 시도 전제 조건이며, 이후 재확인되지 않는다.</li>
+<li><strong>ReactiveFallback</strong>: 동적 선택(dynamic selection) — 모든 앞쪽 대안의 실패 상태가 뒤쪽 대안의 실행 중에도 지속적으로 재확인된다.</li>
+</ul>
+<h2>6. Sequence 변형과의 대칭적 관계</h2>
+<table><thead><tr><th>Sequence 변형</th><th>Fallback 변형</th><th>공통 특성</th></tr></thead><tbody>
+<tr><td>SequenceWithMemory</td><td>FallbackWithMemory</td><td>메모리 기반, 재진입</td></tr>
+<tr><td>ReactiveSequence</td><td>ReactiveFallback</td><td>무상태, 매 Tick 재평가</td></tr>
+</tbody></table>
+<p>각 쌍에서 SUCCESS와 FAILURE의 역할만 교환되며, 알고리즘 구조, 비용 특성, 사용 패턴이 모두 대칭적이다.</p>
+<h2>7. 설계 지침</h2>
+<h3>7.1 FallbackWithMemory 사용이 적합한 경우</h3>
+<ul>
+<li>대안의 시도가 비용이 높아 재시도를 피해야 하는 경우</li>
+<li>부수 효과가 있는 액션이 앞쪽에 위치하는 경우</li>
+<li>우선순위 재검사가 필요하지 않은 경우</li>
+</ul>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="TryExpensiveMethod"/&gt;
+    &lt;Action ID="TryMediumMethod"/&gt;
+    &lt;Action ID="TryCheapMethod"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h3>7.2 ReactiveFallback 사용이 적합한 경우</h3>
+<ul>
+<li>앞쪽 노드가 부수 효과 없는 조건이며, 우선순위 감시가 필요한 경우</li>
+<li>더 나은 대안이 가용해지면 즉시 전환해야 하는 경우</li>
+<li>목표 달성 상태를 지속적으로 확인해야 하는 경우</li>
+</ul>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Condition ID="IsGoalAchieved"/&gt;
+    &lt;Action ID="AchieveGoal"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<h2>8. 종합 비교표</h2>
+<table><thead><tr><th>비교 항목</th><th>FallbackWithMemory</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>재진입 방식</td><td>기억된 인덱스부터 재개</td><td>항상 처음부터 시작</td></tr>
+<tr><td>상태 변수</td><td><code>current_child_idx</code></td><td>없음</td></tr>
+<tr><td>FAILURE 자식 처리</td><td>건너뜀</td><td>재평가</td></tr>
+<tr><td>우선순위 재검사</td><td>불가</td><td>가능</td></tr>
+<tr><td>Tick당 비용</td><td><span class="math math-inline">O(1)</span> (RUNNING 시)</td><td><span class="math math-inline">O(k+1)</span></td></tr>
+<tr><td>동적 대안 전환</td><td>부적합</td><td>적합</td></tr>
+<tr><td>부수 효과 안전성</td><td>안전 (재실행 없음)</td><td>위험 (앞쪽 액션 재실행)</td></tr>
+<tr><td>전형적 앞쪽 노드</td><td>액션 또는 조건</td><td>조건만 권장</td></tr>
+<tr><td>BT.CPP v4 태그</td><td><code>&lt;Fallback&gt;</code></td><td><code>&lt;ReactiveFallback&gt;</code></td></tr>
+<tr><td>사용 패턴</td><td>순차적 대안 시도</td><td>우선순위 감시 하의 대안 선택</td></tr>
+</tbody></table>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

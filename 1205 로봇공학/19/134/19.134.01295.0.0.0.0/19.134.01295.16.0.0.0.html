@@ -115,6 +115,90 @@
             </header>
             <article>
                 <h1>1295.16 Parallel 노드의 조기 종료 메커니즘</h1>
+<h2>1. 조기 종료의 정의</h2>
+<p>조기 종료(early termination)란, Parallel 노드가 모든 자식의 완료를 기다리지 않고, 성공 또는 실패 정책이 충족되는 즉시 최종 상태를 결정하고 나머지 RUNNING 상태의 자식을 중단하는 메커니즘이다. 이는 Parallel 노드의 효율적 실행과 적시적 반응을 보장하는 핵심 메커니즘이다(Colledanchise &amp; Ögren, 2018).</p>
+<h2>2. 조기 종료가 발생하는 조건</h2>
+<h3>2.1 성공 정책에 의한 조기 종료</h3>
+<p>성공 임계값 <span class="math math-inline">M</span>에 도달하면, 아직 RUNNING 상태인 자식이 존재하더라도 Parallel 노드가 SUCCESS를 반환하고 종료한다. 이때 <span class="math math-inline">N - S</span>개의 미완료 자식 중 RUNNING 상태인 자식에 <code>halt()</code>가 호출된다.</p>
+<p><span class="math math-display">
+S \geq M \;\land\; R &gt; 0 \implies \text{조기 종료 (SUCCESS)}
+</span></p>
+<h3>2.2 실패 정책에 의한 조기 종료</h3>
+<p>실패 임계값 <span class="math math-inline">K</span>에 도달하면, 아직 RUNNING 상태인 자식이 존재하더라도 Parallel 노드가 FAILURE를 반환하고 종료한다.</p>
+<p><span class="math math-display">
+F \geq K \;\land\; R &gt; 0 \implies \text{조기 종료 (FAILURE)}
+</span></p>
+<h3>2.3 구조적 불가능성에 의한 조기 종료</h3>
+<p>성공 또는 실패 임계값에 도달하지 않았더라도, 남은 RUNNING 자식의 수로는 임계값에 도달하는 것이 구조적으로 불가능해지는 시점에서도 조기 종료가 발생한다.</p>
+<p><span class="math math-display">
+S + R &lt; M \implies \text{조기 종료 (FAILURE, 성공 불가능)}
+</span></p>
+<p><span class="math math-display">
+F + R &lt; K \implies \text{조기 종료 (SUCCESS, 실패 불가능, 성공 조건 충족 시)}
+</span></p>
+<h2>3. 정책별 조기 종료 시점</h2>
+<table><thead><tr><th>정책</th><th>조기 종료 조건</th><th>종료 시점 특성</th></tr></thead><tbody>
+<tr><td>SUCCESS_ONE (<span class="math math-inline">M = 1</span>)</td><td>첫 SUCCESS 감지</td><td>매우 빠름</td></tr>
+<tr><td>FAILURE_ONE (<span class="math math-inline">K = 1</span>)</td><td>첫 FAILURE 감지</td><td>매우 빠름</td></tr>
+<tr><td>SUCCESS_ALL (<span class="math math-inline">M = N</span>)</td><td>첫 FAILURE 감지 (성공 불가능)</td><td>빠름 (첫 실패 시)</td></tr>
+<tr><td>FAILURE_ALL (<span class="math math-inline">K = N</span>)</td><td>첫 SUCCESS 감지 (실패 불가능, 성공 정책에 따라)</td><td>가변적</td></tr>
+<tr><td>SUCCESS_COUNT(<span class="math math-inline">M</span>)</td><td><span class="math math-inline">M</span>번째 SUCCESS 또는 <span class="math math-inline">(N-M+1)</span>번째 FAILURE</td><td>중간</td></tr>
+<tr><td>FAILURE_COUNT(<span class="math math-inline">K</span>)</td><td><span class="math math-inline">K</span>번째 FAILURE 또는 <span class="math math-inline">(N-K+1)</span>번째 SUCCESS</td><td>중간</td></tr>
+</tbody></table>
+<h2>4. 조기 종료의 절차</h2>
+<p>조기 종료가 결정되면 다음의 절차가 순서대로 실행된다.</p>
+<h3>4.1 단계 1: RUNNING 자식 식별</h3>
+<p>내부 상태 배열을 순회하여 아직 RUNNING 상태인 자식 노드를 식별한다.</p>
+<h3>4.2 단계 2: halt() 호출</h3>
+<p>식별된 RUNNING 자식 각각에 <code>halt()</code> 메서드를 호출한다. <code>halt()</code> 메서드는 다음의 작업을 수행한다.</p>
+<ol>
+<li>자식 노드가 서브트리(subtree)인 경우, 서브트리 내의 모든 RUNNING 노드에 재귀적으로 <code>halt()</code>를 전파한다.</li>
+<li>ROS2 액션 클라이언트와 연동된 경우, 진행 중인 목표에 대해 취소 요청(<code>cancel_goal</code>)을 전송한다.</li>
+<li>노드의 내부 상태를 초기화하고, 상태를 IDLE로 재설정한다.</li>
+<li>할당된 리소스를 해제한다.</li>
+</ol>
+<h3>4.3 단계 3: 내부 상태 초기화</h3>
+<p>Parallel 노드의 완료 플래그 배열, 캐싱된 상태 배열, 카운터 등의 내부 상태를 초기화하여, 다음 번 틱에서 깨끗한 상태로 실행을 재개할 수 있도록 한다.</p>
+<h3>4.4 단계 4: 최종 상태 반환</h3>
+<p>성공 정책이 충족된 경우 SUCCESS를, 실패 정책이 충족된 경우 FAILURE를 상위 노드에 반환한다.</p>
+<h2>5. 조기 종료의 의사 코드</h2>
+<pre><code>Procedure: earlyTermination(final_status)
+1   for i ← 1 to N do
+2       if completed[i] = false then
+3           children[i].haltNode()
+4       end if
+5   end for
+6   resetCompletedFlags()
+7   return final_status
+</code></pre>
+<h2>6. 조기 종료의 효과</h2>
+<h3>6.1 리소스 효율성</h3>
+<p>불필요한 행동의 즉시 중단으로 계산 리소스, 액추에이터 동력, 통신 대역폭 등의 낭비가 방지된다. 특히 SUCCESS_ONE 정책에서는 첫 번째 성공 이후 나머지 모든 자식이 즉시 중단되므로 효율성이 극대화된다.</p>
+<h3>6.2 반응 시간 단축</h3>
+<p>정책 충족 시점에서 즉시 최종 상태를 반환하므로, 상위 행동 트리의 다음 행동으로의 전환이 신속하게 이루어진다. 모든 자식의 완료를 기다리지 않으므로 전체 시스템의 반응 시간이 단축된다.</p>
+<h3>6.3 안전성 확보</h3>
+<p>FAILURE_ONE 정책에서 안전 위반이 감지되면 모든 병렬 행동이 즉시 중단되어, 위험한 상태에서의 지속적 행동 실행이 방지된다.</p>
+<h2>7. 조기 종료 시 주의 사항</h2>
+<h3>7.1 halt() 구현의 정확성</h3>
+<p><code>halt()</code> 메서드가 올바르게 구현되지 않으면, 리소스 누수, 상태 불일관, 또는 후속 실행에서의 비정상 동작이 발생할 수 있다. 특히 다음 사항에 주의해야 한다.</p>
+<ul>
+<li>ROS2 액션 목표의 취소가 실제로 완료되었는지 확인해야 한다.</li>
+<li>노드 내부의 타이머, 콜백, 구독(subscription) 등이 정상적으로 해제되어야 한다.</li>
+<li>블랙보드에 기록된 중간 결과가 후속 처리에 영향을 미치지 않도록 관리해야 한다.</li>
+</ul>
+<h3>7.2 비동기 중단의 처리</h3>
+<p>ROS2 액션의 목표 취소는 비동기적으로 처리된다. <code>cancel_goal</code> 요청을 전송한 후 실제 취소 확인까지 시간이 소요될 수 있으며, 이 기간 동안 액션 서버가 계속 동작할 수 있다. 행동 노드의 <code>halt()</code> 구현에서 이러한 비동기성을 적절히 처리해야 한다.</p>
+<h3>7.3 부분 완료 결과의 처리</h3>
+<p>조기 종료 시점에서 일부 자식은 이미 성공하고, 일부는 중단되며, 일부는 실패한 상태이다. 이러한 부분 완료 결과가 후속 행동에 올바르게 전달되도록 블랙보드의 상태 관리가 필요하다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

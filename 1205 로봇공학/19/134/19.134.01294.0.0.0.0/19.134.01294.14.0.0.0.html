@@ -115,6 +115,114 @@
             </header>
             <article>
                 <h1>1294.14 SequenceWithMemory의 재진입 규칙</h1>
+<h2>1. 재진입의 정의</h2>
+<p>재진입(re-entry)이란, Sequence 노드가 이전 Tick에서 RUNNING을 반환한 후, 다음 Tick에서 다시 Tick을 수신했을 때 실행을 어디서부터 시작하는지를 결정하는 규칙이다. SequenceWithMemory의 재진입 규칙은 “마지막으로 RUNNING을 반환한 자식의 인덱스부터 재개한다“는 것이다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 재진입 규칙의 상세</h2>
+<h3>2.1 규칙 1: RUNNING 자식부터 재개</h3>
+<p>이전 Tick에서 자식 <span class="math math-inline">C_i</span>가 RUNNING을 반환하면, 다음 Tick에서 <span class="math math-inline">C_i</span>부터 실행을 재개한다. <span class="math math-inline">C_0, C_1, \ldots, C_{i-1}</span>은 건너뛴다.</p>
+<pre><code>Tick N:   C₀→S  C₁→S  C₂→R          → current_index = 2
+Tick N+1:              C₂→?          → C₂부터 재개
+</code></pre>
+<h3>2.2 규칙 2: SUCCESS 자식은 재평가하지 않음</h3>
+<p>RUNNING 자식보다 앞에 위치한 자식들은 이전 Tick에서 SUCCESS를 반환한 상태이므로, 다시 평가하지 않는다. 이 자식들의 SUCCESS 결과가 유지된다고 가정한다.</p>
+<h3>2.3 규칙 3: RUNNING 자식이 SUCCESS를 반환하면 다음으로 진행</h3>
+<p>재진입 후 RUNNING이었던 자식이 SUCCESS를 반환하면, 그 다음 자식으로 진행하여 평가를 계속한다.</p>
+<pre><code>Tick N:   C₀→S  C₁→R               → current_index = 1
+Tick N+1:       C₁→S  C₂→R         → current_index = 2
+Tick N+2:             C₂→S         → Sequence SUCCESS
+</code></pre>
+<h3>2.4 규칙 4: FAILURE 또는 SUCCESS 시 인덱스 초기화</h3>
+<p>Sequence가 최종적으로 FAILURE 또는 SUCCESS를 반환하면, <code>current_index</code>는 0으로 초기화된다. 다음에 Sequence가 다시 Tick되면 첫 번째 자식부터 실행한다.</p>
+<h3>2.5 규칙 5: Halt 시 인덱스 초기화</h3>
+<p>외부에서 Sequence에 Halt가 호출되면, <code>current_index</code>는 0으로 초기화되고 모든 자식이 IDLE 상태로 복귀한다.</p>
+<h2>3. 재진입 규칙의 실행 예시</h2>
+<h3>3.1 단계 순차 임무</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="MoveTo" goal="A"/&gt;      &lt;!-- 자식 0 --&gt;
+    &lt;Action ID="PickObject"/&gt;           &lt;!-- 자식 1 --&gt;
+    &lt;Action ID="MoveTo" goal="B"/&gt;      &lt;!-- 자식 2 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick 1: current_index=0
+  MoveTo(A) → RUNNING         → current_index = 0, Seq → RUNNING
+
+Tick 2: current_index=0
+  MoveTo(A) → RUNNING         → Seq → RUNNING
+
+Tick 3: current_index=0
+  MoveTo(A) → SUCCESS         → current_index 진행
+  PickObject → RUNNING        → current_index = 1, Seq → RUNNING
+
+Tick 4: current_index=1
+  PickObject → SUCCESS        → current_index 진행
+  MoveTo(B) → RUNNING         → current_index = 2, Seq → RUNNING
+
+Tick 5: current_index=2
+  MoveTo(B) → SUCCESS         → 모든 자식 완료
+  current_index = 0            → Seq → SUCCESS
+</code></pre>
+<h3>3.2 중간 단계에서의 FAILURE</h3>
+<pre><code>Tick 1: current_index=0
+  MoveTo(A) → SUCCESS
+  PickObject → RUNNING        → current_index = 1
+
+Tick 2: current_index=1
+  PickObject → FAILURE         ← 파지 실패
+  current_index = 0            → Seq → FAILURE
+</code></pre>
+<p>FAILURE 발생 시 인덱스가 0으로 초기화되므로, Sequence가 다시 Tick되면 <code>MoveTo(A)</code>부터 다시 실행한다.</p>
+<h2>4. 재진입과 조건 노드의 관계</h2>
+<p>SequenceWithMemory에서 조건 노드가 SUCCESS를 반환한 후 건너뛰어지는 것은, 해당 조건이 다음 Tick에서도 여전히 충족된다는 가정을 내포한다. 이 가정이 성립하지 않는 환경에서는 ReactiveSequence를 사용하여 매 Tick마다 조건을 재검사해야 한다.</p>
+<pre><code>SequenceWithMemory에서의 위험:
+  Tick 1: [IsBatteryOK → SUCCESS] [Navigate → RUNNING]
+  Tick 2: [건너뜀 — 배터리 소진됨] [Navigate → RUNNING]
+          ← 배터리 부족 상태에서 네비게이션 지속 — 위험
+</code></pre>
+<h2>5. 재진입 규칙의 내부 구현</h2>
+<pre><code class="language-cpp">class SequenceWithMemory : public ControlNode {
+public:
+    NodeStatus tick() override {
+        // current_child_idx_부터 시작
+        while (current_child_idx_ &lt; childrenCount()) {
+            auto status = children_nodes_[current_child_idx_]-&gt;executeTick();
+            
+            switch (status) {
+                case NodeStatus::RUNNING:
+                    return NodeStatus::RUNNING;
+                    
+                case NodeStatus::FAILURE:
+                    haltChildren();
+                    current_child_idx_ = 0;
+                    return NodeStatus::FAILURE;
+                    
+                case NodeStatus::SUCCESS:
+                    current_child_idx_++;
+                    break;
+            }
+        }
+        
+        // 모든 자식 완료
+        haltChildren();
+        current_child_idx_ = 0;
+        return NodeStatus::SUCCESS;
+    }
+    
+    void halt() override {
+        current_child_idx_ = 0;
+        ControlNode::halt();
+    }
+
+private:
+    size_t current_child_idx_{0};
+};
+</code></pre>
+<p><code>current_child_idx_</code>가 재진입 규칙의 핵심 상태 변수이다. 이 변수에 의해 다음 Tick의 시작 위치가 결정되며, Sequence의 최종 반환 또는 Halt 시 초기화된다(Faconti, 2022).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

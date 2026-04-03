@@ -115,6 +115,128 @@
             </header>
             <article>
                 <h1>1295.65 적용 시나리오별 적합한 노드 선택 기준</h1>
+<h2>1. 노드 선택의 원칙</h2>
+<p>Parallel, ReactiveSequence, ReactiveFallback의 선택은 설계 의도에 기반하여야 한다. “어떤 노드가 가능한가“가 아니라, “어떤 노드가 설계 의도를 가장 명확하게 표현하는가“를 기준으로 선택한다. 기능적으로 동일한 결과를 산출하더라도, 의미론적으로 적합한 노드를 선택하면 트리의 가독성과 유지보수성이 향상된다.</p>
+<h2>2. 의사 결정 흐름</h2>
+<p>다음의 질문을 순차적으로 적용하여 적합한 노드를 결정한다.</p>
+<p><strong>질문 1</strong>: 복수의 행동을 동시에 수행하여야 하는가?</p>
+<ul>
+<li>예 → <strong>Parallel</strong></li>
+<li>아니오 → 질문 2로</li>
+</ul>
+<p><strong>질문 2</strong>: 조건이 유지되는 동안만 행동을 수행하여야 하는가?</p>
+<ul>
+<li>예 → <strong>ReactiveSequence</strong></li>
+<li>아니오 → 질문 3으로</li>
+</ul>
+<p><strong>질문 3</strong>: 복수의 대안 중 우선순위에 따라 하나를 선택하여야 하는가?</p>
+<ul>
+<li>예 → <strong>ReactiveFallback</strong></li>
+<li>아니오 → 일반 Sequence 또는 Fallback 검토</li>
+</ul>
+<h2>3. 시나리오별 선택 가이드</h2>
+<h3>3.1 시나리오 1: 이동하면서 장애물을 감시</h3>
+<p>로봇이 목표 지점으로 이동하면서 동시에 장애물을 감시한다. 장애물이 감지되면 이동을 중단한다.</p>
+<p><strong>선택지 A: Parallel (FAILURE_ONE)</strong></p>
+<pre><code>Parallel (failure_policy: FAILURE_ONE)
+├── MonitorObstacles    // RUNNING 유지, 장애물 시 FAILURE
+└── NavigateToGoal      // 이동 행동
+</code></pre>
+<p><strong>선택지 B: ReactiveSequence</strong></p>
+<pre><code>ReactiveSequence
+├── IsPathClear         // SUCCESS 또는 FAILURE
+└── NavigateToGoal      // 이동 행동
+</code></pre>
+<p><strong>권장</strong>: ReactiveSequence. 이유: 장애물 감시는 조건 판정이므로 무상태 조건 노드로 충분하다. 장기 실행 감시 노드를 유지할 필요가 없으며, 구현이 단순하다.</p>
+<h3>3.2 시나리오 2: 이동하면서 환경 데이터를 수집</h3>
+<p>로봇이 이동하면서 동시에 환경 센서 데이터를 기록한다. 두 행동 모두 장기 실행이며, 둘 다 완료되어야 한다.</p>
+<p><strong>권장</strong>: Parallel (SUCCESS_ALL)</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL)
+├── NavigateAlongPath    // 경로 이동
+└── RecordEnvironmentData // 환경 데이터 기록
+</code></pre>
+<p>이유: 두 행동이 동시에 진행되어야 하며, 하나가 다른 하나의 전제 조건이 아니다. ReactiveSequence는 복수의 <code>RUNNING</code> 행동을 동시에 지원하지 않으므로 부적합하다.</p>
+<h3>3.3 시나리오 3: 배터리 상태에 따른 행동 선택</h3>
+<p>배터리 위급이면 즉시 정지, 배터리 부족이면 귀환, 정상이면 임무 수행한다.</p>
+<p><strong>권장</strong>: ReactiveFallback</p>
+<pre><code>ReactiveFallback
+├── Sequence [위급]
+│   ├── IsBatteryCritical
+│   └── EmergencyStop
+├── Sequence [부족]
+│   ├── IsBatteryLow
+│   └── ReturnToBase
+└── ExecuteMission
+</code></pre>
+<p>이유: 우선순위에 따른 배타적 행동 선택이다. 동시에 귀환하면서 임무를 수행할 수 없으므로 Parallel은 부적합하다. ReactiveSequence는 우선순위 선택의 의미론을 표현하지 못한다.</p>
+<h3>3.4 시나리오 4: 안전 조건 하에서 매니퓰레이션</h3>
+<p>매니퓰레이터가 힘 한계 이내에서 작업하며, 힘 한계 초과 시 즉시 정지한다.</p>
+<p><strong>선택지 A: Parallel (FAILURE_ONE)</strong></p>
+<pre><code>Parallel (failure_policy: FAILURE_ONE)
+├── MonitorForce        // RUNNING, 한계 초과 시 FAILURE
+└── ExecuteGrasp        // 파지 행동
+</code></pre>
+<p><strong>선택지 B: ReactiveSequence</strong></p>
+<pre><code>ReactiveSequence
+├── IsForceWithinLimits // SUCCESS 또는 FAILURE
+└── ExecuteGrasp        // 파지 행동
+</code></pre>
+<p><strong>권장</strong>: ReactiveSequence. 이유: 힘 한계 검사는 단순 조건 판정이므로 조건 노드로 충분하다. 또한 ReactiveSequence는 조건 위반 시 행동이 해당 Tick에서 전혀 실행되지 않음을 보장하므로, 안전 측면에서 더 엄격하다.</p>
+<h3>3.5 시나리오 5: 드론 비행 중 자세 유지와 촬영 동시 수행</h3>
+<p>드론이 호버링 자세를 유지하면서 동시에 카메라로 촬영한다.</p>
+<p><strong>권장</strong>: Parallel (SUCCESS_ALL)</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL)
+├── MaintainHover       // 자세 유지
+└── CaptureImages       // 촬영
+</code></pre>
+<p>이유: 자세 유지와 촬영이 동시에 수행되어야 한다. 촬영이 자세 유지의 전제 조건이 아니므로 ReactiveSequence는 부적합하다.</p>
+<h3>3.6 시나리오 6: 행동과 타임아웃의 조합</h3>
+<p>행동이 일정 시간 내에 완료되지 않으면 실패로 처리한다.</p>
+<p><strong>권장</strong>: Parallel (FAILURE_ONE 또는 SUCCESS_ONE)</p>
+<pre><code>Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+├── ExecuteAction       // 주 행동
+└── TimeoutMonitor      // 타임아웃 감시 (시간 초과 시 FAILURE)
+</code></pre>
+<p>이유: 주 행동과 타임아웃 감시가 동시에 진행되어야 한다. 주 행동이 <code>SUCCESS</code>를 반환하면 SUCCESS_ONE에 의해 성공하고, 타임아웃이 <code>FAILURE</code>를 반환하면 FAILURE_ONE에 의해 실패한다.</p>
+<h3>3.7 시나리오 7: 조건에 따른 센서 모드 전환</h3>
+<p>시야 확보 시 카메라 항법, 시야 부족 시 LiDAR 항법, 둘 다 불가 시 정지한다.</p>
+<p><strong>권장</strong>: ReactiveFallback</p>
+<pre><code>ReactiveFallback
+├── Sequence [카메라 항법]
+│   ├── IsVisualConditionGood
+│   └── VisualNavigation
+├── Sequence [LiDAR 항법]
+│   ├── IsLidarAvailable
+│   └── LidarNavigation
+└── SafeStop
+</code></pre>
+<p>이유: 센서 가용성에 따른 우선순위 기반 행동 선택이다. 환경 조건이 변화하면 자동으로 적합한 항법 모드로 전환된다.</p>
+<h2>4. 복합 시나리오에서의 노드 조합</h2>
+<p>복잡한 요구 사항은 단일 노드로 해결할 수 없으며, 노드를 조합하여야 한다.</p>
+<h3>4.1 안전 감시 하의 우선순위 행동 선택</h3>
+<pre><code>ReactiveSequence                        // 안전 조건 지속 보장
+├── IsSafe                              // 안전 조건
+└── ReactiveFallback                    // 우선순위 행동 선택
+    ├── Sequence [비상]
+    │   ├── IsEmergency
+    │   └── EmergencyAction
+    └── NormalMission
+</code></pre>
+<h3>4.2 안전 감시 하의 동시 행동 수행</h3>
+<pre><code>ReactiveSequence                        // 안전 조건 지속 보장
+├── IsSafe                              // 안전 조건
+└── Parallel (success_policy: SUCCESS_ALL) // 동시 행동 수행
+    ├── MoveBase
+    └── RecordData
+</code></pre>
+<h2>5. 선택 기준 요약표</h2>
+<table><thead><tr><th>의미론</th><th>노드</th><th>핵심 질문</th></tr></thead><tbody>
+<tr><td>“동시에 수행”</td><td>Parallel</td><td>복수 행동이 동시에 진행되어야 하는가?</td></tr>
+<tr><td>“조건 하에 행동”</td><td>ReactiveSequence</td><td>전제 조건의 지속적 보장이 필요한가?</td></tr>
+<tr><td>“우선순위 선택”</td><td>ReactiveFallback</td><td>배타적 대안 중 하나를 선택하여야 하는가?</td></tr>
+<tr><td>“순차 실행”</td><td>Sequence</td><td>단계적으로 하나씩 수행하면 되는가?</td></tr>
+<tr><td>“대안 시도”</td><td>Fallback</td><td>실패 시 다음 대안을 시도하면 되는가?</td></tr>
+</tbody></table>
 
             </article>
             <footer>

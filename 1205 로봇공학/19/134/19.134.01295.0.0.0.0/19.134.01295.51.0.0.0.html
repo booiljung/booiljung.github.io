@@ -115,6 +115,271 @@
             </header>
             <article>
                 <h1>1295.51 배터리 부족 시 귀환 우선순위 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>배터리 부족 시 귀환 우선순위 패턴은 로봇의 배터리 잔량 수준에 따라 차별화된 에너지 관리 및 귀환 전략을 ReactiveFallback으로 구현하는 설계 패턴이다. 배터리 잔량은 연속적으로 감소하는 양이므로, 단일 임계값이 아닌 다단계 임계값을 설정하여 잔량 수준에 비례한 점진적 대응을 수행한다. 이 패턴은 로봇이 임무 수행 중 에너지 고갈로 인해 정지하거나 손상되는 상황을 사전에 방지하는 에너지 안전 아키텍처의 핵심이다.</p>
+<h2>2. 배터리 수준별 대응 전략</h2>
+<p>배터리 잔량을 복수의 임계값으로 분류하고, 각 수준에 대응하는 행동을 정의한다.</p>
+<table><thead><tr><th>우선순위</th><th>배터리 수준</th><th>임계값</th><th>대응 행동</th></tr></thead><tbody>
+<tr><td>P0</td><td>위급 (Critical)</td><td><span class="math math-inline">E &lt; E_{critical}</span></td><td>즉시 현재 위치 안전 정지</td></tr>
+<tr><td>P1</td><td>긴급 (Emergency)</td><td><span class="math math-inline">E &lt; E_{emergency}</span></td><td>최단 경로 즉시 귀환</td></tr>
+<tr><td>P2</td><td>경고 (Warning)</td><td><span class="math math-inline">E &lt; E_{warning}</span></td><td>현재 임무 중단, 귀환 시작</td></tr>
+<tr><td>P3</td><td>주의 (Caution)</td><td><span class="math math-inline">E &lt; E_{caution}</span></td><td>에너지 절약 모드, 임무 계속</td></tr>
+<tr><td>P4</td><td>정상 (Normal)</td><td><span class="math math-inline">E \geq E_{caution}</span></td><td>정상 임무 수행</td></tr>
+</tbody></table>
+<p>여기서 <span class="math math-inline">E_{critical} &lt; E_{emergency} &lt; E_{warning} &lt; E_{caution}</span>의 에너지 계층이 성립한다. 각 임계값은 절대 잔량이 아닌, 귀환에 필요한 에너지를 기준으로 동적으로 산출되어야 한다.</p>
+<h2>3. 기본 구조</h2>
+<pre><code>ReactiveFallback
+├── Sequence [P0: 위급 - 즉시 정지]
+│   ├── IsBatteryCritical
+│   │   input: "critical_threshold"
+│   └── SafeShutdown
+├── Sequence [P1: 긴급 - 즉시 귀환]
+│   ├── IsBatteryEmergency
+│   │   input: "emergency_threshold"
+│   └── EmergencyReturn
+├── Sequence [P2: 경고 - 임무 중단 귀환]
+│   ├── IsBatteryWarning
+│   │   input: "warning_threshold"
+│   └── AbortMissionAndReturn
+├── Sequence [P3: 주의 - 에너지 절약]
+│   ├── IsBatteryCaution
+│   │   input: "caution_threshold"
+│   └── EnergySavingMode
+└── ExecuteMission [P4: 정상 임무 수행]
+</code></pre>
+<p>ReactiveFallback의 매 Tick 재평가에 의해, 배터리 잔량이 감소하면 자동으로 상위 우선순위의 대응 행동으로 전환된다.</p>
+<h2>4. 귀환 에너지 추정</h2>
+<h3>4.1 동적 임계값 산출</h3>
+<p>배터리 임계값을 고정 수치로 설정하는 것은 위험하다. 로봇의 현재 위치가 충전소(또는 기지)로부터 멀수록 귀환에 더 많은 에너지가 소요되므로, 임계값을 귀환 에너지에 기반하여 동적으로 산출하여야 한다.</p>
+<p>귀환에 필요한 에너지 <span class="math math-inline">E_{return}</span>은 다음과 같이 추정한다.</p>
+<p><span class="math math-display">E_{return} = P_{avg} \cdot \frac{d_{return}}{v_{return}}</span></p>
+<p>여기서 <span class="math math-inline">P_{avg}</span>는 평균 전력 소비율, <span class="math math-inline">d_{return}</span>은 충전소까지의 거리, <span class="math math-inline">v_{return}</span>은 귀환 시 예상 속도이다. 안전 마진 계수 <span class="math math-inline">\alpha &gt; 1</span>를 적용하여 각 임계값을 산출한다.</p>
+<p><span class="math math-display">E_{emergency} = \alpha_{emergency} \cdot E_{return}</span><br />
+<span class="math math-display">E_{warning} = \alpha_{warning} \cdot E_{return}</span><br />
+<span class="math math-display">E_{caution} = \alpha_{caution} \cdot E_{return}</span></p>
+<p>일반적으로 <span class="math math-inline">\alpha_{emergency} \approx 1.1</span>, <span class="math math-inline">\alpha_{warning} \approx 1.3</span>, <span class="math math-inline">\alpha_{caution} \approx 1.5</span>의 안전 마진을 적용한다. <span class="math math-inline">E_{critical}</span>은 귀환이 불가능한 최저 에너지 수준으로, 안전 정지에 필요한 최소 에너지만을 확보한다.</p>
+<h3>4.2 에너지 추정의 보정 요인</h3>
+<p>실제 귀환 에너지는 다수의 요인에 의해 변동한다. 정밀한 추정을 위해 다음의 보정 요인을 반영하여야 한다.</p>
+<pre><code>function estimateReturnEnergy():
+    distance ← computePathDistance(current_position, charging_station)
+    
+    // 기본 에너지 추정
+    base_energy ← average_power * (distance / return_speed)
+    
+    // 보정 요인 적용
+    terrain_factor ← getTerrainDifficulty(return_path)   // 지형 난이도
+    wind_factor ← getHeadwindFactor(wind_direction, return_direction)  // 역풍
+    payload_factor ← getPayloadFactor(current_payload)    // 적재 하중
+    temperature_factor ← getBatteryTempFactor(battery_temp)  // 배터리 온도
+    
+    corrected_energy ← base_energy * terrain_factor * wind_factor 
+                       * payload_factor * temperature_factor
+    
+    return corrected_energy
+</code></pre>
+<p>지형의 경사도, 풍향과 풍속, 로봇의 적재 하중, 배터리 온도에 따른 효율 변화를 반영하면 귀환 에너지 추정의 정확도가 향상된다.</p>
+<h2>5. 각 대응 수준의 상세</h2>
+<h3>5.1 P0: 위급 - 즉시 안전 정지</h3>
+<p>배터리 잔량이 위급 수준에 도달하여 귀환이 불가능한 상황이다. 현재 위치에서 안전하게 정지하고, 자세 유지에 필요한 최소 전력만을 소비하며, 위치 정보를 원격 관제 시스템에 송신한다.</p>
+<pre><code>function IsBatteryCritical.tick():
+    battery_level ← blackboard.get("battery_energy")
+    min_operational ← blackboard.get("minimum_operational_energy")
+    
+    if battery_level &lt; min_operational:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<pre><code>function SafeShutdown.tick():
+    if not shutdown_initiated:
+        stopAllMotors()
+        disableNonEssentialSystems()
+        broadcastDistressSignal(current_position)
+        shutdown_initiated ← true
+    
+    maintainCommunication()
+    
+    if isExternalRescueArrived():
+        return SUCCESS
+    return RUNNING
+</code></pre>
+<p>위급 수준에서는 모든 비필수 시스템(센서 처리, 임무 관련 모듈)을 비활성화하여 통신 유지에 필요한 전력을 최대한 확보한다.</p>
+<h3>5.2 P1: 긴급 - 최단 경로 즉시 귀환</h3>
+<p>배터리 잔량이 귀환 가능 에너지에 근접하여, 최단 경로로 즉시 귀환하여야 하는 상황이다. 경로의 효율성보다 에너지 소비 최소화를 우선시하며, 불필요한 센서와 행동을 비활성화한다.</p>
+<pre><code>function IsBatteryEmergency.tick():
+    battery_level ← blackboard.get("battery_energy")
+    return_energy ← estimateReturnEnergy()
+    
+    if battery_level &lt; return_energy * emergency_margin:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<pre><code>function EmergencyReturn.tick():
+    if not emergency_return_started:
+        // 에너지 절약을 위한 시스템 최소화
+        disableNonCriticalSensors()
+        setMinimumProcessingMode()
+        
+        // 최단 에너지 경로 계산
+        path ← computeMinEnergyPath(current_position, charging_station)
+        blackboard.set("emergency_return_path", path)
+        emergency_return_started ← true
+    
+    followPath(blackboard.get("emergency_return_path"))
+    
+    if isAtChargingStation():
+        initiateCharging()
+        return SUCCESS
+    return RUNNING
+</code></pre>
+<p>긴급 귀환 경로는 최단 거리 경로가 아닌 최소 에너지 경로(minimum energy path)를 산출한다. 경사도가 낮은 경로, 순풍 방향의 경로가 직선 경로보다 에너지 효율적일 수 있다.</p>
+<h3>5.3 P2: 경고 - 임무 중단 귀환</h3>
+<p>배터리 잔량에 여유는 있으나, 현재 임무를 계속 수행하면 귀환 에너지가 부족해질 수 있는 상황이다. 현재 임무를 안전하게 중단하고, 정상 속도로 귀환한다.</p>
+<pre><code>function IsBatteryWarning.tick():
+    battery_level ← blackboard.get("battery_energy")
+    return_energy ← estimateReturnEnergy()
+    remaining_mission_energy ← estimateRemainingMissionEnergy()
+    
+    if battery_level &lt; return_energy * warning_margin:
+        return SUCCESS
+    if battery_level &lt; return_energy + remaining_mission_energy:
+        return SUCCESS  // 임무 완수 후 귀환 에너지 부족 예측
+    return FAILURE
+</code></pre>
+<pre><code>function AbortMissionAndReturn.tick():
+    if not mission_aborted:
+        saveMissionProgress()  // 임무 진행 상태 저장
+        notifyOperator("Battery warning: aborting mission and returning")
+        mission_aborted ← true
+    
+    navigateToChargingStation(normal_speed)
+    
+    if isAtChargingStation():
+        initiateCharging()
+        return SUCCESS
+    return RUNNING
+</code></pre>
+<p>경고 수준에서는 임무의 진행 상태를 저장하여, 충전 후 중단된 지점부터 임무를 재개할 수 있도록 한다.</p>
+<h3>5.4 P3: 주의 - 에너지 절약 모드</h3>
+<p>배터리 잔량이 주의 수준에 진입하였으나 임무 수행이 가능한 상황이다. 임무를 계속 수행하되, 에너지 소비를 줄이기 위한 절약 조치를 적용한다.</p>
+<pre><code>function IsBatteryCaution.tick():
+    battery_level ← blackboard.get("battery_energy")
+    return_energy ← estimateReturnEnergy()
+    
+    if battery_level &lt; return_energy * caution_margin:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<pre><code>function EnergySavingMode.tick():
+    // 에너지 절약 조치 적용
+    reduceMaxSpeed(energy_save_speed_factor)       // 최대 속도 감소
+    reduceSensorFrequency(energy_save_sensor_factor)  // 센서 갱신 빈도 감소
+    disableOptionalProcessing()                    // 선택적 처리 비활성화
+    
+    // 임무는 계속 수행
+    continueMissionWithConstraints()
+    
+    return RUNNING
+</code></pre>
+<p>에너지 절약 모드에서는 이동 속도를 감소시키고, 센서 데이터의 갱신 빈도를 낮추며, 필수적이지 않은 연산을 비활성화한다. 이를 통해 에너지 소비율을 줄이고 임무 수행 가능 시간을 연장한다.</p>
+<h2>6. 우선순위 전환 시나리오</h2>
+<p><strong>시나리오</strong>: 임무 수행 중 배터리 점진적 소모</p>
+<pre><code>Tick t:   배터리 80% → P4 (정상 임무 수행)
+Tick t+k: 배터리 40% → IsBatteryCaution = SUCCESS → P3 (에너지 절약 모드)
+Tick t+m: 배터리 25% → IsBatteryWarning = SUCCESS → P2 (임무 중단 귀환)
+          EnergySavingMode.halt()
+Tick t+n: 귀환 중 배터리 급격히 소모 → IsBatteryEmergency = SUCCESS
+          → P1 (긴급 귀환), AbortMissionAndReturn.halt()
+Tick t+p: 귀환 완료 → 충전소 도착 → 충전 시작
+</code></pre>
+<p>배터리 잔량의 연속적 감소에 따라 대응 수준이 P4 → P3 → P2 → P1으로 자동 승격된다. 각 전환에서 이전 수준의 행동에 Halt가 전파되고, 새 수준의 행동이 시작된다.</p>
+<p><strong>시나리오</strong>: 충전 후 임무 재개</p>
+<pre><code>Tick t:   충전 완료, 배터리 100% → P4 (정상 임무 수행)
+          → 저장된 임무 진행 상태로부터 임무 재개
+</code></pre>
+<p>P2 수준에서 저장된 임무 진행 상태를 활용하여, 충전 완료 후 중단된 지점부터 임무를 재개할 수 있다.</p>
+<h2>7. 다중 충전소 환경에서의 확장</h2>
+<p>복수의 충전소가 존재하는 환경에서는, 귀환 에너지 추정 시 가장 가까운 충전소를 기준으로 산출한다.</p>
+<pre><code>function selectOptimalChargingStation():
+    stations ← blackboard.get("charging_stations")
+    
+    best_station ← null
+    min_energy ← infinity
+    
+    for station in stations:
+        if station.is_available:
+            energy ← computeReturnEnergy(current_position, station.position)
+            if energy &lt; min_energy:
+                min_energy ← energy
+                best_station ← station
+    
+    return best_station
+</code></pre>
+<p>충전소의 가용 여부(다른 로봇이 충전 중인지)와 도달에 필요한 에너지를 종합하여 최적의 충전소를 선택한다. 충전소 가용 상태가 변경되면 귀환 경로를 재계획하여야 한다.</p>
+<h2>8. 배터리 상태 추정의 정확성</h2>
+<p>배터리 잔량 추정의 정확도는 이 패턴의 신뢰성에 직접적인 영향을 미친다. 배터리 전압은 부하, 온도, 노화 상태에 따라 비선형적으로 변동하므로, 단순 전압 측정만으로는 정확한 잔량 추정이 어렵다.</p>
+<pre><code>function estimateBatteryEnergy():
+    voltage ← blackboard.get("battery_voltage")
+    current ← blackboard.get("battery_current")
+    temperature ← blackboard.get("battery_temperature")
+    
+    // 쿨롱 카운팅 기반 잔량 추정
+    consumed_charge ← integrate(current, dt)
+    remaining_charge ← initial_charge - consumed_charge
+    
+    // 온도 보정
+    temp_correction ← batteryTempModel(temperature)
+    
+    // 노화 보정
+    aging_correction ← batteryAgingModel(cycle_count)
+    
+    corrected_energy ← remaining_charge * nominal_voltage 
+                       * temp_correction * aging_correction
+    
+    return corrected_energy
+</code></pre>
+<p>쿨롱 카운팅(coulomb counting) 방법에 온도 보정과 배터리 노화 보정을 결합하면, 전압 기반 추정에 비해 정확도가 향상된다. 상태 추정 필터(State of Charge estimator)를 적용하여 전압, 전류, 온도 데이터를 융합하는 방법도 널리 사용된다.</p>
+<h2>9. XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryCritical min_energy="50.0" /&gt;
+        &lt;SafeShutdown broadcast_position="true" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryEmergency margin="1.1" /&gt;
+        &lt;EmergencyReturn speed="{min_energy_speed}" 
+                         disable_sensors="true" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryWarning margin="1.3" /&gt;
+        &lt;AbortMissionAndReturn speed="{normal_speed}" 
+                               save_progress="true" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryCaution margin="1.5" /&gt;
+        &lt;EnergySavingMode speed_factor="0.6" 
+                          sensor_factor="0.5" /&gt;
+    &lt;/Sequence&gt;
+    &lt;ExecuteMission waypoints="{mission_waypoints}" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<h2>10. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>보수적 에너지 추정</strong>: 귀환 에너지 추정은 항상 보수적으로 수행하라. 추정의 불확실성이 클수록 안전 마진 계수를 크게 설정하여야 한다. 과대 추정은 임무 시간의 손실을, 과소 추정은 로봇의 정지 또는 손실을 초래한다.</p>
+</li>
+<li>
+<p><strong>임계값의 히스테리시스</strong>: 배터리 잔량이 임계값 부근에서 부하 변동에 의해 진동하는 경우, 대응 수준이 빈번하게 전환될 수 있다. 각 수준 간 전환에 히스테리시스를 적용하여 이를 방지하라. 예를 들어, 주의 수준 진입 임계값과 주의 수준 해소 임계값을 분리 설정한다.</p>
+</li>
+<li>
+<p><strong>충전소 도달 불가 상황 대비</strong>: 충전소까지의 경로가 차단되거나 충전소가 이용 불가인 경우에 대한 대비 전략을 수립하라. 대안 충전소로의 경로 전환 또는 현재 위치에서의 안전 정지가 이에 해당한다.</p>
+</li>
+<li>
+<p><strong>에너지 소비율의 실시간 갱신</strong>: 에너지 소비율을 사전 설정값이 아닌 실시간 측정값에 기반하여 갱신하라. 실제 소비율이 예상보다 높은 경우 임계값이 조기에 도달하여야 한다.</p>
+</li>
+<li>
+<p><strong>Halt 시 에너지 상태 보존</strong>: 귀환 행동에 Halt가 호출되면(더 높은 우선순위의 대응으로 전환 시), 현재까지의 귀환 진행 상태와 경로 정보를 보존하여, Halt 해소 후 귀환이 재개될 때 처음부터 다시 계획하지 않도록 하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

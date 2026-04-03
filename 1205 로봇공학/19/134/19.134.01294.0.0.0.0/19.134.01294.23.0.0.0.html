@@ -115,6 +115,171 @@
             </header>
             <article>
                 <h1>1294.23 ReactiveSequence의 실행 알고리즘</h1>
+<h2>1. 알고리즘의 개요</h2>
+<p>ReactiveSequence의 실행 알고리즘은 매 Tick에서 항상 첫 번째 자식(인덱스 0)부터 순차적으로 평가를 시작하며, 내부에 재진입 인덱스를 유지하지 않는다는 점에서 SequenceWithMemory의 알고리즘과 근본적으로 구분된다. 이 알고리즘의 핵심은 “무상태 순차 평가(stateless sequential evaluation)“로, 매 Tick이 독립적인 완전한 평가 주기를 형성한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 알고리즘의 단계별 절차</h2>
+<h3>2.1 단계 1: 초기화</h3>
+<p>Tick이 수신되면, 반복 인덱스 <code>i</code>를 0으로 설정한다. SequenceWithMemory와 달리, 이전 Tick의 상태를 참조하지 않는다.</p>
+<pre><code>i ← 0
+</code></pre>
+<h3>2.2 단계 2: 자식 순차 평가</h3>
+<p>인덱스 <code>i</code>의 자식에 대해 <code>executeTick()</code>을 호출하고, 반환된 상태에 따라 분기한다.</p>
+<pre><code>status ← children[i].executeTick()
+</code></pre>
+<h3>2.3 단계 3: 반환 상태에 따른 처리</h3>
+<p><strong>경우 1: SUCCESS 반환</strong></p>
+<p>현재 자식이 SUCCESS를 반환하면, 인덱스를 증가시키고 다음 자식의 평가로 진행한다.</p>
+<pre><code>if status == SUCCESS:
+    i ← i + 1
+    if i == N:   // 모든 자식이 SUCCESS
+        return SUCCESS
+    else:
+        단계 2로 이동
+</code></pre>
+<p><strong>경우 2: RUNNING 반환</strong></p>
+<p>현재 자식이 RUNNING을 반환하면, ReactiveSequence 전체가 RUNNING을 반환한다. 이 자식 이후의 자식에게는 Tick이 전달되지 않는다.</p>
+<pre><code>if status == RUNNING:
+    return RUNNING
+</code></pre>
+<p><strong>경우 3: FAILURE 반환</strong></p>
+<p>현재 자식이 FAILURE를 반환하면, 이후에 RUNNING 상태인 자식이 있을 경우 해당 자식을 Halt하고, ReactiveSequence 전체가 FAILURE를 반환한다.</p>
+<pre><code>if status == FAILURE:
+    haltRunningChildren()
+    return FAILURE
+</code></pre>
+<h3>2.4 단계 4: RUNNING 자식의 Halt 처리</h3>
+<p>FAILURE 발생 시, 현재 인덱스 이후에 RUNNING 상태인 자식이 존재하면 해당 자식에게 <code>halt()</code>를 호출하여 비동기 작업을 중단시킨다. 이 단계는 ReactiveSequence의 안전 보장에서 핵심적인 역할을 수행한다.</p>
+<pre><code>function haltRunningChildren():
+    for j ← i+1 to N-1:
+        if children[j].status() == RUNNING:
+            children[j].halt()
+</code></pre>
+<h2>3. 알고리즘의 형식적 기술</h2>
+<p>ReactiveSequence의 실행 알고리즘을 형식적으로 기술하면 다음과 같다.</p>
+<p><span class="math math-display">
+\text{ReactiveSequence.tick}() = \begin{cases}
+\text{SUCCESS} &amp; \text{if } \forall i \in [0, N): \text{child}_i = \text{SUCCESS} \\
+\text{RUNNING} &amp; \text{if } \exists k: \text{child}_k = \text{RUNNING} \land \forall i &lt; k: \text{child}_i = \text{SUCCESS} \\
+\text{FAILURE} &amp; \text{if } \exists k: \text{child}_k = \text{FAILURE} \land \forall i &lt; k: \text{child}_i = \text{SUCCESS}
+\end{cases}
+</span></p>
+<p>여기서 <span class="math math-inline">N</span>은 자식의 총 수이며, <span class="math math-inline">k</span>는 최초로 RUNNING 또는 FAILURE를 반환한 자식의 인덱스이다.</p>
+<h2>4. SequenceWithMemory 알고리즘과의 차이</h2>
+<p>두 알고리즘의 핵심 차이는 Tick 시작 시 반복 인덱스의 결정 방식에 있다.</p>
+<table><thead><tr><th>구분</th><th>SequenceWithMemory</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>시작 인덱스</td><td><code>current_child_idx</code> (기억된 값)</td><td>항상 0</td></tr>
+<tr><td>상태 보존</td><td>이전 Tick의 진행 상태 유지</td><td>Tick 간 상태 없음</td></tr>
+<tr><td>SUCCESS 자식 재평가</td><td>건너뜀</td><td>매 Tick 재평가</td></tr>
+<tr><td>조건 변화 감지</td><td>불가</td><td>가능</td></tr>
+</tbody></table>
+<p>SequenceWithMemory의 알고리즘에서는 다음과 같이 시작 인덱스가 결정된다:</p>
+<pre><code>i ← current_child_idx    // SequenceWithMemory
+</code></pre>
+<p>ReactiveSequence의 알고리즘에서는 항상 다음과 같다:</p>
+<pre><code>i ← 0                    // ReactiveSequence (항상 고정)
+</code></pre>
+<p>이 단일 차이가 조건 재검사 능력, Halt 동작, Tick 비용의 모든 차이를 파생시킨다.</p>
+<h2>5. 알고리즘의 실행 추적 예시</h2>
+<h3>5.1 정상 실행 흐름</h3>
+<pre><code>자식 배열: [CondA, CondB, AsyncAct]
+
+Tick 1:
+  i=0: CondA.executeTick() → SUCCESS
+  i=1: CondB.executeTick() → SUCCESS
+  i=2: AsyncAct.executeTick() → RUNNING
+  → return RUNNING
+
+Tick 2:
+  i=0: CondA.executeTick() → SUCCESS    (재평가)
+  i=1: CondB.executeTick() → SUCCESS    (재평가)
+  i=2: AsyncAct.executeTick() → RUNNING (onRunning 호출)
+  → return RUNNING
+
+Tick 3:
+  i=0: CondA.executeTick() → SUCCESS
+  i=1: CondB.executeTick() → SUCCESS
+  i=2: AsyncAct.executeTick() → SUCCESS
+  → return SUCCESS
+</code></pre>
+<h3>5.2 조건 실패에 의한 Halt 흐름</h3>
+<pre><code>Tick 4 (새로운 작업 시작 후):
+  i=0: CondA.executeTick() → SUCCESS
+  i=1: CondB.executeTick() → SUCCESS
+  i=2: AsyncAct.executeTick() → RUNNING
+  → return RUNNING
+
+Tick 5:
+  i=0: CondA.executeTick() → FAILURE
+  haltRunningChildren():
+    children[2](AsyncAct).status() == RUNNING → halt()
+  → return FAILURE
+</code></pre>
+<p>Tick 5에서 CondA가 FAILURE를 반환하는 즉시 CondB의 평가는 생략(조기 종료)되고, RUNNING 상태인 AsyncAct에 대해 Halt가 호출된다.</p>
+<h2>6. 알고리즘의 시간 복잡도</h2>
+<h3>6.1 최선의 경우</h3>
+<p>첫 번째 자식이 FAILURE를 반환하면, 1개의 노드만 평가된다.</p>
+<p><span class="math math-display">T_{best} = O(1)</span></p>
+<h3>최악의 경우</h3>
+<p>모든 자식이 SUCCESS를 반환하거나 마지막 자식이 RUNNING/FAILURE를 반환하면, <span class="math math-inline">N</span>개의 노드가 평가된다.</p>
+<p><span class="math math-display">T_{worst} = O(N)</span></p>
+<h3>6.2 RUNNING 지속 시의 총 비용</h3>
+<p>비동기 액션이 인덱스 <span class="math math-inline">k</span>에 위치하고 <span class="math math-inline">M</span> Tick 동안 RUNNING을 유지하는 경우:</p>
+<p><span class="math math-display">T_{total} = (k + 1) \times M</span></p>
+<p>SequenceWithMemory에서의 동일 비용은 <span class="math math-inline">k + M</span>이므로, ReactiveSequence의 비용은 <span class="math math-inline">k</span>와 <span class="math math-inline">M</span>이 모두 큰 경우 유의미하게 높다.</p>
+<h2>BehaviorTree.CPP v4에서의 알고리즘 구현</h2>
+<p>BehaviorTree.CPP v4에서 ReactiveSequence의 <code>tick()</code> 메서드는 위 알고리즘을 다음과 같이 구현한다(Faconti, 2022).</p>
+<pre><code class="language-cpp">NodeStatus ReactiveSequence::tick()
+{
+    bool all_success = true;
+    for (size_t i = 0; i &lt; childrenCount(); i++)
+    {
+        TreeNode* child = children_nodes_[i];
+        const NodeStatus child_status = child-&gt;executeTick();
+
+        switch (child_status)
+        {
+            case NodeStatus::RUNNING:
+                for (size_t j = i + 1; j &lt; childrenCount(); j++)
+                {
+                    haltChild(j);
+                }
+                return NodeStatus::RUNNING;
+
+            case NodeStatus::FAILURE:
+                resetChildren();
+                return NodeStatus::FAILURE;
+
+            case NodeStatus::SUCCESS:
+                // 다음 자식으로 계속
+                break;
+
+            case NodeStatus::SKIPPED:
+                all_success = false;
+                break;
+
+            case NodeStatus::IDLE:
+                throw LogicError("Child node returned IDLE");
+        }
+    }
+    resetChildren();
+    return all_success ? NodeStatus::SUCCESS : NodeStatus::SKIPPED;
+}
+</code></pre>
+<p>이 구현에서 주목할 점은, RUNNING 자식이 발견되면 해당 인덱스 이후의 모든 자식에 대해 <code>haltChild()</code>를 호출한다는 것이다. 이는 이전 Tick에서 RUNNING이었던 자식이 현재 Tick에서 더 앞쪽 자식의 RUNNING으로 인해 평가되지 않는 경우를 처리하기 위한 것이다.</p>
+<h2>알고리즘의 불변 조건</h2>
+<p>ReactiveSequence의 실행 알고리즘은 다음의 불변 조건(invariant)을 항상 만족시킨다:</p>
+<ol>
+<li><strong>단일 RUNNING 자식</strong>: 매 Tick 종료 시, 최대 하나의 자식만 RUNNING 상태를 유지한다.</li>
+<li><strong>순차적 평가 보장</strong>: 인덱스 <span class="math math-inline">i</span>의 자식은 반드시 인덱스 <span class="math math-inline">0</span>부터 <span class="math math-inline">i-1</span>까지의 모든 자식이 SUCCESS를 반환한 후에만 평가된다.</li>
+<li><strong>Halt 완전성</strong>: FAILURE 반환 시, 모든 RUNNING 자식이 Halt된다.</li>
+<li><strong>조건 유효성</strong>: RUNNING 상태가 유지되는 동안, 모든 앞쪽 조건이 매 Tick마다 재평가된다.</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

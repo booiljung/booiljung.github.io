@@ -115,6 +115,160 @@
             </header>
             <article>
                 <h1>1295.69 ReactiveFallback 내부의 Parallel 중첩</h1>
+<h2>1. 중첩 구조의 의미</h2>
+<p>ReactiveFallback의 우선순위 분기 내에 Parallel을 배치하면, 선택된 우선순위 분기에서 복수의 행동을 동시에 수행하는 구조가 형성된다. ReactiveFallback이 상황에 따른 행동 분기의 선택을 담당하고, 선택된 분기 내의 Parallel이 해당 상황에 필요한 복수 행동의 동시 실행을 담당한다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>ReactiveFallback
+├── Sequence [상황 A: 복수 동시 행동]
+│   ├── IsConditionA
+│   └── Parallel (정책)
+│       ├── ActionA₁
+│       └── ActionA₂
+├── Sequence [상황 B: 복수 동시 행동]
+│   ├── IsConditionB
+│   └── Parallel (정책)
+│       ├── ActionB₁
+│       └── ActionB₂
+└── DefaultAction
+</code></pre>
+<p>이 구조의 의미론: “조건 A가 충족되면 A₁과 A₂를 동시에 수행하고, 그렇지 않고 조건 B가 충족되면 B₁과 B₂를 동시에 수행하고, 모두 아니면 기본 행동을 수행하라.”</p>
+<h2>3. Tick 흐름의 추적</h2>
+<pre><code>ReactiveFallback
+├── Sequence [비상 대응]
+│   ├── IsEmergency
+│   └── Parallel (SUCCESS_ALL)
+│       ├── EmergencyStop
+│       └── SendAlert
+├── Sequence [경고 대응]
+│   ├── IsWarning
+│   └── Parallel (SUCCESS_ALL)
+│       ├── ReduceSpeed
+│       └── LogWarning
+└── NormalOperation
+</code></pre>
+<h3>3.1 정상 상태</h3>
+<pre><code>Tick 1:
+  Sequence[비상].tick():
+    IsEmergency → FAILURE
+    → Sequence → FAILURE
+  Sequence[경고].tick():
+    IsWarning → FAILURE
+    → Sequence → FAILURE
+  NormalOperation.tick() → RUNNING
+  → ReactiveFallback → RUNNING
+</code></pre>
+<p>비상도 경고도 아니므로 <code>NormalOperation</code>이 실행된다.</p>
+<h3>3.2 경고 발생</h3>
+<pre><code>Tick 2:
+  Sequence[비상].tick():
+    IsEmergency → FAILURE
+    → Sequence → FAILURE
+  Sequence[경고].tick():
+    IsWarning → SUCCESS
+    Parallel.tick():
+      ReduceSpeed.tick() → RUNNING
+      LogWarning.tick() → RUNNING
+      → Parallel → RUNNING
+    → Sequence → RUNNING
+  NormalOperation은 Tick 미수신
+  → NormalOperation.halt() (이전 RUNNING)
+  → ReactiveFallback → RUNNING
+</code></pre>
+<p>경고 조건이 활성화되면, 속도 감소와 경고 기록이 동시에 수행된다. <code>NormalOperation</code>은 Halt된다.</p>
+<h3>3.3 비상 선점</h3>
+<pre><code>Tick 3:
+  Sequence[비상].tick():
+    IsEmergency → SUCCESS
+    Parallel.tick():
+      EmergencyStop.tick() → RUNNING
+      SendAlert.tick() → RUNNING
+      → Parallel → RUNNING
+    → Sequence → RUNNING
+  Sequence[경고]는 Tick 미수신
+  → Sequence[경고] 내 Parallel.halt():
+      ReduceSpeed.halt()
+      LogWarning.halt()
+  → ReactiveFallback → RUNNING
+</code></pre>
+<p>비상 조건이 활성화되면 경고 분기의 Parallel과 그 내부 행동 모두에 Halt가 전파된다. 비상 분기의 Parallel이 새로 시작된다.</p>
+<h2>4. 우선순위 전환 시 Parallel의 Halt</h2>
+<p>ReactiveFallback의 우선순위 전환 시, 이전 분기의 Parallel에 Halt가 전파된다. 이 Halt는 Parallel을 거쳐 내부의 모든 <code>RUNNING</code> 자식에 재귀적으로 전파된다.</p>
+<pre><code>우선순위 전환: 경고 → 비상
+
+Sequence[경고].halt()
+→ Parallel[경고].halt()
+  → ReduceSpeed.halt()
+  → LogWarning.halt()
+</code></pre>
+<p>Parallel 내의 모든 행동이 안전하게 Halt를 처리하여야 한다. 특히 비상 전환 시 이전 분기의 행동이 즉시 정지하는 것이 안전에 직결된다.</p>
+<h2>5. 적용 사례</h2>
+<h3>5.1 상황별 대응 행동의 동시 수행</h3>
+<pre><code>ReactiveFallback
+├── Sequence [화재 대응]
+│   ├── IsFireDetected
+│   └── Parallel (SUCCESS_ALL)
+│       ├── ActivateFireSuppression
+│       ├── EvacuateArea
+│       └── NotifyFireDepartment
+├── Sequence [침입 대응]
+│   ├── IsIntruderDetected
+│   └── Parallel (SUCCESS_ALL)
+│       ├── TrackIntruder
+│       ├── ActivateAlarm
+│       └── NotifySecurity
+└── PatrolRoute
+</code></pre>
+<p>화재 감지 시 소화, 대피, 소방서 통보를 동시에 수행한다. 침입 감지 시 추적, 경보, 보안 통보를 동시에 수행한다. 화재가 침입보다 높은 우선순위를 가지므로, 침입 대응 중 화재가 감지되면 침입 대응 행동이 모두 Halt되고 화재 대응 행동이 시작된다.</p>
+<h3>5.2 기상 조건별 적응 항법</h3>
+<pre><code>ReactiveFallback
+├── Sequence [악천후 항법]
+│   ├── IsSevereWeather
+│   └── Parallel (SUCCESS_ALL)
+│       ├── ReduceSpeedDrastically
+│       ├── SwitchToLidarOnly
+│       └── ActivateHazardLights
+├── Sequence [우천 항법]
+│   ├── IsRaining
+│   └── Parallel (SUCCESS_ALL)
+│       ├── ReduceSpeed
+│       └── IncreaseFollowDistance
+└── NormalNavigation
+</code></pre>
+<p>악천후 시 급속 감속, LiDAR 전용 항법, 비상등 점등을 동시에 수행한다. 단순 우천 시 감속과 차간 거리 증가를 동시에 수행한다.</p>
+<h3>5.3 비상 착륙의 동시 행동</h3>
+<pre><code>ReactiveFallback
+├── Sequence [즉시 착륙]
+│   ├── IsImmediateLandingRequired
+│   └── Parallel (SUCCESS_ALL)
+│       ├── ExecuteVerticalDescent
+│       └── BroadcastMayday
+├── Sequence [긴급 착륙]
+│   ├── IsEmergencyLandingRequired
+│   └── Parallel (SUCCESS_ALL)
+│       ├── NavigateToNearestLandingZone
+│       └── TransmitTelemetry
+└── ContinueFlight
+</code></pre>
+<p>즉시 착륙 시 수직 하강과 조난 신호 발신을 동시에 수행한다.</p>
+<h2>6. Parallel 정책의 선택 가이드</h2>
+<p>ReactiveFallback 분기 내 Parallel의 정책 선택은 분기 내 행동들의 관계에 따라 결정한다.</p>
+<table><thead><tr><th>행동 간 관계</th><th>권장 정책</th><th>이유</th></tr></thead><tbody>
+<tr><td>모든 행동이 필수</td><td>SUCCESS_ALL, FAILURE_ONE</td><td>하나가 실패하면 전체 대응 실패</td></tr>
+<tr><td>일부 행동이 보조적</td><td>SUCCESS_ALL, FAILURE_ALL</td><td>보조 행동 실패가 주 행동에 영향 없음</td></tr>
+<tr><td>하나라도 완료되면 충분</td><td>SUCCESS_ONE</td><td>먼저 완료되는 행동이 대응 완료</td></tr>
+</tbody></table>
+<h2>7. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>분기 전환의 완전성</strong>: 우선순위 전환 시 이전 분기의 Parallel 내 모든 행동이 안전하게 Halt되는지를 검증하라. 하나의 행동이라도 Halt를 부적절하게 처리하면 안전 문제가 발생한다.</p>
+</li>
+<li>
+<p><strong>Parallel 내 행동의 독립성</strong>: 동일 분기의 Parallel 내 행동들은 블랙보드 쓰기 충돌이 없어야 한다. 동시에 실행되므로 동일 엔트리에 대한 쓰기 경합이 발생할 수 있다.</p>
+</li>
+<li>
+<p><strong>분기별 Parallel 정책의 차별화</strong>: 각 분기의 Parallel 정책은 해당 상황의 특성에 맞게 독립적으로 설정할 수 있다. 비상 분기는 FAILURE_ONE으로, 정상 운용 분기는 FAILURE_ALL로 설정하는 등의 차별화가 가능하다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

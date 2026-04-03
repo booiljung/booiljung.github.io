@@ -115,6 +115,112 @@
             </header>
             <article>
                 <h1>1295.31 드론 비행과 촬영의 동시 실행 패턴</h1>
+<h2>1. 패턴의 정의와 배경</h2>
+<p>드론 비행과 촬영의 동시 실행 패턴은 무인 항공기(Unmanned Aerial Vehicle, UAV)가 사전 계획된 비행 경로를 추종하면서 동시에 카메라 촬영, 영상 녹화, 또는 센서 데이터 수집을 수행하는 행동 트리 설계 패턴이다. Parallel 노드를 활용하여 비행 제어 행동과 촬영 행동에 매 Tick마다 실행 기회를 부여함으로써, 두 행동이 논리적으로 동시에 진행되도록 구성한다.</p>
+<p>항공 측량(aerial survey), 정밀 농업(precision agriculture), 시설물 점검(infrastructure inspection), 수색 구조(search and rescue) 등 드론의 주요 응용 분야에서는 비행과 촬영이 분리 불가능한 동시 행동이다. 비행 경로의 특정 지점에서만 촬영을 수행하는 것이 아니라, 비행 전 구간에 걸쳐 연속적으로 촬영이 이루어져야 하므로, Parallel 노드를 통한 동시 실행이 필수적이다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── FollowFlightPath
+│   input: "waypoints"
+│   output: "flight_status"
+└── CaptureImages
+    input: "capture_interval", "camera_params"
+    output: "captured_count"
+</code></pre>
+<p><code>FollowFlightPath</code> 노드는 사전 정의된 웨이포인트(waypoint) 시퀀스를 순차적으로 추종하며, 모든 웨이포인트를 통과하면 <code>SUCCESS</code>를 반환한다. <code>CaptureImages</code> 노드는 지정된 촬영 간격(capture interval)에 따라 카메라 셔터를 구동하고 촬영된 영상을 저장한다.</p>
+<p><code>SUCCESS_ALL</code> 정책에 의해 비행 경로 추종과 촬영이 모두 완료되어야 전체 임무가 성공으로 판정된다. <code>FAILURE_ONE</code> 정책에 의해 비행 제어 이상이나 카메라 장애가 발생하면 즉시 전체 임무가 중단된다.</p>
+<h2>3. 비행 경로 추종과 촬영 동기화</h2>
+<h3>3.1 거리 기반 촬영 트리거</h3>
+<p>항공 측량에서는 일정한 지상 거리 간격으로 촬영을 수행하여 영상 간 충분한 중복률(overlap ratio)을 확보하여야 한다. 이 경우 촬영 노드는 블랙보드에서 드론의 현재 위치를 읽어 이전 촬영 위치로부터의 이동 거리를 산출하고, 지정된 간격에 도달하면 촬영을 수행한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── FollowFlightPath
+│   output: "current_position"
+└── DistanceBasedCapture
+    input: "current_position", "capture_distance"
+    output: "captured_images"
+</code></pre>
+<p>촬영 간격 <span class="math math-inline">d</span>는 지상 해상도(Ground Sample Distance, GSD), 영상 센서의 화각(Field of View, FOV), 그리고 요구되는 종중복률(forward overlap) <span class="math math-inline">p</span>에 의해 결정된다. 촬영 고도 <span class="math math-inline">h</span>, 센서 크기 <span class="math math-inline">s</span>, 초점 거리 <span class="math math-inline">f</span>에 대해 지상 커버리지 폭은 <span class="math math-inline">W = \frac{s \cdot h}{f}</span>이며, 촬영 간격은 <span class="math math-inline">d = W \cdot (1 - p)</span>로 산출된다.</p>
+<h3>3.2 시간 기반 촬영 트리거</h3>
+<p>영상 녹화나 실시간 스트리밍 임무에서는 일정한 시간 간격으로 프레임을 캡처하는 시간 기반 촬영 방식을 사용한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── FollowFlightPath
+│   input: "waypoints"
+└── TimedCapture
+    input: "frame_interval_ms"
+</code></pre>
+<p><code>TimedCapture</code> 노드는 매 Tick마다 경과 시간을 확인하고, 지정된 시간 간격이 경과하면 프레임을 캡처한다. Tick 주파수가 촬영 주파수보다 높은 경우, 대부분의 Tick에서는 시간 미도달로 인해 캡처 없이 <code>RUNNING</code>을 반환하게 된다.</p>
+<h2>4. 안전 감시를 포함한 복합 구조</h2>
+<p>실제 드론 운용에서는 비행과 촬영 외에도 배터리 잔량, GPS 신호 품질, 풍속 등 다양한 안전 조건을 동시에 감시하여야 한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── FollowFlightPath
+│   input: "waypoints"
+│   output: "current_position", "flight_status"
+├── CaptureImages
+│   input: "current_position", "capture_distance"
+│   output: "captured_count"
+├── MonitorBatteryLevel
+│   input: "min_battery_for_return"
+├── MonitorGPSQuality
+│   input: "min_satellites", "max_hdop"
+└── MonitorWindSpeed
+    input: "max_wind_speed"
+</code></pre>
+<p>이 구조에서 배터리 잔량이 귀환에 필요한 최소량 이하로 감소하거나, GPS 위성 수가 최소 요구치에 미달하거나, HDOP(Horizontal Dilution of Precision)이 허용 범위를 초과하거나, 풍속이 안전 한계를 넘으면 즉시 비행과 촬영이 중단된다.</p>
+<h2>5. 짐벌 제어와의 통합</h2>
+<p>드론 촬영에서 카메라 짐벌(gimbal)의 자세 제어는 촬영 품질에 직접적인 영향을 미친다. 짐벌 제어를 별도의 자식 노드로 분리하여 Parallel 구조에 통합할 수 있다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── FollowFlightPath
+│   output: "current_position", "current_heading"
+├── ControlGimbal
+│   input: "target_look_at", "current_position"
+│   output: "gimbal_status"
+└── CaptureImages
+    input: "gimbal_status", "capture_distance"
+</code></pre>
+<p><code>ControlGimbal</code> 노드는 비행 중 카메라의 시선 방향을 목표 관심 지점(Point of Interest, POI)으로 지속적으로 유지한다. <code>CaptureImages</code> 노드는 짐벌의 안정화 상태(<code>gimbal_status</code>)를 확인하여, 짐벌이 목표 자세에 수렴한 상태에서만 촬영을 수행함으로써 영상 흐림(motion blur)을 방지한다.</p>
+<h2>6. 촬영 완료 조건에 따른 정책 변형</h2>
+<h3>6.1 비행 완료 우선 패턴</h3>
+<p>비행 경로 추종이 완료되면 촬영의 완료 여부와 무관하게 임무를 종료하는 패턴이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+├── FollowFlightPath    →  경로 완료 시 SUCCESS
+└── CaptureImages       →  촬영 지속 (RUNNING)
+</code></pre>
+<p><code>SUCCESS_ONE</code> 정책에 의해 비행 경로 추종이 완료되면 Parallel 노드가 즉시 성공으로 종료되고, 촬영 노드에 Halt가 전파되어 촬영이 중단된다. 이 패턴은 촬영이 비행에 종속적인 부수 행동인 경우에 적합하다.</p>
+<h3>6.2 촬영 완료 대기 패턴</h3>
+<p>비행 경로 추종과 촬영 모두 완료되어야 임무가 종료되는 패턴이다. 비행이 먼저 완료되더라도 촬영이 완료될 때까지 호버링(hovering)하며 대기한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── FollowFlightPathWithHover
+│   input: "waypoints"
+└── CaptureAllTargets
+    input: "target_positions"
+</code></pre>
+<p><code>FollowFlightPathWithHover</code> 노드는 최종 웨이포인트에 도달한 후 호버링 상태를 유지하며 <code>RUNNING</code>을 반환하다가, 블랙보드에서 촬영 완료 신호를 확인하면 <code>SUCCESS</code>를 반환한다.</p>
+<h2>7. XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;Parallel success_count="4" failure_count="1"&gt;
+    &lt;FollowFlightPath waypoints="{mission_waypoints}" 
+                      current_pos="{drone_position}" /&gt;
+    &lt;DistanceBasedCapture position="{drone_position}" 
+                          interval="{capture_distance}" 
+                          output_count="{photo_count}" /&gt;
+    &lt;MonitorBattery threshold="{min_return_battery}" /&gt;
+    &lt;MonitorGPS min_sats="6" max_hdop="2.0" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<h2>8. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>촬영 노드의 비차단 설계</strong>: 카메라 셔터 구동 및 영상 저장은 비차단(non-blocking) 방식으로 구현하여야 한다. 촬영 노드의 Tick 처리가 장시간 차단되면 비행 제어 노드의 Tick이 지연되어 비행 안정성이 저하될 수 있다.</p>
+</li>
+<li>
+<p><strong>블랙보드 키 분리</strong>: 비행 상태 데이터와 촬영 데이터는 별도의 블랙보드 키에 기록하여 쓰기 충돌을 방지하라. 비행 노드가 기록하는 위치 정보를 촬영 노드가 읽는 구조에서는 단일 쓰기자 제약이 자연스럽게 충족된다.</p>
+</li>
+<li>
+<p><strong>Halt 시 안전 처리</strong>: 비행 노드에 Halt가 전파되면 드론은 현재 위치에서 호버링하거나 사전 정의된 안전 고도로 상승하여야 한다. 촬영 노드에 Halt가 전파되면 진행 중인 영상 저장을 완료하고 카메라를 안전 상태로 전환하여야 한다.</p>
+</li>
+<li>
+<p><strong>데이터 무결성</strong>: 촬영된 영상에 촬영 시점의 GPS 좌표, 고도, 자세 정보를 메타데이터로 기록하여, 후처리 단계에서의 정사영상(orthophoto) 생성 및 3차원 재구성에 활용할 수 있도록 하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

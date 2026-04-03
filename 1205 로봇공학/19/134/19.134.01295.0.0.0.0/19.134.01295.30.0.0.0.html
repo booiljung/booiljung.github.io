@@ -115,6 +115,111 @@
             </header>
             <article>
                 <h1>1295.30 다중 센서 동시 처리 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>다중 센서 동시 처리 패턴은 Parallel 노드를 활용하여 로봇에 장착된 복수의 센서로부터 데이터를 동시에 수집, 처리, 기록하는 설계 패턴이다. 현대의 자율 로봇은 LiDAR, 카메라, IMU(Inertial Measurement Unit), GPS, 초음파 센서, 힘/토크 센서 등 다양한 센서를 탑재하며, 이들 센서의 데이터를 매 제어 주기마다 갱신하여 환경 인식, 위치 추정, 장애물 감지 등의 기능을 수행한다.</p>
+<p>Parallel 노드는 각 센서의 데이터 처리를 담당하는 자식 노드에 매 Tick마다 실행 기회를 부여하므로, 모든 센서 데이터가 동일한 Tick 주기 내에서 갱신된다. 이를 통해 후속 처리 단계에서 시간적으로 동기화된 센서 데이터 집합을 활용할 수 있다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ProcessLidar     →  writes "lidar_pointcloud"
+├── ProcessCamera    →  writes "camera_image"
+├── ProcessIMU       →  writes "imu_data"
+└── ProcessGPS       →  writes "gps_position"
+</code></pre>
+<p>이 구조에서 각 센서 처리 노드는 고유한 블랙보드 키에 처리 결과를 기록하므로, 쓰기-쓰기 충돌이 발생하지 않는다. <code>SUCCESS_ALL</code> 정책은 모든 센서 데이터의 갱신이 완료되어야 Parallel 노드가 성공으로 종료됨을 보장한다. <code>FAILURE_ONE</code> 정책은 어느 한 센서의 데이터 수집이 실패하면 전체를 실패로 처리하여, 불완전한 센서 데이터 집합에 기반한 후속 처리를 방지한다.</p>
+<h2>3. 센서 처리 노드의 동작 모델</h2>
+<h3>3.1 단발성 갱신 모델</h3>
+<p>센서 데이터를 한 번 읽어 처리한 후 즉시 <code>SUCCESS</code>를 반환하는 모델이다. 이 모델에서 각 센서 처리 노드는 매 Tick에서 최신 센서 데이터를 수신하고, 전처리를 수행하여 블랙보드에 기록한 후 <code>SUCCESS</code>를 반환한다.</p>
+<pre><code>function ProcessLidar.tick():
+    pointcloud ← subscribeLidarData()
+    if pointcloud is valid:
+        filtered ← applyVoxelFilter(pointcloud)
+        blackboard.set("lidar_pointcloud", filtered)
+        return SUCCESS
+    else:
+        return FAILURE
+</code></pre>
+<p>이 모델은 Parallel 노드가 매 Tick마다 모든 자식에서 <code>SUCCESS</code>를 수신하므로, 매 Tick마다 Parallel 노드 자체도 <code>SUCCESS</code>를 반환한다. 따라서 상위 행동 트리에서 반복적 실행 구조(예: 반복 데코레이터 또는 ReactiveSequence)와 결합하여 연속적인 센서 갱신을 구현하여야 한다.</p>
+<h3>3.2 지속적 갱신 모델</h3>
+<p>센서 데이터가 지속적으로 갱신되어야 하는 경우, 각 센서 처리 노드가 <code>RUNNING</code>을 반환하여 Parallel 노드의 실행을 유지하는 모델이다.</p>
+<pre><code>function ProcessLidar.tick():
+    pointcloud ← subscribeLidarData()
+    if pointcloud is valid:
+        filtered ← applyVoxelFilter(pointcloud)
+        blackboard.set("lidar_pointcloud", filtered)
+        return RUNNING
+    else:
+        return FAILURE
+</code></pre>
+<p>이 모델에서는 Parallel 노드가 <code>RUNNING</code>을 계속 반환하므로, 외부에서 Halt가 호출될 때까지 센서 데이터 갱신이 지속된다. 주 행동 노드와 결합하여 행동 실행 기간 동안 센서 데이터가 연속적으로 갱신되도록 구성할 수 있다.</p>
+<h2>4. 센서 융합과의 결합</h2>
+<p>다중 센서 동시 처리 패턴은 센서 융합(sensor fusion) 단계와 결합되어 사용되는 것이 일반적이다. Parallel 노드에서 갱신된 개별 센서 데이터를 후속 노드에서 통합하여 더 정확한 환경 인식이나 상태 추정을 수행한다.</p>
+<pre><code>Sequence
+├── Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+│   ├── ProcessLidar      →  writes "lidar_pointcloud"
+│   ├── ProcessCamera     →  writes "camera_image"
+│   └── ProcessIMU        →  writes "imu_data"
+└── FuseSensorData
+    input: "lidar_pointcloud", "camera_image", "imu_data"
+    output: "fused_perception"
+</code></pre>
+<p>위 구조에서 Sequence 노드는 먼저 Parallel 노드를 통해 모든 센서 데이터를 갱신한 후, <code>FuseSensorData</code> 노드에서 센서 융합을 수행한다. Parallel 노드의 <code>SUCCESS_ALL</code> 정책이 모든 센서 데이터의 갱신 완료를 보장하므로, 융합 노드는 항상 최신의 완전한 센서 데이터 집합을 입력으로 받게 된다.</p>
+<h2>5. 센서 장애 허용 패턴</h2>
+<p>일부 센서의 장애가 전체 시스템의 동작을 중단시키지 않아야 하는 경우, 실패 정책을 조정하여 장애 허용(fault tolerance) 패턴을 구현할 수 있다.</p>
+<h3>5.1 FAILURE_ALL 정책을 활용한 장애 허용</h3>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ALL)
+├── ProcessLidar      →  주 인식 센서
+├── ProcessCamera     →  보조 인식 센서
+└── ProcessIMU        →  관성 측정
+</code></pre>
+<p><code>FAILURE_ALL</code> 정책에서는 모든 센서 처리 노드가 실패해야 Parallel 노드가 실패로 종료된다. 이를 통해 일부 센서의 일시적 장애에도 나머지 센서의 데이터로 시스템 동작을 유지할 수 있다. 다만 실패한 센서의 블랙보드 데이터가 갱신되지 않으므로, 후속 융합 단계에서 데이터의 유효성(freshness)을 확인하여야 한다.</p>
+<h3>5.2 SUCCESS_COUNT(N) 정책을 활용한 부분 완료 허용</h3>
+<pre><code>Parallel (success_count: 2, failure_count: 3)
+├── ProcessLidar
+├── ProcessCamera
+└── ProcessUltrasonic
+</code></pre>
+<p><code>success_count: 2</code>는 세 개의 센서 중 두 개 이상이 성공하면 Parallel 노드가 성공으로 종료됨을 의미한다. 이를 통해 하나의 센서가 장애 상태이더라도, 나머지 센서의 데이터로 후속 처리를 진행할 수 있다. 이 접근은 센서 간 기능적 중복성(redundancy)이 존재하는 경우에 적합하다.</p>
+<h2>6. 센서 데이터 동기화 고려 사항</h2>
+<h3>6.1 시간 정렬 문제</h3>
+<p>Parallel 노드의 단일 스레드 순차 실행 모델에서 각 센서 처리 노드는 순차적으로 Tick된다. 각 노드가 ROS2 토픽으로부터 수신하는 센서 데이터의 타임스탬프는 엄밀하게 동일하지 않을 수 있다. 고정밀 센서 융합이 요구되는 응용에서는 각 센서 데이터의 타임스탬프를 블랙보드에 함께 기록하고, 융합 단계에서 시간 정렬(temporal alignment)을 수행하여야 한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ProcessLidar
+│   output: "lidar_pointcloud", "lidar_timestamp"
+├── ProcessCamera
+│   output: "camera_image", "camera_timestamp"
+└── ProcessIMU
+    output: "imu_data", "imu_timestamp"
+</code></pre>
+<h3>6.2 갱신 주파수 불일치</h3>
+<p>센서마다 데이터 갱신 주파수(update rate)가 상이할 수 있다. LiDAR는 10~20 Hz, 카메라는 30~60 Hz, IMU는 100~1000 Hz로 동작하는 것이 일반적이다. 행동 트리의 Tick 주파수가 특정 센서의 갱신 주파수보다 높은 경우, 해당 센서 처리 노드는 이전 Tick과 동일한 데이터를 중복 처리하게 된다. 이를 방지하기 위해 센서 처리 노드 내에서 데이터의 타임스탬프를 확인하여 새로운 데이터가 도착한 경우에만 처리를 수행하고, 그렇지 않은 경우에는 이전 결과를 유지하는 것이 효율적이다.</p>
+<h2>7. XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Parallel success_count="3" failure_count="1"&gt;
+        &lt;ProcessLidar output_pointcloud="{lidar_pointcloud}" 
+                      output_timestamp="{lidar_ts}" /&gt;
+        &lt;ProcessCamera output_image="{camera_image}" 
+                       output_timestamp="{camera_ts}" /&gt;
+        &lt;ProcessIMU output_data="{imu_data}" 
+                    output_timestamp="{imu_ts}" /&gt;
+    &lt;/Parallel&gt;
+    &lt;FuseSensorData lidar="{lidar_pointcloud}" 
+                    camera="{camera_image}" 
+                    imu="{imu_data}"
+                    output="{fused_perception}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>8. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>블랙보드 키 분리</strong>: 각 센서 처리 노드는 반드시 고유한 블랙보드 키에 결과를 기록하여야 한다. 동일한 키에 복수의 센서 데이터를 기록하면 쓰기-쓰기 충돌이 발생한다.</p>
+</li>
+<li>
+<p><strong>처리 시간 균형</strong>: 특정 센서의 데이터 처리 시간이 과도하게 길면 전체 Tick 주기가 지연된다. 연산 집약적인 센서 처리(점군 필터링, 영상 특징 추출 등)는 별도의 ROS2 노드에서 비동기적으로 수행하고, 행동 트리의 센서 처리 노드는 처리 결과를 조회하는 역할만 담당하도록 설계하는 것이 권장된다.</p>
+</li>
+<li>
+<p><strong>장애 허용 수준 결정</strong>: 센서 장애 시 시스템의 동작 정책을 사전에 결정하고, 이에 부합하는 실패 정책을 설정하여야 한다. 안전 필수 시스템에서는 <code>FAILURE_ONE</code> 정책을 적용하여 단 하나의 센서 장애에도 시스템을 중단시키는 것이 안전한 반면, 센서 중복성이 확보된 시스템에서는 <code>FAILURE_ALL</code> 또는 <code>FAILURE_COUNT(N)</code> 정책을 적용하여 부분적 장애를 허용할 수 있다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

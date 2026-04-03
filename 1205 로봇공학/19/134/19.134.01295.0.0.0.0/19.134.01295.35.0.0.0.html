@@ -115,6 +115,142 @@
             </header>
             <article>
                 <h1>1295.35 안전 위반 시 주 행동 즉각 중단</h1>
+<h2>1. 즉각 중단 메커니즘의 동작 원리</h2>
+<p>Parallel 노드에서 안전 조건 모니터링 노드가 <code>FAILURE</code>를 반환하면, <code>FAILURE_ONE</code> 정책에 의해 Parallel 노드의 Tick 함수는 나머지 자식 노드에 대한 Tick 전파를 즉시 중단하고, 현재 <code>RUNNING</code> 상태인 모든 자식에 Halt를 순차적으로 전파한다. 이 과정을 통해 주 행동 노드에 Halt가 도달하고, 주 행동 노드의 Halt 핸들러가 실행되어 로봇의 물리적 동작이 중단된다.</p>
+<p>이 메커니즘의 시간적 흐름을 상세히 분석하면 다음과 같다.</p>
+<pre><code>Tick 시작
+  ├── Child 1 (PrimaryAction).tick() → RUNNING
+  ├── Child 2 (SafetyMonitor_A).tick() → RUNNING
+  ├── Child 3 (SafetyMonitor_B).tick() → FAILURE  ← 안전 위반 감지
+  │
+  │   [FAILURE_ONE 정책 충족: 실패 자식 수 ≥ 1]
+  │
+  ├── Child 1 (PrimaryAction).halt()    ← 주 행동 중단
+  ├── Child 2 (SafetyMonitor_A).halt()  ← 감시 노드 정리
+  │
+  └── Parallel 노드 → FAILURE 반환
+</code></pre>
+<p>중요한 점은 Parallel 노드의 단일 스레드 순차 실행 모델에서, 안전 감시 노드보다 먼저 Tick되는 자식은 해당 Tick에서 이미 실행이 완료된 상태라는 것이다. 위 예시에서 <code>PrimaryAction</code>은 <code>SafetyMonitor_B</code>가 <code>FAILURE</code>를 반환하기 전에 이미 해당 Tick의 실행을 완료하였다. 따라서 안전 위반이 감지된 시점과 주 행동이 실제로 중단되는 시점 사이에는 최소 한 Tick 주기의 지연이 존재한다.</p>
+<h2>2. Halt 전파의 실행 순서</h2>
+<p>Parallel 노드의 구현에 따라 Halt 전파 순서가 달라질 수 있다. BehaviorTree.CPP의 기본 구현에서는 자식 인덱스의 역순(reverse order)으로 Halt를 전파한다. 이는 가장 나중에 시작된 자식부터 정리한다는 스택 기반(stack-based) 정리 정책에 해당한다.</p>
+<pre><code>Parallel 자식 구성:
+  [0] PrimaryAction
+  [1] SafetyMonitor_A
+  [2] SafetyMonitor_B   ← FAILURE 반환
+
+Halt 전파 순서:
+  [1] SafetyMonitor_A.halt()   (역순 전파)
+  [0] PrimaryAction.halt()     (역순 전파)
+</code></pre>
+<p>안전 감시 패턴에서 Halt 전파 순서는 일반적으로 큰 영향을 미치지 않는다. 안전 감시 노드의 Halt는 내부 상태 초기화에 불과하며, 주 행동 노드의 Halt가 물리적 동작 중단을 실제로 수행하는 핵심 연산이기 때문이다. 다만, 다수의 물리적 행동이 동시에 실행되는 구조에서는 Halt 순서가 의미를 가질 수 있으므로 설계 시 고려하여야 한다.</p>
+<h2>3. 중단 응답 시간 분석</h2>
+<p>안전 위반 감지부터 로봇의 물리적 동작이 실제로 중단되기까지의 총 응답 시간 <span class="math math-inline">T_{response}</span>는 다음 요소의 합으로 구성된다.</p>
+<p><span class="math math-display">T_{response} = T_{detect} + T_{halt\_propagate} + T_{halt\_execute} + T_{physical\_stop}</span></p>
+<p>각 항의 의미는 다음과 같다.</p>
+<table><thead><tr><th>항</th><th>의미</th><th>영향 요인</th></tr></thead><tbody>
+<tr><td><span class="math math-inline">T_{detect}</span></td><td>안전 위반 감지 지연</td><td>Tick 주기, 센서 지연</td></tr>
+<tr><td><span class="math math-inline">T_{halt\_propagate}</span></td><td>Halt 전파 시간</td><td>자식 수, 트리 깊이</td></tr>
+<tr><td><span class="math math-inline">T_{halt\_execute}</span></td><td>Halt 핸들러 실행 시간</td><td>정리 연산 복잡도</td></tr>
+<tr><td><span class="math math-inline">T_{physical\_stop}</span></td><td>물리적 정지 시간</td><td>관성, 감속 능력</td></tr>
+</tbody></table>
+<p><span class="math math-inline">T_{detect}</span>는 최대 한 Tick 주기에 해당하며, 이는 안전 감시 노드가 매 Tick마다 점검을 수행하므로 이전 Tick과 현재 Tick 사이에 발생한 위반을 현재 Tick에서 감지하기 때문이다. Tick 주기가 <span class="math math-inline">\Delta t</span>일 때 최악의 경우 감지 지연은 <span class="math math-inline">\Delta t</span>이다.</p>
+<p><span class="math math-inline">T_{halt\_propagate}</span>는 행동 트리의 구조적 깊이에 비례하며, 일반적으로 마이크로초(microsecond) 수준이다. <span class="math math-inline">T_{halt\_execute}</span>는 각 노드의 Halt 핸들러 구현에 의존하며, ROS2 액션 취소 요청이 포함된 경우 수 밀리초가 소요될 수 있다. <span class="math math-inline">T_{physical\_stop}</span>는 로봇의 물리적 특성(질량, 속도, 감속 능력)에 의해 결정되며 수십 밀리초에서 수 초까지 다양하다.</p>
+<h2>즉각 중단을 위한 주 행동 노드의 Halt 구현</h2>
+<h3>이동 로봇의 Halt 구현</h3>
+<pre><code class="language-cpp">void NavigateToGoal::halt() {
+    // 1. 속도 명령 즉시 0으로 설정
+    geometry_msgs::msg::Twist zero_cmd;
+    velocity_publisher_-&gt;publish(zero_cmd);
+    
+    // 2. ROS2 액션 목표 취소
+    if (navigation_goal_handle_) {
+        action_client_-&gt;async_cancel_goal(navigation_goal_handle_);
+    }
+    
+    // 3. 내부 상태 초기화
+    navigation_goal_handle_ = nullptr;
+    setStatus(BT::NodeStatus::IDLE);
+}
+</code></pre>
+<p>속도 명령의 즉시 발행이 가장 우선적이다. ROS2 액션 취소는 비동기적으로 처리되므로, 액션 서버의 취소 응답을 기다리지 않고 즉시 속도 0 명령을 발행하여 물리적 정지를 우선 달성한다.</p>
+<h3>매니퓰레이터의 Halt 구현</h3>
+<pre><code class="language-cpp">void ExecuteMotion::halt() {
+    // 1. 궤적 추종 즉시 중단
+    trajectory_controller_-&gt;stopMotion();
+    
+    // 2. 브레이크 활성화 (해당하는 경우)
+    for (auto&amp; joint : joints_) {
+        joint.activateBrake();
+    }
+    
+    // 3. ROS2 액션 목표 취소
+    if (motion_goal_handle_) {
+        action_client_-&gt;async_cancel_goal(motion_goal_handle_);
+    }
+    
+    // 4. 정지 시점의 관절 상태 기록
+    blackboard()-&gt;set("halt_joint_positions", 
+                      getCurrentJointPositions());
+    
+    setStatus(BT::NodeStatus::IDLE);
+}
+</code></pre>
+<p>매니퓰레이터의 경우 중력 보상(gravity compensation)이 필요한 관절에서는 브레이크 활성화 전에 현재 자세에서의 중력 보상 토크를 유지하여야 한다. 브레이크 없이 모터 전류를 차단하면 매니퓰레이터가 중력에 의해 낙하할 수 있다.</p>
+<h3>드론의 Halt 구현</h3>
+<pre><code class="language-cpp">void FollowFlightPath::halt() {
+    // 1. 호버링 모드 전환
+    setFlightMode(FlightMode::HOVER);
+    
+    // 2. 현재 위치에서 정지
+    publishPositionHold(getCurrentPosition());
+    
+    // 3. 임무 목표 취소
+    if (flight_goal_handle_) {
+        action_client_-&gt;async_cancel_goal(flight_goal_handle_);
+    }
+    
+    setStatus(BT::NodeStatus::IDLE);
+}
+</code></pre>
+<p>드론의 경우 즉시 정지는 현재 위치에서의 호버링(hovering)을 의미한다. 모터를 완전히 정지시키면 추락하므로, 호버링 모드로의 전환이 안전한 Halt 처리이다.</p>
+<h2>안전 위반의 심각도에 따른 중단 방식</h2>
+<p>모든 안전 위반에 대해 동일한 중단 방식을 적용하는 것이 반드시 적절하지는 않다. 위반의 심각도에 따라 차별화된 중단 방식을 적용할 수 있다.</p>
+<table><thead><tr><th>심각도</th><th>중단 방식</th><th>예시</th></tr></thead><tbody>
+<tr><td>즉시 정지 (Category 0 Stop)</td><td>제어 전력 즉시 차단</td><td>인간 충돌 감지</td></tr>
+<tr><td>제어 정지 (Category 1 Stop)</td><td>감속 후 정지, 이후 전력 차단</td><td>관절 한계 근접</td></tr>
+<tr><td>프로그램 정지 (Category 2 Stop)</td><td>감속 후 정지, 전력 유지</td><td>배터리 부족 경고</td></tr>
+</tbody></table>
+<p>IEC 60204-1 규격은 위의 정지 범주(stop category)를 정의하고 있으며, 각 범주에 따라 로봇의 정지 동작이 상이하다. 행동 트리에서 이를 구현하기 위해, 안전 감시 노드가 위반 감지 시 심각도 정보를 블랙보드에 기록하고, 주 행동 노드의 Halt 핸들러가 심각도에 따라 적절한 정지 범주를 적용한다.</p>
+<pre><code>function PrimaryAction.halt():
+    severity ← blackboard.get("safety_violation_severity")
+    
+    if severity == CRITICAL:
+        emergencyStop()           // Category 0: 즉시 전력 차단
+    elif severity == SEVERE:
+        controlledStop()          // Category 1: 감속 후 정지
+    elif severity == WARNING:
+        programmedStop()          // Category 2: 감속 후 정지, 전력 유지
+</code></pre>
+<h2>Tick 주기와 안전 응답 시간의 관계</h2>
+<p>행동 트리의 Tick 주기 <span class="math math-inline">\Delta t</span>는 안전 위반 감지의 최대 지연 시간을 직접적으로 결정한다. 안전 응용에서 요구되는 최대 허용 응답 시간 <span class="math math-inline">T_{max}</span>가 주어졌을 때, Tick 주기는 다음 조건을 충족하여야 한다.</p>
+<p><span class="math math-display">\Delta t \leq T_{max} - T_{halt\_propagate} - T_{halt\_execute} - T_{physical\_stop}</span></p>
+<p>예를 들어, 요구 응답 시간이 100 ms이고 Halt 전파 시간이 0.1 ms, Halt 실행 시간이 5 ms, 물리적 정지 시간이 50 ms인 경우, Tick 주기는 44.9 ms 이하이어야 한다. 이는 약 22 Hz 이상의 Tick 주파수에 해당한다.</p>
+<p>안전 필수 시스템에서는 이러한 시간 분석을 설계 단계에서 수행하고, 요구되는 응답 시간이 보장됨을 검증하여야 한다. Tick 주기가 너무 길어 요구 응답 시간을 충족하지 못하는 경우, Tick 주파수를 높이거나 행동 트리 외부의 하드웨어 안전 시스템에서 해당 안전 기능을 담당하도록 설계를 변경하여야 한다.</p>
+<h2>4. 중단 후 상태 보존과 복구 지원</h2>
+<p>안전 위반에 의해 주 행동이 중단된 후, 상위 행동 트리에서 복구를 시도할 수 있도록 중단 시점의 상태 정보를 보존하는 것이 중요하다.</p>
+<pre><code>function PrimaryAction.halt():
+    // 물리적 중단 수행
+    stopMotion()
+    
+    // 중단 시점 상태 보존
+    blackboard.set("interrupted_state", {
+        "progress": getProgress(),
+        "position": getCurrentPosition(),
+        "velocity": getCurrentVelocity(),
+        "timestamp": current_time()
+    })
+</code></pre>
+<p>보존된 상태 정보를 활용하여, 안전 조건이 해소된 후 중단된 지점부터 행동을 재개하는 복구 전략을 구현할 수 있다. 다만 안전 위반의 종류에 따라 행동 재개가 적절하지 않을 수 있으므로, 복구 노드에서 재개 가능 여부를 판단하여야 한다.</p>
 
             </article>
             <footer>

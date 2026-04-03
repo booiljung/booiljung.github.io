@@ -115,6 +115,304 @@
             </header>
             <article>
                 <h1>1296.42 ROS2 액션 피드백 처리 액션 노드</h1>
+<h2>1. 피드백의 개요</h2>
+<p>ROS2 액션 인터페이스에서 피드백(Feedback)은 액션 서버가 골의 실행 중에 주기적으로 클라이언트에 전송하는 중간 상태 정보이다. 피드백은 액션이 RUNNING 상태에 있는 동안 서버의 진행 상황을 클라이언트에 알리는 수단으로서, 내비게이션에서의 남은 거리, 매니퓰레이션에서의 현재 관절 위치, 경로 추종에서의 이탈 정도 등을 포함한다. 행동 트리 액션 노드에서 피드백의 처리는 <code>onRunning()</code> 콜백 내에서 수행되며, 처리된 피드백 데이터는 출력 포트를 통해 블랙보드에 기록되어 다른 노드에서 참조할 수 있다(Macenski et al., 2020).</p>
+<h2>2. 피드백 콜백의 등록</h2>
+<p>피드백의 수신은 <code>SendGoalOptions</code>의 <code>feedback_callback</code>에 의해 이루어진다. 이 콜백은 액션 서버가 피드백을 발행할 때마다 호출되며, 수신된 피드백을 멤버 변수에 저장한다.</p>
+<pre><code class="language-cpp">auto send_goal_options =
+    rclcpp_action::Client&lt;ActionT&gt;::SendGoalOptions();
+
+send_goal_options.feedback_callback =
+    [this](
+%20%20%20%20%20%20%20%20typename%20GoalHandle::SharedPtr,
+%20%20%20%20%20%20%20%20const%20std::shared_ptr&lt;const%20Feedback&gt;%20feedback)
+    {
+        latest_feedback_ = feedback;
+    };
+</code></pre>
+<p><code>feedback_callback</code>은 ROS2 실행기(executor)의 컨텍스트에서 호출된다. 따라서 콜백 내에서의 처리는 최소화하고, 수신된 피드백 데이터를 멤버 변수에 저장하는 것에 한정한다. 실질적인 피드백 처리는 <code>onRunning()</code>에서 수행한다.</p>
+<h2>3. onRunning()에서의 피드백 처리</h2>
+<p><code>onRunning()</code>은 매 Tick마다 호출되므로, 축적된 최신 피드백을 확인하고 처리하는 데 적합한 위치이다.</p>
+<h3>3.1 기본 피드백 처리 패턴</h3>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    // ROS2 콜백 처리 (피드백 수신 포함)
+    rclcpp::spin_some(node_);
+
+    // 완료 확인 (결과 콜백에 의해 갱신)
+    if (goal_completed_)
+        return processResult();
+
+    // 피드백 처리
+    if (latest_feedback_)
+    {
+        processFeedback(latest_feedback_);
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>3.2 피드백 데이터의 출력 포트 기록</h3>
+<p>피드백의 주요 필드를 출력 포트를 통해 블랙보드에 기록한다.</p>
+<pre><code class="language-cpp">void processFeedback(
+    const std::shared_ptr&lt;const Feedback&gt;&amp; feedback)
+{
+    // NavigateToPose 피드백 처리
+    setOutput("distance_remaining",
+        feedback-&gt;distance_remaining);
+    setOutput("estimated_time_remaining",
+        feedback-&gt;estimated_time_remaining.sec);
+    setOutput("current_pose",
+        feedback-&gt;current_pose);
+    setOutput("number_of_recoveries",
+        feedback-&gt;number_of_recoveries);
+}
+</code></pre>
+<p>기록된 피드백 데이터는 Parallel 노드의 다른 자식 노드나 후속 노드에서 <code>getInput()</code>을 통해 참조할 수 있다.</p>
+<h2>4. 피드백 출력 포트의 설계</h2>
+<h3>4.1 포트 선언</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // 골 관련 입력 포트
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+            "goal", "목표 위치와 자세"),
+
+        // 결과 출력 포트
+        BT::OutputPort&lt;int&gt;(
+            "error_code", "오류 코드"),
+
+        // 피드백 출력 포트
+        BT::OutputPort&lt;double&gt;(
+            "distance_remaining",
+            "목표까지 남은 거리 (미터)"),
+        BT::OutputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+            "current_pose",
+            "현재 로봇 위치와 자세"),
+        BT::OutputPort&lt;int&gt;(
+            "number_of_recoveries",
+            "복구 행동 수행 횟수")
+    };
+}
+</code></pre>
+<h3>4.2 피드백 포트와 결과 포트의 구분</h3>
+<table><thead><tr><th>포트 범주</th><th style="text-align: center">갱신 시점</th><th style="text-align: center">유효 기간</th><th>용도</th></tr></thead><tbody>
+<tr><td>피드백 포트</td><td style="text-align: center">RUNNING 중 매 Tick</td><td style="text-align: center">현재 Tick</td><td>진행 상태 모니터링</td></tr>
+<tr><td>결과 포트</td><td style="text-align: center">SUCCESS/FAILURE 직전</td><td style="text-align: center">노드 완료 이후</td><td>최종 결과 전달</td></tr>
+</tbody></table>
+<p>피드백 포트는 노드가 RUNNING 상태에 있는 동안 매 Tick마다 갱신되므로, 항상 최신 상태를 반영한다. 결과 포트는 노드의 완료 시에 한 번만 기록된다.</p>
+<h2>5. 피드백 활용 패턴</h2>
+<h3>5.1 Parallel 노드를 통한 실시간 모니터링</h3>
+<p>피드백 데이터를 Parallel 노드의 다른 자식에서 실시간으로 참조하는 패턴이다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="1" failure_count="1"&gt;
+    &lt;!-- 내비게이션 실행: 피드백을 블랙보드에 기록 --&gt;
+    &lt;NavigateToPose goal="{target}"
+                     distance_remaining="{dist_remaining}"
+                     current_pose="{robot_pose}" /&gt;
+
+    &lt;!-- 진행 상태 모니터링: 피드백을 읽어 조건 검사 --&gt;
+    &lt;Sequence&gt;
+        &lt;IsDistanceLessThan
+            distance="{dist_remaining}"
+            threshold="0.5" /&gt;
+        &lt;SwitchToFineApproach /&gt;
+    &lt;/Sequence&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>이 패턴에서 <code>NavigateToPose</code>의 피드백 출력 포트 <code>distance_remaining</code>이 블랙보드 키 <code>dist_remaining</code>에 매핑되고, <code>IsDistanceLessThan</code> 조건 노드가 이 키를 읽어 거리 임계값을 검사한다.</p>
+<h3>5.2 피드백 기반 의사 결정</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;NavigateToPose goal="{target}"
+                     number_of_recoveries="{recovery_count}" /&gt;
+    &lt;Fallback&gt;
+        &lt;IsRecoveryCountBelow
+            count="{recovery_count}" max="3" /&gt;
+        &lt;AbortNavigation /&gt;
+    &lt;/Fallback&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>복구 행동 횟수가 임계값을 초과하면 내비게이션을 중단하는 의사 결정에 피드백이 활용된다.</p>
+<h3>5.3 피드백의 로깅</h3>
+<pre><code class="language-cpp">void processFeedback(
+    const std::shared_ptr&lt;const Feedback&gt;&amp; feedback)
+{
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+        "남은 거리: %.2f m, 복구 횟수: %d",
+        feedback-&gt;distance_remaining,
+        feedback-&gt;number_of_recoveries);
+
+    setOutput("distance_remaining",
+        feedback-&gt;distance_remaining);
+}
+</code></pre>
+<p>피드백의 로깅은 <code>DEBUG</code> 수준으로 수행하여, 정상 운영 시에는 로그 출력을 억제하고 디버깅 시에만 활성화한다.</p>
+<h2>6. 피드백 수신 빈도와 Tick 주기의 관계</h2>
+<p>피드백의 수신 빈도는 액션 서버의 피드백 발행 빈도에 의해 결정되며, 행동 트리의 Tick 주기와 독립적이다. 피드백 콜백은 ROS2 실행기에 의해 호출되고, <code>onRunning()</code>은 Tick 주기에 의해 호출되므로, 두 시점 사이에 비동기적 관계가 존재한다.</p>
+<pre><code>시간 →
+
+서버 피드백 발행:  F₁    F₂    F₃    F₄    F₅    F₆
+                   │     │     │     │     │     │
+Tick 주기:     T₁       T₂       T₃       T₄
+               │        │        │        │
+onRunning():   F₁      F₂,F₃    F₅      F₆
+(처리 시점)   (최신)   (최신만)  (최신)   (최신)
+</code></pre>
+<p>Tick 주기가 피드백 발행 주기보다 긴 경우, 일부 피드백이 건너뛸 수 있다. <code>latest_feedback_</code>에는 항상 가장 최근의 피드백만 저장되므로, 중간 피드백은 유실된다. 이 동작은 대부분의 사용 사례에서 적절하다. 피드백의 누적적 처리가 필요한 경우에는 피드백 콜백 내에서 큐에 저장하는 패턴을 적용한다.</p>
+<h3>6.1 피드백 큐 패턴</h3>
+<pre><code class="language-cpp">// 멤버 변수
+std::queue&lt;std::shared_ptr&lt;const Feedback&gt;&gt; feedback_queue_;
+std::mutex feedback_mutex_;
+
+// 피드백 콜백: 큐에 추가
+send_goal_options.feedback_callback =
+    [this](
+%20%20%20%20%20%20%20%20typename%20GoalHandle::SharedPtr,
+%20%20%20%20%20%20%20%20const%20std::shared_ptr&lt;const%20Feedback&gt;%20feedback)
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(feedback_mutex_);
+        feedback_queue_.push(feedback);
+    };
+
+// onRunning(): 큐의 모든 피드백 처리
+BT::NodeStatus onRunning() override
+{
+    rclcpp::spin_some(node_);
+
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(feedback_mutex_);
+        while (!feedback_queue_.empty())
+        {
+            processEachFeedback(feedback_queue_.front());
+            feedback_queue_.pop();
+        }
+    }
+
+    if (goal_completed_)
+        return processResult();
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>이 패턴은 피드백의 누적 통계(총 이동 거리, 최대 편차 등)를 산출하는 경우에 적용된다.</p>
+<h2>7. 액션 타입별 피드백 구조</h2>
+<h3>7.1 내비게이션 액션의 피드백</h3>
+<table><thead><tr><th>피드백 필드</th><th>타입</th><th>의미</th></tr></thead><tbody>
+<tr><td><code>current_pose</code></td><td><code>PoseStamped</code></td><td>현재 로봇 위치와 자세</td></tr>
+<tr><td><code>distance_remaining</code></td><td><code>float</code></td><td>목표까지 남은 거리</td></tr>
+<tr><td><code>navigation_time</code></td><td><code>Duration</code></td><td>경과된 내비게이션 시간</td></tr>
+<tr><td><code>number_of_recoveries</code></td><td><code>int</code></td><td>복구 행동 수행 횟수</td></tr>
+</tbody></table>
+<h3>7.2 경로 추종 액션의 피드백</h3>
+<table><thead><tr><th>피드백 필드</th><th>타입</th><th>의미</th></tr></thead><tbody>
+<tr><td><code>distance_to_goal</code></td><td><code>float</code></td><td>목표까지 남은 거리</td></tr>
+<tr><td><code>speed</code></td><td><code>float</code></td><td>현재 이동 속도</td></tr>
+</tbody></table>
+<h3>7.3 매니퓰레이션 액션의 피드백</h3>
+<table><thead><tr><th>피드백 필드</th><th>타입</th><th>의미</th></tr></thead><tbody>
+<tr><td><code>joint_positions</code></td><td><code>float[]</code></td><td>현재 관절 위치</td></tr>
+<tr><td><code>distance_to_target</code></td><td><code>float</code></td><td>목표 자세까지 거리</td></tr>
+</tbody></table>
+<h2>8. 가상 함수를 통한 피드백 처리의 확장</h2>
+<p>템플릿 기반 클래스에서 피드백 처리를 가상 함수로 제공하면, 파생 클래스가 액션 타입에 특화된 피드백 처리를 구현할 수 있다.</p>
+<pre><code class="language-cpp">template &lt;typename ActionT&gt;
+class RosActionNode : public BT::StatefulActionNode
+{
+protected:
+    // 파생 클래스에서 재정의 가능
+    virtual void onFeedbackReceived(
+        const typename ActionT::Feedback&amp; feedback)
+    {
+        // 기본 구현: 아무 작업도 수행하지 않음
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        rclcpp::spin_some(node_);
+
+        if (latest_feedback_)
+        {
+            onFeedbackReceived(*latest_feedback_);
+            latest_feedback_ = nullptr;
+        }
+
+        if (goal_completed_)
+            return processResult();
+
+        return BT::NodeStatus::RUNNING;
+    }
+};
+</code></pre>
+<pre><code class="language-cpp">// 파생 클래스에서 피드백 처리 구현
+class NavigateToPoseAction
+    : public RosActionNode&lt;nav2_msgs::action::NavigateToPose&gt;
+{
+protected:
+    void onFeedbackReceived(
+        const nav2_msgs::action::NavigateToPose::Feedback&amp;
+            feedback) override
+    {
+        setOutput("distance_remaining",
+            feedback.distance_remaining);
+        setOutput("current_pose",
+            feedback.current_pose);
+        setOutput("number_of_recoveries",
+            feedback.number_of_recoveries);
+    }
+};
+</code></pre>
+<h2>9. 피드백 미수신 시의 처리</h2>
+<p>액션 서버가 피드백을 발행하지 않거나, 네트워크 지연에 의해 피드백이 도달하지 않는 경우의 처리를 고려한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    rclcpp::spin_some(node_);
+
+    if (goal_completed_)
+        return processResult();
+
+    // 피드백이 있으면 처리, 없으면 무시
+    if (latest_feedback_)
+    {
+        onFeedbackReceived(*latest_feedback_);
+        last_feedback_time_ =
+            std::chrono::steady_clock::now();
+    }
+    else
+    {
+        // 피드백 장기 미수신 경고 (선택적)
+        auto elapsed =
+            std::chrono::steady_clock::now()
+            - last_feedback_time_;
+        if (elapsed &gt; std::chrono::seconds(10))
+        {
+            RCLCPP_WARN_THROTTLE(node_-&gt;get_logger(),
+                *node_-&gt;get_clock(), 5000,
+                "피드백 미수신 경과: %.1f초",
+                std::chrono::duration&lt;double&gt;(elapsed).count());
+        }
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>피드백의 미수신 자체는 FAILURE를 유발하지 않는다. 피드백은 진행 상태의 보고 수단이며, 피드백의 부재가 액션의 실패를 의미하지 않기 때문이다. 다만, 장기간 피드백이 미수신되는 경우 경고 로그를 출력하여 운영자의 주의를 환기한다.</p>
+<h2>10. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>피드백 콜백의 경량화</strong>: 피드백 콜백 내에서는 수신된 데이터를 멤버 변수에 저장하는 것에 한정하고, 복잡한 처리는 <code>onRunning()</code>에서 수행한다.</p>
+</li>
+<li>
+<p><strong>최신 피드백의 사용</strong>: 대부분의 사용 사례에서는 가장 최근의 피드백만을 사용한다. 피드백의 누적적 처리가 필요한 경우에만 큐 패턴을 적용한다.</p>
+</li>
+<li>
+<p><strong>피드백 출력 포트의 선택성</strong>: 피드백 출력 포트는 항상 선택적으로 설계하여, XML에서 피드백 매핑을 생략할 수 있게 한다. 피드백이 불필요한 사용 사례에서 불필요한 블랙보드 기록을 방지한다.</p>
+</li>
+<li>
+<p><strong>피드백과 결과의 구분</strong>: 피드백 출력 포트와 결과 출력 포트를 명확히 구분하여, RUNNING 중의 중간 데이터와 완료 시의 최종 데이터를 혼동하지 않도록 한다.</p>
+</li>
+<li>
+<p><strong>피드백 미수신에 대한 견고성</strong>: 피드백의 미수신을 정상적인 상황으로 처리하고, 피드백의 부재에 의한 오류를 발생시키지 않는다(Macenski et al., 2020; Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

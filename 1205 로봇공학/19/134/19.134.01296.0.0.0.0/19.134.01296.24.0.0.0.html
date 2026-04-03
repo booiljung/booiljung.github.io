@@ -115,6 +115,219 @@
             </header>
             <article>
                 <h1>1296.24 CoroActionNode (코루틴 액션 노드)의 정의</h1>
+<h2>1. CoroActionNode의 정의</h2>
+<p><code>BT::CoroActionNode</code>는 BehaviorTree.CPP 라이브러리(버전 4.x)에서 제공하는 코루틴(coroutine) 기반 액션 노드의 기반 클래스이다. 코루틴은 실행을 중단(suspend)하고 재개(resume)할 수 있는 함수로, <code>CoroActionNode</code>는 이 특성을 활용하여 <code>tick()</code> 메서드 내부에서 실행을 일시 중단하고 RUNNING을 반환한 후, 다음 Tick에서 중단 지점부터 실행을 재개하는 비동기 실행 모델을 제공한다.</p>
+<p><code>CoroActionNode</code>는 다단계 행동을 순차적인 코드로 표현할 수 있도록 하며, <code>StatefulActionNode</code>의 콜백 분리(onStart/onRunning/onHalted)와 달리 단일 <code>tick()</code> 메서드 내에서 전체 행동 로직을 순차적으로 기술할 수 있는 것이 핵심적 이점이다.</p>
+<h2>2. 클래스 인터페이스</h2>
+<pre><code class="language-cpp">class CoroActionNode : public ActionNodeBase
+{
+public:
+    CoroActionNode(const std::string&amp; name,
+                   const NodeConfig&amp; config);
+
+    virtual ~CoroActionNode();
+
+    // 사용자가 구현하여야 하는 순수 가상 메서드
+    virtual NodeStatus tick() = 0;
+
+    // RUNNING을 반환하고 실행을 중단
+    void setStatusRunningAndYield();
+
+    // 내부: executeTick()에서 코루틴 관리
+    NodeStatus executeTick() override final;
+
+    // Halt 처리
+    void halt() override;
+};
+</code></pre>
+<p>핵심 메서드의 역할은 다음과 같다.</p>
+<h3>2.1 tick() 순수 가상 메서드</h3>
+<p><code>tick()</code>은 코루틴 컨텍스트에서 실행되는 행동의 본체이다. 내부에서 <code>setStatusRunningAndYield()</code>를 호출하면 실행이 중단되고 RUNNING이 반환된다. 다음 Tick에서 중단 지점부터 실행이 재개된다. 최종적으로 SUCCESS 또는 FAILURE를 반환하여 행동을 완료한다.</p>
+<h3>2.2 setStatusRunningAndYield()</h3>
+<p><code>tick()</code> 내부에서 호출하여 현재 실행 지점에서 코루틴을 중단시킨다. 노드의 상태가 RUNNING으로 설정되고, 제어가 <code>executeTick()</code>으로 반환된다. 다음 Tick에서 <code>executeTick()</code>이 호출되면 이 중단 지점에서 실행이 재개된다.</p>
+<h3>2.3 executeTick()</h3>
+<p><code>executeTick()</code>은 <code>final</code>로 선언되어 오버라이드할 수 없다. 내부적으로 코루틴의 생성, 재개, 상태 관리를 수행한다.</p>
+<h2>3. 코루틴 실행 모델</h2>
+<p><code>CoroActionNode</code>의 코루틴 실행 모델을 시간 축에서 도식화한다.</p>
+<pre><code>Tick 1: executeTick() → tick() 시작
+        │  코드 실행 ...
+        │  setStatusRunningAndYield() → RUNNING 반환 ← 중단 지점 A
+        └───→ RUNNING 반환
+
+Tick 2: executeTick() → 중단 지점 A에서 재개
+        │  코드 실행 ...
+        │  setStatusRunningAndYield() → RUNNING 반환 ← 중단 지점 B
+        └───→ RUNNING 반환
+
+Tick 3: executeTick() → 중단 지점 B에서 재개
+        │  코드 실행 ...
+        │  return SUCCESS
+        └───→ SUCCESS 반환
+</code></pre>
+<p>각 Tick에서 코루틴은 이전 중단 지점에서 재개되며, 지역 변수와 실행 상태가 보존된다. 이는 <code>StatefulActionNode</code>에서 멤버 변수를 통해 Tick 간 상태를 수동으로 관리하여야 하는 것과 대비되는 장점이다.</p>
+<h2>4. 구현 패턴</h2>
+<h3>4.1 다단계 행동의 순차적 표현</h3>
+<pre><code class="language-cpp">class MultiStepAction : public BT::CoroActionNode
+{
+public:
+    MultiStepAction(const std::string&amp; name,
+                     const BT::NodeConfig&amp; config)
+        : CoroActionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        // 1단계: 초기화
+        std::string target;
+        if (!getInput("target", target))
+            return BT::NodeStatus::FAILURE;
+
+        // RUNNING 반환, 다음 Tick에서 재개
+        setStatusRunningAndYield();
+
+        // 2단계: 계산 수행
+        auto result = computeSomething(target);
+
+        // RUNNING 반환, 다음 Tick에서 재개
+        setStatusRunningAndYield();
+
+        // 3단계: 결과 기록
+        setOutput("result", result);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p>이 구현에서 세 단계의 행동이 단일 <code>tick()</code> 메서드 내에서 순차적으로 기술된다. <code>setStatusRunningAndYield()</code> 호출 사이의 코드가 각 Tick에서 실행되는 단위이다.</p>
+<h3>4.2 조건부 대기 루프</h3>
+<pre><code class="language-cpp">class WaitForCondition : public BT::CoroActionNode
+{
+public:
+    WaitForCondition(const std::string&amp; name,
+                      const BT::NodeConfig&amp; config)
+        : CoroActionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        // 조건이 충족될 때까지 대기
+        while (!checkCondition())
+        {
+            setStatusRunningAndYield();
+        }
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    bool checkCondition()
+    {
+        bool value = false;
+        getInput("condition", value);
+        return value;
+    }
+};
+</code></pre>
+<p><code>while</code> 루프 내에서 <code>setStatusRunningAndYield()</code>를 호출하여, 조건이 충족될 때까지 매 Tick마다 RUNNING을 반환한다. 루프의 조건 검사, 지역 변수, 제어 흐름이 코루틴에 의해 자동으로 보존된다.</p>
+<h2>5. StatefulActionNode와의 비교</h2>
+<p>동일한 다단계 행동을 <code>CoroActionNode</code>와 <code>StatefulActionNode</code>로 각각 구현하여 비교한다.</p>
+<h3>5.1 CoroActionNode 구현</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 1단계
+    auto goal = readGoal();
+    sendGoal(goal);
+    setStatusRunningAndYield();
+
+    // 2단계: 목표 수락 대기
+    while (!isGoalAccepted())
+    {
+        setStatusRunningAndYield();
+    }
+
+    // 3단계: 완료 대기
+    while (!isCompleted())
+    {
+        setStatusRunningAndYield();
+    }
+
+    return getResult() ? BT::NodeStatus::SUCCESS
+                       : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.2 StatefulActionNode 구현</h3>
+<pre><code class="language-cpp">enum class Phase { SEND_GOAL, WAIT_ACCEPT, WAIT_COMPLETE };
+Phase phase_;
+
+BT::NodeStatus onStart() override
+{
+    auto goal = readGoal();
+    sendGoal(goal);
+    phase_ = Phase::WAIT_ACCEPT;
+    return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus onRunning() override
+{
+    switch (phase_)
+    {
+    case Phase::WAIT_ACCEPT:
+        if (isGoalAccepted())
+            phase_ = Phase::WAIT_COMPLETE;
+        return BT::NodeStatus::RUNNING;
+
+    case Phase::WAIT_COMPLETE:
+        if (isCompleted())
+            return getResult() ? BT::NodeStatus::SUCCESS
+                               : BT::NodeStatus::FAILURE;
+        return BT::NodeStatus::RUNNING;
+
+    default:
+        return BT::NodeStatus::FAILURE;
+    }
+}
+
+void onHalted() override { cancelGoal(); }
+</code></pre>
+<table><thead><tr><th>비교 항목</th><th style="text-align: center">CoroActionNode</th><th style="text-align: center">StatefulActionNode</th></tr></thead><tbody>
+<tr><td>코드 구조</td><td style="text-align: center">순차적</td><td style="text-align: center">상태 기계 (switch/case)</td></tr>
+<tr><td>지역 변수 보존</td><td style="text-align: center">자동 (코루틴)</td><td style="text-align: center">수동 (멤버 변수)</td></tr>
+<tr><td>상태 관리</td><td style="text-align: center">암묵적 (실행 위치)</td><td style="text-align: center">명시적 (phase 열거형)</td></tr>
+<tr><td>가독성</td><td style="text-align: center">높음 (순차적 흐름)</td><td style="text-align: center">중간 (분기 구조)</td></tr>
+<tr><td>실행 스레드</td><td style="text-align: center">메인 스레드</td><td style="text-align: center">메인 스레드</td></tr>
+<tr><td>스레드 안전성</td><td style="text-align: center">고려 불필요</td><td style="text-align: center">고려 불필요</td></tr>
+<tr><td>Halt 처리</td><td style="text-align: center">코루틴 파괴</td><td style="text-align: center">onHalted() 구현</td></tr>
+</tbody></table>
+<p><code>CoroActionNode</code>는 다단계 행동의 순차적 표현에서 가독성 면에서 우위에 있다. 그러나 <code>StatefulActionNode</code>는 상태 전이의 명시성과 Halt 처리의 세밀한 제어에서 장점이 있다.</p>
+<h2>6. Halt 처리</h2>
+<p><code>CoroActionNode</code>에서 Halt가 발생하면, 코루틴이 파괴(destroy)된다. 코루틴의 파괴는 코루틴 프레임에 저장된 지역 변수의 소멸자를 호출하므로, RAII 패턴에 의한 자원 정리가 자동으로 수행된다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    auto resource = acquireResource();  // RAII 객체
+
+    setStatusRunningAndYield();
+
+    // Halt 시 코루틴 파괴 → resource 소멸자 호출
+    // → 자원 자동 정리
+
+    useResource(resource);
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>명시적인 정리 로직이 필요한 경우, <code>halt()</code> 메서드를 오버라이드하여 코루틴 파괴 전에 추가 정리를 수행할 수 있다.</p>
+<h2>7. 적용 범위</h2>
+<p><code>CoroActionNode</code>가 적합한 경우를 정리한다.</p>
+<ol>
+<li><strong>다단계 순차 행동</strong>: 여러 단계를 거치는 행동을 순차적 코드로 자연스럽게 표현하려는 경우</li>
+<li><strong>조건부 대기 루프</strong>: 조건이 충족될 때까지 반복적으로 확인하는 행동</li>
+<li><strong>복잡한 제어 흐름</strong>: 중첩된 조건문, 루프, 예외 처리 등이 포함된 행동</li>
+</ol>
+<p>부적합한 경우는 다음과 같다.</p>
+<ol>
+<li><strong>단일 Tick 완료</strong>: <code>SyncActionNode</code>가 적합하다.</li>
+<li><strong>차단 호출 포함</strong>: <code>CoroActionNode</code>는 메인 스레드에서 실행되므로 차단 호출이 불가하다.</li>
+<li><strong>세밀한 Halt 제어</strong>: <code>StatefulActionNode</code>의 <code>onHalted()</code>가 더 적합하다.</li>
+</ol>
+<h2>8. 구현 기반</h2>
+<p>BehaviorTree.CPP의 <code>CoroActionNode</code>는 Boost.Coroutine2 또는 자체 경량 코루틴 구현에 기반한다. C++20의 표준 코루틴(<code>co_await</code>, <code>co_yield</code>)과는 별개의 스택풀(stackful) 코루틴 모델을 사용한다. 스택풀 코루틴은 별도의 스택 공간을 할당하여 중단/재개 시 전체 호출 스택을 보존하므로, <code>tick()</code> 내부에서 호출한 중첩 함수 내에서도 <code>setStatusRunningAndYield()</code>를 호출하여 중단할 수 있다.</p>
+<p>BehaviorTree.CPP 4.x에서 <code>CoroActionNode</code>는 <code>StatefulActionNode</code>와 함께 비동기 행동의 구현 선택지로 제공되며, 행동의 특성에 따라 적절한 기반 클래스를 선택하는 것이 권장된다(Faconti, 2022).</p>
 
             </article>
             <footer>

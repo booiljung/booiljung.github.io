@@ -115,6 +115,159 @@
             </header>
             <article>
                 <h1>1294.83 BehaviorTree.CPP의 SequenceNode 클래스</h1>
+<h2>1. SequenceNode 클래스의 개요</h2>
+<p>BehaviorTree.CPP v4에서 <code>SequenceNode</code> 클래스는 SequenceWithMemory(StatefulSequence) 동작을 구현하는 제어 노드이다. 이 클래스는 <code>ControlNode</code>를 상속하며, <code>current_child_idx_</code> 멤버 변수를 통해 마지막 RUNNING 자식의 위치를 기억한다. XML에서 <code>&lt;Sequence&gt;</code> 태그로 선언되며, BehaviorTree.CPP v4에서 가장 기본적인 Sequence 구현체이다(Faconti, 2022).</p>
+<h2>2. 클래스 선언</h2>
+<pre><code class="language-cpp">namespace BT {
+
+class SequenceNode : public ControlNode {
+public:
+    SequenceNode(const std::string&amp; name,
+                 const NodeConfig&amp; config);
+    
+    virtual ~SequenceNode() override = default;
+    
+    static PortsList providedPorts() { return {}; }
+    
+    virtual void halt() override;
+
+private:
+    size_t current_child_idx_;
+    bool all_skipped_;
+    
+    virtual BT::NodeStatus tick() override;
+};
+
+}  // namespace BT
+</code></pre>
+<p><code>SequenceNode</code>는 입출력 포트를 가지지 않으므로 <code>providedPorts()</code>가 빈 목록을 반환한다. 노드의 핵심 로직은 <code>tick()</code> 메서드에 구현되어 있다.</p>
+<h2>3. tick() 메서드의 상세 분석</h2>
+<h3>3.1 전체 구현</h3>
+<pre><code class="language-cpp">NodeStatus SequenceNode::tick() {
+    const size_t children_count = children_nodes_.size();
+    
+    // IDLE에서 RUNNING으로의 최초 전이 시 초기화
+    if (status() == NodeStatus::IDLE) {
+        all_skipped_ = true;
+    }
+    
+    setStatus(NodeStatus::RUNNING);
+    
+    // current_child_idx_부터 순회
+    while (current_child_idx_ &lt; children_count) {
+        TreeNode* current_child = children_nodes_[current_child_idx_];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status) {
+            case NodeStatus::RUNNING:
+                // 현재 인덱스를 유지하고 RUNNING 반환
+                return NodeStatus::RUNNING;
+                
+            case NodeStatus::FAILURE:
+                // 인덱스 초기화 후 FAILURE 반환
+                resetChildren();
+                current_child_idx_ = 0;
+                return NodeStatus::FAILURE;
+                
+            case NodeStatus::SUCCESS:
+                all_skipped_ = false;
+                current_child_idx_++;
+                break;
+                
+            case NodeStatus::SKIPPED:
+                current_child_idx_++;
+                break;
+        }
+    }
+    
+    // 모든 자식 순회 완료
+    current_child_idx_ = 0;
+    return all_skipped_ ? NodeStatus::SKIPPED : NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>3.2 동작 분석</h3>
+<ol>
+<li>
+<p><strong>IDLE 상태 감지</strong>: 노드가 IDLE에서 처음 Tick되면 <code>all_skipped_</code> 플래그를 초기화한다.</p>
+</li>
+<li>
+<p><strong>인덱스 기반 순회</strong>: <code>current_child_idx_</code>부터 자식을 순회한다. 이전 Tick에서 RUNNING을 반환한 자식의 인덱스가 유지되므로, 이전에 SUCCESS를 반환한 자식은 건너뛴다.</p>
+</li>
+<li>
+<p><strong>RUNNING 처리</strong>: 자식이 RUNNING을 반환하면, <code>current_child_idx_</code>를 유지한 채 RUNNING을 반환한다. 다음 Tick에서 동일 자식부터 재시작한다.</p>
+</li>
+<li>
+<p><strong>FAILURE 처리</strong>: 자식이 FAILURE를 반환하면, <code>resetChildren()</code>으로 모든 자식을 IDLE로 초기화하고, <code>current_child_idx_</code>를 0으로 재설정한 후 FAILURE를 반환한다.</p>
+</li>
+<li>
+<p><strong>SUCCESS 처리</strong>: 자식이 SUCCESS를 반환하면, <code>current_child_idx_</code>를 증가시키고 다음 자식으로 진행한다.</p>
+</li>
+<li>
+<p><strong>전체 완료</strong>: 모든 자식이 SUCCESS(또는 SKIPPED)를 반환하면, <code>current_child_idx_</code>를 0으로 초기화하고 SUCCESS를 반환한다.</p>
+</li>
+</ol>
+<h2>4. halt() 메서드</h2>
+<pre><code class="language-cpp">void SequenceNode::halt() {
+    current_child_idx_ = 0;
+    ControlNode::halt();
+}
+</code></pre>
+<p><code>halt()</code>가 호출되면 <code>current_child_idx_</code>를 0으로 초기화하고, 부모 클래스의 <code>halt()</code>를 호출하여 모든 자식을 Halt한다. 이에 의해 메모리가 완전히 소멸되며, 다음 실행 시 첫 번째 자식부터 시작한다.</p>
+<h2>5. 메모리 메커니즘의 구현 세부</h2>
+<h3>5.1 current_child_idx_의 생명주기</h3>
+<pre><code>IDLE → tick() 호출 → current_child_idx_ = 0 (초기값)
+  ↓
+child[0]→S → current_child_idx_ = 1
+  ↓
+child[1]→R → RUNNING 반환 (current_child_idx_ = 1 유지)
+  ↓
+다음 tick() → child[1]부터 재시작 (child[0] 건너뜀)
+  ↓
+child[1]→S → current_child_idx_ = 2
+  ↓
+...
+  ↓
+child[N-1]→S → SUCCESS 반환, current_child_idx_ = 0
+</code></pre>
+<h3>5.2 인덱스 초기화 조건</h3>
+<table><thead><tr><th>조건</th><th>current_child_idx_ 값</th></tr></thead><tbody>
+<tr><td>자식 RUNNING</td><td>현재 인덱스 유지</td></tr>
+<tr><td>자식 SUCCESS (마지막 아님)</td><td>인덱스 + 1</td></tr>
+<tr><td>모든 자식 SUCCESS</td><td>0으로 초기화</td></tr>
+<tr><td>자식 FAILURE</td><td>0으로 초기화</td></tr>
+<tr><td>halt() 호출</td><td>0으로 초기화</td></tr>
+</tbody></table>
+<h2>6. XML 등록과 사용</h2>
+<h3>6.1 자동 등록</h3>
+<p>BehaviorTree.CPP에서 <code>SequenceNode</code>는 기본 제공 노드로 자동 등록된다. XML에서 다음과 같이 사용한다:</p>
+<pre><code class="language-xml">&lt;BehaviorTree ID="MainTree"&gt;
+    &lt;Sequence name="mission_sequence"&gt;
+        &lt;Action ID="Step1"/&gt;
+        &lt;Action ID="Step2"/&gt;
+        &lt;Action ID="Step3"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>6.2 name 속성</h3>
+<p><code>name</code> 속성은 디버깅과 로깅을 위한 식별자이다. 동일 트리 내에서 여러 Sequence를 구분할 때 유용하다.</p>
+<h2>7. 사용 시 주의 사항</h2>
+<ol>
+<li>
+<p><strong>v3에서 v4로의 명칭 변경</strong>: BehaviorTree.CPP v3에서 <code>SequenceStar</code>(Sequence*)로 불리던 것이 v4에서 <code>SequenceNode</code>로 변경되었다. v3의 <code>Sequence</code>는 v4에서 별도의 구현이 없으며, <code>SequenceNode</code>가 기본 Sequence이다.</p>
+</li>
+<li>
+<p><strong>동기 자식에서의 동작</strong>: 모든 자식이 동기적으로 즉시 완료되면, 메모리 기능이 실질적으로 비활성화된다. 모든 자식이 단일 Tick 내에서 SUCCESS를 반환하므로, <code>current_child_idx_</code>가 0에서 N까지 진행하고 다시 0으로 돌아온다.</p>
+</li>
+<li>
+<p><strong>FAILURE 시 전체 초기화</strong>: 어떤 자식이 FAILURE를 반환하면, 이전에 SUCCESS를 반환한 자식의 기억이 모두 소멸된다. 이는 “작업 체인이 실패했으므로 처음부터 다시 시작해야 한다“는 의미론을 구현한 것이다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

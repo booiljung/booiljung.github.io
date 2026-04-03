@@ -115,6 +115,117 @@
             </header>
             <article>
                 <h1>1294.40 FallbackWithMemory의 재진입 규칙</h1>
+<h2>1. 재진입의 정의</h2>
+<p>FallbackWithMemory의 재진입(re-entry)이란, 이전 Tick에서 자식이 RUNNING을 반환하여 Fallback이 RUNNING 상태인 경우, 다음 Tick에서 <code>current_child_idx</code>에 기억된 인덱스부터 평가를 재개하는 동작을 의미한다. 이 재진입 규칙에 의해 이전 Tick에서 FAILURE를 반환한 자식들의 재평가가 생략된다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 재진입 규칙의 상세</h2>
+<h3>2.1 규칙 1: RUNNING 자식 인덱스에서 재개</h3>
+<p>이전 Tick에서 자식 <span class="math math-inline">c_k</span>가 RUNNING을 반환한 경우, 다음 Tick에서 인덱스 <span class="math math-inline">k</span>부터 평가를 시작한다. 인덱스 <span class="math math-inline">0</span>부터 <span class="math math-inline">k-1</span>까지의 자식은 평가되지 않는다.</p>
+<pre><code>Tick N:
+  children[0] → FAILURE
+  children[1] → FAILURE
+  children[2] → RUNNING
+  current_child_idx ← 2
+  → RUNNING
+
+Tick N+1: (인덱스 2에서 재진입)
+  children[0] → (건너뜀)
+  children[1] → (건너뜀)
+  children[2] → RUNNING
+  → RUNNING
+</code></pre>
+<h3>2.2 규칙 2: 건너뛰어진 자식은 재평가되지 않음</h3>
+<p>재진입 시 인덱스 <span class="math math-inline">0</span>부터 <span class="math math-inline">k-1</span>까지의 자식은 이전 Tick에서 FAILURE를 반환한 자식들이다. 이들은 재진입 Tick에서 재평가되지 않으므로, 해당 자식들의 상태 변화(FAILURE에서 SUCCESS로의 전환)를 감지하지 못한다.</p>
+<pre><code>Tick N:
+  children[0](CondA) → FAILURE    (조건 미충족)
+  children[1](ActB)  → RUNNING
+  current_child_idx ← 1
+
+Tick N+1: (CondA가 SUCCESS로 변경되었으나...)
+  children[0](CondA) → (건너뜀 — 변화 미감지)
+  children[1](ActB)  → RUNNING
+  → RUNNING
+</code></pre>
+<h3>2.3 규칙 3: RUNNING 자식이 FAILURE를 반환하면 다음으로 진행</h3>
+<p>재진입한 자식이 이번 Tick에서 FAILURE를 반환하면, 다음 인덱스의 자식으로 진행한다. 이전에 건너뛰어진 자식으로 되돌아가지 않는다.</p>
+<pre><code>Tick N:
+  children[0] → FAILURE
+  children[1] → RUNNING    (current_child_idx=1)
+
+Tick N+1:
+  children[1] → FAILURE    (RUNNING에서 FAILURE로 전환)
+  children[2] → SUCCESS    (다음 대안으로 진행)
+  current_child_idx ← 0
+  → SUCCESS
+</code></pre>
+<h3>2.4 규칙 4: SUCCESS 또는 전체 FAILURE 시 인덱스 초기화</h3>
+<p>어떤 자식이 SUCCESS를 반환하거나 모든 자식이 FAILURE를 반환하면, <code>current_child_idx</code>가 0으로 초기화된다. 다음 Tick(Fallback이 다시 IDLE에서 시작)에서는 첫 번째 자식부터 평가한다.</p>
+<pre><code>Tick N:
+  children[1] → SUCCESS    (재진입 후 성공)
+  current_child_idx ← 0    (초기화)
+  → SUCCESS
+
+Tick N+1: (새로운 평가 주기)
+  children[0] → ...        (인덱스 0부터 시작)
+</code></pre>
+<h2>3. 재진입 규칙의 실행 추적</h2>
+<h3>3.1 전체 흐름 추적</h3>
+<pre><code>children: [CondCheck, AsyncRecoveryA, AsyncRecoveryB, SafeStop]
+
+Tick 1:
+  i=0: CondCheck → FAILURE         (정상 상태 아님)
+  i=1: AsyncRecoveryA → RUNNING    (복구 A 시도 중)
+  current_child_idx ← 1
+  → RUNNING
+
+Tick 2: (인덱스 1에서 재진입)
+  i=1: AsyncRecoveryA → RUNNING    (복구 A 계속)
+  → RUNNING
+
+Tick 3: (인덱스 1에서 재진입)
+  i=1: AsyncRecoveryA → FAILURE    (복구 A 실패)
+  i=2: AsyncRecoveryB → RUNNING    (복구 B 시도 시작)
+  current_child_idx ← 2
+  → RUNNING
+
+Tick 4: (인덱스 2에서 재진입)
+  i=2: AsyncRecoveryB → SUCCESS    (복구 B 성공)
+  current_child_idx ← 0
+  → SUCCESS
+</code></pre>
+<p>이 추적에서 주목할 점:</p>
+<ul>
+<li>Tick 2에서 CondCheck가 건너뛰어진다 (정상 상태로 변했을 수 있지만 미확인).</li>
+<li>Tick 3에서 AsyncRecoveryA 실패 후 AsyncRecoveryB로 자동 진행된다.</li>
+<li>Tick 4에서 CondCheck와 AsyncRecoveryA가 모두 건너뛰어진다.</li>
+</ul>
+<h2>4. SequenceWithMemory 재진입 규칙과의 대칭성</h2>
+<table><thead><tr><th>규칙</th><th>SequenceWithMemory</th><th>FallbackWithMemory</th></tr></thead><tbody>
+<tr><td>재진입 위치</td><td>RUNNING 자식 인덱스</td><td>RUNNING 자식 인덱스</td></tr>
+<tr><td>건너뛰는 자식</td><td>이전 SUCCESS 자식</td><td>이전 FAILURE 자식</td></tr>
+<tr><td>진행 조건</td><td>현재 자식 SUCCESS</td><td>현재 자식 FAILURE</td></tr>
+<tr><td>종료 및 초기화</td><td>FAILURE 또는 전체 SUCCESS</td><td>SUCCESS 또는 전체 FAILURE</td></tr>
+</tbody></table>
+<p>두 변형의 재진입 규칙은 구조적으로 동일하며, 건너뛰는 대상과 진행/종료 조건에서 SUCCESS와 FAILURE가 교환된 관계이다.</p>
+<h2>5. 재진입 규칙의 장점과 한계</h2>
+<h3>5.1 장점</h3>
+<ol>
+<li><strong>불필요한 재시도 방지</strong>: 이미 실패한 대안을 매 Tick마다 재시도하지 않으므로 자원을 절약한다.</li>
+<li><strong>비동기 작업의 안정적 진행</strong>: RUNNING 자식에 대한 Tick이 앞쪽 자식의 재평가 없이 직접 전달되므로, 비동기 작업의 진행이 안정적이다.</li>
+<li><strong>예측 가능한 Tick 비용</strong>: RUNNING 상태에서 Tick당 1개의 노드만 방문하므로, 자식 수에 무관하게 Tick 비용이 일정하다.</li>
+</ol>
+<h3>5.2 한계</h3>
+<ol>
+<li><strong>우선순위 높은 대안의 가용성 변화 미감지</strong>: 이전에 FAILURE였던 앞쪽 자식이 SUCCESS로 변경되어도 감지하지 못한다. 더 나은 대안이 가용해졌는데도 현재 대안을 계속 시도한다.</li>
+<li><strong>조건 재검사 불가</strong>: 앞쪽에 배치된 조건 노드가 건너뛰어지므로, 조건 기반의 대안 전환이 불가능하다.</li>
+<li><strong>환경 변화에 대한 반응 지연</strong>: 환경이 변화하여 이전 대안이 다시 성공 가능해져도, 현재 대안의 시도가 완료될 때까지 감지되지 않는다.</li>
+</ol>
+<p>이러한 한계가 문제가 되는 경우에는 ReactiveFallback을 사용하여 매 Tick마다 처음부터 재평가해야 한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

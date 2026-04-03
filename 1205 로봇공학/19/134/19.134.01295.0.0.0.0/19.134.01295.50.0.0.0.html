@@ -115,6 +115,161 @@
             </header>
             <article>
                 <h1>1295.50 로봇 장애물 회피 우선순위 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>로봇 장애물 회피 우선순위 패턴은 장애물과의 거리, 장애물의 유형, 충돌 위험의 긴급도에 따라 차별화된 회피 전략을 ReactiveFallback으로 구현하는 설계 패턴이다. 단일 회피 전략이 아닌, 다단계 우선순위에 기반한 점진적 회피 체계를 구성함으로써, 상황의 심각도에 비례한 적절한 대응을 가능하게 한다.</p>
+<h2>2. 다단계 회피 전략</h2>
+<p>장애물 회피를 단일 행동이 아닌 다수의 우선순위 수준으로 분리하여 구성한다.</p>
+<table><thead><tr><th>우선순위</th><th>회피 수준</th><th>조건</th><th>대응 행동</th></tr></thead><tbody>
+<tr><td>P0</td><td>긴급 제동</td><td>충돌 임박 (<span class="math math-inline">d &lt; d_{critical}</span>)</td><td>즉시 정지</td></tr>
+<tr><td>P1</td><td>긴급 회피</td><td>근접 장애물 (<span class="math math-inline">d &lt; d_{danger}</span>)</td><td>반사적 회피 기동</td></tr>
+<tr><td>P2</td><td>계획적 회피</td><td>경로상 장애물 (<span class="math math-inline">d &lt; d_{detection}</span>)</td><td>우회 경로 재계획</td></tr>
+<tr><td>P3</td><td>속도 감소</td><td>원거리 장애물 (<span class="math math-inline">d &lt; d_{caution}</span>)</td><td>속도 저감 후 접근</td></tr>
+<tr><td>P4</td><td>정상 주행</td><td>장애물 미감지</td><td>계획 경로 추종</td></tr>
+</tbody></table>
+<p>여기서 <span class="math math-inline">d_{critical} &lt; d_{danger} &lt; d_{detection} &lt; d_{caution}</span>의 거리 계층이 성립한다.</p>
+<h2>3. 기본 구조</h2>
+<pre><code>ReactiveFallback
+├── Sequence [P0: 긴급 제동]
+│   ├── IsCollisionImminent
+│   │   input: "critical_distance" = 0.3m
+│   └── EmergencyBrake
+├── Sequence [P1: 긴급 회피]
+│   ├── IsObstacleDangerous
+│   │   input: "danger_distance" = 1.0m
+│   └── ReactiveAvoidance
+├── Sequence [P2: 계획적 회피]
+│   ├── IsObstacleInPlannedPath
+│   │   input: "detection_distance" = 3.0m
+│   └── ReplanPath
+├── Sequence [P3: 속도 감소]
+│   ├── IsObstacleAhead
+│   │   input: "caution_distance" = 5.0m
+│   └── ReduceSpeed
+└── FollowPlannedPath [P4: 정상 주행]
+</code></pre>
+<h2>4. 각 회피 수준의 상세</h2>
+<h3>4.1 P0: 긴급 제동</h3>
+<p>장애물이 로봇의 제동 거리 이내에 있어 충돌이 불가피한 상황이다. 즉시 속도 0 명령을 발행하여 최대한 빠르게 정지한다. 이 수준에서는 경로 재계획이나 우회의 여유가 없으며, 오직 정지만이 유일한 대응이다.</p>
+<pre><code>function IsCollisionImminent.tick():
+    min_distance ← blackboard.get("min_obstacle_distance")
+    current_speed ← blackboard.get("robot_speed")
+    
+    // 제동 거리 산출
+    braking_distance ← (current_speed²) / (2 * max_deceleration) + reaction_margin
+    
+    if min_distance &lt; braking_distance or min_distance &lt; critical_distance:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<p>제동 거리 <span class="math math-inline">d_{brake} = \frac{v^2}{2a_{max}}</span>에 반응 마진을 합산하여 동적으로 임계 거리를 산출한다. 로봇의 현재 속도가 높을수록 긴급 제동 영역이 넓어진다.</p>
+<h3>4.2 P1: 긴급 회피</h3>
+<p>장애물이 위험 거리 이내에 있으나 회피 기동이 가능한 상황이다. 사전 계획 없이 즉각적인 반사적(reactive) 회피 기동을 수행한다. 포텐셜 필드(potential field) 방법이나 벡터 필드 히스토그램(Vector Field Histogram, VFH) 알고리즘에 기반한 실시간 회피가 이 수준에 해당한다.</p>
+<pre><code>function ReactiveAvoidance.tick():
+    obstacles ← blackboard.get("local_obstacle_map")
+    
+    // 포텐셜 필드 기반 회피 방향 산출
+    repulsive_force ← computeRepulsiveForce(obstacles)
+    attractive_force ← computeAttractiveForce(goal_position)
+    resultant ← attractive_force + repulsive_force
+    
+    publishVelocityCommand(resultant)
+    
+    if isObstacleClear():
+        return SUCCESS
+    return RUNNING
+</code></pre>
+<h3>4.3 P2: 계획적 회피</h3>
+<p>장애물이 감지되었으나 충분한 거리가 있어 경로를 재계획할 시간이 있는 상황이다. 전역 경로 계획기(global path planner)를 호출하여 장애물을 우회하는 새로운 경로를 생성하고 해당 경로를 추종한다.</p>
+<pre><code>function ReplanPath.tick():
+    if not path_replanned:
+        obstacles ← blackboard.get("obstacle_positions")
+        new_path ← globalPlanner.replan(current_position, goal, obstacles)
+        blackboard.set("current_path", new_path)
+        path_replanned ← true
+    
+    followPath(blackboard.get("current_path"))
+    
+    if isGoalReached():
+        return SUCCESS
+    if isPathBlocked():
+        path_replanned ← false  // 재계획 필요
+    return RUNNING
+</code></pre>
+<h3>4.4 P3: 속도 감소</h3>
+<p>장애물이 원거리에서 감지된 상황이다. 현재 경로를 유지하되 속도를 줄여 접근함으로써, 장애물이 이동하여 경로에서 벗어날 시간을 확보하고, 만약 장애물이 이동하지 않으면 상위 회피 수준으로 자연스럽게 전환된다.</p>
+<pre><code>function ReduceSpeed.tick():
+    obstacle_distance ← blackboard.get("nearest_obstacle_distance")
+    
+    // 거리에 비례한 속도 스케일링
+    speed_factor ← (obstacle_distance - danger_distance) / 
+                   (caution_distance - danger_distance)
+    speed_factor ← clamp(speed_factor, min_speed_factor, 1.0)
+    
+    reduced_speed ← max_speed * speed_factor
+    blackboard.set("commanded_speed", reduced_speed)
+    
+    return RUNNING
+</code></pre>
+<h2>5. 우선순위 전환 시나리오</h2>
+<p><strong>시나리오</strong>: 원거리 장애물 감지 → 접근 → 긴급 회피 → 해소</p>
+<pre><code>Tick t:   장애물 5m 감지 → P3 (속도 감소)
+Tick t+1: 장애물 3m → P2 (경로 재계획)
+Tick t+2: 장애물 갑자기 이동, 0.8m → P1 (긴급 회피), P2에 Halt
+Tick t+3: 회피 성공, 장애물 2m → P2 (경로 재계획 재시작)
+Tick t+4: 장애물 해소 → P4 (정상 주행)
+</code></pre>
+<p>장애물과의 거리 변화에 따라 회피 수준이 자동으로 승격 및 강등된다. 각 전환에서 이전 수준의 행동에 Halt가 전파되고, 새 수준의 행동이 시작된다.</p>
+<h2>6. 장애물 유형별 차별화</h2>
+<p>장애물의 유형(정적/동적, 인간/물체)에 따라 회피 전략을 차별화할 수 있다.</p>
+<pre><code>ReactiveFallback
+├── Sequence [인간 근접]
+│   ├── IsHumanNearby
+│   └── HumanSafeAvoidance
+├── Sequence [동적 장애물]
+│   ├── IsDynamicObstacleNear
+│   └── PredictiveAvoidance
+├── Sequence [정적 장애물]
+│   ├── IsStaticObstacleInPath
+│   └── PathReplan
+└── FollowPlannedPath
+</code></pre>
+<p>인간에 대한 회피가 최고 우선순위를 가지며, ISO/TS 15066에 따른 안전 거리와 속도 제한이 적용된다. 동적 장애물에 대해서는 궤적 예측(trajectory prediction)에 기반한 예측적 회피를 수행하고, 정적 장애물에 대해서는 경로 재계획을 수행한다.</p>
+<h2>7. XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsCollisionImminent critical_dist="0.3" /&gt;
+        &lt;EmergencyBrake /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsObstacleDangerous danger_dist="1.0" /&gt;
+        &lt;ReactiveAvoidance method="VFH" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsObstacleInPath detection_dist="3.0" /&gt;
+        &lt;ReplanPath planner="RRT_star" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsObstacleAhead caution_dist="5.0" /&gt;
+        &lt;ReduceSpeed min_factor="0.3" /&gt;
+    &lt;/Sequence&gt;
+    &lt;FollowPlannedPath path="{current_path}" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<h2>8. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>거리 임계값의 히스테리시스</strong>: 각 수준 간 전환 시 히스테리시스를 적용하여, 장애물이 경계 거리 부근에서 진동할 때 회피 수준이 빈번하게 전환되는 것을 방지하라.</p>
+</li>
+<li>
+<p><strong>속도 의존적 임계값</strong>: 로봇의 현재 속도에 따라 각 수준의 임계 거리를 동적으로 조정하라. 고속 주행 시에는 제동 거리가 증가하므로 모든 임계 거리를 확장하여야 한다.</p>
+</li>
+<li>
+<p><strong>센서 사각지대 고려</strong>: 센서의 시야각(field of view) 제한으로 인한 사각지대에서 장애물이 출현할 가능성을 고려하여, 사각지대 방향으로의 속도를 제한하라.</p>
+</li>
+<li>
+<p><strong>회피 행동의 Halt 안전성</strong>: 각 회피 행동에 Halt가 호출되면, 진행 중인 회피 기동을 안전하게 중단하여야 한다. 회피 도중의 갑작스러운 정지가 오히려 위험할 수 있으므로, Halt 처리 시 현재 회피 상태에 따른 안전한 종료 방식을 결정하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

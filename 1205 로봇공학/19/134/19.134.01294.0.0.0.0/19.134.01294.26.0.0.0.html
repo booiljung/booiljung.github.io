@@ -115,6 +115,162 @@
             </header>
             <article>
                 <h1>1294.26 세 가지 Sequence 변형의 동작 차이 사례</h1>
+<h2>1. 사례의 목적</h2>
+<p>동일한 행동 트리 구조에 대해 SequenceWithMemory와 ReactiveSequence가 각각 어떻게 다른 동작을 생성하는지를 구체적 시나리오를 통해 비교한다. 동일한 자식 배열과 동일한 환경 변화가 주어졌을 때, 변형 선택에 따라 로봇의 행동이 근본적으로 달라지는 사례를 제시한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 사례 1: 조건 변화 감지 차이</h2>
+<h3>2.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Sequence변형&gt;
+    &lt;Condition ID="IsDoorOpen"/&gt;
+    &lt;Action ID="WalkThroughDoor"/&gt;
+&lt;/Sequence변형&gt;
+</code></pre>
+<h3>2.2 환경 변화 시나리오</h3>
+<p>Tick 1에서 문이 열려 있고, Tick 3에서 문이 닫힌다. WalkThroughDoor는 5 Tick이 소요되는 비동기 액션이다.</p>
+<h3>2.3 SequenceWithMemory의 동작</h3>
+<pre><code>Tick 1: IsDoorOpen→S, WalkThroughDoor→R  (idx=1)
+Tick 2: WalkThroughDoor→R                (IsDoorOpen 건너뜀)
+Tick 3: WalkThroughDoor→R                (문이 닫혔지만 감지 못함)
+Tick 4: WalkThroughDoor→R                (닫힌 문을 향해 계속 이동)
+Tick 5: WalkThroughDoor→S                (완료 — 닫힌 문과 충돌 가능)
+Tick 6: IsDoorOpen→F                     (이제서야 감지)
+        → FAILURE
+</code></pre>
+<p>로봇은 문이 닫힌 후에도 4 Tick 동안 이동을 계속하며, 물리적 충돌이 발생할 수 있다.</p>
+<h3>2.4 ReactiveSequence의 동작</h3>
+<pre><code>Tick 1: IsDoorOpen→S, WalkThroughDoor→R
+Tick 2: IsDoorOpen→S, WalkThroughDoor→R
+Tick 3: IsDoorOpen→F                     (문이 닫힌 즉시 감지)
+        WalkThroughDoor→Halt             (이동 즉시 중단)
+        → FAILURE
+</code></pre>
+<p>문이 닫히는 즉시 이동이 중단되어 충돌을 방지한다.</p>
+<h2>3. 사례 2: 다중 조건의 우선순위 처리</h2>
+<h3>3.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Sequence변형&gt;
+    &lt;Condition ID="IsBatteryAbove20"/&gt;
+    &lt;Condition ID="IsCommsAlive"/&gt;
+    &lt;Action ID="RemoteSurvey"/&gt;
+&lt;/Sequence변형&gt;
+</code></pre>
+<h3>3.2 환경 변화 시나리오</h3>
+<p>Tick 5에서 통신이 두절되고, Tick 8에서 배터리가 20% 이하로 떨어진다.</p>
+<h3>3.3 SequenceWithMemory의 동작</h3>
+<pre><code>Tick 1: Battery→S, Comms→S, Survey→R  (idx=2)
+Tick 2: Survey→R                       (조건 건너뜀)
+...
+Tick 5: Survey→R                       (통신 두절 미감지)
+...
+Tick 8: Survey→R                       (배터리 소진 미감지)
+Tick 10: Survey→S                      (작업 완료)
+Tick 11: IsBatteryAbove20→F            (이제서야 감지)
+         → FAILURE
+</code></pre>
+<p>통신 두절과 배터리 소진이 모두 감지되지 않은 채 원격 측량이 10 Tick 동안 계속된다.</p>
+<h3>3.4 ReactiveSequence의 동작</h3>
+<pre><code>Tick 1: Battery→S, Comms→S, Survey→R
+Tick 2: Battery→S, Comms→S, Survey→R
+...
+Tick 5: Battery→S, Comms→F            (통신 두절 즉시 감지)
+        Survey→Halt
+        → FAILURE
+</code></pre>
+<p>통신이 두절되는 즉시 원격 측량이 중단된다. 배터리 소진은 Tick 8이므로 통신 두절이 먼저 감지된다.</p>
+<h2>4. 사례 3: 부수 효과가 있는 액션의 재실행</h2>
+<h3>4.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Sequence변형&gt;
+    &lt;Action ID="SendStartNotification"/&gt;
+    &lt;Action ID="PerformTask"/&gt;
+&lt;/Sequence변형&gt;
+</code></pre>
+<h3>4.2 환경 시나리오</h3>
+<p>SendStartNotification은 동기 액션으로 SUCCESS를 반환하며, 서버에 알림을 전송하는 부수 효과를 가진다. PerformTask는 3 Tick이 소요되는 비동기 액션이다.</p>
+<h3>4.3 SequenceWithMemory의 동작</h3>
+<pre><code>Tick 1: SendStartNotification→S (알림 1회 전송), PerformTask→R (idx=1)
+Tick 2: PerformTask→R           (SendStartNotification 건너뜀)
+Tick 3: PerformTask→S           (완료)
+        → SUCCESS
+
+결과: 알림 1회 전송 (의도된 동작)
+</code></pre>
+<h3>4.4 ReactiveSequence의 동작</h3>
+<pre><code>Tick 1: SendStartNotification→S (알림 전송), PerformTask→R
+Tick 2: SendStartNotification→S (알림 재전송!), PerformTask→R
+Tick 3: SendStartNotification→S (알림 재전송!), PerformTask→S
+        → SUCCESS
+
+결과: 알림 3회 전송 (의도하지 않은 부수 효과)
+</code></pre>
+<p>ReactiveSequence에서 부수 효과가 있는 액션을 앞쪽에 배치하면, 매 Tick마다 부수 효과가 반복 발생한다. 이는 ReactiveSequence에서 앞쪽에 조건 노드만 배치해야 하는 이유를 명확히 보여준다.</p>
+<h2>5. 사례 4: Halt 후 재시작 동작</h2>
+<h3>5.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Sequence변형&gt;
+    &lt;Condition ID="IsTargetVisible"/&gt;
+    &lt;Action ID="ApproachTarget"/&gt;
+&lt;/Sequence변형&gt;
+</code></pre>
+<h3>5.2 환경 시나리오</h3>
+<p>Tick 3에서 대상이 시야에서 사라지고, Tick 5에서 다시 나타난다.</p>
+<h3>5.3 SequenceWithMemory의 동작</h3>
+<pre><code>Tick 1: IsTargetVisible→S, ApproachTarget→R (idx=1)
+Tick 2: ApproachTarget→R                    (조건 건너뜀)
+Tick 3: ApproachTarget→R                    (대상 사라짐 미감지)
+Tick 4: ApproachTarget→R                    (보이지 않는 대상에 접근 중)
+Tick 5: ApproachTarget→S                    (완료)
+        → SUCCESS
+</code></pre>
+<h3>5.4 ReactiveSequence의 동작</h3>
+<pre><code>Tick 1: IsTargetVisible→S, ApproachTarget→R
+Tick 2: IsTargetVisible→S, ApproachTarget→R
+Tick 3: IsTargetVisible→F                   (대상 사라짐 감지)
+        ApproachTarget→Halt                 (접근 중단)
+        → FAILURE
+Tick 4: (상위 노드가 다시 Tick 전달 시)
+        IsTargetVisible→F                   (여전히 보이지 않음)
+        → FAILURE
+Tick 5: IsTargetVisible→S                   (대상 재발견)
+        ApproachTarget→R                    (처음부터 재시작)
+</code></pre>
+<p>ReactiveSequence에서는 대상이 사라지면 접근을 중단하고, 다시 나타나면 처음부터 접근을 재시작한다. 이 동작은 시각 기반 추적에서 의미 있는 안전 행동이다.</p>
+<h2>6. 사례 5: 조기 종료(Short-Circuit) 차이</h2>
+<h3>6.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Sequence변형&gt;
+    &lt;Condition ID="IsSystemHealthy"/&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Condition ID="IsLocalized"/&gt;
+    &lt;Action ID="Navigate"/&gt;
+&lt;/Sequence변형&gt;
+</code></pre>
+<h3>6.2 환경 시나리오</h3>
+<p>Tick 3에서 시스템 건강 상태가 이상(IsSystemHealthy가 FAILURE)으로 변한다.</p>
+<h3>6.3 SequenceWithMemory의 동작</h3>
+<pre><code>Tick 1: Healthy→S, Battery→S, Localized→S, Navigate→R (idx=3)
+Tick 2: Navigate→R                (모든 조건 건너뜀)
+Tick 3: Navigate→R                (시스템 이상 미감지)
+</code></pre>
+<h3>6.4 ReactiveSequence의 동작</h3>
+<pre><code>Tick 1: Healthy→S, Battery→S, Localized→S, Navigate→R
+Tick 2: Healthy→S, Battery→S, Localized→S, Navigate→R
+Tick 3: Healthy→F                 (첫 번째 조건에서 즉시 실패)
+        Battery  → (미평가 — 조기 종료)
+        Localized→ (미평가 — 조기 종료)
+        Navigate → Halt
+        → FAILURE
+</code></pre>
+<p>ReactiveSequence에서 첫 번째 조건의 FAILURE는 후속 조건의 평가를 생략하고 즉시 RUNNING 자식을 Halt한다. 이 조기 종료 메커니즘은 가장 중요한 안전 조건을 첫 번째에 배치해야 하는 설계 원칙의 근거이다.</p>
+<h2>7. 동작 차이 요약</h2>
+<table><thead><tr><th>사례</th><th>SequenceWithMemory</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>조건 변화 감지</td><td>미감지 (위험)</td><td>즉시 감지 (안전)</td></tr>
+<tr><td>다중 조건 우선순위</td><td>재평가 없음</td><td>우선순위대로 감시</td></tr>
+<tr><td>부수 효과 액션</td><td>1회 실행 (안전)</td><td>매 Tick 재실행 (위험)</td></tr>
+<tr><td>Halt 후 재시작</td><td>해당 없음</td><td>자연스러운 재시작</td></tr>
+<tr><td>조기 종료</td><td>적용 불가 (건너뜀)</td><td>최우선 조건에서 즉시 종료</td></tr>
+</tbody></table>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

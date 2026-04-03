@@ -115,6 +115,115 @@
             </header>
             <article>
                 <h1>1294.42 FallbackWithMemory의 이전 실패 자식 건너뛰기</h1>
+<h2>1. 건너뛰기의 정의</h2>
+<p>FallbackWithMemory의 이전 실패 자식 건너뛰기(skipping previously failed children)란, <code>current_child_idx</code>에 기억된 인덱스 이전의 자식들이 다음 Tick에서 평가되지 않고 생략되는 동작이다. 이 자식들은 이전 Tick에서 FAILURE를 반환하여 대안 탐색이 다음 자식으로 진행된 것이므로, 재평가가 생략된다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 건너뛰기의 동작 과정</h2>
+<h3>2.1 기본 동작</h3>
+<pre><code>children: [ActA, ActB, AsyncActC, ActD]
+
+Tick 1:
+  i=0: ActA → FAILURE        (평가됨)
+  i=1: ActB → FAILURE        (평가됨)
+  i=2: AsyncActC → RUNNING   (평가됨)
+  current_child_idx ← 2
+  → RUNNING
+
+Tick 2: (인덱스 2부터 시작)
+  i=0: ActA → (건너뜀)       ← 이전 FAILURE 건너뛰기
+  i=1: ActB → (건너뜀)       ← 이전 FAILURE 건너뛰기
+  i=2: AsyncActC → RUNNING   (평가됨)
+  → RUNNING
+</code></pre>
+<p>Tick 2에서 ActA와 ActB는 <code>current_child_idx</code>(2) 이전에 위치하므로 평가가 생략된다.</p>
+<h3>2.2 건너뛰기 후 진행</h3>
+<p>RUNNING 자식이 FAILURE를 반환하면, 건너뛰어진 자식은 여전히 생략되고 후속 자식으로 진행한다.</p>
+<pre><code>Tick 3:
+  i=0: ActA → (건너뜀)
+  i=1: ActB → (건너뜀)
+  i=2: AsyncActC → FAILURE   (대안 C 실패)
+  i=3: ActD → SUCCESS        (대안 D 성공)
+  current_child_idx ← 0
+  → SUCCESS
+</code></pre>
+<p>ActA와 ActB는 건너뛰어진 채로 ActD가 성공하여 전체가 SUCCESS를 반환한다.</p>
+<h2>3. 건너뛰기의 효과</h2>
+<h3>3.1 성능 향상</h3>
+<p>건너뛰기에 의해 RUNNING 상태가 지속되는 동안의 Tick당 노드 방문 수가 감소한다.</p>
+<pre><code>children: [C₁, C₂, C₃, C₄, AsyncAct]   (5개 자식)
+
+ReactiveFallback (건너뛰기 없음):
+  매 Tick: C₁, C₂, C₃, C₄, AsyncAct → 5개 방문
+
+FallbackWithMemory (건너뛰기):
+  첫 Tick: C₁, C₂, C₃, C₄, AsyncAct → 5개 방문
+  이후 Tick: AsyncAct만 → 1개 방문
+</code></pre>
+<p><span class="math math-inline">M</span> Tick 동안 RUNNING이 지속되는 경우, 총 방문 수는:</p>
+<table><thead><tr><th>변형</th><th>총 노드 방문 수</th></tr></thead><tbody>
+<tr><td>ReactiveFallback</td><td><span class="math math-inline">5 \times M</span></td></tr>
+<tr><td>FallbackWithMemory</td><td><span class="math math-inline">5 + (M - 1) \times 1 = M + 4</span></td></tr>
+</tbody></table>
+<p><span class="math math-inline">M = 100</span>이면 ReactiveFallback은 500회, FallbackWithMemory는 104회로 약 4.8배의 차이가 발생한다.</p>
+<h3>3.2 부수 효과 방지</h3>
+<p>건너뛰어진 자식의 <code>executeTick()</code>이 호출되지 않으므로, 해당 자식의 부수 효과가 반복 발생하지 않는다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="LogAndTryMethodA"/&gt;    &lt;!-- 로그 기록 + 시도 A --&gt;
+    &lt;Action ID="AsyncMethodB"/&gt;         &lt;!-- 비동기 시도 B --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>LogAndTryMethodA가 FAILURE를 반환한 후, AsyncMethodB가 RUNNING 상태를 유지하는 동안 LogAndTryMethodA의 로그 기록이 매 Tick마다 반복되지 않는다.</p>
+<h2>4. 건너뛰기의 위험성</h2>
+<h3>4.1 우선순위 높은 대안의 가용성 변화 미감지</h3>
+<p>건너뛰기의 가장 큰 위험은, 이전에 FAILURE였던 앞쪽 자식이 SUCCESS로 전환되더라도 감지하지 못한다는 점이다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Condition ID="IsPrimaryPathClear"/&gt;   &lt;!-- 주 경로 가용? --&gt;
+    &lt;Action ID="UseDetourPath"/&gt;            &lt;!-- 우회 경로 사용 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>Tick 1: IsPrimaryPathClear→F, UseDetourPath→R (idx=1)
+Tick 2: UseDetourPath→R          (주 경로가 정리되었지만 건너뜀)
+Tick 3: UseDetourPath→R          (여전히 건너뜀)
+Tick 4: UseDetourPath→S          (우회 완료)
+        → SUCCESS
+</code></pre>
+<p>Tick 2에서 주 경로가 정리되어 IsPrimaryPathClear가 SUCCESS를 반환할 수 있었지만, 건너뛰기에 의해 확인되지 않았다. 로봇은 불필요하게 긴 우회 경로를 계속 사용한다.</p>
+<h3>4.2 안전 조건 미검사</h3>
+<p>안전 관련 조건이 Fallback의 앞쪽에 배치된 경우, 건너뛰기에 의해 안전 조건이 재검사되지 않을 수 있다.</p>
+<pre><code class="language-xml">&lt;!-- 위험한 패턴 --&gt;
+&lt;Fallback&gt;
+    &lt;Condition ID="IsOperatingNormally"/&gt;
+    &lt;Action ID="RecoveryProcedure"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>정상 상태가 아니어서 RecoveryProcedure가 RUNNING 상태에서 복구를 수행하는 동안, IsOperatingNormally가 건너뛰어진다. 만약 복구 중 정상 상태로 돌아왔다면, FallbackWithMemory에서는 이를 감지하지 못하고 불필요한 복구를 계속한다.</p>
+<h2>5. SequenceWithMemory의 건너뛰기와의 대칭성</h2>
+<table><thead><tr><th>특성</th><th>SequenceWithMemory</th><th>FallbackWithMemory</th></tr></thead><tbody>
+<tr><td>건너뛰는 자식</td><td>이전에 SUCCESS 반환한 자식</td><td>이전에 FAILURE 반환한 자식</td></tr>
+<tr><td>건너뛰기 이유</td><td>이미 성공한 단계 반복 불필요</td><td>이미 실패한 대안 재시도 불필요</td></tr>
+<tr><td>미감지 위험</td><td>SUCCESS→FAILURE 전환 미감지</td><td>FAILURE→SUCCESS 전환 미감지</td></tr>
+<tr><td>안전 위험</td><td>완료된 전제조건의 무효화 미감지</td><td>가용해진 우선 대안 미감지</td></tr>
+</tbody></table>
+<h2>6. 건너뛰기 위험의 완화 전략</h2>
+<h3>6.1 전략 1: ReactiveFallback 사용</h3>
+<p>조건의 지속적 재검사가 필요한 경우 ReactiveFallback을 사용하여 매 Tick마다 처음부터 재평가한다.</p>
+<h3>6.2 전략 2: 안전 조건의 분리</h3>
+<p>안전 조건을 Fallback 내부가 아닌 상위 ReactiveSequence에 배치하여, 안전 감시가 건너뛰기에 의해 생략되지 않도록 한다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsSystemSafe"/&gt;    &lt;!-- 건너뛰어지지 않음 --&gt;
+    &lt;Fallback&gt;
+        &lt;Action ID="PrimaryAction"/&gt;
+        &lt;Action ID="RecoveryAction"/&gt;
+    &lt;/Fallback&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<h3>6.3 전략 3: 대안 탐색과 조건 감시의 분리</h3>
+<p>FallbackWithMemory를 대안 탐색에만 사용하고, 조건 감시는 별도의 ReactiveSequence나 ReactiveFallback으로 구현한다. 이 분리를 통해 각 변형의 장점을 활용하면서 단점을 회피할 수 있다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

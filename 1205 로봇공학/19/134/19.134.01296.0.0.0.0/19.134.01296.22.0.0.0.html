@@ -115,6 +115,194 @@
             </header>
             <article>
                 <h1>1296.22 ThreadedAction의 Halt 시 스레드 종료</h1>
+<h2>1. Halt 시 스레드 종료의 개요</h2>
+<p><code>ThreadedAction</code>의 Halt 시 스레드 종료는, 외부에서 <code>halt()</code>가 호출되면 RUNNING 상태에서 실행 중인 <code>tick()</code> 스레드에 종료를 요청하고, 스레드가 완전히 종료될 때까지 대기한 후, 노드의 상태를 IDLE로 전이시키는 과정이다. 이 과정은 <code>StatefulActionNode</code>의 <code>onHalted()</code> 콜백과 달리, 별도 스레드의 종료를 수반하므로 고유한 복잡성을 가진다.</p>
+<h2>2. halt() 메서드의 실행 과정</h2>
+<p><code>ThreadedAction</code>의 <code>halt()</code> 메서드의 실행 과정을 단계별로 기술한다.</p>
+<pre><code class="language-cpp">void ThreadedAction::halt()
+{
+    // 1단계: Halt 요청 플래그 설정
+    halt_requested_.store(true);
+
+    // 2단계: 스레드 합류 (종료 대기)
+    if (thread_.joinable())
+    {
+        thread_.join();
+    }
+
+    // 3단계: 상태를 IDLE로 설정
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<h3>2.1 단계: Halt 요청 플래그 설정</h3>
+<p><code>halt_requested_</code> 원자 변수를 <code>true</code>로 설정한다. 이 플래그는 <code>tick()</code> 스레드에서 <code>isHaltRequested()</code>를 통해 확인된다. <code>std::atomic&lt;bool&gt;</code>의 <code>store()</code> 연산은 메모리 가시성을 보장하므로, <code>tick()</code> 스레드가 이 변경을 즉시 관찰할 수 있다.</p>
+<h3>2.2 단계: 스레드 합류</h3>
+<p><code>thread_.join()</code>은 <code>tick()</code> 스레드가 완전히 종료될 때까지 메인 스레드를 차단한다. 이 단계에서 메인 스레드는 <code>tick()</code> 스레드의 종료를 대기하며, 이 대기 시간이 Halt 처리의 총 소요 시간을 결정한다.</p>
+<h3>2.3 단계: IDLE 상태 전이</h3>
+<p>스레드가 합류된 후, 노드의 상태를 IDLE로 설정한다. 이후 노드는 새로운 생명주기를 시작할 수 있는 상태가 된다.</p>
+<h2>3. Halt 요청에 대한 tick() 스레드의 응답</h2>
+<p><code>tick()</code> 스레드가 Halt 요청에 응답하는 방식은 <code>tick()</code> 메서드의 구현에 의존한다. 라이브러리는 <code>isHaltRequested()</code> 메서드를 제공하며, 개발자는 <code>tick()</code> 내부에서 이를 주기적으로 확인하여야 한다.</p>
+<h3>3.1 즉시 응답 가능한 경우</h3>
+<p><code>tick()</code> 내부에 차단 호출이 없고, 루프의 각 반복에서 <code>isHaltRequested()</code>를 확인하는 경우이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    for (int i = 0; i &lt; total_iterations_; ++i)
+    {
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+
+        performIteration(i);
+    }
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>이 경우 Halt 응답 시간은 단일 반복의 실행 시간 이내이다.</p>
+<h3>3.2 차단 호출에 의한 응답 지연</h3>
+<p><code>tick()</code> 내부에 차단 호출이 존재하면, 차단이 해제될 때까지 <code>isHaltRequested()</code> 확인이 지연된다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 차단 호출: 서비스 응답 대기 (수 초 소요 가능)
+    auto response = service_client_-&gt;call(request_);
+
+    // 차단 해제 후 Halt 확인
+    if (isHaltRequested())
+        return BT::NodeStatus::FAILURE;
+
+    return processResponse(response);
+}
+</code></pre>
+<p>이 경우 Halt 응답 시간은 차단 호출의 잔여 시간에 의해 결정된다.</p>
+<h2>4. Halt 응답 지연의 영향</h2>
+<p><code>halt()</code>의 2단계(<code>join()</code>)에서 메인 스레드가 차단되므로, Halt 응답 지연은 트리 전체의 실행에 영향을 미친다.</p>
+<pre><code>메인 스레드:
+──halt()──┬────── join() 대기 ──────┬── IDLE 설정 ── 계속 ──→
+          │                         │
+          │◄─── tick() 스레드 종료 ─┘
+</code></pre>
+<p><code>join()</code> 대기 동안 메인 스레드는 다른 노드를 Tick할 수 없으므로, Halt 응답이 지연되면 트리의 실시간성이 저해된다. 특히 다수의 <code>ThreadedAction</code>이 동시에 Halt되는 경우, 각 <code>join()</code> 대기 시간이 순차적으로 누적된다.</p>
+<p><span class="math math-display">T_{\text{halt\_total}} = \sum_{i=1}^{n} T_{\text{join}_i}</span></p>
+<p>여기서 <span class="math math-inline">n</span>은 동시에 Halt되는 <code>ThreadedAction</code>의 수이다.</p>
+<h2>응답 지연 최소화 전략</h2>
+<h3>타임아웃 분할 패턴</h3>
+<p>장시간 차단 호출을 짧은 타임아웃의 반복으로 분할한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    auto deadline = std::chrono::steady_clock::now()
+                  + std::chrono::seconds(30);
+
+    while (std::chrono::steady_clock::now() &lt; deadline)
+    {
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+
+        // 100ms 타임아웃으로 분할
+        auto status = future_.wait_for(
+            std::chrono::milliseconds(100));
+
+        if (status == std::future_status::ready)
+        {
+            auto result = future_.get();
+            return result.success ? BT::NodeStatus::SUCCESS
+                                  : BT::NodeStatus::FAILURE;
+        }
+    }
+
+    return BT::NodeStatus::FAILURE;  // 타임아웃
+}
+</code></pre>
+<p>이 패턴에서 최대 Halt 응답 지연은 100 ms이다.</p>
+<h3>조건 변수(Condition Variable) 활용</h3>
+<p>차단 호출을 조건 변수의 대기로 대체하여, Halt 시 조건 변수를 통해 대기를 해제한다.</p>
+<pre><code class="language-cpp">class InterruptibleAction : public BT::ThreadedAction
+{
+    std::mutex mutex_;
+    std::condition_variable cv_;
+
+    BT::NodeStatus tick() override
+    {
+        std::unique_lock&lt;std::mutex&gt; lock(mutex_);
+        
+        // 조건 변수로 대기 (100ms 단위로 분할)
+        while (!isCompleted())
+        {
+            if (cv_.wait_for(lock, std::chrono::milliseconds(100),
+                [this]() { return isHaltRequested() || isCompleted(); }))
+            {
+                break;
+            }
+        }
+
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+
+        return isCompleted() ? BT::NodeStatus::SUCCESS
+                             : BT::NodeStatus::FAILURE;
+    }
+
+    void halt() override
+    {
+        halt_requested_.store(true);
+        cv_.notify_all();  // 대기 중인 스레드를 즉시 깨움
+        
+        if (thread_.joinable())
+            thread_.join();
+        
+        setStatus(NodeStatus::IDLE);
+    }
+};
+</code></pre>
+<p><code>halt()</code>에서 <code>cv_.notify_all()</code>을 호출하면, <code>tick()</code> 스레드의 <code>wait_for()</code> 대기가 즉시 해제된다. 이 패턴은 Halt 응답 시간을 수 마이크로초 수준으로 단축한다.</p>
+<h2>스레드 강제 종료의 위험성</h2>
+<p>C++ 표준에서는 스레드의 강제 종료(forceful termination)를 지원하지 않는다. <code>std::thread</code>는 <code>join()</code> 또는 <code>detach()</code>만 제공하며, 실행 중인 스레드를 외부에서 강제로 종료하는 표준 메커니즘이 없다. 플랫폼별 API(예: <code>pthread_cancel</code>)를 사용한 강제 종료는 다음의 위험을 수반한다.</p>
+<ol>
+<li><strong>자원 누수</strong>: 스레드가 점유한 뮤텍스, 파일 핸들, 메모리 등이 해제되지 않는다.</li>
+<li><strong>데이터 무결성 파괴</strong>: 공유 데이터의 수정이 중간 상태에서 중단되어 무결성이 파괴될 수 있다.</li>
+<li><strong>미정의 동작</strong>: C++ 객체의 소멸자가 호출되지 않아 미정의 동작이 발생할 수 있다.</li>
+</ol>
+<p>따라서 <code>ThreadedAction</code>은 협력적 종료(cooperative termination) 모델을 채택한다. <code>tick()</code> 스레드는 <code>isHaltRequested()</code> 확인을 통해 자발적으로 종료하며, 외부에서 강제 종료를 수행하지 않는다.</p>
+<h2>halt() 오버라이드</h2>
+<p><code>ThreadedAction</code>의 <code>halt()</code> 메서드는 <code>final</code>로 선언되지 않으므로, 파생 클래스에서 오버라이드할 수 있다. 추가적인 정리 로직이 필요한 경우 <code>halt()</code>를 오버라이드하되, 반드시 기반 클래스의 <code>halt()</code>를 호출하여야 한다.</p>
+<pre><code class="language-cpp">void halt() override
+{
+    // 추가 정리: 외부 시스템에 취소 요청
+    if (action_client_ &amp;&amp; goal_handle_)
+    {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+
+    // 기반 클래스의 halt() 호출 (스레드 합류 포함)
+    ThreadedAction::halt();
+}
+</code></pre>
+<p>기반 클래스의 <code>halt()</code>를 호출하기 전에 외부 시스템에 취소 요청을 전송하면, <code>tick()</code> 스레드의 차단 호출이 더 빨리 해제되어 합류 시간이 단축될 수 있다.</p>
+<h2>StatefulActionNode의 onHalted()와의 비교</h2>
+<table><thead><tr><th>특성</th><th style="text-align: center">ThreadedAction halt()</th><th style="text-align: center">StatefulActionNode onHalted()</th></tr></thead><tbody>
+<tr><td>실행 스레드</td><td style="text-align: center">메인 스레드</td><td style="text-align: center">메인 스레드</td></tr>
+<tr><td>스레드 종료 대기</td><td style="text-align: center">필요 (join)</td><td style="text-align: center">불필요</td></tr>
+<tr><td>메인 스레드 차단</td><td style="text-align: center">가능 (join 동안)</td><td style="text-align: center">없음</td></tr>
+<tr><td>응답 시간</td><td style="text-align: center">tick() 종료에 의존</td><td style="text-align: center">즉시</td></tr>
+<tr><td>오버라이드</td><td style="text-align: center">가능</td><td style="text-align: center">필수 (순수 가상)</td></tr>
+<tr><td>외부 작업 취소</td><td style="text-align: center">halt()에서 수행</td><td style="text-align: center">onHalted()에서 수행</td></tr>
+</tbody></table>
+<p><code>StatefulActionNode</code>의 <code>onHalted()</code>는 메인 스레드에서 즉시 실행되므로 응답 지연이 없다. 반면 <code>ThreadedAction</code>의 <code>halt()</code>는 스레드 합류에 의한 응답 지연이 발생할 수 있다. 이 차이는 <code>StatefulActionNode</code>가 <code>ThreadedAction</code>보다 Halt 처리에서 우위에 있는 핵심적 이유이다.</p>
+<h2>설계 지침</h2>
+<ol>
+<li>
+<p><strong>isHaltRequested() 확인 빈도</strong>: <code>tick()</code> 내부에서 100 ms 이내의 간격으로 <code>isHaltRequested()</code>를 확인한다.</p>
+</li>
+<li>
+<p><strong>차단 호출의 타임아웃화</strong>: 무한 차단 호출을 짧은 타임아웃의 반복으로 전환하여, Halt 응답 지연을 제한한다.</p>
+</li>
+<li>
+<p><strong>halt() 오버라이드 시 기반 호출</strong>: <code>halt()</code>를 오버라이드하는 경우, 반드시 <code>ThreadedAction::halt()</code>를 호출하여 스레드 합류와 상태 초기화를 수행한다.</p>
+</li>
+<li>
+<p><strong>강제 종료 금지</strong>: 플랫폼별 스레드 강제 종료 API의 사용을 금지한다. 협력적 종료 모델을 준수한다.</p>
+</li>
+<li>
+<p><strong>자원 정리의 완전성</strong>: <code>tick()</code> 메서드가 Halt에 의해 조기 반환되는 경우에도 할당된 자원이 적절히 해제되도록 RAII(Resource Acquisition Is Initialization) 패턴을 활용한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

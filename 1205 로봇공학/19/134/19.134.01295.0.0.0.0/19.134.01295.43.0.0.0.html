@@ -115,6 +115,106 @@
             </header>
             <article>
                 <h1>1295.43 ReactiveFallback의 우선순위 기반 행동 선택</h1>
+<h2>1. 우선순위 기반 행동 선택의 원리</h2>
+<p>ReactiveFallback의 우선순위 기반 행동 선택(priority-based behavior selection)은 자식 노드의 배치 순서가 곧 우선순위 순서이며, 매 Tick에서 가장 높은 우선순위의 비실패 자식이 현재 행동으로 선택되는 메커니즘이다. 인덱스 0의 자식이 최고 우선순위, 마지막 자식이 최저 우선순위를 가진다.</p>
+<p>이 메커니즘을 형식적으로 정의하면, Tick <span class="math math-inline">t</span>에서 선택되는 자식 인덱스 <span class="math math-inline">k(t)</span>는 다음과 같다.</p>
+<p><span class="math math-display">k(t) = \min\{i \mid \text{status}(C_i, t) \neq \text{FAILURE}\}</span></p>
+<p>즉, <code>FAILURE</code>를 반환하지 않는 가장 작은 인덱스의 자식이 선택된다. 모든 자식이 <code>FAILURE</code>를 반환하면 ReactiveFallback 자체가 <code>FAILURE</code>를 반환한다.</p>
+<h2>고정 우선순위 체계</h2>
+<p>ReactiveFallback의 우선순위는 자식의 배치 순서에 의해 정적으로 결정되며, 런타임에 동적으로 변경되지 않는다. 이를 고정 우선순위(fixed priority) 체계라 한다. 고정 우선순위 체계는 설계 시점에서 우선순위 관계가 명확히 정의되므로, 시스템의 동작을 예측하고 검증하기 용이하다는 이점이 있다.</p>
+<pre><code>ReactiveFallback
+├── [P0: 최고] EmergencyResponse
+├── [P1]       ObstacleAvoidance
+├── [P2]       BatteryManagement
+├── [P3]       MissionExecution
+└── [P4: 최저] Idle
+</code></pre>
+<p>이 구조에서 우선순위 관계는 <span class="math math-inline">P_0 &gt; P_1 &gt; P_2 &gt; P_3 &gt; P_4</span>로 불변이다. 비상 대응이 항상 최고 우선순위를 가지며, 유휴 행동이 항상 최저 우선순위를 가진다.</p>
+<h2>조건-행동 쌍을 통한 행동 선택</h2>
+<p>각 우선순위 수준에서 조건 판정과 행동 실행을 분리하기 위해, Sequence 노드 내에 조건 노드와 행동 노드를 쌍으로 배치하는 구조가 표준적으로 사용된다.</p>
+<pre><code>ReactiveFallback
+├── Sequence [P0: 비상]
+│   ├── IsEmergency
+│   └── ExecuteEmergencyStop
+├── Sequence [P1: 장애물 회피]
+│   ├── IsObstacleNear
+│   └── AvoidObstacle
+├── Sequence [P2: 배터리 관리]
+│   ├── IsBatteryLow
+│   └── ReturnToCharger
+└── NavigateToGoal [P3: 기본 임무]
+</code></pre>
+<p>각 Tick에서의 행동 선택 과정은 다음과 같다.</p>
+<ol>
+<li><code>IsEmergency</code> 평가: <code>SUCCESS</code> → <code>ExecuteEmergencyStop</code> 실행 (선택 종료)</li>
+<li><code>IsEmergency</code> = <code>FAILURE</code> → <code>IsObstacleNear</code> 평가</li>
+<li><code>IsObstacleNear</code> = <code>SUCCESS</code> → <code>AvoidObstacle</code> 실행 (선택 종료)</li>
+<li><code>IsObstacleNear</code> = <code>FAILURE</code> → <code>IsBatteryLow</code> 평가</li>
+<li><code>IsBatteryLow</code> = <code>SUCCESS</code> → <code>ReturnToCharger</code> 실행 (선택 종료)</li>
+<li><code>IsBatteryLow</code> = <code>FAILURE</code> → <code>NavigateToGoal</code> 실행 (기본 행동)</li>
+</ol>
+<p>이 과정은 프로그래밍 언어의 if-else if-else 체인과 동일한 의미론을 가지되, 매 Tick마다 전체 조건 체인이 재평가된다는 점이 핵심이다.</p>
+<h2>우선순위 선점(Preemption)</h2>
+<p>ReactiveFallback의 우선순위 기반 선택에서 가장 중요한 특성은 선점(preemption)이다. 더 높은 우선순위의 조건이 성립하면, 현재 실행 중인 더 낮은 우선순위의 행동이 즉시 선점되어 Halt된다.</p>
+<p><strong>시나리오</strong>: NavigateToGoal 실행 중 장애물 감지</p>
+<pre><code>Tick t:   NavigateToGoal → RUNNING (목표로 주행 중)
+Tick t+1: IsObstacleNear → SUCCESS → AvoidObstacle 시작
+          NavigateToGoal.halt() ← 선점에 의한 중단
+</code></pre>
+<p>이 선점은 매 Tick의 재평가에 의해 자동으로 발생하며, 별도의 이벤트 전달이나 인터럽트 메커니즘이 필요하지 않다. 행동 트리의 Tick 구조 자체가 선점 메커니즘을 내포하고 있다.</p>
+<h2>우선순위 역전 방지</h2>
+<p>ReactiveFallback의 고정 우선순위 체계에서는 우선순위 역전(priority inversion) 현상이 구조적으로 발생하지 않는다. 운영체제의 프로세스 스케줄링에서는 낮은 우선순위 작업이 공유 자원을 점유하여 높은 우선순위 작업의 실행을 방해하는 우선순위 역전이 발생할 수 있으나, ReactiveFallback에서는 상위 자식이 비실패 상태를 반환하면 하위 자식이 Tick조차 되지 않으므로 이러한 역전이 원천적으로 불가능하다.</p>
+<p>다만, 상위 자식의 조건 평가에 과도한 시간이 소요되면 전체 Tick 주기가 지연되어 간접적으로 시스템 반응성이 저하될 수 있다. 이를 방지하기 위해 조건 노드는 경량으로 설계하여야 한다.</p>
+<h2>다중 수준 우선순위의 설계 기준</h2>
+<p>로봇공학 응용에서 ReactiveFallback의 우선순위 수준을 설계할 때 다음 기준을 적용하라.</p>
+<table><thead><tr><th>우선순위 수준</th><th>범주</th><th>예시</th></tr></thead><tbody>
+<tr><td>최고 (P0)</td><td>비상 대응</td><td>E-Stop, 충돌 감지, 하드웨어 장애</td></tr>
+<tr><td>높음 (P1)</td><td>안전 유지</td><td>장애물 회피, 금지 구역 이탈</td></tr>
+<tr><td>중간 (P2)</td><td>자원 관리</td><td>배터리 관리, 통신 복구</td></tr>
+<tr><td>낮음 (P3)</td><td>임무 수행</td><td>목표 이동, 작업 실행</td></tr>
+<tr><td>최저 (P4)</td><td>유휴</td><td>대기, 탐색, 순찰</td></tr>
+</tbody></table>
+<p>이 계층 구조는 안전 → 자원 → 임무 → 유휴의 순서로 우선순위가 감소하며, 안전 관련 조건이 항상 임무 수행보다 우선한다는 원칙을 반영한다.</p>
+<h2>우선순위 기반 선택의 행동 트리적 장점</h2>
+<ol>
+<li>
+<p><strong>선언적 표현</strong>: 우선순위 관계가 자식의 배치 순서로 명시적이고 시각적으로 표현된다. XML 정의만으로 우선순위 체계를 파악할 수 있다.</p>
+</li>
+<li>
+<p><strong>모듈성</strong>: 새로운 우선순위 수준을 추가하려면 ReactiveFallback에 자식을 삽입하기만 하면 된다. 기존 자식을 수정할 필요가 없다.</p>
+</li>
+<li>
+<p><strong>검증 용이성</strong>: 각 우선순위 수준의 조건과 행동이 독립적으로 정의되므로, 단위 테스트 시 개별 수준의 동작을 격리하여 검증할 수 있다.</p>
+</li>
+<li>
+<p><strong>디버깅 용이성</strong>: 행동 트리 시각화 도구에서 현재 어떤 우선순위 수준이 활성 상태인지, 어떤 조건이 성립하여 현재 행동이 선택되었는지를 직관적으로 파악할 수 있다.</p>
+</li>
+</ol>
+<h2>XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;!-- P0: 비상 대응 --&gt;
+    &lt;Sequence&gt;
+        &lt;IsEmergency /&gt;
+        &lt;ExecuteEmergencyProtocol /&gt;
+    &lt;/Sequence&gt;
+    
+    &lt;!-- P1: 장애물 회피 --&gt;
+    &lt;Sequence&gt;
+        &lt;IsObstacleNear distance="1.0" /&gt;
+        &lt;AvoidObstacle strategy="dynamic" /&gt;
+    &lt;/Sequence&gt;
+    
+    &lt;!-- P2: 배터리 관리 --&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryBelow level="20" /&gt;
+        &lt;ReturnToCharger station="{charging_station}" /&gt;
+    &lt;/Sequence&gt;
+    
+    &lt;!-- P3: 기본 임무 --&gt;
+    &lt;NavigateToGoal goal="{mission_goal}" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>자식의 XML 배치 순서가 곧 우선순위이며, 상단에 배치된 자식이 더 높은 우선순위를 가진다.</p>
 
             </article>
             <footer>

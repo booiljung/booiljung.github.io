@@ -115,6 +115,225 @@
             </header>
             <article>
                 <h1>1296.32 액션 노드의 블랙보드 입출력 포트 설계</h1>
+<h2>1. 블랙보드 포트의 개요</h2>
+<p>블랙보드 포트(blackboard port)는 BehaviorTree.CPP 라이브러리에서 노드 간의 데이터 교환을 위한 인터페이스이다. 블랙보드는 키-값(key-value) 저장소로서 트리의 모든 노드가 공유하는 데이터 공간이며, 포트는 이 블랙보드에 대한 노드의 접근점을 정의한다. 포트의 설계는 액션 노드의 외부 인터페이스를 결정하며, 노드 간의 데이터 흐름, 재사용성, 타입 안전성에 직접적으로 영향을 미친다(Faconti, 2022).</p>
+<h2>2. 포트의 종류</h2>
+<p>BehaviorTree.CPP 4.x에서 제공하는 포트의 종류는 세 가지이다.</p>
+<h3>2.1 InputPort</h3>
+<p><code>InputPort&lt;T&gt;</code>는 블랙보드로부터 데이터를 읽기 위한 포트이다. 노드가 외부로부터 전달받아야 하는 데이터를 선언한다.</p>
+<pre><code class="language-cpp">BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+    "goal_pose", "내비게이션 목표 위치")
+</code></pre>
+<h3>2.2 OutputPort</h3>
+<p><code>OutputPort&lt;T&gt;</code>는 블랙보드에 데이터를 기록하기 위한 포트이다. 노드가 생성하여 외부에 전달하는 데이터를 선언한다.</p>
+<pre><code class="language-cpp">BT::OutputPort&lt;int&gt;(
+    "error_code", "액션 실행 오류 코드")
+</code></pre>
+<h3>2.3 BidirectionalPort</h3>
+<p><code>BidirectionalPort&lt;T&gt;</code>는 읽기와 쓰기가 모두 가능한 포트이다. 노드가 기존 값을 읽어 수정한 후 다시 기록하는 경우에 사용한다.</p>
+<pre><code class="language-cpp">BT::BidirectionalPort&lt;int&gt;(
+    "retry_count", "현재 재시도 횟수")
+</code></pre>
+<h2>3. providedPorts() 메서드</h2>
+<p>포트의 선언은 <code>providedPorts()</code> 정적 메서드에 의해 수행된다. 이 메서드는 <code>BT::PortsList</code>(실질적으로 <code>std::unordered_map&lt;std::string, BT::PortInfo&gt;</code>)를 반환한다.</p>
+<pre><code class="language-cpp">class NavigateToPose : public BT::StatefulActionNode
+{
+public:
+    NavigateToPose(const std::string&amp; name,
+                    const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            // 입력 포트
+            BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+                "goal_pose",
+                "내비게이션 목표 위치와 자세"),
+            BT::InputPort&lt;std::string&gt;(
+                "server_name",
+                "navigate_to_pose",
+                "액션 서버 이름"),
+            BT::InputPort&lt;double&gt;(
+                "timeout_sec",
+                "30.0",
+                "타임아웃 (초)"),
+
+            // 출력 포트
+            BT::OutputPort&lt;int&gt;(
+                "error_code",
+                "내비게이션 오류 코드"),
+            BT::OutputPort&lt;double&gt;(
+                "distance_remaining",
+                "남은 거리 (미터)")
+        };
+    }
+
+    // ...
+};
+</code></pre>
+<p><code>providedPorts()</code>가 정적 메서드인 이유는, 노드 인스턴스의 생성 이전에 포트 정보가 필요하기 때문이다. 트리의 XML 파싱 단계에서 포트 정보가 참조되어 타입 검사와 연결 유효성 검증이 수행된다.</p>
+<h2>4. 포트 설계의 원칙</h2>
+<h3>4.1 명칭의 명확성</h3>
+<p>포트의 명칭은 데이터의 의미를 명확히 전달하여야 한다. 약어의 사용을 지양하고, 데이터의 성격을 구체적으로 기술한다.</p>
+<table><thead><tr><th style="text-align: center">부적절한 명칭</th><th style="text-align: center">적절한 명칭</th><th>이유</th></tr></thead><tbody>
+<tr><td style="text-align: center"><code>pos</code></td><td style="text-align: center"><code>goal_pose</code></td><td>약어 회피, 역할 명시</td></tr>
+<tr><td style="text-align: center"><code>data</code></td><td style="text-align: center"><code>sensor_reading</code></td><td>범용적 명칭 회피</td></tr>
+<tr><td style="text-align: center"><code>val</code></td><td style="text-align: center"><code>distance_meters</code></td><td>데이터의 의미와 단위 포함</td></tr>
+<tr><td style="text-align: center"><code>result</code></td><td style="text-align: center"><code>navigation_error_code</code></td><td>구체적 결과 명시</td></tr>
+<tr><td style="text-align: center"><code>input1</code></td><td style="text-align: center"><code>target_velocity</code></td><td>번호 대신 의미 부여</td></tr>
+</tbody></table>
+<h3>4.2 설명(Description)의 충실성</h3>
+<p>포트의 세 번째 인자(또는 두 번째 인자, 기본값 없는 경우)로 전달되는 설명 문자열은 포트의 목적, 데이터의 단위, 허용 범위 등을 기술한다.</p>
+<pre><code class="language-cpp">BT::InputPort&lt;double&gt;(
+    "linear_speed",
+    "0.5",
+    "목표 선속도 (m/s), 허용 범위: (0.0, 2.0]")
+
+BT::InputPort&lt;double&gt;(
+    "angular_speed",
+    "0.5",
+    "목표 각속도 (rad/s), 허용 범위: (0.0, 1.5]")
+</code></pre>
+<p>설명은 Groot(행동 트리 시각화 도구)에서 표시되며, 노드의 자기 문서화(self-documenting) 기능을 담당한다.</p>
+<h3>4.3 타입의 적절성</h3>
+<p>포트의 타입은 전달하는 데이터의 의미를 정확히 반영하여야 한다.</p>
+<pre><code class="language-cpp">// 부적절: 문자열로 좌표 전달
+BT::InputPort&lt;std::string&gt;("pose", "위치 문자열")
+
+// 적절: 전용 타입으로 좌표 전달
+BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+    "pose", "위치와 자세")
+</code></pre>
+<p>표준 ROS2 메시지 타입(<code>geometry_msgs</code>, <code>std_msgs</code>, <code>nav_msgs</code> 등)을 포트 타입으로 활용하면, 타입 안전성과 ROS2 생태계와의 호환성을 동시에 확보할 수 있다. 사용자 정의 타입을 포트에 사용하려면 BehaviorTree.CPP의 타입 변환 함수를 등록하여야 한다.</p>
+<h2>5. 입출력 포트의 데이터 흐름</h2>
+<p>포트에 의한 데이터 흐름은 XML 트리 정의에서 블랙보드 키의 매핑에 의해 결정된다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- ComputePathToPose의 출력 'path'가 블랙보드 키 'nav_path'에 기록 --&gt;
+    &lt;ComputePathToPose goal="{target}"
+                        path="{nav_path}" /&gt;
+
+    &lt;!-- FollowPath의 입력 'path'가 블랙보드 키 'nav_path'에서 읽음 --&gt;
+    &lt;FollowPath path="{nav_path}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이 예에서 <code>ComputePathToPose</code>의 출력 포트 <code>path</code>와 <code>FollowPath</code>의 입력 포트 <code>path</code>가 동일한 블랙보드 키 <code>nav_path</code>를 통해 연결된다. 데이터 흐름을 도식화하면 다음과 같다.</p>
+<pre><code>ComputePathToPose                      FollowPath
+┌──────────────────┐                ┌─────────────┐
+│ InputPort: goal ←─── {target}     │ InputPort: path ←─┐
+│                  │                │             │      │
+│ OutputPort: path ───→ {nav_path} ─┘             │      │
+│                  │     블랙보드                  │      │
+└──────────────────┘                └─────────────┘
+</code></pre>
+<h2>6. 포트 수의 적정화</h2>
+<p>과도한 포트 수는 XML 정의의 복잡도를 증가시키고, 노드의 인터페이스 파악을 곤란하게 한다. 반면 불충분한 포트는 하드코딩을 유발하여 재사용성을 저해한다.</p>
+<h3>6.1 포트 수의 지침</h3>
+<table><thead><tr><th style="text-align: center">포트 수</th><th style="text-align: center">평가</th><th>권장 조치</th></tr></thead><tbody>
+<tr><td style="text-align: center">1~3</td><td style="text-align: center">적정</td><td>—</td></tr>
+<tr><td style="text-align: center">4~6</td><td style="text-align: center">허용</td><td>복합 타입 도입 검토</td></tr>
+<tr><td style="text-align: center">7~10</td><td style="text-align: center">과도</td><td>복합 타입 또는 노드 분리</td></tr>
+<tr><td style="text-align: center">10 이상</td><td style="text-align: center">위험</td><td>단일 책임 원칙 위반 가능성 점검</td></tr>
+</tbody></table>
+<p>포트 수가 과도한 경우의 대응 방안은 다음과 같다.</p>
+<ol>
+<li><strong>복합 타입 도입</strong>: 관련된 개별 값을 하나의 구조체나 메시지 타입으로 묶는다.</li>
+<li><strong>노드 분리</strong>: 단일 책임 원칙에 따라 노드를 분리하여 각 노드의 포트 수를 줄인다.</li>
+<li><strong>기본값 설정</strong>: 빈번히 변경되지 않는 파라미터에 기본값을 설정하여 XML에서의 지정을 선택적으로 한다.</li>
+</ol>
+<h2>7. ROS2 인터페이스 대응 포트 설계</h2>
+<p>ROS2 액션, 서비스, 토픽을 래핑하는 액션 노드의 포트 설계 패턴을 제시한다.</p>
+<h3>7.1 ROS2 액션 래핑 노드</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // 액션 목표(Goal) 구성 입력
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+            "goal", "액션 목표 위치"),
+
+        // 구성 파라미터
+        BT::InputPort&lt;std::string&gt;(
+            "server_name", "navigate_to_pose",
+            "액션 서버 이름"),
+
+        // 액션 결과(Result) 출력
+        BT::OutputPort&lt;int&gt;(
+            "error_code", "결과 오류 코드"),
+
+        // 액션 피드백(Feedback) 출력
+        BT::OutputPort&lt;double&gt;(
+            "distance_remaining", "남은 거리 (미터)")
+    };
+}
+</code></pre>
+<p>이 패턴에서 입력 포트는 액션 목표의 구성에, 출력 포트는 액션 결과와 피드백의 전달에 대응한다.</p>
+<h3>7.2 ROS2 서비스 래핑 노드</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // 요청(Request) 구성 입력
+        BT::InputPort&lt;std::string&gt;(
+            "map_url", "적재할 지도 파일 경로"),
+
+        // 구성 파라미터
+        BT::InputPort&lt;std::string&gt;(
+            "service_name", "/map_server/load_map",
+            "서비스 이름"),
+
+        // 응답(Response) 출력
+        BT::OutputPort&lt;bool&gt;(
+            "success", "서비스 호출 성공 여부")
+    };
+}
+</code></pre>
+<h2>8. 포트와 블랙보드 키의 매핑 규칙</h2>
+<h3>8.1 리터럴 값 매핑</h3>
+<p>XML 속성에 <code>{}</code> 없이 값을 직접 지정하면, 해당 값이 리터럴로 해석되어 포트에 전달된다.</p>
+<pre><code class="language-xml">&lt;Wait duration_sec="5.0" /&gt;
+&lt;!-- "5.0"이 문자열에서 double로 변환되어 duration_sec 포트에 전달 --&gt;
+</code></pre>
+<h3>8.2 블랙보드 키 매핑</h3>
+<p>XML 속성에 <code>{키명}</code> 형식으로 지정하면, 해당 블랙보드 키의 값이 포트에 연결된다.</p>
+<pre><code class="language-xml">&lt;NavigateToPose goal_pose="{current_goal}" /&gt;
+&lt;!-- 블랙보드 키 "current_goal"의 값이 goal_pose 포트에 연결 --&gt;
+</code></pre>
+<h3>8.3 출력 포트의 키 매핑</h3>
+<p>출력 포트는 <code>{키명}</code> 형식으로만 지정 가능하다. <code>setOutput()</code>에 의해 기록되는 값이 해당 블랙보드 키에 저장된다.</p>
+<pre><code class="language-xml">&lt;ComputePathToPose goal="{target}" path="{computed_path}" /&gt;
+&lt;!-- setOutput("path", ...)의 결과가 블랙보드 키 "computed_path"에 저장 --&gt;
+</code></pre>
+<h2>9. 포트 설계의 검증</h2>
+<p>포트 설계의 정확성을 검증하기 위한 점검 항목을 제시한다.</p>
+<table><thead><tr><th>점검 항목</th><th>검증 내용</th></tr></thead><tbody>
+<tr><td>완전성</td><td>노드가 블랙보드에서 읽거나 쓰는 모든 데이터가 포트로 선언되었는가?</td></tr>
+<tr><td>타입 정확성</td><td>포트의 타입이 실제 데이터의 타입과 일치하는가?</td></tr>
+<tr><td>방향성</td><td>읽기 전용 데이터가 InputPort, 쓰기 전용 데이터가 OutputPort로 선언되었는가?</td></tr>
+<tr><td>명칭 일관성</td><td>동일한 의미의 데이터가 프로젝트 내에서 동일한 포트 명칭을 사용하는가?</td></tr>
+<tr><td>기본값 적절성</td><td>기본값이 안전하고 일반적 사용 사례에 적합한가?</td></tr>
+<tr><td>설명 충실성</td><td>포트의 설명이 데이터의 의미, 단위, 범위를 기술하는가?</td></tr>
+<tr><td>포트 수 적정성</td><td>포트 수가 과도하지 않은가? (7개 이상 시 재검토)</td></tr>
+</tbody></table>
+<h2>10. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>포트 선언의 완전성</strong>: 블랙보드에 접근하는 모든 데이터를 포트로 선언하여, 노드의 데이터 의존성을 완전히 가시화한다.</p>
+</li>
+<li>
+<p><strong>표준 타입 우선 사용</strong>: 가능한 한 기본 타입(<code>int</code>, <code>double</code>, <code>std::string</code>, <code>bool</code>)과 표준 ROS2 메시지 타입을 포트 타입으로 사용한다.</p>
+</li>
+<li>
+<p><strong>일관된 명명 규칙</strong>: 프로젝트 내에서 동일한 의미의 데이터에 동일한 포트 명칭을 사용한다. 예를 들어, 목표 위치는 모든 노드에서 <code>goal_pose</code>로 통일한다.</p>
+</li>
+<li>
+<p><strong>설명의 충실한 기술</strong>: 포트의 설명에 데이터의 의미, 물리적 단위, 허용 범위를 포함한다.</p>
+</li>
+<li>
+<p><strong>복합 타입의 적절한 활용</strong>: 논리적으로 하나의 단위를 구성하는 데이터는 복합 타입으로 묶어 포트 수를 절감한다.</p>
+</li>
+<li>
+<p><strong>입출력 방향의 정확한 구분</strong>: 읽기 전용 데이터는 <code>InputPort</code>, 쓰기 전용 데이터는 <code>OutputPort</code>, 읽기-수정-쓰기가 필요한 데이터는 <code>BidirectionalPort</code>로 선언한다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

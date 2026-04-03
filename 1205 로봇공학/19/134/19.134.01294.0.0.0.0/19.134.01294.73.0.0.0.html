@@ -115,6 +115,248 @@
             </header>
             <article>
                 <h1>1294.73 드론의 비상 대응 Fallback</h1>
+<h2>1. 드론 비상 대응의 다중 전략적 특성</h2>
+<p>무인 항공기(UAV)의 비상 대응은 지상 로봇과 근본적으로 다른 특성을 가진다. 드론은 비행 중 어떤 오류가 발생하더라도 공중에 무한히 체공할 수 없으며, 반드시 안전한 착륙으로 귀결되어야 한다. 따라서 드론의 비상 대응 Fallback은 “어떤 방식으로든 안전하게 지상에 도달한다“는 최종 목표를 달성하기 위한 다중 대안 전략으로 구성된다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 기본 비상 대응 Fallback 구조</h2>
+<h3>2.1 정상 운영과 비상 대응의 통합</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 정상 비행 --&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsAllSystemsNormal"/&gt;
+        &lt;Condition ID="IsBatteryAbove20Percent"/&gt;
+        &lt;Condition ID="IsGeofenceNotViolated"/&gt;
+        &lt;SubTree ID="NormalFlightMission"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;!-- 비상 대응 --&gt;
+    &lt;SubTree ID="EmergencyResponseFallback"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>정상 비행 조건이 하나라도 위반되면 ReactiveSequence가 FAILURE를 반환하고, 외부 Fallback이 비상 대응 서브트리를 실행한다.</p>
+<h2>3. 비상 유형별 대응 Fallback</h2>
+<h3>3.1 비상 상황 분류 및 단계적 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 1순위: 복귀 가능한 경우 기지 복귀 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsMotorHealthy"/&gt;
+        &lt;Condition ID="IsGPSValid"/&gt;
+        &lt;Condition ID="IsBatteryAbove10Percent"/&gt;
+        &lt;Action ID="ReturnToLaunch"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2순위: GPS 불가 시 최근 경로 역추적 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsMotorHealthy"/&gt;
+        &lt;Condition ID="IsBatteryAbove10Percent"/&gt;
+        &lt;Action ID="BacktrackAlongPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 3순위: 현 위치에서 안전 착륙 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsMotorHealthy"/&gt;
+        &lt;Action ID="FindNearestSafeLandingZone"/&gt;
+        &lt;Action ID="LandAtSafeZone"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 4순위: 모터 제한 시 활강 착륙 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPartialMotorFunctional"/&gt;
+        &lt;Action ID="ControlledDescentLanding"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 5순위: 낙하산 전개 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsParachuteAvailable"/&gt;
+        &lt;Action ID="DeployParachute"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 최후 수단: 비상 모터 정지 --&gt;
+    &lt;Action ID="EmergencyMotorCutoff"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조는 점진적 퇴화(Graceful Degradation) 원칙에 따라, 가장 안전한 대안부터 시도하고 점차 제한적인 대안으로 진행한다.</p>
+<h3>3.2 Tick별 실행 흐름 분석</h3>
+<pre><code>[시나리오: GPS 상실 상태에서의 비상 대응]
+
+Tick 1: IsMotorHealthy→S, IsGPSValid→F     (1순위 실패: GPS 불가)
+        IsMotorHealthy→S, IsBatteryAbove10→S,
+        BacktrackAlongPath→R                 (2순위 시작: 역추적)
+Tick 2: BacktrackAlongPath→R                 (역추적 진행 중)
+...
+Tick N: BacktrackAlongPath→S                 → SUCCESS (기지 복귀 성공)
+</code></pre>
+<pre><code>[시나리오: 모터 고장 상태에서의 비상 대응]
+
+Tick 1: IsMotorHealthy→F                    (1순위 실패)
+        IsMotorHealthy→F                    (2순위 실패)
+        IsMotorHealthy→F                    (3순위 실패)
+        IsPartialMotorFunctional→S,
+        ControlledDescentLanding→R           (4순위 시작: 활강 착륙)
+</code></pre>
+<h2>4. 배터리 관련 비상 대응</h2>
+<h3>4.1 배터리 잔량 기반 단계적 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 배터리 충분: 정상 임무 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsBatteryAbove30Percent"/&gt;
+        &lt;SubTree ID="NormalMission"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 배터리 주의: 임무 단축 후 복귀 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsBatteryAbove20Percent"/&gt;
+        &lt;Action ID="AbortCurrentWaypoint"/&gt;
+        &lt;Action ID="ReturnToLaunch"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 배터리 경고: 즉시 복귀 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsBatteryAbove10Percent"/&gt;
+        &lt;Action ID="DirectReturnToLaunch"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 배터리 위험: 현 위치 착륙 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsBatteryAbove5Percent"/&gt;
+        &lt;Action ID="ImmediateLanding"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 배터리 임계: 비상 하강 --&gt;
+    &lt;Action ID="EmergencyDescent"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>배터리 잔량에 따라 5단계의 대응 전략을 제공한다. 각 단계의 조건은 배타적 범위로 설정되어 정확히 하나의 대응만 선택된다.</p>
+<h2>5. 통신 장애 비상 대응</h2>
+<h3>5.1 RC 링크 상실 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 1순위: RC 재연결 대기 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsRCLinkLostRecently"/&gt;
+        &lt;Action ID="LoiterInPlace" duration="30000"/&gt;
+        &lt;Condition ID="IsRCLinkRestored"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2순위: 사전 설정된 경로로 복귀 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsGPSValid"/&gt;
+        &lt;Action ID="FollowFailsafePath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 3순위: 현 위치 착륙 --&gt;
+    &lt;Action ID="LandAtCurrentPosition"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>RC 링크가 상실되면 먼저 30초간 선회하며 재연결을 대기하고, 재연결되지 않으면 사전 설정된 경로를 따라 복귀하며, GPS도 불가하면 현 위치에 착륙한다.</p>
+<h3>5.2 텔레메트리 상실 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsTelemetryLost"/&gt;
+        &lt;Condition ID="IsRCLinkActive"/&gt;
+        &lt;Action ID="ContinueWithRCOnly"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsTelemetryLost"/&gt;
+        &lt;Condition ID="IsAutonomousCapable"/&gt;
+        &lt;Action ID="AutonomousReturnToLaunch"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="LandAtCurrentPosition"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>6. 센서 고장 비상 대응</h2>
+<h3>6.1 다중 센서 고장 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- GPS 고장: IMU 기반 추측 항법으로 복귀 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsGPSFailed"/&gt;
+        &lt;Condition ID="IsIMUHealthy"/&gt;
+        &lt;Action ID="DeadReckoningReturn"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- IMU 고장: GPS 기반 단순 비행으로 복귀 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsIMUFailed"/&gt;
+        &lt;Condition ID="IsGPSValid"/&gt;
+        &lt;Action ID="GPSOnlyReturn"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 기압계 고장: GPS 고도 기반 착륙 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsBarometerFailed"/&gt;
+        &lt;Action ID="LandUsingGPSAltitude"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 다중 센서 고장: 즉시 착륙 --&gt;
+    &lt;Action ID="EmergencyLand"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>7. ReactiveFallback을 이용한 동적 비상 대응</h2>
+<h3>7.1 상황 변화에 따른 자동 전환</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;!-- 1순위: 정상 비행 가능 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsAllSystemsNormal"/&gt;
+        &lt;SubTree ID="NormalMission"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2순위: 기능 축소 비행 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsSafeToFly"/&gt;
+        &lt;SubTree ID="DegradedMission"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 3순위: 비상 복귀 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsReturnPossible"/&gt;
+        &lt;Action ID="EmergencyReturn"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 4순위: 비상 착륙 --&gt;
+    &lt;Action ID="EmergencyLand"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>ReactiveFallback을 사용하므로, 비상 복귀 중에 시스템이 정상으로 회복되면 정상 임무 또는 기능 축소 임무로 자동 전환한다. 반대로, 기능 축소 비행 중에 상황이 악화되면 비상 복귀 또는 비상 착륙으로 즉시 전환한다.</p>
+<pre><code>Tick 1: IsAllSystemsNormal→S, NormalMission→R    (정상 비행)
+Tick 2: IsAllSystemsNormal→F, IsSafeToFly→S,
+        DegradedMission→R                         (센서 이상 → 축소 운영)
+        NormalMission→Halt
+Tick 3: IsAllSystemsNormal→F, IsSafeToFly→F,
+        IsReturnPossible→S, EmergencyReturn→R     (상황 악화 → 비상 복귀)
+        DegradedMission→Halt
+Tick 4: IsAllSystemsNormal→F, IsSafeToFly→S,
+        DegradedMission→R                         (상황 개선 → 축소 운영 복귀)
+        EmergencyReturn→Halt
+</code></pre>
+<h2>8. 다중 모터 고장 대응</h2>
+<h3>8.1 멀티콥터의 모터 고장 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 단일 모터 고장: 비대칭 비행으로 복귀 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsSingleMotorFailed"/&gt;
+        &lt;Action ID="ReconfigureFlightController"/&gt;
+        &lt;Action ID="ReturnToLaunchReduced"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 다중 모터 고장: 제어된 하강 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPartialControlPossible"/&gt;
+        &lt;Action ID="ControlledDescent"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 완전 동력 상실: 낙하산 전개 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsParachuteEquipped"/&gt;
+        &lt;Condition ID="IsAltitudeAboveMinimum"/&gt;
+        &lt;Action ID="DeployParachute"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 최후 수단 --&gt;
+    &lt;Action ID="EmergencyMotorCutoff"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>단일 모터 고장 시 비행 제어기를 재구성하여 잔여 모터로 복귀를 시도하고, 다중 고장 시 제어된 하강을 수행하며, 완전 동력 상실 시 낙하산을 전개한다.</p>
+<h2>9. 비상 대응 Fallback의 설계 원칙</h2>
+<ol>
+<li>
+<p><strong>안전 착륙 보장</strong>: 모든 Fallback 체인의 최종 대안은 반드시 착륙으로 귀결되어야 한다. 드론은 공중에 무한히 체공할 수 없으므로, 어떤 비상 상황에서든 지상에 안전하게 도달하는 것이 최소한의 안전 요구사항이다.</p>
+</li>
+<li>
+<p><strong>점진적 퇴화</strong>: 가장 안전한 대안(기지 복귀)부터 가장 제한적인 대안(비상 착륙)까지 순서대로 배치하여, 가능한 한 높은 수준의 안전성을 유지한다.</p>
+</li>
+<li>
+<p><strong>조건의 정확한 분류</strong>: 각 비상 대응의 전제 조건을 정확히 명시하여, 해당 대응이 실행 가능한 상황에서만 시도되도록 한다. 모터가 고장난 상태에서 기지 복귀를 시도하는 것은 위험하다.</p>
+</li>
+<li>
+<p><strong>타임아웃 적용</strong>: 대기(Loiter) 및 복귀 행동에 타임아웃을 적용하여, 무한 체공에 의한 배터리 소진을 방지한다.</p>
+</li>
+<li>
+<p><strong>비행 규정 준수</strong>: 비상 대응 행동은 관련 항공 규정(지오펜스, 비행 금지 구역 등)을 가능한 한 준수하되, 인명 안전이 최우선이다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

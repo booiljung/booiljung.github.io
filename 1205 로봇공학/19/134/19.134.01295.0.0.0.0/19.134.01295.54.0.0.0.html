@@ -115,6 +115,144 @@
             </header>
             <article>
                 <h1>1295.54 ReactiveSequence의 실행 알고리즘 상세</h1>
+<h2>1. 알고리즘 개요</h2>
+<p>ReactiveSequence의 실행 알고리즘은 매 Tick에서 첫 번째 자식부터 순차적으로 평가하고, 모든 자식이 <code>SUCCESS</code>를 반환하면 <code>SUCCESS</code>를, 하나의 자식이라도 <code>FAILURE</code>를 반환하면 즉시 <code>FAILURE</code>를, 자식 중 하나가 <code>RUNNING</code>을 반환하면 <code>RUNNING</code>을 반환하는 구조이다. 일반 Sequence와의 핵심적 차이는 평가 시작점에 있다. 일반 Sequence는 이전 Tick에서 마지막으로 <code>RUNNING</code>이었던 자식부터 평가를 재개하지만, ReactiveSequence는 항상 인덱스 0의 자식부터 평가를 시작한다.</p>
+<h2>2. 알고리즘의 단계별 기술</h2>
+<p>ReactiveSequence의 <code>tick()</code> 메서드가 호출되면, 다음의 단계가 순차적으로 수행된다.</p>
+<h3>2.1 단계 1: 반복 시작점 초기화</h3>
+<p>반복 인덱스를 0으로 설정한다. 이전 Tick에서의 실행 상태와 무관하게 항상 첫 번째 자식부터 시작한다.</p>
+<h3>2.2 단계 2: 자식 순차 평가</h3>
+<p>인덱스 <span class="math math-inline">i = 0</span>부터 <span class="math math-inline">N-1</span>까지 (<span class="math math-inline">N</span>은 자식 수) 순차적으로 각 자식에 Tick을 전파한다.</p>
+<h3>2.3 단계 3: 자식 반환값에 따른 분기</h3>
+<p>자식 <span class="math math-inline">C_i</span>의 반환값에 따라 다음과 같이 처리한다.</p>
+<ul>
+<li><strong><code>SUCCESS</code></strong>: 다음 자식 <span class="math math-inline">C_{i+1}</span>로 진행한다.</li>
+<li><strong><code>FAILURE</code></strong>: 반복을 즉시 중단한다. 이전에 <code>RUNNING</code>이었던 후행 자식들에 Halt를 전파한다. ReactiveSequence는 <code>FAILURE</code>를 반환한다.</li>
+<li><strong><code>RUNNING</code></strong>: 반복을 중단한다. 현재 자식 이후에 <code>RUNNING</code>이었던 자식들에 Halt를 전파한다. ReactiveSequence는 <code>RUNNING</code>을 반환한다.</li>
+</ul>
+<h3>2.4 단계 4: 모든 자식 SUCCESS</h3>
+<p>모든 자식이 <code>SUCCESS</code>를 반환하면 ReactiveSequence는 <code>SUCCESS</code>를 반환한다.</p>
+<h2>3. 알고리즘의 형식적 기술</h2>
+<p>자식 노드 집합을 <span class="math math-inline">\{C_0, C_1, \ldots, C_{N-1}\}</span>이라 하자. ReactiveSequence의 <code>tick()</code> 함수는 다음과 같이 정의된다.</p>
+<pre><code>function ReactiveSequence.tick():
+    for i ← 0 to N-1:
+        status ← C_i.tick()
+        
+        if status == RUNNING:
+            // i 이후의 RUNNING 상태 자식에 Halt 전파
+            for j ← i+1 to N-1:
+                if C_j.status() == RUNNING:
+                    C_j.halt()
+            return RUNNING
+        
+        if status == FAILURE:
+            // i 이후의 RUNNING 상태 자식에 Halt 전파
+            for j ← i+1 to N-1:
+                if C_j.status() == RUNNING:
+                    C_j.halt()
+            return FAILURE
+    
+    // 모든 자식이 SUCCESS
+    return SUCCESS
+</code></pre>
+<h2>4. Halt 전파의 대상 결정</h2>
+<p>알고리즘에서 Halt 전파의 대상은 “현재 평가 중인 자식 이후에 위치하면서 <code>RUNNING</code> 상태인 자식“이다. 이 조건은 다음의 상황에서 성립한다.</p>
+<p>이전 Tick에서 자식 <span class="math math-inline">C_k</span> (<span class="math math-inline">k &gt; i</span>)가 <code>RUNNING</code>을 반환하였고, 현재 Tick에서 자식 <span class="math math-inline">C_i</span> (<span class="math math-inline">i &lt; k</span>)가 <code>FAILURE</code> 또는 <code>RUNNING</code>을 반환한 경우, <span class="math math-inline">C_k</span>는 현재 Tick에서 Tick을 수신하지 못하였으므로 여전히 이전의 <code>RUNNING</code> 상태를 유지한다. 이 <span class="math math-inline">C_k</span>에 Halt가 전파되어야 한다.</p>
+<p>구체적으로, 다음과 같은 시나리오를 고려한다.</p>
+<pre><code>ReactiveSequence
+├── C₀ (조건)
+├── C₁ (조건)
+└── C₂ (행동)
+</code></pre>
+<pre><code>Tick t:
+  C₀.tick() → SUCCESS
+  C₁.tick() → SUCCESS
+  C₂.tick() → RUNNING
+  ReactiveSequence → RUNNING
+
+Tick t+1:
+  C₀.tick() → FAILURE
+  → C₂는 Tick을 수신하지 않았으나 여전히 RUNNING 상태
+  → C₂.halt() 호출
+  ReactiveSequence → FAILURE
+</code></pre>
+<p>Tick <span class="math math-inline">t+1</span>에서 <span class="math math-inline">C_0</span>가 <code>FAILURE</code>를 반환하면, <span class="math math-inline">C_1</span>과 <span class="math math-inline">C_2</span>는 평가되지 않는다. 그러나 <span class="math math-inline">C_2</span>는 이전 Tick에서 <code>RUNNING</code>이었으므로 Halt를 수신하여야 한다. <span class="math math-inline">C_1</span>은 이전 Tick에서 <code>SUCCESS</code>였으므로 Halt 대상이 아니다.</p>
+<h2>5. 상태 전이 다이어그램</h2>
+<p>ReactiveSequence의 반환값은 자식들의 반환값 조합에 의해 결정된다. 자식이 3개인 경우를 기준으로 가능한 상태 전이를 정리한다.</p>
+<table><thead><tr><th><span class="math math-inline">C_0</span> 결과</th><th><span class="math math-inline">C_1</span> 결과</th><th><span class="math math-inline">C_2</span> 결과</th><th>ReactiveSequence 결과</th><th>Halt 대상</th></tr></thead><tbody>
+<tr><td>FAILURE</td><td>(미평가)</td><td>(미평가)</td><td>FAILURE</td><td>이전 RUNNING 자식</td></tr>
+<tr><td>SUCCESS</td><td>FAILURE</td><td>(미평가)</td><td>FAILURE</td><td>이전 RUNNING 자식</td></tr>
+<tr><td>SUCCESS</td><td>SUCCESS</td><td>FAILURE</td><td>FAILURE</td><td>없음</td></tr>
+<tr><td>SUCCESS</td><td>SUCCESS</td><td>RUNNING</td><td>RUNNING</td><td>없음</td></tr>
+<tr><td>SUCCESS</td><td>SUCCESS</td><td>SUCCESS</td><td>SUCCESS</td><td>없음</td></tr>
+<tr><td>SUCCESS</td><td>RUNNING</td><td>(미평가)</td><td>RUNNING</td><td>이전 <span class="math math-inline">C_2</span> RUNNING 시 <span class="math math-inline">C_2</span> Halt</td></tr>
+<tr><td>RUNNING</td><td>(미평가)</td><td>(미평가)</td><td>RUNNING</td><td>이전 <span class="math math-inline">C_1</span>, <span class="math math-inline">C_2</span> RUNNING 시 Halt</td></tr>
+</tbody></table>
+<h2>6. RUNNING 반환 시의 의미론</h2>
+<p>ReactiveSequence가 <code>RUNNING</code>을 반환하는 경우는 두 가지이다.</p>
+<h3>6.1 경우 1: 행동 자식이 RUNNING</h3>
+<p>모든 선행 조건이 <code>SUCCESS</code>를 반환하고, 행동 자식이 <code>RUNNING</code>을 반환한 경우이다. 이는 전제 조건이 충족된 상태에서 행동이 진행 중임을 의미한다.</p>
+<pre><code>C₀ → SUCCESS, C₁ → SUCCESS, C₂ → RUNNING
+ReactiveSequence → RUNNING
+</code></pre>
+<h3>6.2 경우 2: 조건 자식이 RUNNING</h3>
+<p>선행 조건 자식이 <code>RUNNING</code>을 반환한 경우이다. 조건의 평가가 완료되지 않았으므로 후행 자식은 평가되지 않는다. 일반적으로 조건 노드는 <code>SUCCESS</code> 또는 <code>FAILURE</code>만을 반환하도록 설계하므로 이 경우는 드물지만, 비동기적 조건 평가(예: 원격 서비스 호출에 의한 조건 확인)에서 발생할 수 있다.</p>
+<pre><code>C₀ → SUCCESS, C₁ → RUNNING
+→ C₂가 이전에 RUNNING이었으면 C₂.halt()
+ReactiveSequence → RUNNING
+</code></pre>
+<h2>7. 일반 Sequence 알고리즘과의 비교</h2>
+<p>일반 Sequence의 알고리즘을 병렬로 제시하여 차이를 명확히 한다.</p>
+<pre><code>function Sequence.tick():
+    for i ← running_child_index to N-1:   // ← 차이점: 시작 인덱스
+        status ← C_i.tick()
+        
+        if status == RUNNING:
+            running_child_index ← i        // ← 차이점: 인덱스 기억
+            return RUNNING
+        
+        if status == FAILURE:
+            running_child_index ← 0
+            return FAILURE
+    
+    running_child_index ← 0
+    return SUCCESS
+</code></pre>
+<pre><code>function ReactiveSequence.tick():
+    for i ← 0 to N-1:                     // ← 항상 0부터 시작
+        status ← C_i.tick()
+        
+        if status == RUNNING:
+            haltRunningChildren(i+1, N-1)  // ← Halt 전파
+            return RUNNING
+        
+        if status == FAILURE:
+            haltRunningChildren(i+1, N-1)  // ← Halt 전파
+            return FAILURE
+    
+    return SUCCESS
+</code></pre>
+<p>핵심적 차이는 두 가지이다. 첫째, ReactiveSequence는 반복 시작 인덱스가 항상 0이다. 둘째, ReactiveSequence는 <code>RUNNING</code> 또는 <code>FAILURE</code> 반환 시 후행 자식에 대한 Halt 전파를 수행한다.</p>
+<h2>8. 알고리즘의 시간 복잡도</h2>
+<p>ReactiveSequence의 단일 Tick 시간 복잡도는 <span class="math math-inline">O(N)</span>이다. 매 Tick에서 최대 <span class="math math-inline">N</span>개의 자식을 평가하여야 하기 때문이다. 일반 Sequence의 최선의 경우 시간 복잡도가 <span class="math math-inline">O(1)</span>인 것과 대비된다(이전 <code>RUNNING</code> 자식부터 바로 시작하므로).</p>
+<p>그러나 ReactiveSequence에서 앞부분의 조건 노드가 <code>FAILURE</code>를 반환하면 나머지 자식은 평가되지 않으므로, 평균적인 시간 복잡도는 조건 노드의 <code>FAILURE</code> 빈도에 의존한다. 조건이 대부분의 Tick에서 <code>SUCCESS</code>를 반환하는 경우 전체 <span class="math math-inline">N</span>개의 자식이 평가되고, 첫 번째 조건이 자주 <code>FAILURE</code>를 반환하는 경우 <span class="math math-inline">O(1)</span>에 근사한다.</p>
+<h2>9. 알고리즘의 정확성 보증</h2>
+<p>ReactiveSequence의 실행 알고리즘은 다음의 속성을 보장한다.</p>
+<ol>
+<li>
+<p><strong>전제 조건 불변성</strong>: 행동 자식이 <code>RUNNING</code>인 모든 Tick에서, 모든 선행 조건 자식이 <code>SUCCESS</code>를 반환하였다.</p>
+</li>
+<li>
+<p><strong>Halt 안전성</strong>: 전제 조건 위반 시, <code>RUNNING</code> 상태의 모든 후행 자식에 Halt가 전파된다. 어떤 <code>RUNNING</code> 자식도 Halt 없이 방치되지 않는다.</p>
+</li>
+<li>
+<p><strong>단조적 평가</strong>: 자식은 항상 좌에서 우로(인덱스 순으로) 평가된다. 평가 순서가 역전되지 않는다.</p>
+</li>
+<li>
+<p><strong>결정론적 결과</strong>: 동일한 자식 반환값 조합에 대해 ReactiveSequence의 반환값은 항상 동일하다.</p>
+</li>
+</ol>
+<p>이러한 속성은 ReactiveSequence를 안전 관련 행동 트리에 적용하기 위한 이론적 근거를 제공한다.</p>
 
             </article>
             <footer>

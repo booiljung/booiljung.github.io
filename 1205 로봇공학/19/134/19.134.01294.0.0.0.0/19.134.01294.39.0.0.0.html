@@ -115,6 +115,146 @@
             </header>
             <article>
                 <h1>1294.39 FallbackWithMemory (StatefulFallback)의 개념</h1>
+<h2>1. FallbackWithMemory의 정의</h2>
+<p>FallbackWithMemory는 Fallback 노드의 변형으로, 이전 Tick에서 RUNNING을 반환한 자식의 인덱스를 기억하고, 다음 Tick에서 해당 인덱스부터 평가를 재개하는 제어 흐름 노드이다. 이전 Tick에서 FAILURE를 반환한 자식들은 건너뛰어지며, 이를 통해 이미 실패가 확인된 대안을 불필요하게 재시도하는 것을 방지한다(Colledanchise &amp; Ogren, 2018).</p>
+<p>“WithMemory“라는 수식어는 노드가 Tick 간에 상태(메모리)를 유지한다는 것을 의미하며, 이는 SequenceWithMemory에서의 메모리 개념과 동일하다.</p>
+<h2>2. 메모리 메커니즘</h2>
+<h3>2.1 current_child_idx 상태 변수</h3>
+<p>FallbackWithMemory는 내부에 <code>current_child_idx</code> 상태 변수를 유지한다. 이 변수는 다음 Tick에서 평가를 시작할 자식의 인덱스를 기억한다.</p>
+<pre><code>초기 상태: current_child_idx = 0
+
+상태 전이 규칙:
+  자식이 RUNNING 반환 → current_child_idx ← 해당 인덱스 (유지)
+  자식이 SUCCESS 반환 → current_child_idx ← 0 (초기화)
+  모든 자식 FAILURE    → current_child_idx ← 0 (초기화)
+  Halt 호출            → current_child_idx ← 0 (초기화)
+</code></pre>
+<h3>2.2 메모리의 생성과 소멸</h3>
+<table><thead><tr><th>이벤트</th><th>current_child_idx 변화</th><th>의미</th></tr></thead><tbody>
+<tr><td>초기 상태</td><td>0</td><td>첫 자식부터 평가</td></tr>
+<tr><td>자식 k가 RUNNING</td><td>k</td><td>k번째 대안 시도 중</td></tr>
+<tr><td>어떤 자식이 SUCCESS</td><td>0</td><td>대안 탐색 완료, 초기화</td></tr>
+<tr><td>모든 자식 FAILURE</td><td>0</td><td>모든 대안 소진, 초기화</td></tr>
+<tr><td>외부 Halt</td><td>0</td><td>강제 초기화</td></tr>
+</tbody></table>
+<h2>3. SequenceWithMemory와의 대칭적 관계</h2>
+<p>FallbackWithMemory와 SequenceWithMemory는 동일한 메모리 메커니즘을 가지며, SUCCESS와 FAILURE의 역할만 교환된다.</p>
+<table><thead><tr><th>특성</th><th>SequenceWithMemory</th><th>FallbackWithMemory</th></tr></thead><tbody>
+<tr><td>건너뛰는 자식의 상태</td><td>이전에 SUCCESS인 자식</td><td>이전에 FAILURE인 자식</td></tr>
+<tr><td>진행 조건</td><td>SUCCESS (다음 단계로)</td><td>FAILURE (다음 대안으로)</td></tr>
+<tr><td>종료 조건</td><td>FAILURE (전체 실패)</td><td>SUCCESS (대안 성공)</td></tr>
+<tr><td>인덱스 초기화 조건</td><td>FAILURE 또는 전체 SUCCESS</td><td>SUCCESS 또는 전체 FAILURE</td></tr>
+</tbody></table>
+<h2>4. 동작 예시</h2>
+<h3>4.1 기본 동작 흐름</h3>
+<pre><code>children: [ActA, AsyncActB, ActC]
+
+Tick 1:
+  i=0: ActA → FAILURE
+  i=1: AsyncActB → RUNNING
+  current_child_idx ← 1
+  → RUNNING
+
+Tick 2: (인덱스 1부터 재개)
+  i=1: AsyncActB → RUNNING    (ActA 건너뜀)
+  → RUNNING
+
+Tick 3: (인덱스 1부터 재개)
+  i=1: AsyncActB → SUCCESS    (ActA 건너뜀)
+  current_child_idx ← 0
+  → SUCCESS
+</code></pre>
+<p>Tick 2와 3에서 ActA는 이전 Tick에서 FAILURE를 반환했으므로 건너뛰어진다.</p>
+<h3>4.2 FAILURE 전파 후 다음 대안 시도</h3>
+<pre><code>Tick 1:
+  i=0: ActA → FAILURE
+  i=1: AsyncActB → RUNNING
+  current_child_idx ← 1
+  → RUNNING
+
+Tick 2:
+  i=1: AsyncActB → FAILURE    (ActA 건너뜀)
+  i=2: ActC → SUCCESS
+  current_child_idx ← 0
+  → SUCCESS
+</code></pre>
+<p>AsyncActB가 FAILURE를 반환하면, 다음 대안인 ActC로 자동 진행한다.</p>
+<h3>4.3 모든 대안 소진</h3>
+<pre><code>Tick 1:
+  i=0: ActA → FAILURE
+  i=1: AsyncActB → RUNNING
+  current_child_idx ← 1
+  → RUNNING
+
+Tick 2:
+  i=1: AsyncActB → FAILURE
+  i=2: ActC → FAILURE
+  current_child_idx ← 0
+  → FAILURE
+</code></pre>
+<h2>5. ReactiveFallback과의 비교</h2>
+<p>동일한 트리에서 FallbackWithMemory와 ReactiveFallback의 동작 차이를 비교한다.</p>
+<pre><code class="language-xml">&lt;Fallback변형&gt;
+    &lt;Condition ID="IsPrimaryPathClear"/&gt;
+    &lt;Action ID="UseDetourPath"/&gt;
+&lt;/Fallback변형&gt;
+</code></pre>
+<h3>5.1 FallbackWithMemory의 동작</h3>
+<pre><code>Tick 1: IsPrimaryPathClear→F, UseDetourPath→R (idx=1)
+Tick 2: UseDetourPath→R                       (조건 건너뜀)
+Tick 3: UseDetourPath→R                       (주 경로 정리됐지만 감지 못함)
+Tick 4: UseDetourPath→S                       (우회 완료)
+        → SUCCESS
+</code></pre>
+<p>주 경로가 Tick 3에서 정리되었지만, FallbackWithMemory는 이를 감지하지 못하고 우회 경로를 계속 사용한다.</p>
+<h3>5.2 ReactiveFallback의 동작</h3>
+<pre><code>Tick 1: IsPrimaryPathClear→F, UseDetourPath→R
+Tick 2: IsPrimaryPathClear→F, UseDetourPath→R
+Tick 3: IsPrimaryPathClear→S                  (주 경로 정리 감지)
+        UseDetourPath→Halt                    (우회 중단)
+        → SUCCESS
+</code></pre>
+<p>ReactiveFallback에서는 주 경로가 정리되는 즉시 우회를 중단하고 SUCCESS를 반환한다.</p>
+<h2>6. BehaviorTree.CPP v4에서의 FallbackWithMemory</h2>
+<p>BehaviorTree.CPP v4에서 <code>&lt;Fallback&gt;</code> XML 태그는 기본적으로 WithMemory 동작을 수행한다. 별도의 FallbackWithMemory 태그는 존재하지 않으며, <code>&lt;Fallback&gt;</code>이 곧 FallbackWithMemory이다(Faconti, 2022).</p>
+<pre><code class="language-xml">&lt;!-- BehaviorTree.CPP v4 --&gt;
+&lt;Fallback&gt;                   &lt;!-- WithMemory 동작 (기본) --&gt;
+    &lt;Action ID="TryMethodA"/&gt;
+    &lt;Action ID="TryMethodB"/&gt;
+    &lt;Action ID="TryMethodC"/&gt;
+&lt;/Fallback&gt;
+
+&lt;ReactiveFallback&gt;           &lt;!-- 매 Tick 재평가 동작 --&gt;
+    &lt;Condition ID="CondA"/&gt;
+    &lt;Action ID="ActB"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>이 설계는 Sequence에서 <code>&lt;Sequence&gt;</code>가 기본적으로 WithMemory 동작을 수행하는 것과 일관적이다.</p>
+<h2>7. FallbackWithMemory의 적용 시나리오</h2>
+<h3>7.1 비용이 높은 대안의 재시도 방지</h3>
+<p>대안의 실행 비용이 높은 경우, 이미 실패한 대안을 매 Tick마다 재시도하는 것은 비효율적이다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="ExpensiveDiagnostic"/&gt;     &lt;!-- 비용 높은 진단 --&gt;
+    &lt;Action ID="ExpensiveRecalibration"/&gt;  &lt;!-- 비용 높은 재보정 --&gt;
+    &lt;Action ID="ManualIntervention"/&gt;      &lt;!-- 수동 개입 요청 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>ExpensiveDiagnostic이 실패한 후 매 Tick마다 재실행하면 불필요한 자원 소모가 발생한다. WithMemory를 사용하면 실패한 진단을 건너뛰고 다음 대안으로 직접 진행한다.</p>
+<h3>7.2 순차적 복구 단계</h3>
+<p>복구 절차가 단계적으로 진행되어야 하며, 이전 단계를 반복할 필요가 없는 경우에 적합하다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="SoftReset"/&gt;
+    &lt;Action ID="HardReset"/&gt;
+    &lt;Action ID="FactoryReset"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>SoftReset이 실패하면 HardReset을 시도하고, 그것도 실패하면 FactoryReset을 시도한다. SoftReset을 매번 재시도하는 것은 의미가 없다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

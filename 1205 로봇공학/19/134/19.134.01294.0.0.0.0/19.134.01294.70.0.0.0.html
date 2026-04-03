@@ -115,6 +115,230 @@
             </header>
             <article>
                 <h1>1294.70 매니퓰레이터의 접근-파지-이동-배치 Sequence</h1>
+<h2>1. 픽 앤 플레이스의 순차적 구조</h2>
+<p>로봇 매니퓰레이터의 픽 앤 플레이스(pick-and-place) 작업은 접근(approach), 파지(grasp), 이동(transport), 배치(place)의 4단계로 구성되는 전형적인 순차적 작업이다. 각 단계는 이전 단계의 물리적 완료에 의존하며, 단계의 순서를 바꾸거나 건너뛸 수 없다. Sequence 노드는 이러한 엄격한 순차적 의존 관계를 행동 트리 수준에서 표현한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 기본 접근-파지-이동-배치 시퀀스</h2>
+<h3>2.1 최소 구조</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="MoveToPreGraspPose" pose="{pre_grasp_pose}"/&gt;
+    &lt;Action ID="OpenGripper"/&gt;
+    &lt;Action ID="MoveToGraspPose" pose="{grasp_pose}"/&gt;
+    &lt;Action ID="CloseGripper"/&gt;
+    &lt;Action ID="MoveToPrePlacePose" pose="{pre_place_pose}"/&gt;
+    &lt;Action ID="MoveToPlacePose" pose="{place_pose}"/&gt;
+    &lt;Action ID="OpenGripper"/&gt;
+    &lt;Action ID="Retreat" pose="{retreat_pose}"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>이 시퀀스는 8개의 액션으로 구성되며, 각 단계의 역할은 다음과 같다:</p>
+<ol>
+<li><strong>접근(Approach)</strong>: 파지 전 자세(pre-grasp pose)로 이동한다. 이 자세는 대상 물체의 위쪽 또는 측면에 위치하며, 충돌 없이 파지 자세에 진입할 수 있는 준비 자세이다.</li>
+<li><strong>그리퍼 개방</strong>: 파지 전에 그리퍼를 완전히 개방한다.</li>
+<li><strong>파지 자세 진입</strong>: 대상 물체를 파지할 수 있는 정확한 자세로 이동한다.</li>
+<li><strong>파지(Grasp)</strong>: 그리퍼를 폐쇄하여 물체를 파지한다.</li>
+<li><strong>배치 전 자세 이동</strong>: 배치 위치 위의 준비 자세로 이동한다.</li>
+<li><strong>배치 자세 진입</strong>: 물체를 놓을 정확한 자세로 이동한다.</li>
+<li><strong>배치(Place)</strong>: 그리퍼를 개방하여 물체를 놓는다.</li>
+<li><strong>후퇴(Retreat)</strong>: 배치된 물체와의 충돌을 피해 후퇴한다.</li>
+</ol>
+<h3>2.2 Tick별 실행 흐름</h3>
+<pre><code>Tick 1:  MoveToPreGraspPose→R         (접근 이동 중)
+Tick 2:  MoveToPreGraspPose→R         (이동 중)
+Tick 3:  MoveToPreGraspPose→S, OpenGripper→R (도달, 그리퍼 개방 중)
+Tick 4:  OpenGripper→S, MoveToGraspPose→R    (파지 자세 진입 중)
+Tick 5:  MoveToGraspPose→R            (미세 접근 중)
+Tick 6:  MoveToGraspPose→S, CloseGripper→R   (파지 시작)
+Tick 7:  CloseGripper→S, MoveToPrePlacePose→R (파지 완료, 이동 시작)
+...
+Tick N:  Retreat→S                    → SUCCESS (작업 완료)
+</code></pre>
+<p>SequenceWithMemory에 의해 완료된 단계는 반복되지 않고, 현재 활성 단계만 매 Tick 실행된다.</p>
+<h2>3. 단계 서브트리 분해</h2>
+<h3>3.1 단계별 서브트리 구성</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;SubTree ID="ApproachPhase"/&gt;
+    &lt;SubTree ID="GraspPhase"/&gt;
+    &lt;SubTree ID="TransportPhase"/&gt;
+    &lt;SubTree ID="PlacePhase"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>각 서브트리의 내부 구조:</p>
+<pre><code class="language-xml">&lt;!-- ApproachPhase --&gt;
+&lt;BehaviorTree ID="ApproachPhase"&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="PerceiveObject" object_id="{target_object}"/&gt;
+        &lt;Action ID="ComputeGraspPose" object_pose="{object_pose}"
+                grasp_pose="{grasp_pose}"/&gt;
+        &lt;Action ID="PlanMotion" target="{pre_grasp_pose}"/&gt;
+        &lt;Action ID="ExecuteMotion"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<pre><code class="language-xml">&lt;!-- GraspPhase --&gt;
+&lt;BehaviorTree ID="GraspPhase"&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="OpenGripper"/&gt;
+        &lt;Action ID="PlanMotion" target="{grasp_pose}"/&gt;
+        &lt;Action ID="ExecuteMotion"/&gt;
+        &lt;Action ID="CloseGripper"/&gt;
+        &lt;Action ID="VerifyGrasp"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<pre><code class="language-xml">&lt;!-- TransportPhase --&gt;
+&lt;BehaviorTree ID="TransportPhase"&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="LiftObject" height="0.1"/&gt;
+        &lt;Action ID="PlanMotion" target="{pre_place_pose}"/&gt;
+        &lt;Action ID="ExecuteMotion"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<pre><code class="language-xml">&lt;!-- PlacePhase --&gt;
+&lt;BehaviorTree ID="PlacePhase"&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="PlanMotion" target="{place_pose}"/&gt;
+        &lt;Action ID="ExecuteMotion"/&gt;
+        &lt;Action ID="OpenGripper"/&gt;
+        &lt;Action ID="Retreat" distance="0.1"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>4. 인식 통합 픽 앤 플레이스 시퀀스</h2>
+<h3>4.1 시각 기반 물체 인식 포함</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;!-- 1단계: 물체 인식 --&gt;
+    &lt;Action ID="MoveToScanPose"/&gt;
+    &lt;Action ID="CapturePointCloud"/&gt;
+    &lt;Action ID="DetectObject" object_id="{target_object}"
+            result_pose="{object_pose}"/&gt;
+    &lt;Action ID="EstimateGraspPose" object_pose="{object_pose}"
+            grasp_pose="{grasp_pose}"/&gt;
+    &lt;!-- 2단계: 접근 및 파지 --&gt;
+    &lt;Action ID="PlanAndMoveToPreGrasp" pose="{grasp_pose}"/&gt;
+    &lt;Action ID="OpenGripper"/&gt;
+    &lt;Action ID="PlanAndMoveToGrasp" pose="{grasp_pose}"/&gt;
+    &lt;Action ID="CloseGripper"/&gt;
+    &lt;Action ID="VerifyGrasp"/&gt;
+    &lt;!-- 3단계: 이동 및 배치 --&gt;
+    &lt;Action ID="LiftObject" height="0.1"/&gt;
+    &lt;Action ID="PlanAndMoveTo" pose="{place_pose}"/&gt;
+    &lt;Action ID="OpenGripper"/&gt;
+    &lt;Action ID="Retreat" distance="0.15"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>물체 인식, 파지 자세 추정, 경로 계획이 모두 순차적으로 통합되어 있다. 블랙보드 포트를 통해 인식 결과(<code>{object_pose}</code>)가 파지 계획(<code>{grasp_pose}</code>)으로, 파지 계획이 운동 실행으로 전달된다.</p>
+<h2>5. 안전 감시 통합 시퀀스</h2>
+<h3>5.1 ReactiveSequence를 이용한 조작 안전 감시</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;!-- 지속 감시 조건 --&gt;
+    &lt;Condition ID="IsJointTorqueNormal"/&gt;
+    &lt;Condition ID="IsCollisionNotDetected"/&gt;
+    &lt;Condition ID="IsWorkspaceNotViolated"/&gt;
+    &lt;!-- 조작 임무 --&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;SubTree ID="ApproachPhase"/&gt;
+        &lt;SubTree ID="GraspPhase"/&gt;
+        &lt;SubTree ID="TransportPhase"/&gt;
+        &lt;SubTree ID="PlacePhase"/&gt;
+    &lt;/SequenceWithMemory&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>매 Tick마다 관절 토크, 충돌, 작업 공간 위반을 검사하며, 어느 조건이든 위반되면 조작이 즉시 중단된다.</p>
+<h3>5.2 협동 로봇의 안전 감시 통합</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsHumanDistanceSafe"/&gt;
+    &lt;Condition ID="IsContactForceNormal"/&gt;
+    &lt;Condition ID="IsSpeedWithinLimit"/&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;SubTree ID="ApproachPhase"/&gt;
+        &lt;SubTree ID="GraspPhase"/&gt;
+        &lt;SubTree ID="TransportPhase"/&gt;
+        &lt;SubTree ID="PlacePhase"/&gt;
+    &lt;/SequenceWithMemory&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>협동 로봇(cobot)의 경우, 사람과의 거리, 접촉력, 속도를 지속적으로 감시하여 작업자의 안전을 보장한다.</p>
+<h2>6. 파지 검증과 오류 처리</h2>
+<h3>6.1 파지 성공 확인 포함 시퀀스</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="MoveToPreGraspPose"/&gt;
+    &lt;Action ID="OpenGripper"/&gt;
+    &lt;Action ID="MoveToGraspPose"/&gt;
+    &lt;Action ID="CloseGripper"/&gt;
+    &lt;!-- 파지 검증 --&gt;
+    &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;!-- 파지 성공 후 이동 --&gt;
+    &lt;Action ID="LiftObject" height="0.1"/&gt;
+    &lt;Action ID="MoveToPlacePose"/&gt;
+    &lt;Action ID="OpenGripper"/&gt;
+    &lt;Action ID="Retreat"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p><code>IsObjectGrasped</code> 조건 노드는 그리퍼의 폭, 힘 센서 값, 또는 촉각 센서를 통해 물체가 실제로 파지되었는지 확인한다. 파지가 실패한 경우(그리퍼가 완전히 닫혔으나 물체를 잡지 못한 경우) FAILURE를 반환하여 시퀀스 전체가 중단된다.</p>
+<h3>6.2 Fallback을 이용한 파지 재시도</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="MoveToPreGraspPose"/&gt;
+    &lt;!-- 파지 시도 (재시도 포함) --&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Action ID="OpenGripper"/&gt;
+            &lt;Action ID="MoveToGraspPose"/&gt;
+            &lt;Action ID="CloseGripper"/&gt;
+            &lt;Condition ID="IsObjectGrasped"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Action ID="OpenGripper"/&gt;
+            &lt;Action ID="AdjustGraspPose"/&gt;
+            &lt;Action ID="MoveToGraspPose"/&gt;
+            &lt;Action ID="CloseGripper"/&gt;
+            &lt;Condition ID="IsObjectGrasped"/&gt;
+        &lt;/Sequence&gt;
+    &lt;/Fallback&gt;
+    &lt;!-- 파지 성공 후 이동 및 배치 --&gt;
+    &lt;Action ID="LiftObject"/&gt;
+    &lt;Action ID="MoveToPlacePose"/&gt;
+    &lt;Action ID="OpenGripper"/&gt;
+    &lt;Action ID="Retreat"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>첫 번째 파지가 실패하면 파지 자세를 조정한 후 재시도한다. Sequence 내부에 Fallback을 중첩하여 파지 단계에서의 대안 전략을 구현하였다.</p>
+<h2>7. 다중 물체 픽 앤 플레이스</h2>
+<h3>7.1 순차적 다중 물체 처리</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;!-- 물체 1 --&gt;
+    &lt;SubTree ID="PickAndPlace" object="{object_1}"
+             pick_pose="{pick_1}" place_pose="{place_1}"/&gt;
+    &lt;!-- 물체 2 --&gt;
+    &lt;SubTree ID="PickAndPlace" object="{object_2}"
+             pick_pose="{pick_2}" place_pose="{place_2}"/&gt;
+    &lt;!-- 물체 3 --&gt;
+    &lt;SubTree ID="PickAndPlace" object="{object_3}"
+             pick_pose="{pick_3}" place_pose="{place_3}"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>동일한 PickAndPlace 서브트리를 재사용하여 여러 물체를 순차적으로 처리한다. 블랙보드 포트를 통해 각 호출에 서로 다른 물체와 위치를 전달한다.</p>
+<h2>8. 설계 시 고려 사항</h2>
+<ol>
+<li>
+<p><strong>운동 계획의 통합</strong>: 각 이동 단계에서 경로 계획(motion planning)을 수행하여 충돌 없는 궤적을 생성해야 한다. 계획 실패 시 Sequence가 FAILURE를 반환하므로, 상위 트리에서 복구 전략을 제공해야 한다.</p>
+</li>
+<li>
+<p><strong>파지 검증의 필수성</strong>: 그리퍼 폐쇄 후 물체가 실제로 파지되었는지 반드시 검증해야 한다. 검증 없이 이동 단계로 진행하면, 물체가 파지되지 않은 상태에서 이동하여 작업이 실패한다.</p>
+</li>
+<li>
+<p><strong>Halt 시 그리퍼 상태 관리</strong>: 물체를 파지한 상태에서 Halt가 발생하면, 그리퍼를 유지할지 해제할지를 <code>onHalted()</code> 메서드에서 결정해야 한다. 파지 해제 시 물체가 낙하할 수 있고, 유지 시 다음 시도에서 간섭이 발생할 수 있다.</p>
+</li>
+<li>
+<p><strong>블랙보드를 통한 자세 전달</strong>: 인식 결과, 파지 자세, 배치 자세 등의 기하학적 데이터는 블랙보드 포트를 통해 단계 간에 전달하여, 동적으로 계산된 자세를 런타임에 활용할 수 있도록 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

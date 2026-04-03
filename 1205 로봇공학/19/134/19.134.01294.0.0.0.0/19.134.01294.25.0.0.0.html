@@ -115,6 +115,134 @@
             </header>
             <article>
                 <h1>1294.25 Sequence, SequenceWithMemory, ReactiveSequence의 비교</h1>
+<h2>1. 세 가지 Sequence 변형의 개관</h2>
+<p>BehaviorTree.CPP v4에서 제공하는 세 가지 Sequence 변형—기본 Sequence(SequenceWithMemory), ReactiveSequence, 그리고 개념적 기본 Sequence—은 모두 자식 노드를 왼쪽에서 오른쪽으로 순차적으로 평가하며 AND 의미론을 따른다는 공통점을 가진다. 그러나 RUNNING 상태 이후의 재진입 동작, 조건 재검사 여부, Halt 처리 방식에서 본질적인 차이를 보인다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 핵심 특성 비교</h2>
+<h3>2.1 재진입 동작</h3>
+<table><thead><tr><th>특성</th><th>SequenceWithMemory</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>Tick 시작 위치</td><td>마지막 RUNNING 자식 인덱스</td><td>항상 인덱스 0</td></tr>
+<tr><td>상태 변수</td><td><code>current_child_idx</code> 유지</td><td>상태 변수 없음</td></tr>
+<tr><td>SUCCESS 자식 재평가</td><td>건너뜀</td><td>매 Tick 재평가</td></tr>
+<tr><td>메모리 유무</td><td>있음 (Stateful)</td><td>없음 (Stateless)</td></tr>
+</tbody></table>
+<p>SequenceWithMemory는 이전 Tick에서 SUCCESS를 반환한 자식을 기억하고 건너뛰는 반면, ReactiveSequence는 매 Tick에서 모든 자식을 처음부터 재평가한다.</p>
+<h3>2.2 조건 감시 능력</h3>
+<table><thead><tr><th>특성</th><th>SequenceWithMemory</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>조건 변화 감지</td><td>불가</td><td>가능</td></tr>
+<tr><td>안전 조건 감시</td><td>부적합</td><td>적합</td></tr>
+<tr><td>환경 변화 반응</td><td>작업 완료 후에만 반응</td><td>즉시 반응</td></tr>
+</tbody></table>
+<p>ReactiveSequence는 앞쪽 조건 노드를 매 Tick마다 재평가하므로, 비동기 액션 실행 중 조건의 변화를 즉시 감지할 수 있다. SequenceWithMemory에서는 SUCCESS를 반환한 조건을 건너뛰므로, 해당 조건이 이후에 FAILURE로 변경되더라도 감지하지 못한다.</p>
+<h3>2.3 Halt 동작</h3>
+<table><thead><tr><th>특성</th><th>SequenceWithMemory</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>조건 실패 시 RUNNING 자식 Halt</td><td>해당 없음 (조건 재평가 없음)</td><td>즉시 Halt</td></tr>
+<tr><td>자체 FAILURE 시 RUNNING 자식 Halt</td><td>Halt 수행</td><td>Halt 수행</td></tr>
+<tr><td>Halt 후 인덱스 초기화</td><td><code>current_child_idx ← 0</code></td><td>상태 없으므로 불필요</td></tr>
+</tbody></table>
+<p>ReactiveSequence에서는 조건 재평가 결과 FAILURE가 발생하면, RUNNING 상태인 후속 자식에게 Halt를 전달하여 비동기 작업을 즉시 중단시킨다. 이 Halt 메커니즘이 ReactiveSequence의 안전 보장 기능의 핵심이다.</p>
+<h2>3. Tick 비용 비교</h2>
+<h3>3.1 Tick당 노드 방문 수</h3>
+<p>자식 배열이 <span class="math math-inline">[C_0, C_1, ..., C_{k-1}, A_k]</span>이고 <span class="math math-inline">A_k</span>가 RUNNING 상태인 경우:</p>
+<table><thead><tr><th>변형</th><th>Tick당 방문 노드 수</th></tr></thead><tbody>
+<tr><td>SequenceWithMemory</td><td>1 (<span class="math math-inline">A_k</span>만 방문)</td></tr>
+<tr><td>ReactiveSequence</td><td><span class="math math-inline">k + 1</span> (모든 자식 방문)</td></tr>
+</tbody></table>
+<h3>3.2 총 노드 방문 수 (<span class="math math-inline">M</span> Tick 동안 RUNNING 유지)</h3>
+<table><thead><tr><th>변형</th><th>초기 평가</th><th>RUNNING 유지 기간</th><th>총 방문 수</th></tr></thead><tbody>
+<tr><td>SequenceWithMemory</td><td><span class="math math-inline">k + 1</span></td><td><span class="math math-inline">(M - 1) \times 1</span></td><td><span class="math math-inline">k + M</span></td></tr>
+<tr><td>ReactiveSequence</td><td><span class="math math-inline">k + 1</span></td><td><span class="math math-inline">(M - 1) \times (k + 1)</span></td><td><span class="math math-inline">(k + 1) \times M</span></td></tr>
+</tbody></table>
+<p><span class="math math-inline">k = 3</span>, <span class="math math-inline">M = 100</span>인 경우:</p>
+<ul>
+<li>SequenceWithMemory: <span class="math math-inline">3 + 100 = 103</span>회</li>
+<li>ReactiveSequence: <span class="math math-inline">4 \times 100 = 400</span>회</li>
+</ul>
+<p>ReactiveSequence의 비용이 약 3.9배 높지만, 조건 노드의 평가 비용이 충분히 작다면(순수 상태 확인) 실용적 영향은 미미하다.</p>
+<h2>4. 안전성 비교</h2>
+<h3>4.1 시나리오: 배터리 소진 감지</h3>
+<pre><code class="language-xml">&lt;Sequence변형&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Action ID="Navigate"/&gt;
+&lt;/Sequence변형&gt;
+</code></pre>
+<pre><code>초기: Battery=30%
+
+SequenceWithMemory:
+  Tick 1: IsBatteryOK→S, Navigate→R (idx=1)
+  Tick 2: Navigate→R               (IsBatteryOK 건너뜀)
+  ...
+  Tick N: Navigate→R               (Battery=5%이지만 감지 못함)
+  Tick N+1: Navigate→S             (작업 완료)
+  Tick N+2: IsBatteryOK→F          (이제서야 감지)
+
+ReactiveSequence:
+  Tick 1: IsBatteryOK→S, Navigate→R
+  Tick 2: IsBatteryOK→S, Navigate→R
+  ...
+  Tick K: IsBatteryOK→F            (Battery&lt;임계값)
+          Navigate→Halt            (즉시 중단)
+</code></pre>
+<p>SequenceWithMemory에서는 네비게이션이 완료될 때까지 배터리 상태를 확인하지 않으므로, 배터리 소진 상황에서 로봇이 정지할 위험이 있다. ReactiveSequence에서는 배터리가 임계값 이하로 떨어지는 즉시 네비게이션을 중단한다.</p>
+<h2>5. 의미론적 비교</h2>
+<h3>5.1 논리적 해석</h3>
+<p>두 변형은 동일한 AND 의미론을 따르지만, 그 적용 시점이 다르다.</p>
+<ul>
+<li><strong>SequenceWithMemory</strong>: “모든 자식이 순서대로 성공해야 한다” — 각 자식의 성공은 한 번만 확인된다.</li>
+<li><strong>ReactiveSequence</strong>: “모든 자식이 동시에 참이어야 한다” — 앞쪽 자식의 참 상태가 지속적으로 유지되어야 한다.</li>
+</ul>
+<h3>5.2 시간적 해석</h3>
+<ul>
+<li><strong>SequenceWithMemory</strong>: 순차적 달성(sequential achievement) — 자식 <span class="math math-inline">i</span>의 성공은 자식 <span class="math math-inline">i+1</span>의 시작 전제 조건이며, 이후 재검증되지 않는다.</li>
+<li><strong>ReactiveSequence</strong>: 동시적 유지(concurrent maintenance) — 모든 앞쪽 자식의 성공 상태가 뒤쪽 자식의 실행 중에도 지속적으로 유지되어야 한다.</li>
+</ul>
+<h2>6. 설계 지침</h2>
+<h3>6.1 SequenceWithMemory 사용이 적합한 경우</h3>
+<ul>
+<li>자식 노드가 순차적 단계를 나타내며, 완료된 단계를 반복할 필요가 없는 경우</li>
+<li>부수 효과가 있는 액션(데이터베이스 기록, 메시지 전송 등)이 앞쪽에 위치하는 경우</li>
+<li>조건 재검사가 필요하지 않거나 별도의 안전 메커니즘이 존재하는 경우</li>
+</ul>
+<pre><code class="language-xml">&lt;!-- 적합 사례: 순차적 임무 단계 --&gt;
+&lt;SequenceWithMemory&gt;
+    &lt;Action ID="Undock"/&gt;
+    &lt;Action ID="NavigateToA"/&gt;
+    &lt;Action ID="PickObject"/&gt;
+    &lt;Action ID="NavigateToB"/&gt;
+    &lt;Action ID="PlaceObject"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<h3>6.2 ReactiveSequence 사용이 적합한 경우</h3>
+<ul>
+<li>앞쪽 노드가 부수 효과 없는 조건 노드이며, 지속적 감시가 필요한 경우</li>
+<li>안전 조건이 비동기 액션의 실행 중에도 유효해야 하는 경우</li>
+<li>환경 변화에 대한 즉각적 반응이 요구되는 경우</li>
+</ul>
+<pre><code class="language-xml">&lt;!-- 적합 사례: 안전 조건 감시 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsNotEmergency"/&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Action ID="PerformMission"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<h2>7. 종합 비교표</h2>
+<table><thead><tr><th>비교 항목</th><th>SequenceWithMemory</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>재진입 방식</td><td>기억된 인덱스부터 재개</td><td>항상 처음부터 시작</td></tr>
+<tr><td>상태 변수</td><td><code>current_child_idx</code></td><td>없음</td></tr>
+<tr><td>SUCCESS 자식 처리</td><td>건너뜀</td><td>재평가</td></tr>
+<tr><td>조건 재검사</td><td>불가</td><td>가능</td></tr>
+<tr><td>Tick당 비용</td><td><span class="math math-inline">O(1)</span> (RUNNING 시)</td><td><span class="math math-inline">O(k+1)</span></td></tr>
+<tr><td>안전 감시</td><td>부적합</td><td>적합</td></tr>
+<tr><td>부수 효과 안전성</td><td>안전 (재실행 없음)</td><td>위험 (앞쪽 액션 재실행)</td></tr>
+<tr><td>전형적 앞쪽 노드</td><td>액션 또는 조건</td><td>조건만 권장</td></tr>
+<tr><td>BT.CPP v4 태그</td><td><code>&lt;Sequence&gt;</code></td><td><code>&lt;ReactiveSequence&gt;</code></td></tr>
+<tr><td>사용 패턴</td><td>순차적 임무 수행</td><td>조건 감시 하의 작업</td></tr>
+</tbody></table>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

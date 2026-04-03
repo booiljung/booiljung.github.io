@@ -115,6 +115,311 @@
             </header>
             <article>
                 <h1>1296.30 재사용 가능한 액션 노드 설계</h1>
+<h2>1. 재사용성의 의의</h2>
+<p>재사용 가능한 액션 노드(reusable action node)는 특정 임무나 트리 구조에 종속되지 않고, 다양한 컨텍스트에서 동일한 코드로 활용될 수 있는 노드이다. 행동 트리의 핵심 장점인 모듈성(modularity)은 개별 노드의 재사용성에 의해 실현되며, 재사용성이 높은 노드의 라이브러리는 새로운 행동 트리의 구성 비용을 현저히 감소시킨다(Colledanchise &amp; Ögren, 2018).</p>
+<p>재사용 가능한 노드의 설계는 노드 개발의 초기 비용을 증가시키나, 장기적으로는 코드 중복의 제거, 테스트 범위의 축소, 유지 보수 비용의 감소에 의해 전체 개발 비용을 절감한다.</p>
+<h2>2. 재사용을 저해하는 설계 요인</h2>
+<h3>2.1 하드코딩된 값</h3>
+<p>입력 값이 포트가 아닌 코드 내부에 직접 기입된 경우, 해당 값을 변경하려면 코드를 수정하고 재컴파일하여야 한다.</p>
+<pre><code class="language-cpp">// 재사용 불가: 토픽명과 타임아웃이 하드코딩됨
+class PublishVelocity : public BT::SyncActionNode
+{
+    BT::NodeStatus tick() override
+    {
+        auto msg = geometry_msgs::msg::Twist();
+        msg.linear.x = 0.5;  // 하드코딩된 속도
+        publisher_-&gt;publish(msg);
+        return BT::NodeStatus::SUCCESS;
+    }
+
+public:
+    PublishVelocity(const std::string&amp; name,
+                     const BT::NodeConfig&amp; config,
+                     rclcpp::Node::SharedPtr node)
+        : SyncActionNode(name, config)
+    {
+        publisher_ = node-&gt;create_publisher&lt;
+            geometry_msgs::msg::Twist&gt;(
+            "/cmd_vel", 10);  // 하드코딩된 토픽명
+    }
+};
+</code></pre>
+<h3>2.2 특정 임무에 대한 결합</h3>
+<p>노드의 행동이 특정 임무의 맥락에 종속되면, 다른 임무에서 재사용할 수 없다.</p>
+<pre><code class="language-cpp">// 재사용 불가: "부엌으로 이동" 행동이 임무에 종속
+class GoToKitchen : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        Pose kitchen_pose{3.5, 2.1, 0.0};  // 특정 위치
+        sendNavigationGoal(kitchen_pose);
+        return BT::NodeStatus::RUNNING;
+    }
+    // ...
+};
+</code></pre>
+<h3>2.3 특정 ROS2 인터페이스에 대한 강결합</h3>
+<p>노드 내부에서 ROS2 인터페이스(토픽명, 서비스명, 액션명)를 직접 생성하면, 인터페이스 이름의 변경 시 코드 수정이 필요하다.</p>
+<h2>3. 재사용성을 위한 설계 전략</h2>
+<h3>3.1 포트를 통한 파라미터화</h3>
+<p>모든 가변적 값을 입력 포트로 노출하여, XML 트리 정의에서 값을 지정할 수 있게 한다.</p>
+<pre><code class="language-cpp">class NavigateToPose : public BT::StatefulActionNode
+{
+public:
+    NavigateToPose(const std::string&amp; name,
+                    const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;Pose&gt;("target_pose",
+                "목표 위치와 자세"),
+            BT::InputPort&lt;std::string&gt;("server_name",
+                "navigate_to_pose",
+                "액션 서버 이름"),
+            BT::InputPort&lt;double&gt;("timeout_sec",
+                "30.0",
+                "타임아웃 (초)")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        Pose target;
+        if (!getInput("target_pose", target))
+            return BT::NodeStatus::FAILURE;
+
+        std::string server_name;
+        getInput("server_name", server_name);
+
+        double timeout;
+        getInput("timeout_sec", timeout);
+
+        sendGoalToServer(server_name, target, timeout);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        return isNavigationComplete()
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override { cancelNavigation(); }
+};
+</code></pre>
+<p>이 구현에서 목표 위치, 액션 서버 이름, 타임아웃 값이 모두 입력 포트로 노출되어 있다. 동일한 노드를 다양한 목표와 서버에 대해 재사용할 수 있다.</p>
+<pre><code class="language-xml">&lt;!-- 동일한 노드를 다른 목표로 재사용 --&gt;
+&lt;Sequence&gt;
+    &lt;NavigateToPose target_pose="{kitchen_pose}"
+                     server_name="navigate_to_pose"
+                     timeout_sec="30.0" /&gt;
+    &lt;NavigateToPose target_pose="{living_room_pose}"
+                     server_name="navigate_to_pose"
+                     timeout_sec="45.0" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>3.2 의존성 주입</h3>
+<p>ROS2 노드 핸들, 액션 클라이언트, 서비스 클라이언트 등의 외부 의존성은 생성자 파라미터 또는 블랙보드를 통해 주입한다. 노드 내부에서 직접 생성하지 않는다.</p>
+<pre><code class="language-cpp">class GenericActionClient : public BT::StatefulActionNode
+{
+public:
+    GenericActionClient(const std::string&amp; name,
+                         const BT::NodeConfig&amp; config,
+                         rclcpp::Node::SharedPtr ros_node)
+        : StatefulActionNode(name, config),
+          ros_node_(ros_node) {}
+
+    BT::NodeStatus onStart() override
+    {
+        std::string action_name;
+        getInput("action_name", action_name);
+
+        // 의존성 주입된 ROS2 노드를 사용
+        action_client_ = rclcpp_action::create_client&lt;
+            ActionType&gt;(ros_node_, action_name);
+
+        // ...
+        return BT::NodeStatus::RUNNING;
+    }
+
+private:
+    rclcpp::Node::SharedPtr ros_node_;
+};
+</code></pre>
+<p>의존성 주입은 다음의 재사용성 이점을 제공한다.</p>
+<ol>
+<li><strong>환경 독립성</strong>: 노드가 특정 ROS2 노드 이름에 종속되지 않는다.</li>
+<li><strong>테스트 용이성</strong>: 모의 객체(mock object)를 주입하여 단위 테스트가 가능하다.</li>
+<li><strong>구성 유연성</strong>: 동일한 노드 클래스를 다른 ROS2 노드 핸들과 조합하여 사용할 수 있다.</li>
+</ol>
+<h3>3.3 범용적 행동의 추상화</h3>
+<p>특정 임무에 종속된 행동 대신, 범용적 행동을 추상화하여 노드를 설계한다.</p>
+<table><thead><tr><th style="text-align: center">임무 종속적 노드</th><th style="text-align: center">범용적 노드</th></tr></thead><tbody>
+<tr><td style="text-align: center">GoToKitchen</td><td style="text-align: center">NavigateToPose</td></tr>
+<tr><td style="text-align: center">GrabRedBox</td><td style="text-align: center">PickupObject</td></tr>
+<tr><td style="text-align: center">SayHello</td><td style="text-align: center">SpeakText</td></tr>
+<tr><td style="text-align: center">CheckBatteryLow</td><td style="text-align: center">CompareValue</td></tr>
+<tr><td style="text-align: center">WaitThreeSeconds</td><td style="text-align: center">Wait</td></tr>
+</tbody></table>
+<p>범용적 노드는 구체적 값(부엌 좌표, “Hello” 문자열, 3초)을 입력 포트를 통해 전달받으므로, 트리의 XML 정의에서 다양한 값으로 인스턴스화할 수 있다.</p>
+<h3>3.4 ROS2 인터페이스 이름의 파라미터화</h3>
+<p>ROS2 토픽, 서비스, 액션의 이름을 입력 포트 또는 생성자 파라미터로 전달하여, 인터페이스 이름의 변경에 코드 수정이 불필요하게 한다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;std::string&gt;("topic_name",
+            "/cmd_vel",
+            "발행 대상 토픽 이름"),
+        BT::InputPort&lt;double&gt;("linear_x",
+            "목표 선속도 (m/s)"),
+        BT::InputPort&lt;double&gt;("angular_z",
+            "목표 각속도 (rad/s)")
+    };
+}
+</code></pre>
+<h2>4. 재사용성 수준의 분류</h2>
+<p>액션 노드의 재사용성을 수준별로 분류한다.</p>
+<h3>4.1 수준 1: 프로젝트 내 재사용</h3>
+<p>동일 프로젝트의 다수의 행동 트리에서 재사용 가능한 수준이다. 프로젝트 고유의 메시지 타입이나 인터페이스에 의존할 수 있다.</p>
+<pre><code class="language-cpp">// 프로젝트 고유 메시지 타입 사용
+class SetRobotMode : public BT::SyncActionNode
+{
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;my_project_msgs::msg::RobotMode&gt;(
+                "mode", "설정할 로봇 모드")
+        };
+    }
+    // ...
+};
+</code></pre>
+<h3>4.2 수준 2: 도메인 내 재사용</h3>
+<p>동일 도메인(내비게이션, 매니퓰레이션 등)의 다수의 프로젝트에서 재사용 가능한 수준이다. 표준 ROS2 메시지 타입과 인터페이스를 사용한다.</p>
+<pre><code class="language-cpp">// 표준 ROS2 메시지 타입 사용
+class NavigateToPose : public BT::StatefulActionNode
+{
+    // nav2_msgs::action::NavigateToPose 사용
+    // geometry_msgs::msg::PoseStamped 사용
+    // ...
+};
+</code></pre>
+<h3>4.3 수준 3: 범용 재사용</h3>
+<p>도메인에 무관하게 재사용 가능한 범용적 노드이다. 표준 타입만을 사용하며, 특정 도메인의 인터페이스에 의존하지 않는다.</p>
+<pre><code class="language-cpp">// 범용적 대기 노드
+class Wait : public BT::StatefulActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("duration_sec",
+                "대기 시간 (초)")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        double duration;
+        if (!getInput("duration_sec", duration))
+            return BT::NodeStatus::FAILURE;
+
+        deadline_ = std::chrono::steady_clock::now()
+                  + std::chrono::duration&lt;double&gt;(duration);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        return (std::chrono::steady_clock::now() &gt;= deadline_)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override {}
+
+private:
+    std::chrono::steady_clock::time_point deadline_;
+};
+</code></pre>
+<h2>5. 재사용성 검증 기준</h2>
+<p>노드의 재사용 가능성을 검증하기 위한 기준을 제시한다.</p>
+<table><thead><tr><th>검증 항목</th><th>질문</th><th style="text-align: center">재사용 가능</th></tr></thead><tbody>
+<tr><td>입력 파라미터화</td><td>모든 가변값이 포트로 노출되어 있는가?</td><td style="text-align: center">예</td></tr>
+<tr><td>하드코딩 부재</td><td>코드에 특정 값이 직접 기입되어 있지 않은가?</td><td style="text-align: center">예</td></tr>
+<tr><td>임무 독립성</td><td>노드의 명칭과 행동이 특정 임무를 가정하지 않는가?</td><td style="text-align: center">예</td></tr>
+<tr><td>환경 독립성</td><td>특정 ROS2 네임스페이스나 토픽명에 종속되지 않는가?</td><td style="text-align: center">예</td></tr>
+<tr><td>의존성 주입</td><td>외부 의존성이 주입 가능한가?</td><td style="text-align: center">예</td></tr>
+<tr><td>표준 타입 사용</td><td>가능한 한 표준 메시지 타입을 사용하는가?</td><td style="text-align: center">예</td></tr>
+</tbody></table>
+<h2>6. Nav2의 재사용 가능 노드 설계 사례</h2>
+<p>ROS2 Navigation2(Nav2)는 재사용 가능한 행동 트리 노드의 대표적 설계 사례를 제공한다. Nav2의 액션 노드는 다음의 설계 원칙을 따른다.</p>
+<ol>
+<li>
+<p><strong>BtActionNode 기반 클래스</strong>: ROS2 액션 클라이언트의 생성, 목표 전송, 결과 수신, 취소 처리를 캡슐화하는 기반 클래스를 제공하여, 파생 클래스에서 목표 생성과 결과 처리만 구현하면 된다.</p>
+</li>
+<li>
+<p><strong>액션 서버 이름의 파라미터화</strong>: 액션 서버 이름을 입력 포트로 전달하여, 동일한 노드를 다른 서버에 대해 재사용할 수 있다.</p>
+</li>
+<li>
+<p><strong>표준 인터페이스 사용</strong>: <code>nav2_msgs::action::NavigateToPose</code>, <code>nav2_msgs::action::FollowPath</code> 등의 표준화된 액션 인터페이스를 사용한다.</p>
+</li>
+</ol>
+<pre><code class="language-cpp">// Nav2 스타일의 재사용 가능한 노드 구조 (개념적)
+class NavigateToPoseAction
+    : public BtActionNode&lt;nav2_msgs::action::NavigateToPose&gt;
+{
+public:
+    NavigateToPoseAction(const std::string&amp; name,
+                          const BT::NodeConfig&amp; config,
+                          const BT::RosNodeParams&amp; params)
+        : BtActionNode(name, config, params) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return providedBasicPorts({
+            BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+                "goal", "목표 위치"),
+            BT::InputPort&lt;std::string&gt;(
+                "behavior_tree", "",
+                "사용할 행동 트리 파일")
+        });
+    }
+
+    void on_tick() override
+    {
+        getInput("goal", goal_.pose);
+        getInput("behavior_tree", goal_.behavior_tree);
+    }
+
+    BT::NodeStatus on_success() override
+    {
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p>이러한 설계에 의해 Nav2의 노드는 다양한 로봇 플랫폼과 임무에서 코드 수정 없이 재사용되고 있다(Macenski et al., 2020).</p>
+<h2>7. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>“이 노드를 다른 트리에서 그대로 사용할 수 있는가?”</strong>: 노드 설계 시 이 질문을 반복적으로 검증한다.</p>
+</li>
+<li>
+<p><strong>범용적 명칭 사용</strong>: <code>GoToKitchen</code> 대신 <code>NavigateToPose</code>, <code>GrabRedBox</code> 대신 <code>PickupObject</code>와 같이 범용적 명칭을 사용한다.</p>
+</li>
+<li>
+<p><strong>기본값 제공</strong>: 빈번히 사용되는 파라미터에 합리적 기본값을 설정하여, XML에서의 지정을 간소화한다.</p>
+</li>
+<li>
+<p><strong>기반 클래스 활용</strong>: 반복되는 패턴(ROS2 액션 클라이언트, 서비스 클라이언트)은 기반 클래스로 추상화하여, 파생 클래스에서 도메인 로직만 구현하게 한다.</p>
+</li>
+<li>
+<p><strong>노드 라이브러리 구축</strong>: 검증된 재사용 가능 노드를 라이브러리로 관리하여, 새로운 프로젝트에서 즉시 활용할 수 있게 한다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

@@ -115,6 +115,232 @@
             </header>
             <article>
                 <h1>1296.13 비동기 액션 노드의 다중 Tick 실행 모델</h1>
+<h2>1. 다중 Tick 실행 모델의 개요</h2>
+<p><code>StatefulActionNode</code>의 다중 Tick 실행 모델(multi-tick execution model)은 하나의 행동이 다수의 Tick에 걸쳐 실행되는 비동기 실행 패러다임이다. 동기 액션 노드가 단일 Tick 내에서 시작과 완료를 모두 수행하는 것과 달리, <code>StatefulActionNode</code>는 첫 번째 Tick에서 행동을 시작하고, 후속 Tick에서 진행 상태를 확인하며, 행동이 완료되면 최종 상태를 반환한다. 이 모델은 로봇공학에서 흔히 발생하는 장시간 행동—내비게이션, 매니퓰레이션, 센서 데이터 수집 대기 등—을 행동 트리 내에서 표현하기 위한 핵심 메커니즘이다.</p>
+<h2>2. 시간 축에서의 실행 흐름</h2>
+<p>다중 Tick 실행 모델을 시간 축에서 도식화하면 다음과 같다.</p>
+<pre><code>시간 →
+Tick 1: [executeTick()] → 상태=IDLE  → onStart()   → RUNNING 반환
+Tick 2: [executeTick()] → 상태=RUNNING → onRunning() → RUNNING 반환
+Tick 3: [executeTick()] → 상태=RUNNING → onRunning() → RUNNING 반환
+  ...
+Tick N: [executeTick()] → 상태=RUNNING → onRunning() → SUCCESS 반환
+</code></pre>
+<p>각 Tick에서 <code>executeTick()</code>은 현재 상태를 검사하여 적절한 콜백을 호출한다. 첫 번째 Tick에서는 상태가 IDLE이므로 <code>onStart()</code>를 호출하고, 이후 RUNNING 상태가 유지되는 동안 매 Tick마다 <code>onRunning()</code>을 호출한다. 행동이 완료되면 <code>onRunning()</code>이 SUCCESS 또는 FAILURE를 반환하여 다중 Tick 실행이 종료된다.</p>
+<h2>3. executeTick()의 상태 기반 분기</h2>
+<p>다중 Tick 실행 모델의 핵심은 <code>executeTick()</code> 메서드 내부의 상태 기반 분기 로직이다.</p>
+<pre><code class="language-cpp">NodeStatus StatefulActionNode::executeTick()
+{
+    auto pre_result = checkPreConditions();
+    if (pre_result.has_value())
+        return pre_result.value();
+
+    NodeStatus initial_status = status();
+
+    if (initial_status == NodeStatus::IDLE)
+    {
+        NodeStatus new_status = onStart();
+        if (new_status == NodeStatus::IDLE)
+            throw LogicError("onStart() must not return IDLE");
+        setStatus(new_status);
+        return new_status;
+    }
+
+    if (initial_status == NodeStatus::RUNNING)
+    {
+        NodeStatus new_status = onRunning();
+        if (new_status == NodeStatus::IDLE)
+            throw LogicError("onRunning() must not return IDLE");
+        setStatus(new_status);
+        return new_status;
+    }
+
+    return initial_status;
+}
+</code></pre>
+<p>이 구현에서 <code>executeTick()</code>은 세 가지 분기를 가진다.</p>
+<ol>
+<li><strong>IDLE 분기</strong>: <code>onStart()</code>를 호출하여 행동을 시작한다. 반환값이 RUNNING이면 다중 Tick 실행이 시작된다.</li>
+<li><strong>RUNNING 분기</strong>: <code>onRunning()</code>을 호출하여 진행 상태를 확인한다. RUNNING이 반환되면 다음 Tick에서 다시 이 분기로 진입한다.</li>
+<li><strong>SUCCESS/FAILURE 분기</strong>: 이미 완료된 상태이므로 현재 상태를 그대로 반환한다.</li>
+</ol>
+<h2>4. 단일 Tick 실행과의 비교</h2>
+<p>동기 액션 노드의 단일 Tick 실행 모델과 비동기 액션 노드의 다중 Tick 실행 모델을 비교한다.</p>
+<pre><code>단일 Tick 실행 (SyncActionNode):
+─────────────────────────────────────
+Tick 1: │ tick() 시작 → 행동 수행 → 행동 완료 → SUCCESS/FAILURE │
+─────────────────────────────────────
+
+다중 Tick 실행 (StatefulActionNode):
+─────────────────────────────────────────────────────────────
+Tick 1: │ onStart()   │  ← 행동 시작
+Tick 2: │ onRunning() │  ← 진행 확인 (외부에서 행동 진행 중)
+Tick 3: │ onRunning() │  ← 진행 확인
+Tick 4: │ onRunning() │  ← 완료 확인 → SUCCESS/FAILURE
+─────────────────────────────────────────────────────────────
+</code></pre>
+<p>핵심적 차이는 행동의 실제 수행이 Tick 사이의 시간에 발생한다는 것이다. <code>onStart()</code>는 ROS2 액션 서버에 목표를 전송하는 등의 행동 시작 명령을 발행하고, <code>onRunning()</code>은 외부 시스템에서 진행 중인 행동의 완료 여부를 비차단 방식으로 확인한다. 행동의 실질적인 수행은 ROS2 액션 서버, 모터 컨트롤러, 센서 드라이버 등의 외부 시스템에서 이루어진다.</p>
+<h2>5. Tick 간 상태 보존</h2>
+<p>다중 Tick 실행에서 핵심 요구 사항은 Tick 간 상태 보존(inter-tick state preservation)이다. <code>onStart()</code>에서 설정한 상태가 <code>onRunning()</code>에서 참조 가능하여야 하며, 이를 위해 멤버 변수를 사용한다.</p>
+<pre><code class="language-cpp">class FollowPath : public BT::StatefulActionNode
+{
+public:
+    FollowPath(const std::string&amp; name,
+               const BT::NodeConfig&amp; config,
+               rclcpp_action::Client&lt;nav2_msgs::action::FollowPath&gt;::SharedPtr client)
+        : StatefulActionNode(name, config), action_client_(client) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;nav_msgs::msg::Path&gt;("path"),
+            BT::OutputPort&lt;double&gt;("progress", "경로 추종 진행률")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        nav_msgs::msg::Path path;
+        if (!getInput("path", path))
+            return BT::NodeStatus::FAILURE;
+
+        auto goal = nav2_msgs::action::FollowPath::Goal();
+        goal.path = path;
+
+        // 목표 전송 및 핸들 저장 (Tick 간 보존)
+        goal_handle_future_ = action_client_-&gt;async_send_goal(goal);
+        goal_accepted_ = false;
+        total_poses_ = path.poses.size();
+
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        // 목표 수락 확인
+        if (!goal_accepted_)
+        {
+            if (goal_handle_future_.wait_for(
+                    std::chrono::milliseconds(0)) 
+                == std::future_status::ready)
+            {
+                goal_handle_ = goal_handle_future_.get();
+                if (!goal_handle_)
+                    return BT::NodeStatus::FAILURE;
+                goal_accepted_ = true;
+                result_future_ = 
+                    action_client_-&gt;async_get_result(goal_handle_);
+            }
+            return BT::NodeStatus::RUNNING;
+        }
+
+        // 결과 확인
+        if (result_future_.wait_for(std::chrono::milliseconds(0))
+            == std::future_status::ready)
+        {
+            auto result = result_future_.get();
+            if (result.code == rclcpp_action::ResultCode::SUCCEEDED)
+                return BT::NodeStatus::SUCCESS;
+            else
+                return BT::NodeStatus::FAILURE;
+        }
+
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override
+    {
+        if (goal_accepted_ &amp;&amp; goal_handle_)
+        {
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+        }
+    }
+
+private:
+    rclcpp_action::Client&lt;nav2_msgs::action::FollowPath&gt;::SharedPtr action_client_;
+    std::shared_future&lt;rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::FollowPath&gt;::SharedPtr&gt; goal_handle_future_;
+    rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::FollowPath&gt;::SharedPtr goal_handle_;
+    std::shared_future&lt;rclcpp_action::ClientGoalHandle&lt;nav2_msgs::action::FollowPath&gt;::WrappedResult&gt; result_future_;
+    bool goal_accepted_;
+    size_t total_poses_;
+};
+</code></pre>
+<p>이 구현에서 <code>goal_handle_future_</code>, <code>goal_handle_</code>, <code>result_future_</code>, <code>goal_accepted_</code> 등의 멤버 변수가 Tick 간 상태를 보존한다. <code>onStart()</code>에서 초기화된 이 변수들은 후속 <code>onRunning()</code> 호출에서 참조되어 행동의 진행 상태를 추적한다.</p>
+<h2>6. 다중 Tick 실행의 Tick 수 분석</h2>
+<p>다중 Tick 실행에서 총 Tick 수는 행동의 실행 시간과 트리의 Tick 주기에 의해 결정된다.</p>
+<p><span class="math math-display">N_{\text{ticks}} = \left\lceil \frac{T_{\text{action}}}{T_{\text{tick}}} \right\rceil + 1</span></p>
+<p>여기서 <span class="math math-inline">T_{\text{action}}</span>은 행동의 실제 실행 시간, <span class="math math-inline">T_{\text{tick}}</span>은 트리의 Tick 주기, +1은 <code>onStart()</code> 호출을 위한 첫 번째 Tick이다.</p>
+<p>예를 들어, 10 Hz(100 ms 주기)의 Tick에서 3초간 지속되는 내비게이션 행동의 경우이다.</p>
+<p><span class="math math-display">N_{\text{ticks}} = \left\lceil \frac{3.0}{0.1} \right\rceil + 1 = 31</span></p>
+<p>첫 번째 Tick에서 <code>onStart()</code>가 호출되고, 이후 약 30회의 <code>onRunning()</code> 호출을 거쳐 행동이 완료된다.</p>
+<h2>7. Sequence에서의 다중 Tick 실행</h2>
+<p>Sequence 내에서 <code>StatefulActionNode</code>가 RUNNING을 반환하면, Sequence는 해당 자식에서 실행을 일시 정지하고 RUNNING을 부모에 전달한다. 다음 Tick에서 Sequence는 RUNNING 상태의 자식부터 다시 Tick한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;SetSpeed value="0.5"/&gt;         &lt;!-- Tick 1: SUCCESS --&gt;
+    &lt;NavigateToGoal goal="{g1}"/&gt;   &lt;!-- Tick 1~50: RUNNING → SUCCESS --&gt;
+    &lt;PlaySound file="arrived.wav"/&gt; &lt;!-- Tick 51: SUCCESS --&gt;
+    &lt;NavigateToGoal goal="{g2}"/&gt;   &lt;!-- Tick 51~120: RUNNING → SUCCESS --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이 Sequence의 실행 과정을 Tick 단위로 추적하면 다음과 같다.</p>
+<table><thead><tr><th style="text-align: center">Tick</th><th style="text-align: center">실행 노드</th><th style="text-align: center">반환값</th><th style="text-align: center">Sequence 상태</th></tr></thead><tbody>
+<tr><td style="text-align: center">1</td><td style="text-align: center">SetSpeed → NavigateToGoal(g1)</td><td style="text-align: center">RUNNING</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td style="text-align: center">2~49</td><td style="text-align: center">NavigateToGoal(g1)</td><td style="text-align: center">RUNNING</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td style="text-align: center">50</td><td style="text-align: center">NavigateToGoal(g1)</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">—</td></tr>
+<tr><td style="text-align: center">50</td><td style="text-align: center">PlaySound → NavigateToGoal(g2)</td><td style="text-align: center">RUNNING</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td style="text-align: center">51~119</td><td style="text-align: center">NavigateToGoal(g2)</td><td style="text-align: center">RUNNING</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td style="text-align: center">120</td><td style="text-align: center">NavigateToGoal(g2)</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">SUCCESS</td></tr>
+</tbody></table>
+<p>Tick 1에서 <code>SetSpeed</code>가 SUCCESS를 반환하면 동일 Tick 내에서 <code>NavigateToGoal(g1)</code>이 Tick되고 RUNNING을 반환한다. Tick 2부터 49까지 <code>NavigateToGoal(g1)</code>만 Tick되며 RUNNING을 반환한다. Tick 50에서 SUCCESS가 반환되면 동일 Tick 내에서 <code>PlaySound</code>와 <code>NavigateToGoal(g2)</code>가 순차적으로 Tick된다.</p>
+<h2>8. ReactiveSequence에서의 다중 Tick 실행</h2>
+<p>ReactiveSequence에서 다중 Tick 실행은 조건 재평가와 결합되어 동작한다. RUNNING 상태의 비동기 액션 노드 앞에 배치된 조건 노드가 매 Tick마다 재평가된다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;IsBatteryOK/&gt;              &lt;!-- 매 Tick 재평가 --&gt;
+    &lt;IsPathClear/&gt;              &lt;!-- 매 Tick 재평가 --&gt;
+    &lt;NavigateToGoal goal="{g}"/&gt;&lt;!-- 다중 Tick RUNNING --&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<table><thead><tr><th style="text-align: center">Tick</th><th style="text-align: center">IsBatteryOK</th><th style="text-align: center">IsPathClear</th><th style="text-align: center">NavigateToGoal</th><th style="text-align: center">ReactiveSequence</th></tr></thead><tbody>
+<tr><td style="text-align: center">1</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">RUNNING (onStart)</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td style="text-align: center">2</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">RUNNING (onRunning)</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td style="text-align: center">3</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">FAILURE</td><td style="text-align: center">Halt 발생</td><td style="text-align: center">FAILURE</td></tr>
+<tr><td style="text-align: center">4</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">SUCCESS</td><td style="text-align: center">RUNNING (onStart)</td><td style="text-align: center">RUNNING</td></tr>
+</tbody></table>
+<p>Tick 3에서 <code>IsPathClear</code>가 FAILURE를 반환하면, ReactiveSequence는 RUNNING 상태의 <code>NavigateToGoal</code>을 Halt한다. <code>onHalted()</code>가 호출되고 노드는 IDLE로 전이한다. Tick 4에서 조건이 다시 충족되면, <code>NavigateToGoal</code>은 IDLE 상태에서 <code>onStart()</code>부터 새로 시작한다.</p>
+<p>이 동작은 다중 Tick 실행의 중요한 특성을 보여준다. RUNNING 상태에서 Halt된 후 다시 Tick되면, <code>onRunning()</code>이 아닌 <code>onStart()</code>가 호출된다. Halt에 의해 상태가 IDLE로 초기화되므로, 행동은 처음부터 재시작된다.</p>
+<h2>9. 다중 Tick 실행의 onRunning() 시간 예산</h2>
+<p>다중 Tick 실행에서 <code>onRunning()</code>은 매 Tick마다 호출되므로, 각 호출의 실행 시간이 Tick 주기 내에서 완료되어야 한다. <code>onRunning()</code>의 시간 예산은 다음과 같이 산정한다.</p>
+<p><span class="math math-display">T_{\text{onRunning}} \leq T_{\text{tick}} - T_{\text{overhead}} - \sum_{i} T_{\text{other}_i}</span></p>
+<p>여기서 <span class="math math-inline">T_{\text{overhead}}</span>는 트리 순회의 오버헤드이고, <span class="math math-inline">\sum_{i} T_{\text{other}_i}</span>는 동일 Tick에서 실행되는 다른 노드의 실행 시간의 합이다.</p>
+<p>10 ms Tick 주기에서 트리 순회 오버헤드가 1 ms이고, 조건 재평가에 0.5 ms가 소요된다면, <code>onRunning()</code>의 시간 예산은 약 8.5 ms이다. 비차단 폴링(future의 wait_for(0), 콜백 확인 등)은 수 마이크로초 이내에 완료되므로 시간 예산을 충분히 만족한다.</p>
+<h2>다중 Tick 실행의 재시작 조건</h2>
+<p>다중 Tick 실행이 종료된 후 노드가 다시 Tick되면, 새로운 다중 Tick 실행이 시작된다. 재시작의 조건은 다음과 같다.</p>
+<ol>
+<li>
+<p><strong>정상 완료 후 재시작</strong>: <code>onRunning()</code>이 SUCCESS 또는 FAILURE를 반환하면 상태가 설정되고, 부모 노드에 의해 IDLE로 초기화된 후 다시 Tick되면 <code>onStart()</code>부터 시작된다.</p>
+</li>
+<li>
+<p><strong>Halt 후 재시작</strong>: RUNNING 상태에서 <code>halt()</code>가 호출되면 <code>onHalted()</code>를 거쳐 IDLE로 전이한다. 이후 다시 Tick되면 <code>onStart()</code>부터 시작된다.</p>
+</li>
+</ol>
+<p>두 경우 모두 새로운 실행은 <code>onStart()</code>부터 시작되므로, 이전 실행의 상태를 멤버 변수에서 적절히 초기화하거나 <code>onStart()</code>에서 새로 설정하여야 한다.</p>
+<h2>협력적 비동기 모델의 특성</h2>
+<p><code>StatefulActionNode</code>의 다중 Tick 실행 모델은 협력적 비동기(cooperative asynchrony) 모델에 해당한다. 이 모델의 특성은 다음과 같다.</p>
+<ol>
+<li>
+<p><strong>비선점적(Non-preemptive)</strong>: 노드의 콜백이 실행 중인 동안 다른 노드가 개입할 수 없다. 콜백이 반환되어야 트리 순회가 계속된다.</p>
+</li>
+<li>
+<p><strong>단일 스레드</strong>: 모든 콜백이 메인 스레드에서 실행된다. 동시성(concurrency) 문제가 발생하지 않으며, 블랙보드 접근에 대한 동기화가 불필요하다.</p>
+</li>
+<li>
+<p><strong>폴링 기반</strong>: 외부 행동의 완료를 능동적으로 확인한다. 이벤트 기반(event-driven) 모델이 아니므로, 행동 완료와 다음 <code>onRunning()</code> 호출 사이에 최대 1 Tick 주기의 지연이 발생할 수 있다.</p>
+</li>
+<li>
+<p><strong>결정론적 실행 순서</strong>: 트리의 순회 순서에 의해 노드의 Tick 순서가 결정된다. 동일 Tick 내에서 다수의 <code>StatefulActionNode</code>가 Tick되는 경우(Parallel 노드의 자식 등), 트리에서의 배치 순서에 따라 순차적으로 <code>onRunning()</code>이 호출된다.</p>
+</li>
+</ol>
+<p>이 협력적 비동기 모델은 Colledanchise와 Ögren(2018)이 제시한 행동 트리의 형식적 실행 모델과 일치하며, 단일 스레드 실행의 예측 가능성과 비동기 행동 표현의 유연성을 동시에 제공한다.</p>
 
             </article>
             <footer>

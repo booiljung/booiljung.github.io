@@ -115,6 +115,103 @@
             </header>
             <article>
                 <h1>1295.40 ReactiveFallback의 조건 노드 우선 평가</h1>
+<h2>1. 조건 노드 우선 평가의 원리</h2>
+<p>ReactiveFallback의 매 Tick 재평가 원칙에 의해, 자식 리스트의 상위에 배치된 조건 노드(condition node)는 매 Tick마다 가장 먼저 평가된다. 조건 노드는 <code>SUCCESS</code> 또는 <code>FAILURE</code>만을 반환하는 동기적(synchronous) 노드이며, <code>RUNNING</code>을 반환하지 않으므로 단일 Tick 내에서 즉시 평가가 완료된다. 이러한 특성을 활용하여 ReactiveFallback의 상위 자식에 조건 노드를 배치하면, 매 Tick에서 환경 조건을 우선적으로 점검하고 그 결과에 따라 하위 행동의 실행 여부를 결정하는 구조를 구현할 수 있다.</p>
+<h2>2. 조건-행동 쌍 배치 패턴</h2>
+<p>ReactiveFallback에서 가장 일반적으로 사용되는 구조는, 각 우선순위 수준을 Sequence 노드 내의 조건-행동 쌍으로 구성하는 것이다.</p>
+<pre><code>ReactiveFallback
+├── Sequence [우선순위 1]
+│   ├── IsEmergency          →  조건 (SUCCESS/FAILURE)
+│   └── ExecuteEmergencyStop  →  행동 (RUNNING/SUCCESS/FAILURE)
+├── Sequence [우선순위 2]
+│   ├── IsObstacleNear       →  조건
+│   └── AvoidObstacle        →  행동
+├── Sequence [우선순위 3]
+│   ├── IsBatteryLow         →  조건
+│   └── ReturnToBase         →  행동
+└── NavigateToGoal            →  기본 행동 [우선순위 4]
+</code></pre>
+<p>이 구조의 Tick 실행 과정은 다음과 같다.</p>
+<ol>
+<li><code>Sequence [우선순위 1]</code>이 Tick된다. 내부에서 <code>IsEmergency</code> 조건 노드가 평가된다.</li>
+</ol>
+<ul>
+<li><code>SUCCESS</code>이면 <code>ExecuteEmergencyStop</code>이 Tick되고, Sequence가 <code>RUNNING</code> 또는 <code>SUCCESS</code>를 반환하여 ReactiveFallback의 Tick 전파가 중단된다.</li>
+<li><code>FAILURE</code>이면 Sequence가 <code>FAILURE</code>를 반환하고, 다음 우선순위로 진행한다.</li>
+</ul>
+<ol start="2">
+<li><code>Sequence [우선순위 2]</code>가 Tick된다. <code>IsObstacleNear</code> 조건이 평가된다.</li>
+</ol>
+<ul>
+<li>동일한 논리로, 조건 성립 시 <code>AvoidObstacle</code>이 실행되고, 미성립 시 다음 우선순위로 진행한다.</li>
+</ul>
+<ol start="3">
+<li>이 과정이 모든 우선순위에 대해 반복되며, 모든 조건이 <code>FAILURE</code>이면 최하위의 <code>NavigateToGoal</code>이 실행된다.</li>
+</ol>
+<h2>3. 조건 노드의 즉시 평가 특성</h2>
+<p>조건 노드는 행동 트리의 노드 유형 중 유일하게 <code>RUNNING</code>을 반환하지 않는 노드이다. 조건 노드의 <code>tick()</code> 함수는 단일 호출 내에서 조건의 참/거짓을 판정하고 즉시 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 반환한다. 이 특성은 ReactiveFallback의 재평가 구조에서 두 가지 이점을 제공한다.</p>
+<p>첫째, 조건 평가에 소요되는 시간이 극도로 짧으므로, 다수의 조건을 매 Tick마다 재평가하더라도 전체 Tick 주기에 미치는 영향이 미미하다. 조건 노드가 수행하는 연산은 일반적으로 블랙보드 값 비교 수준이므로, 마이크로초 이내에 완료된다.</p>
+<p>둘째, 조건 노드의 즉시 반환으로 인해 Sequence 노드 내에서 조건 판정과 행동 개시가 동일한 Tick 내에서 순차적으로 처리된다. 조건이 <code>SUCCESS</code>를 반환하면 같은 Tick 내에서 행동 노드의 <code>tick()</code>이 호출되므로, 조건 성립과 행동 개시 사이에 Tick 단위의 지연이 발생하지 않는다.</p>
+<h2>4. 조건 노드의 배치 순서와 우선순위</h2>
+<p>ReactiveFallback 내에서 조건-행동 쌍의 배치 순서는 우선순위를 직접적으로 결정한다. 인덱스가 낮은(상위에 배치된) 쌍이 더 높은 우선순위를 가진다. 매 Tick에서 상위 조건부터 순차적으로 평가되므로, 상위 조건이 성립하면 하위 조건은 평가조차 되지 않는다.</p>
+<p>이 우선순위 체계를 설계할 때 다음 원칙을 따르라.</p>
+<ol>
+<li><strong>안전 우선 원칙</strong>: 안전 관련 조건(비상 정지, 충돌 위험)을 최상위에 배치한다.</li>
+<li><strong>긴급도 순서 원칙</strong>: 긴급한 대응이 요구되는 조건을 상위에, 일상적 조건을 하위에 배치한다.</li>
+<li><strong>비용 순서 원칙</strong>: 대응 비용이 높은(행동 전환 비용이 큰) 조건일수록 상위에 배치하여, 해당 조건이 성립할 때 즉각적으로 전환이 이루어지도록 한다.</li>
+</ol>
+<h2>5. 조건 노드 없는 최하위 기본 행동</h2>
+<p>ReactiveFallback의 최하위 자식은 일반적으로 조건 없이 직접 배치되는 기본 행동(default action)이다. 모든 상위 조건이 <code>FAILURE</code>를 반환한 경우에만 도달하는 이 행동은, “특별한 상황이 없을 때의 기본 동작“을 정의한다.</p>
+<pre><code>ReactiveFallback
+├── Sequence
+│   ├── IsEmergency
+│   └── EmergencyAction
+├── Sequence
+│   ├── IsObstacleNear
+│   └── AvoidObstacle
+└── NavigateToGoal      ←  조건 없는 기본 행동
+</code></pre>
+<p>기본 행동은 Sequence로 감쌀 필요 없이 직접 배치된다. 기본 행동이 <code>RUNNING</code>을 반환하면 ReactiveFallback도 <code>RUNNING</code>을 반환하며, 다음 Tick에서 상위 조건이 재평가된다.</p>
+<h2>6. 다중 조건의 결합</h2>
+<p>하나의 우선순위 수준에 복수의 조건이 동시에 충족되어야 행동이 실행되는 경우, Sequence 내에 다수의 조건 노드를 순차적으로 배치한다.</p>
+<pre><code>ReactiveFallback
+├── Sequence
+│   ├── IsObstacleNear      →  조건 1
+│   ├── IsSpeedAboveLimit   →  조건 2
+│   └── EmergencyBrake      →  행동 (두 조건 모두 충족 시)
+└── NavigateToGoal
+</code></pre>
+<p>Sequence의 의미론에 의해, <code>IsObstacleNear</code>와 <code>IsSpeedAboveLimit</code>가 모두 <code>SUCCESS</code>를 반환해야 <code>EmergencyBrake</code>가 Tick된다. 두 조건 중 하나라도 <code>FAILURE</code>이면 Sequence가 <code>FAILURE</code>를 반환하고 다음 우선순위로 진행한다.</p>
+<h2>7. 조건 노드의 구현 지침</h2>
+<p>ReactiveFallback에서 매 Tick마다 재평가되는 조건 노드는 다음 지침에 따라 구현하여야 한다.</p>
+<ol>
+<li>
+<p><strong>무부작용(side-effect free)</strong>: 조건 노드는 블랙보드에 쓰기를 수행하지 않고, 외부 상태를 변경하지 않아야 한다. 매 Tick마다 반복 호출되므로, 부작용이 존재하면 반복적으로 축적되어 예기치 않은 동작을 유발한다.</p>
+</li>
+<li>
+<p><strong>결정론적(deterministic)</strong>: 동일한 입력에 대해 항상 동일한 결과를 반환하여야 한다. 블랙보드 값과 센서 데이터가 변하지 않았다면 반환값도 변하지 않아야 한다.</p>
+</li>
+<li>
+<p><strong>경량 연산</strong>: 조건 평가의 연산 비용을 최소화하라. 블랙보드 값 읽기 및 비교 연산 수준으로 제한하고, 복잡한 연산은 별도의 노드 또는 ROS2 노드에서 수행하여 결과를 블랙보드에 기록한 후 조건 노드에서 읽도록 설계하라.</p>
+</li>
+</ol>
+<pre><code>// 권장: 블랙보드 값 비교
+function IsBatteryLow.tick():
+    level ← blackboard.get("battery_level")
+    if level &lt; threshold:
+        return SUCCESS
+    return FAILURE
+
+// 비권장: 직접 센서 통신
+function IsBatteryLow.tick():
+    level ← queryBatteryManagementSystem()  // 통신 지연 발생 가능
+    if level &lt; threshold:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<ol start="4">
+<li><strong>RUNNING 반환 금지</strong>: 조건 노드는 절대 <code>RUNNING</code>을 반환하지 않아야 한다. <code>RUNNING</code>을 반환하면 ReactiveFallback의 Tick 전파가 해당 조건에서 중단되어, 하위 행동이 Tick되지 않는 교착 상태가 발생할 수 있다.</li>
+</ol>
 
             </article>
             <footer>

@@ -115,6 +115,400 @@
             </header>
             <article>
                 <h1>1295.89 ReactiveSequence 조건 재평가 추적</h1>
+<h2>1. 조건 재평가 추적의 목적</h2>
+<p>ReactiveSequence는 매 Tick마다 첫 번째 자식부터 재평가하여, 전제 조건이 지속적으로 충족되는지를 보장한다. 이 재평가 동작을 추적하는 것은 두 가지 목적을 가진다. 첫째, 조건 노드가 실제로 매 Tick마다 평가되고 있는지를 검증한다. 둘째, 조건의 상태 변화가 후속 행동에 미치는 영향을 정확히 파악한다. 조건이 FAILURE로 전이하였을 때 행동이 즉시 Halt되지 않으면 로봇이 전제 조건이 위반된 상태에서 행동을 지속하는 안전 위험이 발생한다.</p>
+<h2>2. 조건 평가 이력 로거</h2>
+<p>ReactiveSequence 내 조건 노드의 매 Tick 평가 결과를 기록하는 로거를 구현한다.</p>
+<pre><code class="language-cpp">class ConditionEvaluationLogger
+{
+public:
+    struct EvalRecord
+    {
+        int tick;
+        std::string condition_name;
+        BT::NodeStatus result;
+        std::chrono::microseconds eval_time;
+    };
+
+    void recordEvaluation(int tick, const std::string&amp; name,
+                          BT::NodeStatus result,
+                          std::chrono::microseconds duration)
+    {
+        records_.push_back({tick, name, result, duration});
+    }
+
+    // 특정 조건의 평가 이력 출력
+    void printConditionHistory(const std::string&amp; name) const
+    {
+        std::cout &lt;&lt; "=== Condition: " &lt;&lt; name &lt;&lt; " ===" &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Tick  Result      Duration(us)" &lt;&lt; std::endl;
+        for (const auto&amp; r : records_)
+        {
+            if (r.condition_name == name)
+            {
+                std::cout &lt;&lt; std::setw(4) &lt;&lt; r.tick
+                          &lt;&lt; "  " &lt;&lt; std::setw(10) 
+                          &lt;&lt; BT::toStr(r.result)
+                          &lt;&lt; "  " &lt;&lt; std::setw(8) 
+                          &lt;&lt; r.eval_time.count()
+                          &lt;&lt; std::endl;
+            }
+        }
+    }
+
+    // 조건이 재평가되지 않은 Tick 탐지
+    std::vector&lt;int&gt; findMissingEvaluations(
+        const std::string&amp; name, int total_ticks) const
+    {
+        std::set&lt;int&gt; evaluated_ticks;
+        for (const auto&amp; r : records_)
+        {
+            if (r.condition_name == name)
+                evaluated_ticks.insert(r.tick);
+        }
+
+        std::vector&lt;int&gt; missing;
+        for (int t = 0; t &lt; total_ticks; t++)
+        {
+            if (evaluated_ticks.find(t) == evaluated_ticks.end())
+                missing.push_back(t);
+        }
+        return missing;
+    }
+
+    // 상태 전이 시점 추출
+    std::vector&lt;std::pair&lt;int, BT::NodeStatus&gt;&gt; 
+    findTransitions(const std::string&amp; name) const
+    {
+        std::vector&lt;std::pair&lt;int, BT::NodeStatus&gt;&gt; transitions;
+        BT::NodeStatus prev = BT::NodeStatus::IDLE;
+
+        for (const auto&amp; r : records_)
+        {
+            if (r.condition_name == name)
+            {
+                if (r.result != prev)
+                {
+                    transitions.emplace_back(r.tick, r.result);
+                    prev = r.result;
+                }
+            }
+        }
+        return transitions;
+    }
+
+private:
+    std::vector&lt;EvalRecord&gt; records_;
+};
+</code></pre>
+<p>출력 예시이다.</p>
+<pre><code>=== Condition: IsLocalized ===
+Tick  Result      Duration(us)
+   0     SUCCESS         15
+   1     SUCCESS         12
+   2     SUCCESS         14
+   3     FAILURE         11
+   4     FAILURE         13
+   5     SUCCESS         16
+</code></pre>
+<p>이 이력에서 Tick 3에서 위치 추정이 실패하고 Tick 5에서 복구되었음을 확인할 수 있다.</p>
+<h2>3. 조건-행동 인과 관계 추적</h2>
+<p>조건의 상태 변화가 후속 행동 노드에 미치는 인과 관계를 추적한다.</p>
+<pre><code class="language-cpp">class ConditionActionCausalTracker : public BT::StatusChangeLogger
+{
+public:
+    struct CausalEvent
+    {
+        int tick;
+        std::string condition_name;
+        BT::NodeStatus condition_new_status;
+        std::string affected_action;
+        BT::NodeStatus action_old_status;
+        BT::NodeStatus action_new_status;
+    };
+
+    ConditionActionCausalTracker(
+        const BT::Tree&amp; tree,
+        const std::string&amp; reactive_seq_name)
+        : StatusChangeLogger(tree.rootNode()),
+          seq_name_(reactive_seq_name) {}
+
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev_status,
+                  BT::NodeStatus status) override
+    {
+        auto* parent = node.getParent();
+        if (!parent || parent-&gt;name() != seq_name_)
+            return;
+
+        // 조건 노드의 상태 변화 기록
+        if (node.type() == BT::NodeType::CONDITION)
+        {
+            last_condition_change_ = {
+                current_tick_, node.name(), status
+            };
+        }
+
+        // 행동 노드가 IDLE로 전이 (Halt) → 조건 위반에 의한 것인지 확인
+        if (status == BT::NodeStatus::IDLE &amp;&amp;
+            prev_status == BT::NodeStatus::RUNNING &amp;&amp;
+            node.type() == BT::NodeType::ACTION)
+        {
+            if (last_condition_change_.tick == current_tick_ &amp;&amp;
+                last_condition_change_.status == BT::NodeStatus::FAILURE)
+            {
+                CausalEvent event;
+                event.tick = current_tick_;
+                event.condition_name = last_condition_change_.name;
+                event.condition_new_status = BT::NodeStatus::FAILURE;
+                event.affected_action = node.name();
+                event.action_old_status = prev_status;
+                event.action_new_status = status;
+                causal_events_.push_back(event);
+            }
+        }
+    }
+
+    void onNewTick() { current_tick_++; }
+
+    void printCausalChain() const
+    {
+        std::cout &lt;&lt; "=== Condition -&gt; Action Causal Chain ===" 
+                  &lt;&lt; std::endl;
+        for (const auto&amp; e : causal_events_)
+        {
+            std::cout &lt;&lt; "Tick " &lt;&lt; e.tick &lt;&lt; ": "
+                      &lt;&lt; e.condition_name &lt;&lt; " FAILURE -&gt; "
+                      &lt;&lt; e.affected_action &lt;&lt; " HALTED"
+                      &lt;&lt; std::endl;
+        }
+    }
+
+    void flush() override {}
+
+private:
+    struct ConditionChange
+    {
+        int tick = -1;
+        std::string name;
+        BT::NodeStatus status;
+    };
+
+    std::string seq_name_;
+    ConditionChange last_condition_change_;
+    std::vector&lt;CausalEvent&gt; causal_events_;
+    int current_tick_ = 0;
+};
+</code></pre>
+<p>출력 예시이다.</p>
+<pre><code>=== Condition -&gt; Action Causal Chain ===
+Tick 45: IsLocalized FAILURE -&gt; NavigateToGoal HALTED
+Tick 102: IsPathValid FAILURE -&gt; FollowPath HALTED
+</code></pre>
+<h2>4. 조건 안정성 분석</h2>
+<p>조건 노드의 상태가 안정적인지, 또는 잦은 진동(flapping)이 발생하는지를 분석한다.</p>
+<pre><code class="language-cpp">class ConditionStabilityAnalyzer
+{
+public:
+    struct StabilityReport
+    {
+        std::string condition_name;
+        int total_evaluations;
+        int transition_count;
+        double stability_ratio;  // 1.0 = 완전 안정
+        int longest_stable_run;
+        double avg_stable_run;
+    };
+
+    StabilityReport analyze(
+        const std::string&amp; name,
+        const std::vector&lt;ConditionEvaluationLogger::EvalRecord&gt;&amp; 
+            records) const
+    {
+        StabilityReport report;
+        report.condition_name = name;
+        report.total_evaluations = 0;
+        report.transition_count = 0;
+        report.longest_stable_run = 0;
+
+        BT::NodeStatus prev = BT::NodeStatus::IDLE;
+        int current_run = 0;
+        int total_runs = 0;
+        int sum_runs = 0;
+
+        for (const auto&amp; r : records)
+        {
+            if (r.condition_name != name) continue;
+            report.total_evaluations++;
+
+            if (r.result != prev &amp;&amp; prev != BT::NodeStatus::IDLE)
+            {
+                report.transition_count++;
+                report.longest_stable_run = std::max(
+                    report.longest_stable_run, current_run);
+                sum_runs += current_run;
+                total_runs++;
+                current_run = 1;
+            }
+            else
+            {
+                current_run++;
+            }
+            prev = r.result;
+        }
+
+        // 마지막 연속 구간 처리
+        report.longest_stable_run = std::max(
+            report.longest_stable_run, current_run);
+        sum_runs += current_run;
+        total_runs++;
+
+        report.avg_stable_run = total_runs &gt; 0 ? 
+            static_cast&lt;double&gt;(sum_runs) / total_runs : 0.0;
+        report.stability_ratio = report.total_evaluations &gt; 0 ?
+            1.0 - static_cast&lt;double&gt;(report.transition_count) / 
+                  report.total_evaluations : 1.0;
+
+        return report;
+    }
+
+    void printReport(const StabilityReport&amp; report) const
+    {
+        std::cout &lt;&lt; "=== Stability: " &lt;&lt; report.condition_name 
+                  &lt;&lt; " ===" &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Total evaluations: " 
+                  &lt;&lt; report.total_evaluations &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Transitions: " 
+                  &lt;&lt; report.transition_count &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Stability ratio: " 
+                  &lt;&lt; std::fixed &lt;&lt; std::setprecision(3)
+                  &lt;&lt; report.stability_ratio &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Longest stable run: " 
+                  &lt;&lt; report.longest_stable_run &lt;&lt; " ticks" 
+                  &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Average stable run: "
+                  &lt;&lt; std::fixed &lt;&lt; std::setprecision(1)
+                  &lt;&lt; report.avg_stable_run &lt;&lt; " ticks"
+                  &lt;&lt; std::endl;
+    }
+};
+</code></pre>
+<p>안정성 비율(stability ratio)이 낮은 조건 노드는 센서 잡음이나 경계 조건에서의 진동을 의심할 수 있다. 이 경우 조건 노드에 히스테리시스를 추가하거나, 블랙보드 값의 필터링을 적용하여 안정성을 개선한다.</p>
+<h2>5. 재평가 오버헤드 프로파일링</h2>
+<p>조건 노드의 재평가가 전체 Tick 시간에 미치는 영향을 측정한다.</p>
+<pre><code class="language-cpp">class ReevaluationProfiler
+{
+public:
+    void beginConditionEval(const std::string&amp; name)
+    {
+        start_ = std::chrono::steady_clock::now();
+        current_ = name;
+    }
+
+    void endConditionEval()
+    {
+        auto elapsed = std::chrono::duration_cast&lt;
+            std::chrono::microseconds&gt;(
+            std::chrono::steady_clock::now() - start_);
+        
+        profiles_[current_].total += elapsed;
+        profiles_[current_].count++;
+        profiles_[current_].max = std::max(
+            profiles_[current_].max, elapsed);
+    }
+
+    void printOverheadReport(
+        std::chrono::microseconds total_tick_time) const
+    {
+        std::chrono::microseconds total_condition_time{0};
+        for (const auto&amp; [name, p] : profiles_)
+            total_condition_time += p.total;
+
+        double overhead_ratio = total_tick_time.count() &gt; 0 ?
+            static_cast&lt;double&gt;(total_condition_time.count()) / 
+            total_tick_time.count() : 0.0;
+
+        std::cout &lt;&lt; "=== Reevaluation Overhead ===" &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Total tick time: " 
+                  &lt;&lt; total_tick_time.count() &lt;&lt; " us" &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Total condition time: " 
+                  &lt;&lt; total_condition_time.count() &lt;&lt; " us" 
+                  &lt;&lt; std::endl;
+        std::cout &lt;&lt; "Overhead ratio: " 
+                  &lt;&lt; std::fixed &lt;&lt; std::setprecision(1)
+                  &lt;&lt; (overhead_ratio * 100) &lt;&lt; "%" &lt;&lt; std::endl;
+
+        std::cout &lt;&lt; std::endl;
+        std::cout &lt;&lt; std::setw(20) &lt;&lt; "Condition"
+                  &lt;&lt; std::setw(12) &lt;&lt; "Avg(us)"
+                  &lt;&lt; std::setw(12) &lt;&lt; "Max(us)"
+                  &lt;&lt; std::setw(8) &lt;&lt; "Count"
+                  &lt;&lt; std::endl;
+
+        for (const auto&amp; [name, p] : profiles_)
+        {
+            auto avg = p.count &gt; 0 ? p.total.count() / p.count : 0;
+            std::cout &lt;&lt; std::setw(20) &lt;&lt; name
+                      &lt;&lt; std::setw(12) &lt;&lt; avg
+                      &lt;&lt; std::setw(12) &lt;&lt; p.max.count()
+                      &lt;&lt; std::setw(8) &lt;&lt; p.count
+                      &lt;&lt; std::endl;
+        }
+    }
+
+private:
+    struct Profile
+    {
+        std::chrono::microseconds total{0};
+        std::chrono::microseconds max{0};
+        int count = 0;
+    };
+
+    std::map&lt;std::string, Profile&gt; profiles_;
+    std::string current_;
+    std::chrono::steady_clock::time_point start_;
+};
+</code></pre>
+<p>출력 예시이다.</p>
+<pre><code>=== Reevaluation Overhead ===
+Total tick time: 5200 us
+Total condition time: 120 us
+Overhead ratio: 2.3%
+
+           Condition     Avg(us)     Max(us)   Count
+        IsLocalized          18          35     200
+         IsPathValid          22          48     200
+</code></pre>
+<p>이 결과에서 조건 재평가의 오버헤드가 전체 Tick 시간의 2.3%에 불과하므로, 성능에 미치는 영향이 미미함을 확인할 수 있다. 오버헤드가 높은 경우에는 조건 노드의 연산을 경량화하거나 캐싱을 적용하여야 한다.</p>
+<h2>6. 통합 추적 사용 예시</h2>
+<p>위의 추적 도구를 조합하여 ReactiveSequence의 조건 재평가를 종합적으로 분석하는 방법이다.</p>
+<pre><code class="language-cpp">// 트리 생성
+BT::Tree tree = factory.createTreeFromText(xml_text);
+
+// 추적 도구 구성
+ConditionEvaluationLogger eval_logger;
+ConditionActionCausalTracker causal_tracker(tree, "SafeNavigation");
+ConditionStabilityAnalyzer stability_analyzer;
+ReevaluationProfiler profiler;
+
+// 실행 루프
+int tick = 0;
+while (tree.tickOnce() == BT::NodeStatus::RUNNING)
+{
+    causal_tracker.onNewTick();
+    tick++;
+}
+
+// 분석 보고서 출력
+eval_logger.printConditionHistory("IsLocalized");
+causal_tracker.printCausalChain();
+
+auto report = stability_analyzer.analyze(
+    "IsLocalized", eval_logger.records());
+stability_analyzer.printReport(report);
+</code></pre>
+<p>이 통합 추적을 통해 ReactiveSequence의 조건 재평가가 올바르게 수행되는지, 조건 위반 시 행동이 즉시 중단되는지, 조건의 안정성은 충분한지를 종합적으로 검증할 수 있다.</p>
 
             </article>
             <footer>

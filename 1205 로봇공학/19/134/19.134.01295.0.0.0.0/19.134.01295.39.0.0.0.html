@@ -115,6 +115,128 @@
             </header>
             <article>
                 <h1>1295.39 ReactiveFallback의 의사 코드</h1>
+<h2>1. 핵심 의사 코드</h2>
+<p>ReactiveFallback 노드의 Tick 동작을 구현하는 의사 코드는 다음과 같다.</p>
+<pre><code>function ReactiveFallback::tick():
+    found_non_failure ← false
+    result_status ← FAILURE
+    result_index ← -1
+    
+    // Phase 1: 첫 번째 자식부터 순차적으로 Tick 전파
+    for i ← 0 to childCount() - 1:
+        child_status ← child(i).tick()
+        
+        if child_status ≠ FAILURE:
+            // 비실패 자식 발견: Tick 전파 중단
+            found_non_failure ← true
+            result_status ← child_status
+            result_index ← i
+            break
+    
+    // Phase 2: 비실패 자식 이후의 RUNNING 자식에 Halt 전파
+    if found_non_failure:
+        for j ← result_index + 1 to childCount() - 1:
+            if child(j).status() == RUNNING:
+                child(j).halt()
+    
+    // Phase 3: 반환값 결정
+    return result_status
+</code></pre>
+<h2>2. 의사 코드의 상세 해설</h2>
+<h3>2.1 Phase 1: 순차적 Tick 전파</h3>
+<pre><code>for i ← 0 to childCount() - 1:
+    child_status ← child(i).tick()
+</code></pre>
+<p>매 Tick에서 반드시 인덱스 <span class="math math-inline">i = 0</span>부터 시작한다. 이것이 ReactiveFallback의 “반응형” 특성을 결정하는 핵심 부분이다. 일반 Fallback에서는 이전 Tick에서 <code>RUNNING</code>을 반환한 자식의 인덱스를 기억하고 해당 인덱스부터 재개하지만, ReactiveFallback에서는 그러한 인덱스 기억이 존재하지 않는다.</p>
+<pre><code>if child_status ≠ FAILURE:
+    found_non_failure ← true
+    result_status ← child_status
+    result_index ← i
+    break
+</code></pre>
+<p>자식이 <code>SUCCESS</code> 또는 <code>RUNNING</code>을 반환하면 Tick 전파를 즉시 중단(<code>break</code>)한다. 이 자식이 현재 Tick에서 선택된 행동이다. <code>FAILURE</code>를 반환한 경우에만 다음 자식으로 진행한다.</p>
+<h3>2.2 Phase 2: Halt 전파</h3>
+<pre><code>if found_non_failure:
+    for j ← result_index + 1 to childCount() - 1:
+        if child(j).status() == RUNNING:
+            child(j).halt()
+</code></pre>
+<p>비실패 자식이 발견된 경우, 그 이후 인덱스의 자식 중 <code>RUNNING</code> 상태인 자식에 Halt를 전파한다. 이 단계가 없으면 이전 Tick에서 실행 중이던 하위 우선순위 행동이 정리되지 않아 자원 누수가 발생한다.</p>
+<p>Halt 대상 판별 시 <code>child(j).status() == RUNNING</code> 조건을 확인하는 것은, 이미 <code>IDLE</code> 또는 <code>FAILURE</code> 상태인 자식에는 Halt가 불필요하기 때문이다. Halt는 <code>RUNNING</code> 상태의 자식, 즉 진행 중인 비동기 행동을 보유한 자식에만 의미가 있다.</p>
+<h3>2.3 Phase 3: 반환값 결정</h3>
+<pre><code>return result_status
+</code></pre>
+<p><code>result_status</code>는 세 가지 경우 중 하나이다.</p>
+<ul>
+<li><code>SUCCESS</code>: 어떤 자식이 성공하였다.</li>
+<li><code>RUNNING</code>: 어떤 자식이 실행 중이다.</li>
+<li><code>FAILURE</code>: 모든 자식이 실패하였다 (초기값 <code>FAILURE</code>가 변경되지 않은 경우).</li>
+</ul>
+<h2>3. 일반 Fallback 의사 코드와의 비교</h2>
+<pre><code>function Fallback::tick():
+    // 이전 RUNNING 자식의 인덱스에서 시작
+    for i ← current_index to childCount() - 1:
+        child_status ← child(i).tick()
+        
+        if child_status == SUCCESS:
+            current_index ← 0    // 다음 Tick에서 처음부터 시작
+            return SUCCESS
+        
+        if child_status == RUNNING:
+            current_index ← i    // 이 인덱스를 기억
+            return RUNNING
+    
+    current_index ← 0
+    return FAILURE
+</code></pre>
+<p>일반 Fallback에서는 <code>current_index</code> 변수가 이전 <code>RUNNING</code> 자식의 위치를 기억하며, 해당 인덱스부터 Tick을 재개한다. 또한 Halt 전파 로직이 없다. 이 두 가지 차이가 일반 Fallback과 ReactiveFallback의 근본적 동작 차이를 결정한다.</p>
+<table><thead><tr><th>의사 코드 요소</th><th>ReactiveFallback</th><th>일반 Fallback</th></tr></thead><tbody>
+<tr><td>Tick 시작 인덱스</td><td>항상 0</td><td><code>current_index</code> (기억된 값)</td></tr>
+<tr><td>인덱스 기억 변수</td><td>없음</td><td><code>current_index</code></td></tr>
+<tr><td>Halt 전파 로직</td><td>Phase 2에서 수행</td><td>없음 (자체 Halt 시에만)</td></tr>
+</tbody></table>
+<h2>4. C++ 스타일 구현 예시</h2>
+<p>BehaviorTree.CPP의 구현 스타일에 근접한 C++ 의사 코드는 다음과 같다.</p>
+<pre><code class="language-cpp">NodeStatus ReactiveFallback::tick() {
+    for (size_t i = 0; i &lt; childrenCount(); ++i) {
+        const NodeStatus child_status = children_[i]-&gt;executeTick();
+        
+        if (child_status != NodeStatus::FAILURE) {
+            // 이 자식 이후의 RUNNING 자식에 Halt 전파
+            for (size_t j = i + 1; j &lt; childrenCount(); ++j) {
+                if (children_[j]-&gt;status() == NodeStatus::RUNNING) {
+                    haltChild(j);
+                }
+            }
+            return child_status;
+        }
+    }
+    return NodeStatus::FAILURE;
+}
+</code></pre>
+<p>이 구현에서 <code>haltChild(j)</code> 메서드는 자식 노드 <span class="math math-inline">j</span>에 Halt를 전파하고 해당 자식의 상태를 <code>IDLE</code>로 초기화하는 역할을 수행한다. <code>executeTick()</code> 메서드는 자식 노드의 <code>tick()</code> 함수를 호출하고 반환된 상태를 기록하는 프레임워크 수준의 래퍼(wrapper) 함수이다.</p>
+<h2>5. Halt 메서드의 의사 코드</h2>
+<p>ReactiveFallback 자체에 Halt가 호출되는 경우(상위 노드로부터의 Halt 전파), 현재 <code>RUNNING</code> 상태인 모든 자식에 Halt를 전파하여야 한다.</p>
+<pre><code>function ReactiveFallback::halt():
+    for i ← 0 to childCount() - 1:
+        if child(i).status() == RUNNING:
+            child(i).halt()
+    setStatus(IDLE)
+</code></pre>
+<p>이 Halt 메서드는 ReactiveFallback이 상위 Parallel 노드의 자식으로 배치된 경우 등, 외부에서 Halt가 호출되는 상황에서 모든 진행 중인 자식을 안전하게 정리하는 역할을 수행한다.</p>
+<h2>6. 알고리즘의 불변 조건</h2>
+<p>ReactiveFallback 알고리즘은 다음 불변 조건(invariant)을 항상 유지한다.</p>
+<ol>
+<li>
+<p><strong>단일 활성 자식 불변</strong>: 임의의 시점에서 <code>RUNNING</code> 상태인 자식은 최대 하나이다. Phase 2의 Halt 전파에 의해 이전의 <code>RUNNING</code> 자식이 정리되므로, 새로운 <code>RUNNING</code> 자식과 이전 <code>RUNNING</code> 자식이 공존하지 않는다.</p>
+</li>
+<li>
+<p><strong>우선순위 순서 불변</strong>: <code>RUNNING</code> 상태인 자식은 항상 비실패 상태를 반환한 가장 높은 우선순위의 자식이다. 더 높은 우선순위의 자식이 모두 <code>FAILURE</code>를 반환한 경우에만 하위 자식이 <code>RUNNING</code> 상태가 된다.</p>
+</li>
+<li>
+<p><strong>Halt 완전성 불변</strong>: Tick 완료 후, <code>RUNNING</code> 상태인 자식보다 하위 인덱스의 자식 중 <code>RUNNING</code> 상태인 자식은 존재하지 않는다. Phase 2에 의해 모두 Halt되었기 때문이다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

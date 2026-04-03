@@ -115,6 +115,106 @@
             </header>
             <article>
                 <h1>1294.36 Fallback 노드의 조기 종료 (Short-Circuit) 동작</h1>
+<h2>1. 조기 종료의 정의</h2>
+<p>Fallback 노드의 조기 종료(short-circuit)란, 자식의 순차 평가 과정에서 하나의 자식이 SUCCESS를 반환하면 나머지 자식의 평가를 생략하고 즉시 SUCCESS를 반환하는 동작이다. 이는 논리 OR 연산의 단락 평가(short-circuit evaluation)와 동일한 원리이며, 첫 번째 참(true) 값이 발견되면 나머지 평가가 불필요해지는 성질에 기반한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. Sequence의 조기 종료와의 대칭성</h2>
+<p>Fallback과 Sequence의 조기 종료는 SUCCESS와 FAILURE가 교환된 대칭 관계이다.</p>
+<table><thead><tr><th>특성</th><th>Sequence의 조기 종료</th><th>Fallback의 조기 종료</th></tr></thead><tbody>
+<tr><td>종료 트리거</td><td>FAILURE</td><td>SUCCESS</td></tr>
+<tr><td>논리 연산 대응</td><td>AND 단락 평가</td><td>OR 단락 평가</td></tr>
+<tr><td>계속 진행 조건</td><td>SUCCESS</td><td>FAILURE</td></tr>
+<tr><td>최악 경우</td><td>모든 자식 SUCCESS (종료 없음)</td><td>모든 자식 FAILURE (종료 없음)</td></tr>
+</tbody></table>
+<h2>3. 조기 종료의 동작 과정</h2>
+<h3>3.1 SUCCESS에 의한 조기 종료</h3>
+<pre><code>children: [A, B, C, D, E]
+
+tick():
+  A.executeTick() → FAILURE    (다음으로 진행)
+  B.executeTick() → SUCCESS    ← 조기 종료 지점
+  → return SUCCESS
+
+미평가: C, D, E
+</code></pre>
+<p>자식 B가 SUCCESS를 반환하는 순간, C, D, E는 평가되지 않으며 Fallback은 SUCCESS를 반환한다.</p>
+<h3>3.2 RUNNING에 의한 조기 종료</h3>
+<p>RUNNING 반환도 일종의 조기 종료를 유발한다. 현재 자식의 결과가 미결정이므로 후속 자식의 평가를 보류한다.</p>
+<pre><code>tick():
+  A.executeTick() → FAILURE
+  B.executeTick() → RUNNING    ← 조기 종료 (결과 미결정)
+  → return RUNNING
+
+미평가: C, D, E
+</code></pre>
+<h3>3.3 조기 종료가 발생하지 않는 경우</h3>
+<p>모든 자식이 FAILURE를 반환하면 조기 종료 없이 전체 자식이 평가된다.</p>
+<pre><code>tick():
+  A.executeTick() → FAILURE
+  B.executeTick() → FAILURE
+  C.executeTick() → FAILURE
+  D.executeTick() → FAILURE
+  E.executeTick() → FAILURE
+  → return FAILURE
+
+평가된 자식: 5개 (전부)
+</code></pre>
+<h2>4. 조기 종료의 성능 효과</h2>
+<h3>4.1 평균 평가 비용 절감</h3>
+<p>자식이 <span class="math math-inline">N</span>개이고, 각 자식의 SUCCESS 확률이 <span class="math math-inline">p</span>인 경우, 조기 종료에 의해 평균적으로 평가되는 자식 수는 다음과 같다:</p>
+<p><span class="math math-display">E[\text{평가 수}] = \sum_{k=1}^{N} k \cdot (1-p)^{k-1} \cdot p + N \cdot (1-p)^N</span></p>
+<p>첫 번째 항은 <span class="math math-inline">k</span>번째 자식에서 조기 종료되는 확률, 두 번째 항은 모든 자식이 FAILURE인 확률을 나타낸다.</p>
+<p><span class="math math-inline">p = 0.5</span>, <span class="math math-inline">N = 5</span>인 경우:</p>
+<p><span class="math math-display">E[\text{평가 수}] = 1 \times 0.5 + 2 \times 0.25 + 3 \times 0.125 + 4 \times 0.0625 + 5 \times 0.03125 + 5 \times 0.03125 \approx 1.94</span></p>
+<p>평균적으로 5개 자식 중 약 1.94개만 평가된다.</p>
+<h3>4.2 자식 배치 순서의 최적화</h3>
+<p>조기 종료의 성능 효과를 극대화하려면, SUCCESS 확률이 높은 자식을 왼쪽에 배치해야 한다. 이렇게 하면 평균 평가 비용이 최소화된다.</p>
+<pre><code class="language-xml">&lt;!-- 최적 배치: 성공 확률 높은 순서 --&gt;
+&lt;Fallback&gt;
+    &lt;Action ID="HighSuccessRate"/&gt;     &lt;!-- 성공 확률 80% --&gt;
+    &lt;Action ID="MediumSuccessRate"/&gt;   &lt;!-- 성공 확률 50% --&gt;
+    &lt;Action ID="LowSuccessRate"/&gt;      &lt;!-- 성공 확률 20% --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>그러나 실무에서는 성공 확률만이 아니라 비용, 안전성, 선호도 등의 복합적 기준에 의해 배치 순서가 결정된다.</p>
+<h2>5. 조건 노드를 활용한 조기 종료 패턴</h2>
+<h3>5.1 가드 패턴 (Guard Pattern)</h3>
+<p>Fallback의 첫 번째 자식으로 조건 노드를 배치하면, 조건이 이미 충족된 경우 액션의 실행을 방지하는 가드 역할을 수행한다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Condition ID="IsGoalAchieved"/&gt;    &lt;!-- 가드: 이미 달성? --&gt;
+    &lt;Action ID="AchieveGoal"/&gt;          &lt;!-- 미달성 시에만 실행 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>IsGoalAchieved가 SUCCESS를 반환하면 조기 종료에 의해 AchieveGoal은 실행되지 않는다. 이 패턴은 불필요한 액션 실행을 방지하는 효율적 구조이다.</p>
+<h3>5.2 다중 가드 패턴</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Condition ID="IsObjectAlreadyGrasped"/&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsObjectVisible"/&gt;
+        &lt;Action ID="GraspObject"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="SearchAndGrasp"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<ol>
+<li>이미 물체를 잡고 있으면 → 조기 종료 (SUCCESS)</li>
+<li>물체가 보이면 → 잡기 시도</li>
+<li>보이지 않으면 → 탐색 후 잡기</li>
+</ol>
+<p>각 단계에서 SUCCESS가 반환되면 후속 대안의 평가가 생략된다.</p>
+<h2>6. 조기 종료와 부수 효과</h2>
+<p>조기 종료에 의해 평가가 생략된 자식의 부수 효과는 발생하지 않는다. 이는 설계 시 의도된 동작이며, 특정 자식이 반드시 실행되어야 하는 경우에는 Fallback의 조기 종료 메커니즘이 부적합할 수 있다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="TryMethod"/&gt;       &lt;!-- SUCCESS 시 조기 종료 --&gt;
+    &lt;Action ID="LogFailure"/&gt;      &lt;!-- TryMethod 성공 시 실행되지 않음 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>TryMethod가 성공하면 LogFailure는 실행되지 않는다. 실패 로깅이 항상 필요한 경우, 이 구조는 부적합하며 별도의 메커니즘을 사용해야 한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

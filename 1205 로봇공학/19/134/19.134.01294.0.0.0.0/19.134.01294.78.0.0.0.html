@@ -115,6 +115,133 @@
             </header>
             <article>
                 <h1>1294.78 Fallback 노드에서의 오류 전파</h1>
+<h2>1. Fallback에서의 오류 전파 원리</h2>
+<p>Fallback 노드에서의 오류 전파는 Sequence와 대칭적(symmetric)인 구조를 가진다. Sequence에서 단일 자식의 FAILURE가 전체 FAILURE로 전파되는 것과 달리, Fallback에서는 <em>모든</em> 자식이 FAILURE를 반환해야 비로소 Fallback 자체가 FAILURE를 반환한다. Fallback의 OR 의미론에 의해, 개별 자식의 FAILURE는 “이 대안이 실패했으나 다른 대안이 남아 있다“는 의미이며, Fallback 전체의 FAILURE는 “모든 대안이 소진되었다“는 의미이다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 자식 FAILURE의 흡수와 전파</h2>
+<h3>2.1 FAILURE의 흡수 (다음 대안으로 진행)</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="Alternative1"/&gt;    &lt;!-- FAILURE → 흡수 --&gt;
+    &lt;Action ID="Alternative2"/&gt;    &lt;!-- 시도됨 --&gt;
+    &lt;Action ID="Alternative3"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>Tick: Alternative1→F, Alternative2→S → Fallback: SUCCESS
+</code></pre>
+<p>Alternative1의 FAILURE는 Fallback에 의해 흡수되며, 다음 자식인 Alternative2가 시도된다. Alternative2가 SUCCESS를 반환하면 Fallback 전체가 SUCCESS를 반환하고, Alternative1의 FAILURE는 상위 노드로 전파되지 않는다.</p>
+<h3>2.2 FAILURE의 전파 (모든 대안 소진)</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="Alternative1"/&gt;    &lt;!-- FAILURE --&gt;
+    &lt;Action ID="Alternative2"/&gt;    &lt;!-- FAILURE --&gt;
+    &lt;Action ID="Alternative3"/&gt;    &lt;!-- FAILURE --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>Tick: Alternative1→F, Alternative2→F, Alternative3→F → Fallback: FAILURE
+</code></pre>
+<p>모든 자식이 FAILURE를 반환하면 Fallback 자체가 FAILURE를 반환하여, 오류가 상위 노드로 전파된다.</p>
+<h2>3. Sequence와의 대칭적 관계</h2>
+<table><thead><tr><th>특성</th><th>Sequence</th><th>Fallback</th></tr></thead><tbody>
+<tr><td>단일 자식 FAILURE 시</td><td>전체 FAILURE (즉시 전파)</td><td>다음 자식 시도 (흡수)</td></tr>
+<tr><td>전체 FAILURE 조건</td><td>하나라도 FAILURE</td><td>모두 FAILURE</td></tr>
+<tr><td>FAILURE의 역할</td><td>작업 체인 중단</td><td>대안 전환 트리거</td></tr>
+<tr><td>오류 전파 조건</td><td><span class="math math-inline">\exists</span> child: FAILURE</td><td><span class="math math-inline">\forall</span> children: FAILURE</td></tr>
+</tbody></table>
+<h2>4. 다중 계층에서의 오류 전파</h2>
+<h3>4.1 Fallback 내부 Sequence의 FAILURE</h3>
+<pre><code class="language-xml">&lt;Fallback name="Root"&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsConditionA"/&gt;    &lt;!-- FAILURE --&gt;
+        &lt;Action ID="ActionA"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsConditionB"/&gt;    &lt;!-- SUCCESS --&gt;
+        &lt;Action ID="ActionB"/&gt;            &lt;!-- SUCCESS --&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>Tick: IsConditionA→F → Sequence1: FAILURE (Fallback이 흡수)
+     IsConditionB→S, ActionB→S → Sequence2: SUCCESS
+     → Root Fallback: SUCCESS
+</code></pre>
+<p>Sequence1의 FAILURE가 Fallback에 의해 흡수되고, Sequence2가 시도되어 성공한다. 오류는 Fallback 수준에서 차단된다.</p>
+<h3>4.2 중첩 Fallback에서의 전파 경로</h3>
+<pre><code class="language-xml">&lt;Fallback name="Outer"&gt;
+    &lt;Fallback name="Inner"&gt;
+        &lt;Action ID="Alt1"/&gt;     &lt;!-- FAILURE --&gt;
+        &lt;Action ID="Alt2"/&gt;     &lt;!-- FAILURE --&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="Alt3"/&gt;         &lt;!-- 시도됨 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>Tick: Alt1→F, Alt2→F → Inner: FAILURE (Outer가 흡수)
+     Alt3→S           → Outer: SUCCESS
+</code></pre>
+<p>Inner Fallback의 모든 대안이 실패하면 Inner가 FAILURE를 반환하지만, Outer Fallback이 이를 흡수하고 Alt3을 시도한다.</p>
+<pre><code>Tick: Alt1→F, Alt2→F → Inner: FAILURE
+     Alt3→F           → Outer: FAILURE (상위로 전파)
+</code></pre>
+<p>Outer Fallback의 모든 대안도 실패하면, 최종적으로 FAILURE가 상위 노드로 전파된다.</p>
+<h2>5. Fallback 변형별 오류 전파 특성</h2>
+<h3>5.1 FallbackWithMemory에서의 전파</h3>
+<pre><code>Tick 1: Alt1→F, Alt2→R (idx=1)         (Alt1 실패, Alt2 진행 중)
+Tick 2: Alt2→R          (idx=1)         (Alt1 건너뜀)
+Tick 3: Alt2→F, Alt3→R  (idx=2)         (Alt2 실패, Alt3 진행 중)
+Tick 4: Alt3→F                           → FAILURE (idx=0으로 초기화)
+</code></pre>
+<p>FallbackWithMemory에서는 비동기 대안이 RUNNING에서 FAILURE로 전환되면, 자연스럽게 다음 대안으로 진행한다. 모든 대안이 소진되어야 FAILURE가 전파된다.</p>
+<h3>5.2 ReactiveFallback에서의 전파</h3>
+<pre><code>Tick 1: Alt1→F, Alt2→R                  (Alt1 실패, Alt2 진행 중)
+Tick 2: Alt1→F, Alt2→R                  (Alt1 매 Tick 재평가)
+Tick 3: Alt1→S                           → SUCCESS (Alt2 Halt)
+</code></pre>
+<p>ReactiveFallback에서는 매 Tick 앞쪽 대안을 재평가하므로, 앞쪽 대안이 SUCCESS로 전환되면 현재 대안을 Halt하고 Fallback이 SUCCESS를 반환한다. 이 경우 오류 전파가 발생하지 않는다.</p>
+<h2>6. 오류 전파와 Sequence의 상호작용</h2>
+<h3>6.1 Sequence에 의한 Fallback FAILURE의 전파</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="Step1"/&gt;
+    &lt;Fallback&gt;
+        &lt;Action ID="Alt1"/&gt;    &lt;!-- FAILURE --&gt;
+        &lt;Action ID="Alt2"/&gt;    &lt;!-- FAILURE --&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="Step3"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick: Step1→S, Alt1→F, Alt2→F → Fallback: FAILURE
+     → Sequence: FAILURE
+     Step3→(미실행)
+</code></pre>
+<p>Fallback의 모든 대안이 실패하면 Fallback이 FAILURE를 반환하고, 이 FAILURE가 Sequence로 전파되어 전체 시퀀스가 중단된다. Fallback이 오류를 흡수하지 못한 경우, 오류는 상위 Sequence를 통해 계속 전파된다.</p>
+<h2>7. 오류 전파의 의미론적 해석</h2>
+<h3>7.1 Fallback FAILURE의 의미</h3>
+<p>Fallback이 FAILURE를 반환하는 것은 “가용한 모든 대안이 소진되었다“는 강력한 실패 신호이다. 단일 대안의 실패와 달리, 모든 대안의 실패는 현재 수준에서 문제를 해결할 수 없음을 의미한다. 이 신호는 상위 트리에서 더 근본적인 복구 전략을 시도하거나, 최종적으로 안전 행동을 수행하도록 유도한다.</p>
+<h3>7.2 최후 수단에 의한 전파 방지</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="PrimaryMethod"/&gt;
+    &lt;Action ID="SecondaryMethod"/&gt;
+    &lt;Action ID="SafeStop"/&gt;          &lt;!-- 항상 SUCCESS 반환 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>마지막 자식이 항상 SUCCESS를 반환하도록 설계하면, Fallback이 FAILURE를 반환하는 상황을 방지할 수 있다. 이 패턴은 “어떤 상황에서든 최소한의 안전 행동은 수행된다“는 것을 보장한다.</p>
+<h2>8. 오류 전파 설계의 고려 사항</h2>
+<ol>
+<li>
+<p><strong>전파 범위의 설계</strong>: Fallback의 FAILURE가 어느 수준까지 전파되어야 하는지를 설계 시점에 결정해야 한다. 불필요하게 상위까지 전파되면 전체 임무가 중단되고, 너무 일찍 차단되면 심각한 오류가 무시된다.</p>
+</li>
+<li>
+<p><strong>최후 수단의 포함</strong>: 오류 전파를 방지하려면 Fallback 체인의 마지막에 항상 성공하는 안전 행동을 배치한다.</p>
+</li>
+<li>
+<p><strong>오류 정보의 보존</strong>: Fallback이 오류를 흡수하더라도, 개별 대안의 실패 원인을 블랙보드에 기록하여 진단 및 로깅에 활용할 수 있도록 한다.</p>
+</li>
+<li>
+<p><strong>Sequence-Fallback 조합의 활용</strong>: Sequence의 즉시 전파와 Fallback의 흡수 후 전파를 적절히 조합하여, 오류가 정확한 범위에서 처리되도록 트리 구조를 설계한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

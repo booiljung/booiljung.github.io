@@ -115,6 +115,113 @@
             </header>
             <article>
                 <h1>1295.59 조건 지속 보장 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>조건 지속 보장 패턴(Continuous Condition Guarantee Pattern)은 ReactiveSequence를 활용하여, 행동의 실행 전체 기간에 걸쳐 특정 조건의 충족이 구조적으로 보장되는 설계 패턴이다. 행동의 개시 시점뿐만 아니라 실행 도중의 모든 Tick에서 조건이 재검사되며, 조건이 위반되는 즉시 행동에 Halt가 전파된다. 이 패턴은 “조건 <span class="math math-inline">C</span>가 참인 동안만 행동 <span class="math math-inline">A</span>를 수행하라“라는 요구 사항을 행동 트리에서 가장 직접적으로 표현하는 방식이다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>ReactiveSequence
+├── Condition (조건 노드)
+└── Action    (행동 노드)
+</code></pre>
+<p>이 구조는 다음의 불변 조건을 매 Tick에서 강제한다.</p>
+<p><span class="math math-display">\forall t : \text{Action}(t) = \text{RUNNING} \implies \text{Condition}(t) = \text{SUCCESS}</span></p>
+<p>조건이 <code>FAILURE</code>를 반환하는 어떤 Tick에서도 행동은 <code>RUNNING</code> 상태를 유지할 수 없다.</p>
+<h2>적용 사례</h2>
+<h3>위치 추정 보장 하의 이동</h3>
+<p>로봇의 자기 위치 추정(localization)이 유효한 동안에만 이동을 수행하는 패턴이다.</p>
+<pre><code>ReactiveSequence
+├── IsLocalizationValid
+└── NavigateToGoal
+</code></pre>
+<pre><code>function IsLocalizationValid.tick():
+    localization_quality ← blackboard.get("localization_confidence")
+    covariance ← blackboard.get("pose_covariance")
+    
+    if localization_quality &gt; min_confidence 
+       and trace(covariance) &lt; max_covariance:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<p>위치 추정의 신뢰도가 임계값 이하로 떨어지거나, 자세 공분산(pose covariance)이 임계값을 초과하면, 로봇이 자신의 위치를 정확히 파악하지 못하는 것이므로 이동을 즉시 중단한다. 잘못된 위치 추정에 기반한 이동은 장애물과의 충돌이나 경로 이탈을 초래할 수 있기 때문이다.</p>
+<h3>통신 보장 하의 원격 작업</h3>
+<p>원격 관제 시스템과의 통신이 유지되는 동안에만 작업을 수행하는 패턴이다.</p>
+<pre><code>ReactiveSequence
+├── IsCommunicationAlive
+└── ExecuteRemoteTask
+</code></pre>
+<pre><code>function IsCommunicationAlive.tick():
+    last_heartbeat ← blackboard.get("last_heartbeat_time")
+    elapsed ← current_time() - last_heartbeat
+    
+    if elapsed &lt; heartbeat_timeout:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<p>관제 시스템으로부터의 심장 박동(heartbeat) 메시지가 타임아웃 내에 수신되지 않으면, 통신이 두절된 것으로 판단하고 작업을 중단한다. 통신 두절 상태에서의 자율 작업이 허용되지 않는 운용 규정을 준수하기 위한 패턴이다.</p>
+<h3>에너지 보장 하의 임무 수행</h3>
+<p>배터리 에너지가 귀환에 충분한 수준을 유지하는 동안에만 임무를 수행하는 패턴이다.</p>
+<pre><code>ReactiveSequence
+├── IsEnergyForReturnAvailable
+└── ExecuteMission
+</code></pre>
+<pre><code>function IsEnergyForReturnAvailable.tick():
+    current_energy ← blackboard.get("battery_energy")
+    return_energy ← blackboard.get("estimated_return_energy")
+    safety_margin ← 1.3
+    
+    if current_energy &gt; return_energy * safety_margin:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<p>현재 에너지에서 귀환 에너지와 안전 마진을 뺀 잔여 에너지가 양수인 동안에만 임무가 수행된다. 에너지가 임계값에 도달하면 임무가 중단되어, 귀환을 위한 에너지가 확보된다.</p>
+<h3>지오펜스 보장 하의 이동</h3>
+<p>로봇이 허가된 운용 영역(지오펜스) 이내에 있는 동안에만 이동을 수행하는 패턴이다.</p>
+<pre><code>ReactiveSequence
+├── IsWithinGeofence
+└── MoveToWaypoint
+</code></pre>
+<pre><code>function IsWithinGeofence.tick():
+    position ← blackboard.get("robot_position")
+    geofence ← blackboard.get("operational_boundary")
+    
+    distance_to_boundary ← computeDistanceToBoundary(position, geofence)
+    
+    if distance_to_boundary &gt; safety_buffer:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<p>지오펜스 경계에 대한 안전 여유(safety buffer)를 설정하여, 로봇이 경계에 도달하기 전에 이동을 중단한다. 이 패턴은 드론, 농업 로봇, 보안 로봇 등에서 운용 영역 제한을 구현하는 데 사용된다.</p>
+<h2>다중 조건의 지속 보장</h2>
+<p>복수의 조건을 동시에 보장하여야 하는 경우, ReactiveSequence에 다수의 조건 노드를 배치한다.</p>
+<pre><code>ReactiveSequence
+├── Condition_A   // 조건 A 지속 보장
+├── Condition_B   // 조건 B 지속 보장
+├── Condition_C   // 조건 C 지속 보장
+└── Action        // 행동
+</code></pre>
+<p>이 구조에서 행동은 <span class="math math-inline">A \land B \land C</span>가 모두 참인 동안에만 실행된다. 어느 한 조건이라도 <code>FAILURE</code>를 반환하면 행동에 Halt가 전파된다.</p>
+<p>조건의 배치 순서는 의미론적 중요성에 따라 결정한다. 가장 근본적이거나 가장 안전에 직결되는 조건을 첫 번째에 배치하여, 해당 조건이 위반되면 나머지 조건의 평가를 생략하고 즉시 <code>FAILURE</code>를 반환하도록 한다.</p>
+<h2>조건의 히스테리시스 적용</h2>
+<p>조건이 임계값 부근에서 진동하면, 조건의 <code>SUCCESS</code>/<code>FAILURE</code> 전환이 빈번하게 발생하고, 행동이 반복적으로 시작과 정지를 반복하는 현상(chattering)이 발생한다. 이를 방지하기 위해 히스테리시스(hysteresis)를 적용한다.</p>
+<pre><code>function IsLocalizationValid.tick():
+    quality ← blackboard.get("localization_confidence")
+    
+    if currently_valid:
+        // 현재 유효 → 무효 전환: 낮은 임계값 적용
+        if quality &lt; low_threshold:
+            currently_valid ← false
+            return FAILURE
+        return SUCCESS
+    else:
+        // 현재 무효 → 유효 전환: 높은 임계값 적용
+        if quality &gt; high_threshold:
+            currently_valid ← true
+            return SUCCESS
+        return FAILURE
+</code></pre>
+<p><code>high_threshold &gt; low_threshold</code>로 설정하면, 유효에서 무효로의 전환 임계값과 무효에서 유효로의 전환 임계값이 분리된다. 이 분리 구간(<span class="math math-inline">\text{low\_threshold}</span>과 <span class="math math-inline">\text{high\_threshold}</span> 사이) 내에서는 이전 상태가 유지되어 빈번한 전환이 방지된다.</p>
+<h2>조건 지속 보장과 안전성</h2>
+<p>조건 지속 보장 패턴은 로봇 안전의 소프트웨어 수준 방어선으로 기능한다. 다만 이 패턴이 보장하는 것은 소프트웨어 수준에서의 조건 감시이며, 하드웨어 수준의 안전 메커니즘(비상 정지 회로, 힘 제한 장치 등)을 대체하지 않는다. 안전 관련 시스템에서는 소프트웨어 수준의 조건 지속 보장과 하드웨어 수준의 안전 장치를 중첩하여 적용하는 다층 방어(defense in depth) 전략이 요구된다.</p>
+<p>또한 조건 감시의 최대 지연은 하나의 Tick 주기 <span class="math math-inline">T_{tick}</span>이므로, 안전 요구 사항에서 정의한 최대 허용 반응 시간이 <span class="math math-inline">T_{tick}</span>보다 큰지를 검증하여야 한다.</p>
 
             </article>
             <footer>

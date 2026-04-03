@@ -115,6 +115,243 @@
             </header>
             <article>
                 <h1>1294.74 매니퓰레이터의 파지 재시도 Fallback</h1>
+<h2>1. 파지 재시도의 필요성</h2>
+<p>로봇 매니퓰레이터의 파지(grasp) 작업은 물체의 형상, 재질, 표면 상태, 위치 불확실성 등 다양한 요인에 의해 실패할 수 있다. 단일 파지 시도만으로는 산업 환경에서 요구되는 높은 성공률을 달성하기 어려우므로, 파지 실패 시 전략을 변경하여 재시도하는 구조가 필수적이다. Fallback 노드는 “하나라도 성공하면 충분한” 다중 파지 전략을 자연스럽게 표현한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 기본 파지 재시도 Fallback</h2>
+<h3>2.1 동일 전략 재시도</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 1차 시도 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="OpenGripper"/&gt;
+        &lt;Action ID="MoveToGraspPose"/&gt;
+        &lt;Action ID="CloseGripper"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2차 시도: 자세 미세 조정 후 재시도 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="OpenGripper"/&gt;
+        &lt;Action ID="Retreat" distance="0.05"/&gt;
+        &lt;Action ID="AdjustGraspPose" offset_z="-0.005"/&gt;
+        &lt;Action ID="MoveToGraspPose"/&gt;
+        &lt;Action ID="CloseGripper"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 최종 실패 --&gt;
+    &lt;Action ID="ReportGraspFailure"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>1차 시도가 실패하면 그리퍼를 열고 약간 후퇴한 후, 파지 자세를 미세 조정하여 재시도한다. <code>IsObjectGrasped</code> 조건 노드가 그리퍼의 폭, 힘 센서, 또는 촉각 센서를 통해 파지 성공 여부를 판정한다.</p>
+<h3>2.2 Tick별 실행 흐름</h3>
+<pre><code>Tick 1: OpenGripper→S, MoveToGraspPose→R       (1차 접근 중)
+Tick 2: MoveToGraspPose→S, CloseGripper→R       (파지 시도)
+Tick 3: CloseGripper→S, IsObjectGrasped→F       (1차 파지 실패)
+        → 1차 Sequence FAILURE
+        OpenGripper→R                            (2차 시도 시작)
+Tick 4: OpenGripper→S, Retreat→R                 (후퇴 중)
+Tick 5: Retreat→S, AdjustGraspPose→S,
+        MoveToGraspPose→R                        (조정된 자세로 접근)
+Tick 6: MoveToGraspPose→S, CloseGripper→R       (2차 파지 시도)
+Tick 7: CloseGripper→S, IsObjectGrasped→S       → SUCCESS (파지 성공)
+</code></pre>
+<h2>3. 다중 파지 전략 Fallback</h2>
+<h3>3.1 파지 방식별 대안 체인</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 1순위: 정밀 파지 (Precision Grasp) --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="ComputePrecisionGraspPose"/&gt;
+        &lt;Action ID="ExecutePrecisionGrasp"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2순위: 포락 파지 (Enveloping Grasp) --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="ComputeEnvelopingGraspPose"/&gt;
+        &lt;Action ID="ExecuteEnvelopingGrasp"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 3순위: 흡착 파지 (Suction Grasp) --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsSuctionGripperAvailable"/&gt;
+        &lt;Action ID="SwitchToSuctionGripper"/&gt;
+        &lt;Action ID="ExecuteSuctionGrasp"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 4순위: 모서리 밀어 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="PushObjectToEdge"/&gt;
+        &lt;Action ID="ExecuteEdgeGrasp"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 최후 수단: 인간 지원 요청 --&gt;
+    &lt;Action ID="RequestHumanAssistance"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>정밀 파지 → 포락 파지 → 흡착 파지 → 모서리 파지의 순서로 점진적으로 전략을 전환한다. 각 전략은 물체의 형상과 크기에 따라 적합성이 다르며, 앞쪽 전략이 실패할수록 더 범용적이지만 정밀도가 낮은 전략으로 진행한다.</p>
+<h2>4. 재인식 기반 파지 재시도</h2>
+<h3>4.1 시각 재인식 후 재시도</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 1차: 초기 인식 결과로 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="MoveToGraspPose" pose="{initial_grasp_pose}"/&gt;
+        &lt;Action ID="CloseGripper"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2차: 물체 재인식 후 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="OpenGripper"/&gt;
+        &lt;Action ID="MoveToScanPose"/&gt;
+        &lt;Action ID="RedetectObject" result_pose="{updated_object_pose}"/&gt;
+        &lt;Action ID="ComputeGraspPose" object_pose="{updated_object_pose}"
+                grasp_pose="{updated_grasp_pose}"/&gt;
+        &lt;Action ID="MoveToGraspPose" pose="{updated_grasp_pose}"/&gt;
+        &lt;Action ID="CloseGripper"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 3차: 다른 시점에서 재인식 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="OpenGripper"/&gt;
+        &lt;Action ID="MoveToAlternativeScanPose"/&gt;
+        &lt;Action ID="RedetectObject" result_pose="{alt_object_pose}"/&gt;
+        &lt;Action ID="ComputeGraspPose" object_pose="{alt_object_pose}"
+                grasp_pose="{alt_grasp_pose}"/&gt;
+        &lt;Action ID="MoveToGraspPose" pose="{alt_grasp_pose}"/&gt;
+        &lt;Action ID="CloseGripper"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="ReportGraspFailure"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>1차 시도 실패 시 카메라를 이용하여 물체를 재인식하고, 갱신된 자세로 파지를 재시도한다. 2차 시도도 실패하면 다른 시점에서 재인식하여 3차 시도를 수행한다. 이 구조는 초기 인식의 오차가 파지 실패의 원인인 경우에 효과적이다.</p>
+<h2>5. Retry 데코레이터를 이용한 파지 재시도</h2>
+<h3>5.1 단순 반복 재시도</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Retry num_attempts="3"&gt;
+        &lt;Sequence&gt;
+            &lt;Action ID="OpenGripper"/&gt;
+            &lt;Action ID="MoveToGraspPose"/&gt;
+            &lt;Action ID="CloseGripper"/&gt;
+            &lt;Condition ID="IsObjectGrasped"/&gt;
+        &lt;/Sequence&gt;
+    &lt;/Retry&gt;
+    &lt;Action ID="ReportGraspFailure"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>Retry 데코레이터는 자식이 FAILURE를 반환하면 지정된 횟수만큼 재실행한다. 동일한 전략을 동일한 자세로 반복하므로, 파지 실패의 원인이 비결정론적(물체 미끄러짐 등)인 경우에 적합하다.</p>
+<h3>5.2 전략별 재시도 결합</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 정밀 파지: 최대 3회 재시도 --&gt;
+    &lt;Retry num_attempts="3"&gt;
+        &lt;Sequence&gt;
+            &lt;Action ID="ExecutePrecisionGrasp"/&gt;
+            &lt;Condition ID="IsObjectGrasped"/&gt;
+        &lt;/Sequence&gt;
+    &lt;/Retry&gt;
+    &lt;!-- 포락 파지: 최대 2회 재시도 --&gt;
+    &lt;Retry num_attempts="2"&gt;
+        &lt;Sequence&gt;
+            &lt;Action ID="ExecuteEnvelopingGrasp"/&gt;
+            &lt;Condition ID="IsObjectGrasped"/&gt;
+        &lt;/Sequence&gt;
+    &lt;/Retry&gt;
+    &lt;!-- 최후 수단 --&gt;
+    &lt;Action ID="RequestHumanAssistance"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>각 파지 전략에 대해 개별적인 재시도 횟수를 설정한다. 정밀 파지는 3회, 포락 파지는 2회까지 재시도하며, 모두 실패하면 인간 지원을 요청한다.</p>
+<h2>6. 물체 유형별 파지 전략 선택</h2>
+<h3>6.1 조건 기반 파지 전략 분기</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 소형 물체: 핀치 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsSmallObject"/&gt;
+        &lt;Fallback&gt;
+            &lt;Sequence&gt;
+                &lt;Action ID="PinchGrasp"/&gt;
+                &lt;Condition ID="IsObjectGrasped"/&gt;
+            &lt;/Sequence&gt;
+            &lt;Sequence&gt;
+                &lt;Action ID="AdjustAndPinchGrasp"/&gt;
+                &lt;Condition ID="IsObjectGrasped"/&gt;
+            &lt;/Sequence&gt;
+        &lt;/Fallback&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 대형 물체: 포락 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsLargeObject"/&gt;
+        &lt;Fallback&gt;
+            &lt;Sequence&gt;
+                &lt;Action ID="EnvelopingGrasp"/&gt;
+                &lt;Condition ID="IsObjectGrasped"/&gt;
+            &lt;/Sequence&gt;
+            &lt;Sequence&gt;
+                &lt;Action ID="TwoHandedGrasp"/&gt;
+                &lt;Condition ID="IsObjectGrasped"/&gt;
+            &lt;/Sequence&gt;
+        &lt;/Fallback&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 평면 물체: 흡착 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsFlatObject"/&gt;
+        &lt;Action ID="SuctionGrasp"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 분류 불가: 범용 전략 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="GenericGrasp"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>물체의 크기와 형상에 따라 적합한 파지 전략을 선택하고, 선택된 전략 내에서도 Fallback을 통해 대안을 제공한다.</p>
+<h2>7. 물체 자세 조정 후 재시도</h2>
+<h3>7.1 물체를 재배치한 후 파지</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 현재 자세에서 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="GraspAtCurrentPose"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 물체 회전 후 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="PushObjectToRotate" angle="90"/&gt;
+        &lt;Action ID="RedetectObject"/&gt;
+        &lt;Action ID="GraspAtNewPose"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 물체를 안정적 자세로 변경 후 파지 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="FlipObjectToStablePose"/&gt;
+        &lt;Action ID="RedetectObject"/&gt;
+        &lt;Action ID="GraspAtStablePose"/&gt;
+        &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="ReportGraspFailure"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>물체의 현재 자세가 파지에 불리한 경우, 물체를 밀어 회전시키거나 뒤집어서 파지에 유리한 자세로 변경한 후 재시도한다.</p>
+<h2>8. 파지 재시도 Fallback의 설계 원칙</h2>
+<ol>
+<li>
+<p><strong>파지 검증의 필수성</strong>: 모든 파지 시도 후에 <code>IsObjectGrasped</code> 조건 노드로 파지 성공 여부를 반드시 검증해야 한다. 검증 없이 이동 단계로 진행하면 물체 분실이 발생한다.</p>
+</li>
+<li>
+<p><strong>그리퍼 초기화</strong>: 각 재시도 전에 그리퍼를 완전히 개방하고, 이전 시도의 잔여 상태를 정리해야 한다. 이전 시도에서 물체가 그리퍼에 걸려 있으면 다음 시도가 방해받을 수 있다.</p>
+</li>
+<li>
+<p><strong>재시도 횟수 제한</strong>: 무한 재시도는 시스템의 응답성을 저하시키므로, 전략별로 최대 재시도 횟수를 설정하고 최후 수단을 반드시 포함한다.</p>
+</li>
+<li>
+<p><strong>물체 손상 방지</strong>: 재시도 과정에서 물체에 가해지는 힘과 접촉 횟수가 증가하므로, 물체의 재질과 내구성을 고려하여 재시도 전략을 설계해야 한다.</p>
+</li>
+<li>
+<p><strong>안전 감시 통합</strong>: 파지 재시도 전체를 ReactiveSequence로 감싸서, 재시도 중에도 관절 토크, 충돌 감지 등의 안전 조건을 지속 감시해야 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

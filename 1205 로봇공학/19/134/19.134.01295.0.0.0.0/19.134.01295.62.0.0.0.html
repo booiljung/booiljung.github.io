@@ -115,6 +115,90 @@
             </header>
             <article>
                 <h1>1295.62 Parallel과 Reactive 노드의 비교</h1>
+<h2>1. 비교의 필요성</h2>
+<p>Parallel 노드, ReactiveSequence, ReactiveFallback은 모두 행동 트리에서 복수의 자식 노드를 관리하며, 일반 Sequence나 Fallback과는 다른 실행 패턴을 제공한다. 이 세 노드는 외형적으로 유사한 동작을 수행하는 것처럼 보일 수 있으나, 실행 모델, Tick 전파 방식, Halt 조건, 적용 목적이 근본적으로 다르다. 이 차이를 정확히 이해하는 것은 로봇 행동 트리 설계에서 적합한 노드를 선택하기 위한 전제이다.</p>
+<h2>2. 실행 모델의 비교</h2>
+<h3>2.1 Parallel 노드</h3>
+<p>Parallel 노드는 매 Tick에서 모든 자식에게 Tick을 전파한다. 자식 간에 순차적 의존이 없으며, 모든 자식이 동등하게 Tick을 수신한다. 자식의 종료 여부는 성공 정책(success policy)과 실패 정책(failure policy)에 의해 판정된다.</p>
+<h3>2.2 ReactiveSequence</h3>
+<p>ReactiveSequence는 매 Tick에서 첫 번째 자식부터 순차적으로 평가한다. 자식 간에 순차적 의존이 존재하며, 앞선 자식이 <code>SUCCESS</code>를 반환하여야 후속 자식이 Tick을 수신한다. 앞선 자식이 <code>FAILURE</code>를 반환하면 후속 자식은 Tick을 수신하지 못하고 Halt된다.</p>
+<h3>2.3 ReactiveFallback</h3>
+<p>ReactiveFallback은 매 Tick에서 첫 번째 자식부터 순차적으로 평가한다. 앞선 자식이 <code>FAILURE</code>를 반환하여야 후속 자식이 Tick을 수신한다. 앞선 자식이 <code>SUCCESS</code>를 반환하면 후속 자식은 Tick을 수신하지 못하고 Halt된다.</p>
+<h2>3. 핵심 특성 비교표</h2>
+<table><thead><tr><th>특성</th><th>Parallel</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>Tick 전파</td><td>모든 자식 동시</td><td>좌→우 순차, 조건부</td><td>좌→우 순차, 조건부</td></tr>
+<tr><td>재평가</td><td>매 Tick 모든 자식</td><td>매 Tick 첫 자식부터</td><td>매 Tick 첫 자식부터</td></tr>
+<tr><td>성공 조건</td><td>정책에 의해 결정</td><td>모든 자식 SUCCESS</td><td>하나의 자식 SUCCESS</td></tr>
+<tr><td>실패 조건</td><td>정책에 의해 결정</td><td>하나의 자식 FAILURE</td><td>모든 자식 FAILURE</td></tr>
+<tr><td>Halt 조건</td><td>정책 충족 시 나머지 Halt</td><td>선행 FAILURE 시 후행 Halt</td><td>선행 SUCCESS 시 후행 Halt</td></tr>
+<tr><td>자식 간 관계</td><td>독립적 동시 실행</td><td>순차적 전제 조건</td><td>순차적 우선순위</td></tr>
+<tr><td>의미론</td><td>“동시에 수행”</td><td>“조건 하에 행동”</td><td>“우선순위 선택”</td></tr>
+</tbody></table>
+<h2>4. Tick 전파 방식의 차이</h2>
+<h3>4.1 Parallel의 Tick 전파</h3>
+<pre><code>Parallel (Tick t)
+├── Child_A.tick() → RUNNING     ✓ Tick 전파
+├── Child_B.tick() → SUCCESS     ✓ Tick 전파
+└── Child_C.tick() → RUNNING     ✓ Tick 전파
+</code></pre>
+<p>모든 자식이 무조건 Tick을 수신한다. <span class="math math-inline">C_A</span>의 결과와 무관하게 <span class="math math-inline">C_B</span>와 <span class="math math-inline">C_C</span>가 Tick을 수신한다.</p>
+<h3>4.2 ReactiveSequence의 Tick 전파</h3>
+<pre><code>ReactiveSequence (Tick t, C₀ = FAILURE)
+├── Child_0.tick() → FAILURE     ✓ Tick 전파
+├── Child_1                      ✗ Tick 미전파
+└── Child_2                      ✗ Tick 미전파 (RUNNING이면 Halt)
+</code></pre>
+<p><span class="math math-inline">C_0</span>가 <code>FAILURE</code>를 반환하면 <span class="math math-inline">C_1</span>과 <span class="math math-inline">C_2</span>는 Tick을 수신하지 않는다.</p>
+<h3>4.3 ReactiveFallback의 Tick 전파</h3>
+<pre><code>ReactiveFallback (Tick t, C₀ = SUCCESS)
+├── Child_0.tick() → SUCCESS     ✓ Tick 전파
+├── Child_1                      ✗ Tick 미전파
+└── Child_2                      ✗ Tick 미전파 (RUNNING이면 Halt)
+</code></pre>
+<p><span class="math math-inline">C_0</span>가 <code>SUCCESS</code>를 반환하면 <span class="math math-inline">C_1</span>과 <span class="math math-inline">C_2</span>는 Tick을 수신하지 않는다.</p>
+<h2>5. Halt 전파의 차이</h2>
+<h3>5.1 Parallel의 Halt</h3>
+<p>Parallel은 성공 정책 또는 실패 정책이 충족되면 나머지 <code>RUNNING</code> 자식에 Halt를 전파한다. 특정 자식의 결과에 의해 나머지 자식이 Halt되는 구조이다.</p>
+<h3>5.2 ReactiveSequence의 Halt</h3>
+<p>ReactiveSequence는 선행 자식의 <code>FAILURE</code>에 의해 후행 자식에 Halt가 전파된다. 전제 조건 위반이 행동 중단의 원인이다.</p>
+<h3>5.3 ReactiveFallback의 Halt</h3>
+<p>ReactiveFallback은 선행 자식의 <code>SUCCESS</code>에 의해 후행 자식에 Halt가 전파된다. 상위 우선순위 행동의 활성화가 하위 우선순위 행동 중단의 원인이다.</p>
+<h2>6. 자식 노드의 역할 차이</h2>
+<h3>6.1 Parallel에서의 자식</h3>
+<p>모든 자식이 동등한 역할을 가진다. 자식 간에 “조건“과 “행동“의 구분이 구조적으로 강제되지 않는다. 물론 안전 감시 패턴에서 조건 역할의 자식과 행동 역할의 자식을 배치할 수 있으나, 이는 설계 관례이며 노드 자체의 의미론에 의해 강제되는 것은 아니다.</p>
+<h3>6.2 ReactiveSequence에서의 자식</h3>
+<p>앞부분의 자식은 조건 역할을, 마지막 자식은 행동 역할을 가진다. 이 역할 구분은 ReactiveSequence의 순차 평가 의미론에 의해 구조적으로 강제된다.</p>
+<h3>6.3 ReactiveFallback에서의 자식</h3>
+<p>각 자식은 우선순위 수준을 나타낸다. 앞에 위치한 자식일수록 높은 우선순위를 가진다. 일반적으로 “조건-행동” 쌍이 Sequence로 묶여 각 우선순위 수준을 형성한다.</p>
+<h2>7. 동시성과 순차성</h2>
+<p>Parallel은 논리적 동시성을 제공한다. 모든 자식이 매 Tick에서 Tick을 수신하므로, 복수의 행동이 “동시에” 진행된다. 물리적으로는 단일 스레드 내에서 순차적으로 처리되지만, 논리적으로는 동시 실행과 동등하다.</p>
+<p>ReactiveSequence와 ReactiveFallback은 순차적이다. 한 번의 Tick에서 최대 하나의 <code>RUNNING</code> 자식만이 존재한다. 조건 노드는 즉시 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 반환하고, <code>RUNNING</code>을 반환하는 행동 노드에 도달하면 후속 자식은 평가되지 않는다.</p>
+<h2>8. 적용 목적의 비교</h2>
+<table><thead><tr><th>적용 목적</th><th>적합한 노드</th></tr></thead><tbody>
+<tr><td>복수 행동의 동시 수행</td><td>Parallel</td></tr>
+<tr><td>행동 + 감시의 동시 수행</td><td>Parallel (FAILURE_ONE)</td></tr>
+<tr><td>전제 조건 보장 하의 행동</td><td>ReactiveSequence</td></tr>
+<tr><td>우선순위 기반 행동 선택</td><td>ReactiveFallback</td></tr>
+<tr><td>타임아웃 있는 행동</td><td>Parallel (FAILURE_ONE 또는 SUCCESS_ONE)</td></tr>
+<tr><td>다중 센서 동시 처리</td><td>Parallel (SUCCESS_ALL)</td></tr>
+<tr><td>비상 대응 우선순위</td><td>ReactiveFallback</td></tr>
+<tr><td>안전 조건 지속 감시</td><td>ReactiveSequence 또는 Parallel</td></tr>
+</tbody></table>
+<h2>9. 동일 요구 사항에 대한 다른 구현</h2>
+<p>“안전 조건을 감시하면서 행동을 수행하라“라는 요구 사항은 Parallel과 ReactiveSequence 모두로 구현할 수 있으나, 동작 방식이 다르다.</p>
+<h3>9.1 Parallel 구현</h3>
+<pre><code>Parallel (failure_policy: FAILURE_ONE)
+├── MonitorSafety     // RUNNING 유지, 위반 시 FAILURE
+└── ExecuteAction     // 행동 수행
+</code></pre>
+<p><code>MonitorSafety</code>가 <code>FAILURE</code>를 반환하면 FAILURE_ONE 정책에 의해 <code>ExecuteAction</code>에 Halt가 전파된다.</p>
+<h3>9.2 ReactiveSequence 구현</h3>
+<pre><code>ReactiveSequence
+├── IsSafe            // 매 Tick SUCCESS 또는 FAILURE
+└── ExecuteAction     // 행동 수행
+</code></pre>
+<p><code>IsSafe</code>가 <code>FAILURE</code>를 반환하면 <code>ExecuteAction</code>에 Halt가 전파된다.</p>
+<p>두 구현의 핵심적 차이는, Parallel에서 <code>MonitorSafety</code>는 <code>RUNNING</code>을 반환하는 장기 실행 노드인 반면, ReactiveSequence에서 <code>IsSafe</code>는 <code>SUCCESS</code> 또는 <code>FAILURE</code>만을 반환하는 조건 노드라는 것이다. ReactiveSequence의 조건 노드가 더 경량이며, 조건 노드의 상태 관리가 필요 없다는 장점이 있다.</p>
 
             </article>
             <footer>

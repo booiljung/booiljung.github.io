@@ -115,6 +115,534 @@
             </header>
             <article>
                 <h1>1296.40 ROS2 액션 클라이언트 기반 액션 노드 구현</h1>
+<h2>1. ROS2 액션과 행동 트리 액션 노드의 연결</h2>
+<p>ROS2 액션(Action)은 장시간 실행되는 비동기 작업을 위한 통신 인터페이스로서, 골(Goal) 전송, 피드백(Feedback) 수신, 결과(Result) 획득, 취소(Cancel) 요청의 네 가지 상호 작용을 지원한다. 행동 트리의 액션 노드는 ROS2 액션 클라이언트를 내부에 보유하여, 트리의 Tick에 의해 액션 서버와의 상호 작용을 제어한다. 이 구조에서 행동 트리 액션 노드는 ROS2 액션 클라이언트의 생명주기를 관리하는 래퍼(wrapper)로서 기능한다(Macenski et al., 2020).</p>
+<p>ROS2 액션 클라이언트 기반 액션 노드의 핵심 과제는 ROS2 액션의 비동기 통신 모델과 행동 트리의 Tick 기반 실행 모델 간의 조화이다. ROS2 액션 클라이언트는 비동기 콜백을 통해 서버의 응답을 수신하는 반면, 행동 트리 액션 노드는 매 Tick마다 <code>NodeStatus</code>를 반환하여야 한다. 이 두 모델의 연결은 <code>StatefulActionNode</code>의 상태 기반 콜백 구조에 의해 달성된다.</p>
+<h2>2. 구현의 기반 구조</h2>
+<h3>2.1 StatefulActionNode 기반의 액션 클라이언트 노드</h3>
+<p>ROS2 액션 클라이언트 기반 액션 노드는 <code>StatefulActionNode</code>를 기반으로 구현한다. <code>StatefulActionNode</code>의 세 가지 콜백이 ROS2 액션 클라이언트의 생명주기에 다음과 같이 대응한다.</p>
+<table><thead><tr><th>StatefulActionNode 콜백</th><th>ROS2 액션 클라이언트 동작</th></tr></thead><tbody>
+<tr><td><code>onStart()</code></td><td>액션 서버 탐색, 골 전송</td></tr>
+<tr><td><code>onRunning()</code></td><td>피드백 수신, 결과 대기, 완료 확인</td></tr>
+<tr><td><code>onHalted()</code></td><td>골 취소 요청, 자원 정리</td></tr>
+</tbody></table>
+<h3>2.2 노드 클래스의 기본 구조</h3>
+<pre><code class="language-cpp">template &lt;typename ActionT&gt;
+class RosActionNode : public BT::StatefulActionNode
+{
+public:
+    using ActionClient = rclcpp_action::Client&lt;ActionT&gt;;
+    using GoalHandle = rclcpp_action::ClientGoalHandle&lt;ActionT&gt;;
+    using Goal = typename ActionT::Goal;
+    using Result = typename ActionT::Result;
+    using Feedback = typename ActionT::Feedback;
+
+    RosActionNode(
+        const std::string&amp; name,
+        const BT::NodeConfig&amp; config,
+        rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config)
+        , node_(node)
+    {
+    }
+
+protected:
+    rclcpp::Node::SharedPtr node_;
+    typename ActionClient::SharedPtr action_client_;
+    typename GoalHandle::SharedPtr goal_handle_;
+    typename Result::SharedPtr result_;
+    bool goal_completed_ = false;
+};
+</code></pre>
+<p>이 템플릿 구조에서 <code>ActionT</code>는 ROS2 액션 타입(예: <code>nav2_msgs::action::NavigateToPose</code>)이며, 액션 클라이언트, 골 핸들, 결과 저장소가 멤버 변수로 선언된다.</p>
+<h2>3. 액션 클라이언트의 초기화</h2>
+<p>액션 클라이언트의 생성은 노드의 생성자 또는 최초 <code>onStart()</code> 호출 시에 수행한다. 지연 초기화(lazy initialization) 패턴은 액션 서버 이름이 포트를 통해 동적으로 결정되는 경우에 적용된다.</p>
+<h3>3.1 생성자에서의 초기화</h3>
+<pre><code class="language-cpp">RosActionNode(
+    const std::string&amp; name,
+    const BT::NodeConfig&amp; config,
+    rclcpp::Node::SharedPtr node,
+    const std::string&amp; action_name)
+    : BT::StatefulActionNode(name, config)
+    , node_(node)
+{
+    action_client_ = rclcpp_action::create_client&lt;ActionT&gt;(
+        node_, action_name);
+}
+</code></pre>
+<h3>3.2 지연 초기화</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    std::string server_name;
+    if (!getInput("server_name", server_name))
+        return BT::NodeStatus::FAILURE;
+
+    if (!action_client_ || current_server_ != server_name)
+    {
+        action_client_ = rclcpp_action::create_client&lt;ActionT&gt;(
+            node_, server_name);
+        current_server_ = server_name;
+    }
+    // ...
+}
+</code></pre>
+<p>지연 초기화는 포트를 통한 서버 이름 변경을 지원하지만, 매 실행마다 서버 탐색이 필요할 수 있다는 비용을 수반한다.</p>
+<h2>4. onStart() 콜백의 구현</h2>
+<p><code>onStart()</code>는 액션 노드가 최초로 Tick될 때 호출되며, 다음의 단계를 수행한다.</p>
+<h3>4.1 단계별 처리 과정</h3>
+<pre><code>onStart()
+    │
+    ├─ 1. 입력 포트 읽기
+    │       └─ getInput()으로 골 파라미터 획득
+    │
+    ├─ 2. 액션 서버 가용성 확인
+    │       └─ wait_for_action_server() (짧은 타임아웃)
+    │
+    ├─ 3. 골 메시지 구성
+    │       └─ 입력 포트 값으로 Goal 메시지 생성
+    │
+    ├─ 4. 골 전송
+    │       └─ async_send_goal() (비동기)
+    │
+    └─ 5. 반환
+            ├─ 서버 미가용 → FAILURE
+            ├─ 골 전송 성공 → RUNNING
+            └─ 골 전송 실패 → FAILURE
+</code></pre>
+<h3>4.2 구현 코드</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    // 1. 입력 포트 읽기
+    Goal goal;
+    if (!populateGoal(goal))
+        return BT::NodeStatus::FAILURE;
+
+    // 2. 액션 서버 가용성 확인
+    if (!action_client_-&gt;wait_for_action_server(
+            std::chrono::milliseconds(100)))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "액션 서버 '%s' 미가용", current_server_.c_str());
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 3. 골 전송 옵션 설정
+    auto send_goal_options =
+        typename rclcpp_action::Client&lt;ActionT&gt;::SendGoalOptions();
+
+    send_goal_options.result_callback =
+        [this](const%20typename%20GoalHandle::WrappedResult&amp;%20result)
+        {
+            result_ = std::make_shared&lt;Result&gt;(result.result);
+            goal_result_code_ = result.code;
+            goal_completed_ = true;
+        };
+
+    send_goal_options.feedback_callback =
+        [this](typename%20GoalHandle::SharedPtr,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20std::shared_ptr&lt;const%20Feedback&gt;%20feedback)
+        {
+            latest_feedback_ = feedback;
+        };
+
+    // 4. 골 전송
+    auto goal_handle_future =
+        action_client_-&gt;async_send_goal(goal, send_goal_options);
+
+    // 5. 골 수락 대기 (짧은 시간)
+    if (rclcpp::spin_until_future_complete(
+            node_, goal_handle_future,
+            std::chrono::milliseconds(100))
+        != rclcpp::FutureReturnCode::SUCCESS)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(), "골 전송 실패");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    goal_handle_ = goal_handle_future.get();
+    if (!goal_handle_)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(), "골이 서버에 의해 거부됨");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 상태 초기화
+    goal_completed_ = false;
+    result_ = nullptr;
+    latest_feedback_ = nullptr;
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>onStart()</code>에서 골 전송 후 즉시 RUNNING을 반환함으로써, 행동 트리의 메인 스레드를 차단하지 않는다. 골의 수락 대기에는 짧은 타임아웃을 적용하여, 서버의 즉각적 응답만을 확인한다.</p>
+<h2>5. onRunning() 콜백의 구현</h2>
+<p><code>onRunning()</code>은 RUNNING 상태에서 매 Tick마다 호출되며, ROS2 액션의 진행 상태를 확인하고 완료 여부를 판단한다.</p>
+<h3>5.1 구현 코드</h3>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    // ROS2 콜백 처리
+    rclcpp::spin_some(node_);
+
+    // 완료 확인
+    if (goal_completed_)
+    {
+        return processResult();
+    }
+
+    // 피드백 기반 출력 갱신 (선택적)
+    if (latest_feedback_)
+    {
+        processFeedback(latest_feedback_);
+    }
+
+    // 타임아웃 검사
+    if (isTimedOut())
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(), "액션 타임아웃");
+        cancelGoal();
+        return BT::NodeStatus::FAILURE;
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>rclcpp::spin_some()</code>의 호출은 ROS2 콜백 큐에 대기 중인 콜백을 처리하기 위해 필요하다. 이 호출에 의해 <code>result_callback</code>과 <code>feedback_callback</code>이 실행되어, 멤버 변수 <code>goal_completed_</code>와 <code>latest_feedback_</code>가 갱신된다.</p>
+<h3>5.2 결과 처리</h3>
+<pre><code class="language-cpp">BT::NodeStatus processResult()
+{
+    using rclcpp_action::ResultCode;
+
+    switch (goal_result_code_)
+    {
+    case ResultCode::SUCCEEDED:
+        onResultReceived(*result_);
+        return BT::NodeStatus::SUCCESS;
+
+    case ResultCode::ABORTED:
+        RCLCPP_WARN(node_-&gt;get_logger(), "액션이 서버에 의해 중단됨");
+        setOutput("error_code", getErrorCodeFromResult(*result_));
+        return BT::NodeStatus::FAILURE;
+
+    case ResultCode::CANCELED:
+        RCLCPP_INFO(node_-&gt;get_logger(), "액션이 취소됨");
+        return BT::NodeStatus::FAILURE;
+
+    default:
+        RCLCPP_ERROR(node_-&gt;get_logger(), "알 수 없는 결과 코드");
+        return BT::NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<p><code>ResultCode</code>에 따른 <code>NodeStatus</code> 매핑은 ROS2 액션의 완료 상태를 행동 트리의 반환 상태로 변환하는 핵심 로직이다. <code>SUCCEEDED</code>는 <code>SUCCESS</code>로, <code>ABORTED</code>와 <code>CANCELED</code>는 <code>FAILURE</code>로 매핑된다.</p>
+<h2>6. onHalted() 콜백의 구현</h2>
+<p><code>onHalted()</code>는 행동 트리가 액션 노드의 실행을 중단할 때 호출되며, 진행 중인 ROS2 액션 골을 취소하여야 한다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    cancelGoal();
+}
+
+void cancelGoal()
+{
+    if (goal_handle_)
+    {
+        auto cancel_future =
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+
+        rclcpp::spin_until_future_complete(
+            node_, cancel_future,
+            std::chrono::milliseconds(500));
+
+        goal_handle_.reset();
+    }
+    goal_completed_ = false;
+    result_ = nullptr;
+    latest_feedback_ = nullptr;
+}
+</code></pre>
+<p>골 취소 요청 후 짧은 시간 동안 취소 확인을 대기하되, <code>onHalted()</code>가 과도하게 차단되지 않도록 타임아웃을 설정한다. 골 핸들의 초기화와 상태 변수의 정리가 필수적이다.</p>
+<h2>7. 골 메시지 구성 패턴</h2>
+<p>입력 포트의 값으로 ROS2 액션 골 메시지를 구성하는 패턴을 기술한다.</p>
+<h3>7.1 직접 매핑 패턴</h3>
+<p>포트 값을 골 메시지의 필드에 직접 대입한다.</p>
+<pre><code class="language-cpp">bool populateGoal(Goal&amp; goal)
+{
+    geometry_msgs::msg::PoseStamped target;
+    if (!getInput("goal_pose", target))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "필수 입력 'goal_pose' 누락");
+        return false;
+    }
+
+    goal.pose = target;
+
+    std::string behavior_tree;
+    getInput("behavior_tree", behavior_tree);
+    goal.behavior_tree = behavior_tree;
+
+    return true;
+}
+</code></pre>
+<h3>7.2 가상 함수 패턴</h3>
+<p>구체적인 골 구성을 파생 클래스에 위임한다.</p>
+<pre><code class="language-cpp">// 기반 클래스
+virtual bool populateGoal(Goal&amp; goal) = 0;
+virtual void onResultReceived(const Result&amp; result) {}
+virtual void processFeedback(
+    const std::shared_ptr&lt;const Feedback&gt;&amp; feedback) {}
+</code></pre>
+<pre><code class="language-cpp">// 파생 클래스: NavigateToPose
+class NavigateToPoseAction
+    : public RosActionNode&lt;nav2_msgs::action::NavigateToPose&gt;
+{
+    bool populateGoal(Goal&amp; goal) override
+    {
+        geometry_msgs::msg::PoseStamped pose;
+        if (!getInput("goal_pose", pose))
+            return false;
+
+        goal.pose = pose;
+
+        std::string bt;
+        getInput("behavior_tree", bt);
+        goal.behavior_tree = bt;
+
+        return true;
+    }
+
+    void onResultReceived(const Result&amp; result) override
+    {
+        setOutput("error_code", result.error_code);
+    }
+};
+</code></pre>
+<p>가상 함수 패턴은 템플릿 기반 클래스의 재사용성을 극대화하며, 새로운 액션 타입에 대한 노드 구현을 최소한의 코드로 가능하게 한다.</p>
+<h2>8. 포트 설계</h2>
+<p>ROS2 액션 클라이언트 기반 노드의 포트 설계는 액션의 골, 피드백, 결과에 대응하는 구조를 따른다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // 골 관련 입력 포트 (필수)
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+            "goal_pose", "목표 위치와 자세"),
+
+        // 구성 입력 포트 (선택)
+        BT::InputPort&lt;std::string&gt;(
+            "server_name", "navigate_to_pose",
+            "액션 서버 이름"),
+        BT::InputPort&lt;double&gt;(
+            "timeout_sec", "30.0",
+            "타임아웃 (초)"),
+
+        // 결과 출력 포트 (선택)
+        BT::OutputPort&lt;int&gt;(
+            "error_code", "오류 코드"),
+
+        // 피드백 출력 포트 (선택)
+        BT::OutputPort&lt;double&gt;(
+            "distance_remaining", "남은 거리")
+    };
+}
+</code></pre>
+<table><thead><tr><th>포트 범주</th><th>대응 ROS2 요소</th><th style="text-align: center">방향</th><th style="text-align: center">필수/선택</th></tr></thead><tbody>
+<tr><td>골 파라미터</td><td>Action Goal 필드</td><td style="text-align: center">입력</td><td style="text-align: center">필수</td></tr>
+<tr><td>서버 이름</td><td>액션 서버 식별자</td><td style="text-align: center">입력</td><td style="text-align: center">선택 (기본값)</td></tr>
+<tr><td>타임아웃</td><td>클라이언트 측 제한</td><td style="text-align: center">입력</td><td style="text-align: center">선택 (기본값)</td></tr>
+<tr><td>결과 데이터</td><td>Action Result 필드</td><td style="text-align: center">출력</td><td style="text-align: center">선택</td></tr>
+<tr><td>피드백 데이터</td><td>Action Feedback 필드</td><td style="text-align: center">출력</td><td style="text-align: center">선택</td></tr>
+</tbody></table>
+<h2>9. spin_some()의 통합</h2>
+<p><code>onRunning()</code>에서 <code>rclcpp::spin_some()</code>을 호출하는 것은 ROS2 콜백의 처리를 위해 필수적이나, 이 호출에는 주의사항이 존재한다.</p>
+<h3>9.1 단일 실행기 제약</h3>
+<p>노드가 이미 외부 실행기(executor)에 의해 스핀되고 있는 경우, <code>onRunning()</code> 내부에서 <code>spin_some()</code>을 호출하면 충돌이 발생한다. 이 경우 콜백 그룹(callback group)의 분리 또는 별도의 콜백 실행기를 사용한다.</p>
+<pre><code class="language-cpp">// 콜백 그룹 분리 패턴
+RosActionNode(
+    const std::string&amp; name,
+    const BT::NodeConfig&amp; config,
+    rclcpp::Node::SharedPtr node)
+    : BT::StatefulActionNode(name, config)
+    , node_(node)
+{
+    callback_group_ = node_-&gt;create_callback_group(
+        rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    action_client_ = rclcpp_action::create_client&lt;ActionT&gt;(
+        node_, action_name,
+        callback_group_);
+}
+</code></pre>
+<h3>9.2 Nav2의 spin_some() 관리</h3>
+<p>Nav2 프레임워크에서는 행동 트리 실행기(BT executor)가 트리의 Tick 루프 내에서 <code>spin_some()</code>을 호출하여, 모든 액션 노드의 ROS2 콜백을 일괄적으로 처리한다. 이 접근에서는 개별 액션 노드가 <code>spin_some()</code>을 호출할 필요가 없다(Macenski et al., 2020).</p>
+<pre><code class="language-cpp">// Nav2 BT 실행기의 Tick 루프 (개념적 구조)
+while (running)
+{
+    rclcpp::spin_some(node_);
+    auto status = tree_.tickOnce();
+
+    if (status == BT::NodeStatus::SUCCESS ||
+        status == BT::NodeStatus::FAILURE)
+    {
+        break;
+    }
+
+    loop_rate.sleep();
+}
+</code></pre>
+<h2>10. 전체 구현 사례</h2>
+<p>내비게이션 액션 노드의 전체 구현을 제시한다.</p>
+<pre><code class="language-cpp">class NavigateToPoseAction
+    : public BT::StatefulActionNode
+{
+public:
+    using NavigateToPose = nav2_msgs::action::NavigateToPose;
+    using GoalHandle =
+        rclcpp_action::ClientGoalHandle&lt;NavigateToPose&gt;;
+
+    NavigateToPoseAction(
+        const std::string&amp; name,
+        const BT::NodeConfig&amp; config,
+        rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config)
+        , node_(node)
+    {
+        action_client_ =
+            rclcpp_action::create_client&lt;NavigateToPose&gt;(
+                node_, "navigate_to_pose");
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+                "goal", "목표 위치와 자세"),
+            BT::InputPort&lt;std::string&gt;(
+                "server_name", "navigate_to_pose",
+                "액션 서버 이름"),
+            BT::OutputPort&lt;int&gt;(
+                "error_code", "내비게이션 오류 코드")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        geometry_msgs::msg::PoseStamped goal_pose;
+        if (!getInput("goal", goal_pose))
+        {
+            RCLCPP_ERROR(node_-&gt;get_logger(),
+                "필수 입력 'goal' 누락");
+            return BT::NodeStatus::FAILURE;
+        }
+
+        if (!action_client_-&gt;wait_for_action_server(
+                std::chrono::milliseconds(100)))
+        {
+            RCLCPP_ERROR(node_-&gt;get_logger(),
+                "내비게이션 액션 서버 미가용");
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto goal_msg = NavigateToPose::Goal();
+        goal_msg.pose = goal_pose;
+
+        auto options =
+            rclcpp_action::Client&lt;NavigateToPose&gt;
+                ::SendGoalOptions();
+
+        options.result_callback =
+            [this](const%20GoalHandle::WrappedResult&amp;%20result)
+            {
+                result_ = result.result;
+                result_code_ = result.code;
+                goal_done_ = true;
+            };
+
+        auto future =
+            action_client_-&gt;async_send_goal(goal_msg, options);
+
+        if (rclcpp::spin_until_future_complete(
+                node_, future,
+                std::chrono::milliseconds(100))
+            != rclcpp::FutureReturnCode::SUCCESS)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        goal_handle_ = future.get();
+        if (!goal_handle_)
+            return BT::NodeStatus::FAILURE;
+
+        goal_done_ = false;
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (!goal_done_)
+            return BT::NodeStatus::RUNNING;
+
+        using rclcpp_action::ResultCode;
+        if (result_code_ == ResultCode::SUCCEEDED)
+        {
+            setOutput("error_code", 0);
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        if (result_)
+        {
+            setOutput("error_code", result_-&gt;error_code);
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+    void onHalted() override
+    {
+        if (goal_handle_)
+        {
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+            goal_handle_.reset();
+        }
+        goal_done_ = false;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp_action::Client&lt;NavigateToPose&gt;::SharedPtr
+        action_client_;
+    GoalHandle::SharedPtr goal_handle_;
+    NavigateToPose::Result::SharedPtr result_;
+    rclcpp_action::ResultCode result_code_;
+    bool goal_done_ = false;
+};
+</code></pre>
+<h2>11. ROS2 액션 상태와 행동 트리 반환 상태의 매핑</h2>
+<table><thead><tr><th>ROS2 액션 상태</th><th style="text-align: center">행동 트리 NodeStatus</th><th>조건</th></tr></thead><tbody>
+<tr><td>골 수락 대기</td><td style="text-align: center">RUNNING</td><td>골 전송 후</td></tr>
+<tr><td>실행 중 (피드백 수신)</td><td style="text-align: center">RUNNING</td><td>피드백 콜백 수신 중</td></tr>
+<tr><td>SUCCEEDED</td><td style="text-align: center">SUCCESS</td><td>액션 성공 완료</td></tr>
+<tr><td>ABORTED</td><td style="text-align: center">FAILURE</td><td>서버 측 중단</td></tr>
+<tr><td>CANCELED</td><td style="text-align: center">FAILURE</td><td>클라이언트 취소 요청에 의한 중단</td></tr>
+<tr><td>서버 미가용</td><td style="text-align: center">FAILURE</td><td>서버 탐색 실패</td></tr>
+<tr><td>골 거부</td><td style="text-align: center">FAILURE</td><td>서버가 골을 거부</td></tr>
+<tr><td>타임아웃</td><td style="text-align: center">FAILURE</td><td>클라이언트 측 타임아웃 초과</td></tr>
+</tbody></table>
+<h2>12. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>템플릿 기반 클래스의 활용</strong>: 액션 타입을 템플릿 파라미터로 추상화하여, 공통 로직(골 전송, 결과 대기, 취소 처리)을 기반 클래스에 집중하고, 골 구성과 결과 해석을 가상 함수로 파생 클래스에 위임한다.</p>
+</li>
+<li>
+<p><strong>onStart()에서의 비차단 골 전송</strong>: 골 전송과 수락 확인에 짧은 타임아웃을 적용하여, 행동 트리의 메인 스레드가 장시간 차단되지 않도록 한다.</p>
+</li>
+<li>
+<p><strong>onHalted()에서의 골 취소 보장</strong>: 행동 트리가 액션 노드를 중단할 때 진행 중인 ROS2 액션 골을 반드시 취소하여, 서버 측 자원의 누수를 방지한다.</p>
+</li>
+<li>
+<p><strong>콜백 기반 상태 갱신</strong>: <code>result_callback</code>과 <code>feedback_callback</code>을 통해 멤버 변수를 갱신하고, <code>onRunning()</code>에서 이 변수를 확인하는 패턴을 사용하여, 비동기 통신과 Tick 기반 실행의 조화를 달성한다.</p>
+</li>
+<li>
+<p><strong>포트 설계의 ROS2 액션 대응</strong>: 골의 필드를 입력 포트로, 결과의 필드를 출력 포트로, 피드백의 필드를 선택적 출력 포트로 매핑하여, 행동 트리의 블랙보드를 통한 데이터 흐름을 지원한다(Macenski et al., 2020; Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

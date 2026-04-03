@@ -115,6 +115,369 @@
             </header>
             <article>
                 <h1>1295.84 Reactive 노드의 재평가 동작 테스트 케이스</h1>
+<h2>1. 재평가 동작 테스트의 핵심</h2>
+<p>ReactiveSequence와 ReactiveFallback의 본질적 특성은 매 Tick마다 이미 완료된 자식 노드를 포함하여 처음부터 재평가하는 것이다. 이 재평가 동작이 올바르게 구현되었는지를 검증하는 것이 Reactive 노드 테스트의 핵심이다. 일반 Sequence/Fallback과의 차이를 명확히 드러내는 테스트 케이스를 설계하여야 한다.</p>
+<h2>2. ReactiveSequence 재평가 테스트</h2>
+<h3>2.1 조건 노드의 매 Tick 재평가 검증</h3>
+<p>ReactiveSequence에서 첫 번째 자식(조건 노드)이 매 Tick마다 재Tick되는지를 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, ReactiveSequence_ConditionReevaluated)
+{
+    auto tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveSequence&gt;
+                    &lt;MockCondition name="condition"/&gt;
+                    &lt;MockAsync name="action"/&gt;
+                &lt;/ReactiveSequence&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* condition = getNode&lt;MockCondition&gt;(tree, "condition");
+    auto* action = getNode&lt;MockAsyncAction&gt;(tree, "action");
+
+    condition-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+
+    // Tick 1: 조건 SUCCESS, 행동 RUNNING
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(condition-&gt;tickCount(), 1);
+
+    // Tick 2: 조건이 다시 평가됨
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(condition-&gt;tickCount(), 2);
+
+    // Tick 3: 조건이 또다시 평가됨
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(condition-&gt;tickCount(), 3);
+}
+</code></pre>
+<p>이 테스트는 조건 노드의 <code>tickCount()</code>가 매 Tick마다 증가하는지를 확인함으로써 재평가 동작을 검증한다. 일반 Sequence에서는 조건이 한 번 SUCCESS를 반환하면 이후 Tick에서 재평가되지 않으므로, <code>tickCount()</code>가 1에서 멈춘다.</p>
+<h3>2.2 조건 실패 시 행동 Halt 검증</h3>
+<p>조건이 SUCCESS에서 FAILURE로 전이할 때, 실행 중인 행동 노드에 Halt가 전파되는지를 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, ReactiveSequence_ConditionFailure_HaltsAction)
+{
+    auto tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveSequence&gt;
+                    &lt;MockCondition name="condition"/&gt;
+                    &lt;MockAsync name="action"/&gt;
+                &lt;/ReactiveSequence&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* condition = getNode&lt;MockCondition&gt;(tree, "condition");
+    auto* action = getNode&lt;MockAsyncAction&gt;(tree, "action");
+
+    // 초기: 조건 SUCCESS
+    condition-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+
+    // Tick 1: 조건 SUCCESS, 행동 RUNNING → 전체 RUNNING
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(action-&gt;haltCount(), 0);
+
+    // 조건을 FAILURE로 변경
+    condition-&gt;setExpectedResult(BT::NodeStatus::FAILURE);
+
+    // Tick 2: 조건 FAILURE → ReactiveSequence FAILURE
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+
+    // 행동 노드에 Halt가 전파되었는지 확인
+    EXPECT_GE(action-&gt;haltCount(), 1);
+}
+</code></pre>
+<h3>2.3 조건 복원 시 행동 재시작 검증</h3>
+<p>조건이 FAILURE에서 다시 SUCCESS로 복원되었을 때, 행동 노드가 새롭게 시작되는지를 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, ReactiveSequence_ConditionRestore_ActionRestart)
+{
+    auto tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveSequence&gt;
+                    &lt;MockCondition name="condition"/&gt;
+                    &lt;MockAsync name="action"/&gt;
+                &lt;/ReactiveSequence&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* condition = getNode&lt;MockCondition&gt;(tree, "condition");
+    auto* action = getNode&lt;MockAsyncAction&gt;(tree, "action");
+
+    // Tick 1: 조건 SUCCESS, 행동 RUNNING
+    condition-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    int initial_tick = action-&gt;tickCount();
+
+    // Tick 2: 조건 FAILURE → 행동 Halt
+    condition-&gt;setExpectedResult(BT::NodeStatus::FAILURE);
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+
+    // Tick 3: 조건 다시 SUCCESS → 행동이 onStart()부터 재시작
+    condition-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+    action-&gt;reset();
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+
+    // 행동이 새로 시작되었으므로 tickCount가 1
+    EXPECT_EQ(action-&gt;tickCount(), 1);
+}
+</code></pre>
+<h3>2.4 다중 조건의 순차 재평가 검증</h3>
+<p>ReactiveSequence에 다수의 조건 노드가 있는 경우, 앞선 조건이 FAILURE를 반환하면 후속 자식은 Tick되지 않아야 한다.</p>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, ReactiveSequence_MultipleConditions)
+{
+    auto tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveSequence&gt;
+                    &lt;MockCondition name="cond_1"/&gt;
+                    &lt;MockCondition name="cond_2"/&gt;
+                    &lt;MockAsync name="action"/&gt;
+                &lt;/ReactiveSequence&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* cond1 = getNode&lt;MockCondition&gt;(tree, "cond_1");
+    auto* cond2 = getNode&lt;MockCondition&gt;(tree, "cond_2");
+    auto* action = getNode&lt;MockAsyncAction&gt;(tree, "action");
+
+    cond1-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+    cond2-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+
+    // Tick 1: 모든 조건 SUCCESS, 행동 RUNNING
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+
+    // cond_1을 FAILURE로 변경
+    cond1-&gt;setExpectedResult(BT::NodeStatus::FAILURE);
+    int cond2_count_before = cond2-&gt;tickCount();
+
+    // Tick 2: cond_1 FAILURE → cond_2는 평가되지 않아야 함
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::FAILURE);
+    EXPECT_EQ(cond2-&gt;tickCount(), cond2_count_before);
+}
+</code></pre>
+<h2>3. ReactiveFallback 재평가 테스트</h2>
+<h3>3.1 상위 우선순위 조건의 재평가 검증</h3>
+<p>ReactiveFallback에서 하위 분기가 RUNNING 상태일 때, 매 Tick마다 상위 분기의 조건이 재평가되는지를 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, ReactiveFallback_HighPriorityReevaluated)
+{
+    auto tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveFallback&gt;
+                    &lt;MockCondition name="high_priority"/&gt;
+                    &lt;MockAsync name="low_priority_action"/&gt;
+                &lt;/ReactiveFallback&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* high = getNode&lt;MockCondition&gt;(tree, "high_priority");
+    auto* low = getNode&lt;MockAsyncAction&gt;(tree, "low_priority_action");
+
+    // 초기: 상위 조건 FAILURE → 하위 행동 실행
+    high-&gt;setExpectedResult(BT::NodeStatus::FAILURE);
+
+    // Tick 1: 상위 FAILURE, 하위 RUNNING
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(high-&gt;tickCount(), 1);
+
+    // Tick 2: 상위가 다시 평가됨
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(high-&gt;tickCount(), 2);
+
+    // Tick 3: 상위가 또다시 평가됨
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(high-&gt;tickCount(), 3);
+}
+</code></pre>
+<h3>3.2 상위 분기 활성화 시 하위 분기 선점 검증</h3>
+<p>상위 분기의 조건이 SUCCESS로 전이하면, 실행 중이던 하위 분기가 Halt되고 상위 분기의 행동이 실행되는지를 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, ReactiveFallback_Preemption)
+{
+    auto tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveFallback&gt;
+                    &lt;Sequence name="emergency"&gt;
+                        &lt;MockCondition name="is_emergency"/&gt;
+                        &lt;MockAsync name="emergency_action"/&gt;
+                    &lt;/Sequence&gt;
+                    &lt;MockAsync name="normal_action"/&gt;
+                &lt;/ReactiveFallback&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* is_emergency = getNode&lt;MockCondition&gt;(tree, "is_emergency");
+    auto* emergency_action = getNode&lt;MockAsyncAction&gt;(tree, "emergency_action");
+    auto* normal_action = getNode&lt;MockAsyncAction&gt;(tree, "normal_action");
+
+    // 초기: 비상 아님 → 정상 행동 실행
+    is_emergency-&gt;setExpectedResult(BT::NodeStatus::FAILURE);
+
+    // Tick 1: 비상 조건 FAILURE → Sequence FAILURE → normal_action RUNNING
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(normal_action-&gt;tickCount(), 1);
+
+    // 비상 상황 발생
+    is_emergency-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+
+    // Tick 2: 비상 조건 SUCCESS → emergency_action 시작, normal_action Halt
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_GE(normal_action-&gt;haltCount(), 1);
+    EXPECT_GE(emergency_action-&gt;tickCount(), 1);
+}
+</code></pre>
+<h3>3.3 상위 분기 비활성화 시 하위 분기 복원 검증</h3>
+<p>선점 후 상위 조건이 다시 FAILURE로 전이하면, 하위 분기의 행동이 새롭게 시작되는지를 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, ReactiveFallback_ReturnToLowerPriority)
+{
+    auto tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveFallback&gt;
+                    &lt;Sequence name="emergency"&gt;
+                        &lt;MockCondition name="is_emergency"/&gt;
+                        &lt;MockAsync name="emergency_action"/&gt;
+                    &lt;/Sequence&gt;
+                    &lt;MockAsync name="normal_action"/&gt;
+                &lt;/ReactiveFallback&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* is_emergency = getNode&lt;MockCondition&gt;(tree, "is_emergency");
+    auto* emergency_action = getNode&lt;MockAsyncAction&gt;(tree, "emergency_action");
+    auto* normal_action = getNode&lt;MockAsyncAction&gt;(tree, "normal_action");
+
+    // 비상 상황 활성
+    is_emergency-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+
+    // 비상 상황 해제
+    is_emergency-&gt;setExpectedResult(BT::NodeStatus::FAILURE);
+
+    // Tick: 비상 조건 FAILURE → emergency Sequence FAILURE
+    //       → emergency_action Halt → normal_action 재시작
+    normal_action-&gt;reset();
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_GE(emergency_action-&gt;haltCount(), 1);
+    EXPECT_GE(normal_action-&gt;tickCount(), 1);
+}
+</code></pre>
+<h3>3.4 다단계 우선순위 전환 검증</h3>
+<p>세 개 이상의 우선순위 분기 간 전환이 올바르게 동작하는지를 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, ReactiveFallback_MultiLevelPriority)
+{
+    auto tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveFallback&gt;
+                    &lt;Sequence name="P0"&gt;
+                        &lt;MockCondition name="cond_P0"/&gt;
+                        &lt;MockAsync name="action_P0"/&gt;
+                    &lt;/Sequence&gt;
+                    &lt;Sequence name="P1"&gt;
+                        &lt;MockCondition name="cond_P1"/&gt;
+                        &lt;MockAsync name="action_P1"/&gt;
+                    &lt;/Sequence&gt;
+                    &lt;MockAsync name="action_default"/&gt;
+                &lt;/ReactiveFallback&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* cond_P0 = getNode&lt;MockCondition&gt;(tree, "cond_P0");
+    auto* cond_P1 = getNode&lt;MockCondition&gt;(tree, "cond_P1");
+    auto* action_P0 = getNode&lt;MockAsyncAction&gt;(tree, "action_P0");
+    auto* action_P1 = getNode&lt;MockAsyncAction&gt;(tree, "action_P1");
+    auto* action_default = getNode&lt;MockAsyncAction&gt;(tree, "action_default");
+
+    // 상태 1: 모든 조건 FAILURE → 기본 행동 실행
+    cond_P0-&gt;setExpectedResult(BT::NodeStatus::FAILURE);
+    cond_P1-&gt;setExpectedResult(BT::NodeStatus::FAILURE);
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_GE(action_default-&gt;tickCount(), 1);
+
+    // 상태 2: P1 활성화 → 기본 행동 Halt, P1 행동 실행
+    cond_P1-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_GE(action_default-&gt;haltCount(), 1);
+    EXPECT_GE(action_P1-&gt;tickCount(), 1);
+
+    // 상태 3: P0 활성화 → P1 행동 Halt, P0 행동 실행
+    cond_P0-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+    EXPECT_GE(action_P1-&gt;haltCount(), 1);
+    EXPECT_GE(action_P0-&gt;tickCount(), 1);
+}
+</code></pre>
+<h2>4. 일반 노드와의 비교 테스트</h2>
+<p>Reactive 노드의 재평가 동작이 일반 Sequence/Fallback과 다름을 대조적으로 검증하는 테스트이다.</p>
+<h3>4.1 ReactiveSequence vs Sequence 비교</h3>
+<pre><code class="language-cpp">TEST_F(ReactiveNodeTest, CompareReactiveSequenceWithSequence)
+{
+    // ReactiveSequence 트리
+    auto reactive_tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ReactiveSequence&gt;
+                    &lt;MockCondition name="condition"/&gt;
+                    &lt;MockAsync name="action"/&gt;
+                &lt;/ReactiveSequence&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    // 일반 Sequence 트리
+    auto standard_tree = factory_.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;Sequence&gt;
+                    &lt;MockCondition name="condition"/&gt;
+                    &lt;MockAsync name="action"/&gt;
+                &lt;/Sequence&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto* reactive_cond = getNode&lt;MockCondition&gt;(reactive_tree, "condition");
+    auto* standard_cond = getNode&lt;MockCondition&gt;(standard_tree, "condition");
+
+    reactive_cond-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+    standard_cond-&gt;setExpectedResult(BT::NodeStatus::SUCCESS);
+
+    // 3회 Tick
+    for (int i = 0; i &lt; 3; i++)
+    {
+        reactive_tree.tickOnce();
+        standard_tree.tickOnce();
+    }
+
+    // ReactiveSequence: 조건이 매 Tick마다 재평가됨
+    EXPECT_EQ(reactive_cond-&gt;tickCount(), 3);
+
+    // 일반 Sequence: 조건이 한 번만 평가됨 (SUCCESS 후 건너뜀)
+    EXPECT_EQ(standard_cond-&gt;tickCount(), 1);
+}
+</code></pre>
+<p>이 비교 테스트는 Reactive 노드의 재평가 의미론을 가장 명확하게 드러낸다.</p>
+<h2>5. 테스트 케이스 요약</h2>
+<table><thead><tr><th>테스트 범주</th><th>노드 유형</th><th>검증 내용</th></tr></thead><tbody>
+<tr><td>매 Tick 재평가</td><td>ReactiveSequence</td><td>조건 노드의 tickCount 증가 확인</td></tr>
+<tr><td>조건 실패 시 Halt</td><td>ReactiveSequence</td><td>조건 FAILURE → 행동 Halt 전파</td></tr>
+<tr><td>조건 복원 시 재시작</td><td>ReactiveSequence</td><td>조건 복원 → 행동 onStart()부터 재시작</td></tr>
+<tr><td>다중 조건 순차 평가</td><td>ReactiveSequence</td><td>앞선 조건 FAILURE → 후속 자식 미평가</td></tr>
+<tr><td>상위 조건 재평가</td><td>ReactiveFallback</td><td>하위 RUNNING 중 상위 조건 매 Tick 평가</td></tr>
+<tr><td>우선순위 선점</td><td>ReactiveFallback</td><td>상위 조건 SUCCESS → 하위 행동 Halt</td></tr>
+<tr><td>하위 복원</td><td>ReactiveFallback</td><td>상위 조건 해제 → 하위 행동 재시작</td></tr>
+<tr><td>다단계 전환</td><td>ReactiveFallback</td><td>3단계 우선순위 간 전환 동작</td></tr>
+<tr><td>비교 검증</td><td>ReactiveSequence vs Sequence</td><td>재평가 여부의 차이 대조</td></tr>
+</tbody></table>
+<p>각 테스트 케이스는 Reactive 노드의 재평가 의미론의 구체적 측면을 격리하여 검증한다. 이들 테스트를 통과하면 Reactive 노드가 매 Tick 재평가, Halt 전파, 우선순위 선점의 세 가지 핵심 동작을 올바르게 구현하고 있음을 보장할 수 있다.</p>
 
             </article>
             <footer>

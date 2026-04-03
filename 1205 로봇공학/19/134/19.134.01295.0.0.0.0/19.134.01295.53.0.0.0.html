@@ -115,6 +115,101 @@
             </header>
             <article>
                 <h1>1295.53 ReactiveSequence의 전제 조건 지속 검사 원칙</h1>
+<h2>1. 전제 조건 지속 검사의 개념</h2>
+<p>전제 조건 지속 검사(continuous precondition checking)란, 행동의 실행 중에도 해당 행동의 전제 조건이 여전히 충족되는지를 매 Tick에서 반복적으로 확인하는 원칙이다. ReactiveSequence는 이 원칙을 구조적으로 강제한다. 일반 Sequence에서는 전제 조건이 최초 한 번만 평가되고 이후에는 건너뛰어지므로, 행동 실행 도중 전제 조건이 무효화되더라도 행동이 계속 실행되는 문제가 발생한다. ReactiveSequence는 매 Tick에서 첫 번째 자식부터 재평가함으로써 이 문제를 근본적으로 해결한다.</p>
+<h2>2. 전제 조건과 행동의 관계</h2>
+<p>로봇 행동의 전제 조건은 두 가지 범주로 분류된다.</p>
+<h3>2.1 시작 전제 조건 (Start Precondition)</h3>
+<p>행동이 개시되기 위하여 충족되어야 하는 조건이다. 일반 Sequence에서도 이 조건은 검사된다. 행동 <span class="math math-inline">A</span>가 시작되기 전에 조건 <span class="math math-inline">C</span>가 <code>SUCCESS</code>를 반환하여야 Sequence가 <span class="math math-inline">A</span>를 Tick한다.</p>
+<h3>2.2 유지 전제 조건 (Maintenance Precondition)</h3>
+<p>행동이 실행되는 동안 지속적으로 충족되어야 하는 조건이다. 일반 Sequence에서는 이 조건이 행동 개시 후 재검사되지 않는다. ReactiveSequence만이 유지 전제 조건의 지속적 검사를 구조적으로 보장한다.</p>
+<pre><code>ReactiveSequence
+├── C (전제 조건: 시작 + 유지)
+└── A (행동)
+</code></pre>
+<p>이 구조에서 조건 <span class="math math-inline">C</span>는 행동 <span class="math math-inline">A</span>의 시작 전제 조건이자 유지 전제 조건으로 동시에 기능한다. 매 Tick에서 <span class="math math-inline">C</span>가 먼저 평가되므로, <span class="math math-inline">A</span>가 <code>RUNNING</code>인 동안에도 <span class="math math-inline">C</span>의 유효성이 검증된다.</p>
+<h2>3. 일반 Sequence에서의 전제 조건 검사 문제</h2>
+<p>일반 Sequence에서 전제 조건이 왜 지속적으로 검사되지 않는지를 구체적으로 분석한다.</p>
+<pre><code>Sequence (일반)
+├── IsSafe         // 조건 노드
+└── MoveForward    // 행동 노드
+</code></pre>
+<pre><code>Tick 1: IsSafe → SUCCESS, MoveForward → RUNNING
+        Sequence → RUNNING (index = 1로 기억)
+
+Tick 2: IsSafe 건너뜀, MoveForward → RUNNING
+        Sequence → RUNNING
+
+Tick 3: (안전 조건 위반 발생, 그러나 IsSafe는 평가되지 않음)
+        MoveForward → RUNNING
+        Sequence → RUNNING
+</code></pre>
+<p>Tick 2 이후 <code>IsSafe</code>는 평가되지 않는다. Tick 3에서 안전 조건이 위반되었음에도 <code>MoveForward</code>는 계속 실행된다. 로봇이 안전하지 않은 상태에서 전진을 계속하는 위험한 상황이 발생한다.</p>
+<h2>4. ReactiveSequence에서의 전제 조건 지속 검사</h2>
+<p>동일한 구조를 ReactiveSequence로 구성한 경우를 분석한다.</p>
+<pre><code>ReactiveSequence
+├── IsSafe         // 조건 노드
+└── MoveForward    // 행동 노드
+</code></pre>
+<pre><code>Tick 1: IsSafe → SUCCESS, MoveForward → RUNNING
+        ReactiveSequence → RUNNING
+
+Tick 2: IsSafe → SUCCESS, MoveForward → RUNNING
+        ReactiveSequence → RUNNING
+
+Tick 3: IsSafe → FAILURE (안전 조건 위반)
+        → MoveForward.halt()
+        ReactiveSequence → FAILURE
+</code></pre>
+<p>매 Tick에서 <code>IsSafe</code>가 재평가되므로, Tick 3에서 안전 조건 위반이 즉시 감지되고 <code>MoveForward</code>에 Halt가 전파된다. 전제 조건의 지속적 유효성이 구조적으로 보장되는 것이다.</p>
+<h2>5. 형식적 표현</h2>
+<p>ReactiveSequence의 전제 조건 지속 검사를 형식적으로 표현한다. ReactiveSequence의 자식이 <span class="math math-inline">C_1, C_2, \ldots, C_{n-1}, A_n</span>이고, <span class="math math-inline">C_1</span>부터 <span class="math math-inline">C_{n-1}</span>까지가 조건 노드, <span class="math math-inline">A_n</span>이 행동 노드일 때, 다음의 불변 조건이 매 Tick에서 성립한다.</p>
+<p><span class="math math-display">A_n.\text{status} = \text{RUNNING} \implies \bigwedge_{i=1}^{n-1} C_i.\text{status} = \text{SUCCESS}</span></p>
+<p>대우(contrapositive)로 표현하면:</p>
+<p><span class="math math-display">\exists i \in \{1, \ldots, n-1\} : C_i.\text{status} = \text{FAILURE} \implies A_n.\text{status} \neq \text{RUNNING}</span></p>
+<p>즉, 어떤 전제 조건이라도 <code>FAILURE</code>이면 행동은 <code>RUNNING</code> 상태를 유지할 수 없다. 이 불변 조건은 행동 트리 엔진에 의해 자동으로 강제되며, 개발자가 명시적으로 구현할 필요가 없다.</p>
+<h2>6. 다중 전제 조건의 계층적 검사</h2>
+<p>복수의 전제 조건이 존재하는 경우, ReactiveSequence는 이를 순차적으로(좌에서 우로) 평가한다.</p>
+<pre><code>ReactiveSequence
+├── C₁ (하드웨어 정상)
+├── C₂ (환경 안전)
+├── C₃ (경로 유효)
+└── A  (이동 행동)
+</code></pre>
+<p>평가 순서: <span class="math math-inline">C_1 \rightarrow C_2 \rightarrow C_3 \rightarrow A</span></p>
+<p><span class="math math-inline">C_1</span>이 <code>FAILURE</code>를 반환하면 <span class="math math-inline">C_2</span>, <span class="math math-inline">C_3</span>, <span class="math math-inline">A</span>는 평가되지 않는다. 이는 단축 평가(short-circuit evaluation)에 해당하며, 가장 근본적인 전제 조건이 충족되지 않은 상태에서 상위 조건을 평가하는 불필요한 연산을 회피한다.</p>
+<p>전제 조건의 배치 순서는 다음의 기준에 따라 결정한다.</p>
+<ol>
+<li><strong>근본성</strong>: 더 근본적인 조건(하드웨어 상태)을 앞에 배치한다. 하드웨어가 정상이 아니면 환경이나 경로를 검사하는 것이 무의미하다.</li>
+<li><strong>안전 우선</strong>: 안전에 직결되는 조건을 앞에 배치한다. 안전 조건 위반 시 다른 조건의 검사 없이 즉시 행동을 중단한다.</li>
+<li><strong>평가 비용</strong>: 동일한 중요도라면, 평가 비용이 낮은 조건을 앞에 배치하여 전체 평가 비용을 최소화한다.</li>
+</ol>
+<h2>7. 전제 조건의 시간적 특성</h2>
+<p>전제 조건의 변화 빈도에 따라 지속 검사의 필요성이 달라진다.</p>
+<table><thead><tr><th>조건 유형</th><th>변화 빈도</th><th>예시</th><th>지속 검사 필요성</th></tr></thead><tbody>
+<tr><td>정적 조건</td><td>거의 변하지 않음</td><td>하드웨어 구성</td><td>낮음</td></tr>
+<tr><td>준정적 조건</td><td>드물게 변함</td><td>배터리 수준</td><td>중간</td></tr>
+<tr><td>동적 조건</td><td>빈번히 변함</td><td>장애물 존재</td><td>높음</td></tr>
+<tr><td>고동적 조건</td><td>매 Tick 변동 가능</td><td>센서 값 임계</td><td>최고</td></tr>
+</tbody></table>
+<p>정적 조건은 일반 Sequence에서도 문제가 거의 발생하지 않으나, 동적 조건과 고동적 조건은 ReactiveSequence의 전제 조건 지속 검사가 필수적이다. 장애물의 출현, 센서 값의 급변, 통신 상태의 변동 등은 행동 실행 도중 언제든 발생할 수 있으므로, 이러한 조건에 의존하는 행동은 반드시 ReactiveSequence로 구성하여야 한다.</p>
+<h2>8. 전제 조건 위반 시의 동작 보장</h2>
+<p>전제 조건이 위반되면 ReactiveSequence는 다음의 동작을 보장한다.</p>
+<ol>
+<li><strong>즉시 감지</strong>: 위반은 다음 Tick에서 반드시 감지된다. 최대 감지 지연은 <span class="math math-inline">T_{tick}</span>이다.</li>
+<li><strong>행동 Halt</strong>: 위반 감지 즉시, <code>RUNNING</code> 상태의 행동에 Halt가 호출된다.</li>
+<li><strong>FAILURE 전파</strong>: ReactiveSequence는 <code>FAILURE</code>를 부모에게 반환한다.</li>
+<li><strong>상태 정리</strong>: Halt를 수신한 행동 노드는 내부 상태를 정리한다.</li>
+</ol>
+<p>이 네 단계는 하나의 Tick 내에서 순차적으로 처리되므로, 전제 조건 위반과 행동 중단 사이에 추가적인 Tick이 개입하지 않는다.</p>
+<h2>9. 전제 조건 지속 검사의 비용과 상충</h2>
+<p>매 Tick에서의 전제 조건 재평가는 연산 비용을 수반한다. <span class="math math-inline">n-1</span>개의 조건 노드가 매 Tick에서 재평가되므로, 조건 평가의 총 비용은 다음과 같다.</p>
+<p><span class="math math-display">C_{total} = \sum_{i=1}^{n-1} C_{eval}(i) \cdot f_{tick}</span></p>
+<p>여기서 <span class="math math-inline">C_{eval}(i)</span>는 조건 <span class="math math-inline">i</span>의 단일 평가 비용, <span class="math math-inline">f_{tick}</span>은 Tick 빈도이다. 조건 평가가 경량일수록, 그리고 Tick 빈도가 낮을수록 총 비용이 감소한다. 이 비용과 안전성 사이의 상충(trade-off)이 존재하며, Tick 빈도를 높이면 반응 지연이 줄어들지만 연산 비용이 증가한다.</p>
+<p>따라서 조건 노드는 가능한 한 경량으로 구현하되, 안전에 직결되는 조건은 비용이 높더라도 반드시 매 Tick에서 평가하여야 한다.</p>
+<h2>전제 조건 지속 검사의 로봇공학적 의의</h2>
+<p>로봇 시스템에서 전제 조건의 지속 검사가 필수적인 이유는, 로봇이 동적 환경에서 동작하기 때문이다. 정적 환경에서는 행동 개시 시점에 유효했던 조건이 행동 완료 시점에서도 유효할 가능성이 높다. 그러나 동적 환경에서는 장애물의 출현, 지형의 변화, 센서 장애, 통신 두절 등이 행동 실행 도중에 발생할 수 있다. 전제 조건 지속 검사는 이러한 환경 변화에 대한 로봇의 반응성(reactivity)을 보장하는 핵심 메커니즘이다.</p>
+<p>Colledanchise와 Ögren은 <em>Behavior Trees in Robotics and AI: An Introduction</em>(CRC Press, 2018)에서, 반응형 행동 트리(Reactive Behavior Tree)가 전통적 행동 트리에 비해 동적 환경에서의 강건성(robustness)이 우수함을 이론적으로 보인 바 있다. ReactiveSequence의 전제 조건 지속 검사는 이 강건성의 구현 기반이다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,212 @@
             </header>
             <article>
                 <h1>1294.100 불필요한 조건 재평가 방지</h1>
+<h2>1. 조건 재평가의 비용 구조</h2>
+<p>ReactiveSequence와 ReactiveFallback은 매 Tick 첫 번째 자식부터 재평가하는 특성을 가진다. 이 재평가는 안전 조건의 지속적 감시를 위해 필수적이지만, 변화 가능성이 없거나 평가 비용이 높은 조건이 불필요하게 반복 평가되면 Tick 시간의 낭비를 초래한다. 불필요한 조건 재평가를 식별하고 방지하는 것은 행동 트리의 성능 최적화에서 중요한 과제이다(Faconti, 2022).</p>
+<h2>2. 불필요한 재평가가 발생하는 상황</h2>
+<h3>2.1 변화 빈도가 낮은 조건의 매 Tick 재평가</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsHardwareCalibrated"/&gt;   &lt;!-- 시동 시 1회 확인 --&gt;
+    &lt;Condition ID="IsConfigLoaded"/&gt;          &lt;!-- 초기화 시 1회 확인 --&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;             &lt;!-- 지속 감시 필요 --&gt;
+    &lt;Action ID="MainMission"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><code>IsHardwareCalibrated</code>와 <code>IsConfigLoaded</code>는 시스템 초기화 이후 상태가 변하지 않는 조건이다. 그러나 ReactiveSequence에 배치되면 매 Tick 재평가된다. Tick 주기가 100ms이고 임무가 10분간 수행되면, 불변 조건이 6,000회 불필요하게 평가된다.</p>
+<h3>2.2 고비용 조건의 반복 평가</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsPathClear"/&gt;   &lt;!-- 비용: 경로 전체 충돌 검사 --&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;   &lt;!-- 비용: 블랙보드 조회 --&gt;
+    &lt;Action ID="FollowPath"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><code>IsPathClear</code> 조건이 전체 경로의 충돌 검사를 수행한다면, 매 Tick 수 밀리초의 비용이 발생한다. 경로가 변경되지 않은 상태에서 동일한 충돌 검사를 반복하는 것은 계산 자원의 낭비이다.</p>
+<h2>3. 방지 기법 1: Memory 변형으로의 전환</h2>
+<h3>3.1 재평가가 불필요한 조건의 분리</h3>
+<pre><code class="language-xml">&lt;!-- 비효율: 모든 조건이 ReactiveSequence에 배치 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsHardwareCalibrated"/&gt;
+    &lt;Condition ID="IsConfigLoaded"/&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Action ID="MainMission"/&gt;
+&lt;/ReactiveSequence&gt;
+
+&lt;!-- 효율: 불변 조건을 외부 SequenceNode로 분리 --&gt;
+&lt;Sequence&gt;
+    &lt;Condition ID="IsHardwareCalibrated"/&gt;
+    &lt;Condition ID="IsConfigLoaded"/&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsBatteryOK"/&gt;
+        &lt;Action ID="MainMission"/&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>외부 SequenceNode(WithMemory)에 배치된 <code>IsHardwareCalibrated</code>와 <code>IsConfigLoaded</code>는 최초 1회만 평가되고, 이후 Memory에 의해 건너뛰어진다. 지속 감시가 필요한 <code>IsBatteryOK</code>만 ReactiveSequence에 남겨 매 Tick 재평가한다.</p>
+<h2>4. 방지 기법 2: 캐시 기반 조건 노드</h2>
+<h3>4.1 시간 기반 캐싱</h3>
+<p>조건의 평가 결과를 일정 시간 동안 캐시하여, 캐시 유효 기간 내에는 재평가를 생략한다:</p>
+<pre><code class="language-cpp">class CachedCondition : public BT::ConditionNode {
+public:
+    CachedCondition(const std::string&amp; name,
+                    const BT::NodeConfig&amp; config)
+        : ConditionNode(name, config) {}
+    
+    static BT::PortsList providedPorts() {
+        return {BT::InputPort&lt;unsigned&gt;("cache_ms", 1000)};
+    }
+    
+    BT::NodeStatus tick() override {
+        unsigned cache_ms = 1000;
+        getInput("cache_ms", cache_ms);
+        
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast&lt;
+            std::chrono::milliseconds&gt;(now - last_eval_time_).count();
+        
+        if (elapsed &lt; cache_ms &amp;&amp; last_eval_time_ !=
+            std::chrono::steady_clock::time_point{}) {
+            return cached_result_;
+        }
+        
+        cached_result_ = evaluateCondition();
+        last_eval_time_ = now;
+        return cached_result_;
+    }
+
+private:
+    virtual BT::NodeStatus evaluateCondition() = 0;
+    BT::NodeStatus cached_result_ = BT::NodeStatus::FAILURE;
+    std::chrono::steady_clock::time_point last_eval_time_;
+};
+</code></pre>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;CachedPathCheck cache_ms="500"/&gt;   &lt;!-- 0.5초 캐시 --&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Action ID="FollowPath"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>경로 충돌 검사가 500ms 동안 캐시되므로, Tick 주기가 100ms인 경우 5 Tick 중 1 Tick에서만 실제 검사가 수행된다. 평가 횟수가 5분의 1로 감소한다.</p>
+<h3>4.2 이벤트 기반 캐싱</h3>
+<p>조건과 관련된 데이터가 변경될 때만 캐시를 무효화하는 방식이다:</p>
+<pre><code class="language-cpp">class EventCachedCondition : public BT::ConditionNode {
+public:
+    BT::NodeStatus tick() override {
+        if (!cache_dirty_ &amp;&amp; has_cached_value_) {
+            return cached_result_;
+        }
+        
+        cached_result_ = evaluateCondition();
+        has_cached_value_ = true;
+        cache_dirty_ = false;
+        return cached_result_;
+    }
+    
+    void invalidateCache() {
+        cache_dirty_ = true;
+    }
+
+private:
+    virtual BT::NodeStatus evaluateCondition() = 0;
+    BT::NodeStatus cached_result_ = BT::NodeStatus::FAILURE;
+    bool has_cached_value_ = false;
+    bool cache_dirty_ = true;
+};
+</code></pre>
+<p>외부 이벤트(센서 데이터 갱신, 지도 변경 등)가 발생할 때 <code>invalidateCache()</code>를 호출하여 다음 Tick에서 재평가를 유발한다. 이벤트가 없는 동안에는 캐시된 결과를 반환한다.</p>
+<h2>5. 방지 기법 3: 비동기 조건 평가</h2>
+<h3>5.1 별도 스레드에서의 조건 평가</h3>
+<p>고비용 조건의 평가를 별도 스레드에서 비동기적으로 수행하고, 조건 노드는 블랙보드에 기록된 최신 결과만 조회한다:</p>
+<pre><code class="language-cpp">// 별도 스레드에서 비동기 평가
+void conditionEvaluationThread(BT::Blackboard::Ptr blackboard) {
+    while (running) {
+        bool path_clear = performExpensivePathCheck();
+        blackboard-&gt;set("path_clear", path_clear);
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+}
+
+// 경량 조건 노드: 블랙보드 조회만 수행
+class LightweightPathCheck : public BT::ConditionNode {
+    BT::NodeStatus tick() override {
+        bool clear = false;
+        getInput("path_clear", clear);
+        return clear ? BT::NodeStatus::SUCCESS
+                     : BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<p>이 패턴에서 조건 노드의 <code>tick()</code> 호출 비용은 블랙보드 조회 수준(수 마이크로초)으로 감소한다. 실제 평가는 행동 트리 Tick과 독립적인 주기로 수행된다.</p>
+<h2>6. 방지 기법 4: 조건 집약</h2>
+<h3>6.1 다수 조건의 단일 노드 통합</h3>
+<pre><code class="language-xml">&lt;!-- 집약 전: 조건 4개 × 매 Tick 재평가 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsBatteryAbove20"/&gt;
+    &lt;Condition ID="IsTemperatureNormal"/&gt;
+    &lt;Condition ID="IsCommsActive"/&gt;
+    &lt;Condition ID="IsIMUCalibrated"/&gt;
+    &lt;Action ID="Mission"/&gt;
+&lt;/ReactiveSequence&gt;
+
+&lt;!-- 집약 후: 복합 조건 1개 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsSystemHealthy"/&gt;
+    &lt;Action ID="Mission"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><code>IsSystemHealthy</code>는 내부적으로 4개 조건을 모두 평가하지만, 제어 노드의 루프 반복 횟수가 5에서 2로 감소하고, 노드 상태 관리 오버헤드도 줄어든다. 또한 복합 조건 내부에서 단락 평가(short-circuit evaluation)를 적용하여, 첫 번째 실패 시 나머지 평가를 생략할 수 있다.</p>
+<h2>7. 방지 기법 5: 계층적 Reactive-Memory 혼합</h2>
+<h3>7.1 부분 반응형 구조</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- Phase 1: 초기 조건 (1회 평가) --&gt;
+    &lt;Condition ID="IsSystemInitialized"/&gt;
+    
+    &lt;!-- Phase 2: 지속 감시 하에 임무 수행 --&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsSafetyOK"/&gt;
+        
+        &lt;!-- Phase 2 내부: 순차 작업 (Memory) --&gt;
+        &lt;Sequence&gt;
+            &lt;Action ID="Navigate"/&gt;
+            &lt;Action ID="Manipulate"/&gt;
+            &lt;Action ID="Report"/&gt;
+        &lt;/Sequence&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이 구조에서 <code>IsSystemInitialized</code>는 SequenceNode(WithMemory)에 속하므로 최초 1회만 평가된다. <code>IsSafetyOK</code>는 ReactiveSequence에 속하므로 매 Tick 재평가된다. 내부 Sequence는 WithMemory로 동작하여 완료된 단계를 건너뛴다.</p>
+<h2>8. 재평가 방지와 안전성의 균형</h2>
+<h3>8.1 방지해서는 안 되는 재평가</h3>
+<p>다음 조건은 성능 비용과 무관하게 반드시 매 Tick 재평가되어야 한다:</p>
+<ol>
+<li>
+<p><strong>안전 관련 조건</strong>: 배터리 잔량, 통신 상태, 비상 정지 신호 등 안전에 직접 관련된 조건은 캐싱이나 Memory 분리의 대상이 아니다.</p>
+</li>
+<li>
+<p><strong>동적으로 변하는 환경 조건</strong>: 장애물 존재 여부, 목표 가시성 등 실시간으로 변하는 조건은 매 Tick 재평가가 필요하다.</p>
+</li>
+<li>
+<p><strong>타이밍에 민감한 조건</strong>: 타임아웃, 데드라인 등 시간 경과에 따라 결과가 변하는 조건은 캐시 적용 시 주의가 필요하다.</p>
+</li>
+</ol>
+<h3>8.2 방지 가능한 재평가</h3>
+<ol>
+<li>
+<p><strong>불변 조건</strong>: 시스템 초기화 후 변하지 않는 설정, 하드웨어 보정 상태 등은 Memory 변형으로 분리할 수 있다.</p>
+</li>
+<li>
+<p><strong>저빈도 변화 조건</strong>: 지도 업데이트, 임무 파라미터 변경 등 드물게 변하는 조건은 이벤트 기반 캐싱이 적합하다.</p>
+</li>
+<li>
+<p><strong>고비용 동일 결과 조건</strong>: 동일한 입력에 대해 항상 같은 결과를 반환하는 순수 함수 조건은 입력 변화가 없을 때 캐싱할 수 있다(Colledanchise &amp; Ogren, 2018).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

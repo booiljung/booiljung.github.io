@@ -115,6 +115,492 @@
             </header>
             <article>
                 <h1>1294.89 Sequence와 Fallback의 커스텀 변형 구현</h1>
+<h2>1. 커스텀 제어 노드의 필요성</h2>
+<p>BehaviorTree.CPP v4가 제공하는 네 가지 기본 제어 노드(SequenceNode, ReactiveSequence, FallbackNode, ReactiveFallback)는 대부분의 행동 트리 설계 요구를 충족한다. 그러나 특정 응용에서는 기본 제어 노드의 동작을 변형하거나 확장해야 하는 경우가 발생한다. 예를 들어, 자식 노드의 실행 순서를 동적으로 변경하거나, 특정 조건에 따라 자식 평가를 선택적으로 수행하거나, 메모리 동작과 Reactive 동작을 혼합한 제어 흐름이 필요할 수 있다. 이러한 요구를 충족하기 위해 <code>ControlNode</code> 기반 클래스를 상속하여 커스텀 변형을 구현할 수 있다(Faconti, 2022).</p>
+<h2>2. ControlNode 기반 클래스의 구조</h2>
+<h3>2.1 상속 가능한 인터페이스</h3>
+<pre><code class="language-cpp">namespace BT {
+
+class ControlNode : public TreeNode {
+public:
+    ControlNode(const std::string&amp; name, const NodeConfig&amp; config);
+    
+    void addChild(TreeNode* child);
+    size_t childrenCount() const;
+    
+    void halt() override;
+    void haltChild(size_t index);
+    void haltChildren();
+    void resetChildren();
+    
+    const std::vector&lt;TreeNode*&gt;&amp; children() const;
+
+protected:
+    std::vector&lt;TreeNode*&gt; children_nodes_;
+};
+
+}  // namespace BT
+</code></pre>
+<p>커스텀 제어 노드는 <code>ControlNode</code>를 직접 상속하여 구현한다. <code>tick()</code> 메서드를 오버라이드하여 자식 노드의 실행 순서와 반환 상태 해석 방식을 정의한다. <code>children_nodes_</code>를 통해 자식 노드 벡터에 접근하고, <code>haltChild()</code>, <code>resetChildren()</code> 등의 유틸리티 메서드를 활용한다.</p>
+<h3>2.2 커스텀 노드의 기본 골격</h3>
+<pre><code class="language-cpp">class CustomControlNode : public BT::ControlNode {
+public:
+    CustomControlNode(const std::string&amp; name,
+                      const BT::NodeConfig&amp; config)
+        : ControlNode(name, config) {}
+    
+    static BT::PortsList providedPorts() {
+        return {};  // 필요 시 입출력 포트 정의
+    }
+
+private:
+    BT::NodeStatus tick() override;
+    void halt() override;
+};
+</code></pre>
+<p><code>tick()</code>에서 자식 노드의 <code>executeTick()</code>을 호출하고, 반환 상태에 따라 제어 흐름을 결정한다. <code>halt()</code>에서는 내부 상태를 초기화하고 <code>ControlNode::halt()</code>를 호출하여 RUNNING 자식을 정지시킨다.</p>
+<h2>3. Sequence 커스텀 변형의 구현 예제</h2>
+<h3>3.1 RandomSequence: 무작위 순서 Sequence</h3>
+<p>자식 노드의 실행 순서를 매 실행 사이클마다 무작위로 섞는 Sequence 변형이다. 탐색 행동이나 무작위성이 요구되는 테스트 시나리오에서 활용된다.</p>
+<pre><code class="language-cpp">class RandomSequence : public BT::ControlNode {
+public:
+    RandomSequence(const std::string&amp; name,
+                   const BT::NodeConfig&amp; config)
+        : ControlNode(name, config), current_idx_(0) {}
+    
+    static BT::PortsList providedPorts() { return {}; }
+    
+    void halt() override {
+        current_idx_ = 0;
+        shuffled_indices_.clear();
+        ControlNode::halt();
+    }
+
+private:
+    size_t current_idx_;
+    std::vector&lt;size_t&gt; shuffled_indices_;
+    
+    BT::NodeStatus tick() override {
+        const size_t count = childrenCount();
+        
+        if (status() == BT::NodeStatus::IDLE) {
+            shuffled_indices_.resize(count);
+            std::iota(shuffled_indices_.begin(),
+                      shuffled_indices_.end(), 0);
+            std::shuffle(shuffled_indices_.begin(),
+                         shuffled_indices_.end(),
+                         std::mt19937{std::random_device{}()});
+            current_idx_ = 0;
+        }
+        
+        setStatus(BT::NodeStatus::RUNNING);
+        
+        while (current_idx_ &lt; count) {
+            size_t child_idx = shuffled_indices_[current_idx_];
+            TreeNode* child = children_nodes_[child_idx];
+            const auto status = child-&gt;executeTick();
+            
+            switch (status) {
+                case BT::NodeStatus::RUNNING:
+                    return BT::NodeStatus::RUNNING;
+                case BT::NodeStatus::FAILURE:
+                    resetChildren();
+                    current_idx_ = 0;
+                    shuffled_indices_.clear();
+                    return BT::NodeStatus::FAILURE;
+                case BT::NodeStatus::SUCCESS:
+                    current_idx_++;
+                    break;
+                case BT::NodeStatus::SKIPPED:
+                    current_idx_++;
+                    break;
+            }
+        }
+        
+        resetChildren();
+        current_idx_ = 0;
+        shuffled_indices_.clear();
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p>IDLE 상태에서 진입할 때 인덱스 배열을 무작위로 섞고, 이후 Tick에서는 섞인 순서대로 자식을 실행한다. 메모리 동작을 유지하므로 RUNNING 자식의 위치를 기억한다.</p>
+<h3>3.2 SequenceWithTimeout: 전체 타임아웃 Sequence</h3>
+<p>전체 Sequence의 실행 시간이 지정된 시간을 초과하면 FAILURE를 반환하는 변형이다. 개별 자식이 아닌 전체 시퀀스에 대한 시간 제한을 적용한다.</p>
+<pre><code class="language-cpp">class SequenceWithTimeout : public BT::ControlNode {
+public:
+    SequenceWithTimeout(const std::string&amp; name,
+                        const BT::NodeConfig&amp; config)
+        : ControlNode(name, config), current_idx_(0) {}
+    
+    static BT::PortsList providedPorts() {
+        return {BT::InputPort&lt;unsigned&gt;("timeout_msec")};
+    }
+    
+    void halt() override {
+        current_idx_ = 0;
+        start_time_ = std::chrono::steady_clock::time_point{};
+        ControlNode::halt();
+    }
+
+private:
+    size_t current_idx_;
+    std::chrono::steady_clock::time_point start_time_;
+    
+    BT::NodeStatus tick() override {
+        unsigned timeout_msec = 0;
+        if (!getInput("timeout_msec", timeout_msec)) {
+            throw BT::RuntimeError("missing required input: timeout_msec");
+        }
+        
+        if (status() == BT::NodeStatus::IDLE) {
+            start_time_ = std::chrono::steady_clock::now();
+            current_idx_ = 0;
+        }
+        
+        setStatus(BT::NodeStatus::RUNNING);
+        
+        // 전체 타임아웃 확인
+        auto elapsed = std::chrono::steady_clock::now() - start_time_;
+        if (std::chrono::duration_cast&lt;std::chrono::milliseconds&gt;(
+                elapsed).count() &gt;= timeout_msec) {
+            resetChildren();
+            current_idx_ = 0;
+            return BT::NodeStatus::FAILURE;
+        }
+        
+        while (current_idx_ &lt; childrenCount()) {
+            auto* child = children_nodes_[current_idx_];
+            const auto child_status = child-&gt;executeTick();
+            
+            switch (child_status) {
+                case BT::NodeStatus::RUNNING:
+                    return BT::NodeStatus::RUNNING;
+                case BT::NodeStatus::FAILURE:
+                    resetChildren();
+                    current_idx_ = 0;
+                    return BT::NodeStatus::FAILURE;
+                case BT::NodeStatus::SUCCESS:
+                    current_idx_++;
+                    break;
+                case BT::NodeStatus::SKIPPED:
+                    current_idx_++;
+                    break;
+            }
+        }
+        
+        resetChildren();
+        current_idx_ = 0;
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p><code>timeout_msec</code> 입력 포트를 통해 타임아웃 값을 XML에서 설정할 수 있다. IDLE 진입 시 타이머를 시작하고, 매 Tick에서 경과 시간을 확인한다.</p>
+<h2>4. Fallback 커스텀 변형의 구현 예제</h2>
+<h3>4.1 WeightedFallback: 가중치 기반 Fallback</h3>
+<p>자식 노드에 가중치를 부여하여, 가중치가 높은 대안을 우선 시도하는 Fallback 변형이다. 가중치는 런타임에 블랙보드를 통해 동적으로 변경될 수 있다.</p>
+<pre><code class="language-cpp">class WeightedFallback : public BT::ControlNode {
+public:
+    WeightedFallback(const std::string&amp; name,
+                     const BT::NodeConfig&amp; config)
+        : ControlNode(name, config), current_idx_(0) {}
+    
+    static BT::PortsList providedPorts() {
+        return {BT::InputPort&lt;std::string&gt;("weights")};
+    }
+    
+    void halt() override {
+        current_idx_ = 0;
+        sorted_indices_.clear();
+        ControlNode::halt();
+    }
+
+private:
+    size_t current_idx_;
+    std::vector&lt;size_t&gt; sorted_indices_;
+    
+    std::vector&lt;double&gt; parseWeights(const std::string&amp; str) {
+        std::vector&lt;double&gt; weights;
+        std::istringstream iss(str);
+        double w;
+        while (iss &gt;&gt; w) {
+            weights.push_back(w);
+            if (iss.peek() == ',') iss.ignore();
+        }
+        return weights;
+    }
+    
+    BT::NodeStatus tick() override {
+        if (status() == BT::NodeStatus::IDLE) {
+            std::string weights_str;
+            getInput("weights", weights_str);
+            auto weights = parseWeights(weights_str);
+            
+            sorted_indices_.resize(childrenCount());
+            std::iota(sorted_indices_.begin(),
+                      sorted_indices_.end(), 0);
+            std::sort(sorted_indices_.begin(),
+                      sorted_indices_.end(),
+                      [&amp;](size_t%20a,%20size_t%20b) {
+                          double wa = a &lt; weights.size() ? weights[a] : 0.0;
+                          double wb = b &lt; weights.size() ? weights[b] : 0.0;
+                          return wa &gt; wb;
+                      });
+            current_idx_ = 0;
+        }
+        
+        setStatus(BT::NodeStatus::RUNNING);
+        
+        while (current_idx_ &lt; childrenCount()) {
+            size_t child_idx = sorted_indices_[current_idx_];
+            auto* child = children_nodes_[child_idx];
+            const auto child_status = child-&gt;executeTick();
+            
+            switch (child_status) {
+                case BT::NodeStatus::RUNNING:
+                    return BT::NodeStatus::RUNNING;
+                case BT::NodeStatus::SUCCESS:
+                    resetChildren();
+                    current_idx_ = 0;
+                    sorted_indices_.clear();
+                    return BT::NodeStatus::SUCCESS;
+                case BT::NodeStatus::FAILURE:
+                    current_idx_++;
+                    break;
+                case BT::NodeStatus::SKIPPED:
+                    current_idx_++;
+                    break;
+            }
+        }
+        
+        resetChildren();
+        current_idx_ = 0;
+        sorted_indices_.clear();
+        return BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<h3>4.2 FallbackWithRetry: 재시도 내장 Fallback</h3>
+<p>모든 자식이 FAILURE를 반환한 경우, 지정된 횟수만큼 전체 Fallback을 처음부터 재시도하는 변형이다. 외부에 Retry 데코레이터를 배치하지 않고도 재시도 기능을 제어 노드 내부에 통합한다.</p>
+<pre><code class="language-cpp">class FallbackWithRetry : public BT::ControlNode {
+public:
+    FallbackWithRetry(const std::string&amp; name,
+                      const BT::NodeConfig&amp; config)
+        : ControlNode(name, config),
+          current_idx_(0), retry_count_(0) {}
+    
+    static BT::PortsList providedPorts() {
+        return {BT::InputPort&lt;int&gt;("max_retries", 1)};
+    }
+    
+    void halt() override {
+        current_idx_ = 0;
+        retry_count_ = 0;
+        ControlNode::halt();
+    }
+
+private:
+    size_t current_idx_;
+    int retry_count_;
+    
+    BT::NodeStatus tick() override {
+        int max_retries = 1;
+        getInput("max_retries", max_retries);
+        
+        setStatus(BT::NodeStatus::RUNNING);
+        
+        while (current_idx_ &lt; childrenCount()) {
+            auto* child = children_nodes_[current_idx_];
+            const auto child_status = child-&gt;executeTick();
+            
+            switch (child_status) {
+                case BT::NodeStatus::RUNNING:
+                    return BT::NodeStatus::RUNNING;
+                case BT::NodeStatus::SUCCESS:
+                    resetChildren();
+                    current_idx_ = 0;
+                    retry_count_ = 0;
+                    return BT::NodeStatus::SUCCESS;
+                case BT::NodeStatus::FAILURE:
+                    current_idx_++;
+                    break;
+                case BT::NodeStatus::SKIPPED:
+                    current_idx_++;
+                    break;
+            }
+        }
+        
+        // 모든 자식 FAILURE → 재시도 판단
+        if (retry_count_ &lt; max_retries) {
+            retry_count_++;
+            current_idx_ = 0;
+            resetChildren();
+            return BT::NodeStatus::RUNNING;
+        }
+        
+        resetChildren();
+        current_idx_ = 0;
+        retry_count_ = 0;
+        return BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<p>모든 자식이 FAILURE를 반환하면 <code>retry_count_</code>를 증가시키고 <code>current_idx_</code>를 0으로 초기화하여 다음 Tick에서 처음부터 재시도한다. <code>max_retries</code>에 도달하면 최종 FAILURE를 반환한다.</p>
+<h2>5. 커스텀 노드의 등록과 XML 사용</h2>
+<h3>5.1 노드 등록</h3>
+<pre><code class="language-cpp">BT::BehaviorTreeFactory factory;
+
+factory.registerNodeType&lt;RandomSequence&gt;("RandomSequence");
+factory.registerNodeType&lt;SequenceWithTimeout&gt;("SequenceWithTimeout");
+factory.registerNodeType&lt;WeightedFallback&gt;("WeightedFallback");
+factory.registerNodeType&lt;FallbackWithRetry&gt;("FallbackWithRetry");
+</code></pre>
+<p><code>registerNodeType&lt;T&gt;()</code>를 통해 커스텀 제어 노드를 팩토리에 등록하면, XML에서 해당 ID로 참조할 수 있다.</p>
+<h3>5.2 XML에서의 사용</h3>
+<pre><code class="language-xml">&lt;root BTCPP_format="4"&gt;
+    &lt;BehaviorTree ID="CustomControlExample"&gt;
+        &lt;RandomSequence&gt;
+            &lt;Action ID="ExploreArea1"/&gt;
+            &lt;Action ID="ExploreArea2"/&gt;
+            &lt;Action ID="ExploreArea3"/&gt;
+        &lt;/RandomSequence&gt;
+    &lt;/BehaviorTree&gt;
+    
+    &lt;BehaviorTree ID="TimedMission"&gt;
+        &lt;SequenceWithTimeout timeout_msec="30000"&gt;
+            &lt;Action ID="Navigate"/&gt;
+            &lt;Action ID="Inspect"/&gt;
+            &lt;Action ID="Report"/&gt;
+        &lt;/SequenceWithTimeout&gt;
+    &lt;/BehaviorTree&gt;
+    
+    &lt;BehaviorTree ID="AdaptiveFallback"&gt;
+        &lt;WeightedFallback weights="0.8,0.5,0.2"&gt;
+            &lt;Action ID="MethodA"/&gt;
+            &lt;Action ID="MethodB"/&gt;
+            &lt;Action ID="MethodC"/&gt;
+        &lt;/WeightedFallback&gt;
+    &lt;/BehaviorTree&gt;
+    
+    &lt;BehaviorTree ID="RobustRecovery"&gt;
+        &lt;FallbackWithRetry max_retries="3"&gt;
+            &lt;Action ID="PrimaryRecovery"/&gt;
+            &lt;Action ID="SecondaryRecovery"/&gt;
+            &lt;Action ID="EmergencyStop"/&gt;
+        &lt;/FallbackWithRetry&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<h2>6. 하이브리드 제어 노드의 구현</h2>
+<h3>6.1 PartiallyReactiveSequence: 부분 반응형 Sequence</h3>
+<p>Sequence의 앞부분은 Reactive(매 Tick 재평가)로, 뒷부분은 WithMemory(상태 유지)로 동작하는 하이브리드 변형이다. 앞쪽 조건 노드들은 매 Tick 감시하되, 뒤쪽 행동 노드들은 메모리 기반으로 순차 실행한다.</p>
+<pre><code class="language-cpp">class PartiallyReactiveSequence : public BT::ControlNode {
+public:
+    PartiallyReactiveSequence(const std::string&amp; name,
+                               const BT::NodeConfig&amp; config)
+        : ControlNode(name, config), current_idx_(0) {}
+    
+    static BT::PortsList providedPorts() {
+        return {BT::InputPort&lt;unsigned&gt;("reactive_count", 1)};
+    }
+    
+    void halt() override {
+        current_idx_ = 0;
+        ControlNode::halt();
+    }
+
+private:
+    size_t current_idx_;
+    
+    BT::NodeStatus tick() override {
+        unsigned reactive_count = 1;
+        getInput("reactive_count", reactive_count);
+        
+        setStatus(BT::NodeStatus::RUNNING);
+        
+        // Reactive 구간: 항상 인덱스 0부터 재평가
+        for (size_t i = 0; i &lt; reactive_count &amp;&amp; i &lt; childrenCount(); i++) {
+            auto* child = children_nodes_[i];
+            const auto status = child-&gt;executeTick();
+            
+            if (status == BT::NodeStatus::FAILURE) {
+                resetChildren();
+                current_idx_ = std::max(current_idx_, reactive_count);
+                return BT::NodeStatus::FAILURE;
+            }
+            if (status == BT::NodeStatus::RUNNING) {
+                for (size_t j = i + 1; j &lt; childrenCount(); j++) {
+                    haltChild(j);
+                }
+                current_idx_ = reactive_count;
+                return BT::NodeStatus::RUNNING;
+            }
+        }
+        
+        // WithMemory 구간: 이전 위치부터 재진입
+        if (current_idx_ &lt; reactive_count) {
+            current_idx_ = reactive_count;
+        }
+        
+        while (current_idx_ &lt; childrenCount()) {
+            auto* child = children_nodes_[current_idx_];
+            const auto status = child-&gt;executeTick();
+            
+            switch (status) {
+                case BT::NodeStatus::RUNNING:
+                    return BT::NodeStatus::RUNNING;
+                case BT::NodeStatus::FAILURE:
+                    resetChildren();
+                    current_idx_ = 0;
+                    return BT::NodeStatus::FAILURE;
+                case BT::NodeStatus::SUCCESS:
+                    current_idx_++;
+                    break;
+                case BT::NodeStatus::SKIPPED:
+                    current_idx_++;
+                    break;
+            }
+        }
+        
+        resetChildren();
+        current_idx_ = 0;
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<pre><code class="language-xml">&lt;PartiallyReactiveSequence reactive_count="2"&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;      &lt;!-- Reactive --&gt;
+    &lt;Condition ID="IsCommsActive"/&gt;    &lt;!-- Reactive --&gt;
+    &lt;Action ID="Navigate"/&gt;            &lt;!-- WithMemory --&gt;
+    &lt;Action ID="Manipulate"/&gt;          &lt;!-- WithMemory --&gt;
+    &lt;Action ID="Report"/&gt;              &lt;!-- WithMemory --&gt;
+&lt;/PartiallyReactiveSequence&gt;
+</code></pre>
+<p><code>reactive_count="2"</code>는 앞쪽 2개의 자식을 매 Tick 재평가하고, 나머지 3개는 메모리 기반으로 실행함을 의미한다. 이 패턴은 안전 조건의 지속적 감시와 행동의 순차적 진행을 단일 노드에서 결합한다.</p>
+<h2>7. 커스텀 변형 구현 시 주의 사항</h2>
+<ol>
+<li>
+<p><strong>halt() 메서드의 완전한 구현</strong>: 커스텀 제어 노드는 반드시 <code>halt()</code> 메서드에서 모든 내부 상태 변수를 초기화해야 한다. <code>ControlNode::halt()</code> 호출을 누락하면 RUNNING 자식이 정지되지 않아 리소스 누수가 발생한다.</p>
+</li>
+<li>
+<p><strong>executeTick()과 tick()의 구분</strong>: 자식 노드를 실행할 때는 반드시 <code>executeTick()</code>을 호출해야 한다. <code>tick()</code>을 직접 호출하면 노드 상태 관리가 우회되어 예기치 않은 동작이 발생한다(Faconti, 2022).</p>
+</li>
+<li>
+<p><strong>SKIPPED 상태의 처리</strong>: BehaviorTree.CPP v4에서 추가된 SKIPPED 상태를 반드시 처리해야 한다. SKIPPED를 무시하면 무한 루프가 발생하거나 자식이 실행되지 않은 채 SUCCESS 또는 FAILURE가 반환될 수 있다.</p>
+</li>
+<li>
+<p><strong>resetChildren()과 haltChild()의 적절한 사용</strong>: <code>resetChildren()</code>은 모든 자식을 IDLE로 초기화하며, RUNNING 자식에 대해 <code>halt()</code>를 호출한다. <code>haltChild(i)</code>는 특정 자식만 정지시킨다. Reactive 패턴에서는 <code>haltChild()</code>로 후속 자식만 선택적으로 정지시키고, WithMemory 패턴의 종료 시에는 <code>resetChildren()</code>으로 전체를 초기화한다.</p>
+</li>
+<li>
+<p><strong>스레드 안전성</strong>: <code>tick()</code> 메서드는 단일 스레드에서 호출되지만, 비동기 액션 노드가 자식으로 포함되면 내부 상태 접근의 동기화를 고려해야 한다.</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

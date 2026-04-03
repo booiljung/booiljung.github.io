@@ -115,6 +115,135 @@
             </header>
             <article>
                 <h1>1295.46 우선순위 기반 행동 선택 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>우선순위 기반 행동 선택 패턴은 ReactiveFallback 노드를 활용하여 복수의 행동 중 현재 상황에서 가장 적합한 행동을 우선순위에 따라 선택하는 설계 패턴이다. 각 행동에는 활성화 조건이 부여되며, 매 Tick에서 가장 높은 우선순위의 활성 조건에 대응하는 행동이 실행된다. 상위 조건이 성립하면 하위 행동이 즉시 선점되어 중단된다.</p>
+<p>이 패턴은 로봇 행동 제어에서 가장 빈번하게 사용되는 기본 패턴으로, 임무 수행 중 발생하는 다양한 상황에 대해 적절한 행동을 실시간으로 선택하는 의사 결정 구조를 제공한다.</p>
+<h2>2. 패턴의 구조</h2>
+<pre><code>ReactiveFallback
+├── Sequence [우선순위 1: 최고]
+│   ├── Condition_1
+│   └── Action_1
+├── Sequence [우선순위 2]
+│   ├── Condition_2
+│   └── Action_2
+├── ...
+├── Sequence [우선순위 N-1]
+│   ├── Condition_{N-1}
+│   └── Action_{N-1}
+└── DefaultAction [우선순위 N: 최저]
+</code></pre>
+<p>각 우선순위 수준은 Sequence 내의 조건-행동 쌍으로 구성된다. 최하위에는 조건 없는 기본 행동(default action)을 배치하여, 어떤 특수 조건도 성립하지 않을 때의 기본 동작을 정의한다.</p>
+<h2>3. 의사 결정 흐름</h2>
+<p>매 Tick에서의 의사 결정 흐름은 다음과 같다.</p>
+<pre><code>Tick 시작
+  │
+  ├── Condition_1 평가
+  │   ├── SUCCESS → Action_1 실행 → 결정 완료
+  │   └── FAILURE ↓
+  │
+  ├── Condition_2 평가
+  │   ├── SUCCESS → Action_2 실행 → 결정 완료
+  │   └── FAILURE ↓
+  │
+  ├── ...
+  │
+  ├── Condition_{N-1} 평가
+  │   ├── SUCCESS → Action_{N-1} 실행 → 결정 완료
+  │   └── FAILURE ↓
+  │
+  └── DefaultAction 실행 → 결정 완료
+</code></pre>
+<p>이 흐름은 프로그래밍 언어의 <code>if-else if-else</code> 구조와 의미론적으로 동등하되, 매 Tick에서 전체 조건 체인이 처음부터 재평가된다는 점이 핵심이다.</p>
+<h2>4. 구체적 적용 예시</h2>
+<h3>4.1 이동 로봇의 상황 대응 패턴</h3>
+<pre><code>ReactiveFallback
+├── Sequence [비상 정지]
+│   ├── IsEmergencyStopPressed
+│   └── PerformEmergencyStop
+├── Sequence [근접 장애물 긴급 회피]
+│   ├── IsCollisionImminent
+│   │   input: "min_distance" = 0.3m
+│   └── PerformEmergencyBrake
+├── Sequence [일반 장애물 회피]
+│   ├── IsObstacleInPath
+│   │   input: "detection_distance" = 2.0m
+│   └── ExecuteObstacleAvoidance
+├── Sequence [배터리 부족 귀환]
+│   ├── IsBatteryBelowThreshold
+│   │   input: "threshold" = 20%
+│   └── NavigateToChargingStation
+├── Sequence [통신 두절 대응]
+│   ├── IsCommunicationLost
+│   │   input: "timeout" = 30s
+│   └── ReturnToLastKnownSafePoint
+└── ContinueMissionNavigation
+</code></pre>
+<p>이 구조에서 우선순위는 비상 정지 &gt; 긴급 회피 &gt; 일반 회피 &gt; 배터리 관리 &gt; 통신 대응 &gt; 임무 수행 순이다. 각 조건은 독립적으로 평가되며, 가장 높은 우선순위의 성립 조건에 대응하는 행동이 선택된다.</p>
+<h3>4.2 실행 시나리오</h3>
+<p><strong>정상 운행 시</strong>: 모든 상위 조건이 FAILURE → ContinueMissionNavigation 실행</p>
+<p><strong>장애물 감지 시</strong>: IsObstacleInPath = SUCCESS → ExecuteObstacleAvoidance 실행, ContinueMissionNavigation에 Halt 전파</p>
+<p><strong>장애물 회피 중 배터리 부족 시</strong>: IsObstacleInPath = SUCCESS (여전히 장애물 있음) → 장애물 회피가 배터리 관리보다 높은 우선순위이므로, 장애물 회피 계속. 배터리 관리는 장애물이 해소된 후에 활성화됨.</p>
+<p><strong>장애물 회피 중 비상 정지 시</strong>: IsEmergencyStopPressed = SUCCESS → 비상 정지가 최고 우선순위이므로, ExecuteObstacleAvoidance에 Halt 전파 후 PerformEmergencyStop 실행.</p>
+<h2>5. 조건 평가 순서의 최적화</h2>
+<p>조건 평가는 상위부터 순차적으로 수행되므로, 조건의 평가 비용을 고려한 배치가 효율적이다. 평가 비용이 높은 조건을 상위에 배치하면 매 Tick에서 해당 비용이 발생하므로, 다음 원칙을 적용하라.</p>
+<ol>
+<li>
+<p><strong>빈번히 성립하는 조건을 상위에</strong>: 자주 성립하는 조건이 상위에 있으면, 해당 조건에서 Tick 전파가 조기에 중단되어 하위 조건의 평가를 건너뛸 수 있다.</p>
+</li>
+<li>
+<p><strong>평가 비용이 낮은 조건을 상위에</strong>: 상위 조건은 매 Tick에서 평가되므로, 블랙보드 값 비교 같은 경량 조건을 상위에 배치하라.</p>
+</li>
+<li>
+<p><strong>우선순위 요구와의 균형</strong>: 위 효율성 원칙은 안전 우선 원칙과 충돌할 수 있다. 안전 관련 조건은 평가 비용과 무관하게 항상 최상위에 배치하여야 한다.</p>
+</li>
+</ol>
+<h2>6. 상태 전이 관리</h2>
+<p>우선순위 기반 행동 선택에서 행동 간 전환이 발생할 때, 전환 전후의 상태 관리가 중요하다.</p>
+<h3>6.1 전환 시 상태 기록</h3>
+<pre><code>function Action.halt():
+    // 현재 행동의 진행 상태를 블랙보드에 기록
+    blackboard.set(self.name + "_last_state", {
+        "progress": getProgress(),
+        "position": getCurrentState(),
+        "timestamp": current_time()
+    })
+    cleanup()
+</code></pre>
+<h3>6.2 재시작 시 상태 복원</h3>
+<pre><code>function Action.tick():
+    if is_first_tick:
+        saved ← blackboard.get(self.name + "_last_state")
+        if saved is valid and isResumable(saved):
+            resumeFrom(saved)
+        else:
+            startFresh()
+        is_first_tick ← false
+    
+    return executeStep()
+</code></pre>
+<p>이 방식으로 행동이 상위 조건 성립에 의해 중단된 후, 상위 조건이 해소되어 동일 행동이 재선택될 때 이전 진행 상태에서 재개할 수 있다.</p>
+<h2>7. XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsEmergencyStopPressed /&gt;
+        &lt;PerformEmergencyStop /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsCollisionImminent distance="0.3" /&gt;
+        &lt;PerformEmergencyBrake /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsObstacleInPath distance="2.0" /&gt;
+        &lt;ExecuteObstacleAvoidance /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryBelow level="20.0" /&gt;
+        &lt;NavigateToCharger station="{charging_station}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;ContinueMission goal="{mission_goal}" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>자식의 배치 순서가 곧 우선순위이며, XML의 구조만으로 전체 의사 결정 체계를 명확히 파악할 수 있다.</p>
 
             </article>
             <footer>

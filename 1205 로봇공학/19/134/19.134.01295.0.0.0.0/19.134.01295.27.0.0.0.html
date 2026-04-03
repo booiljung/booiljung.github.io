@@ -115,6 +115,81 @@
             </header>
             <article>
                 <h1>1295.27 이동과 감시의 동시 실행 패턴</h1>
+<h2>1. 패턴의 정의와 목적</h2>
+<p>이동과 감시의 동시 실행 패턴은 로봇이 목표 지점으로 이동(navigation)하는 주 행동을 수행하면서, 동시에 하나 이상의 조건을 지속적으로 감시(monitoring)하는 행동 트리 설계 패턴이다. 이 패턴은 Parallel 노드를 활용하여 이동 행동과 감시 행동에 매 Tick마다 실행 기회를 부여함으로써, 이동 중 발생할 수 있는 이상 상태를 실시간으로 감지하고 대응할 수 있게 한다.</p>
+<p>자율 이동 로봇에서 목표 지점까지의 경로 추종은 수 초에서 수 분에 이르는 장시간 행동이다. 이 기간 동안 배터리 잔량 감소, 장애물 출현, 통신 두절, 지형 변화 등 다양한 이상 상태가 발생할 수 있으며, 이에 대한 즉각적 대응이 요구된다. 순차 실행 모델에서는 이동 행동이 완료될 때까지 감시 행동이 실행되지 않으므로, 이동 중 발생하는 이상 상태에 대응할 수 없다. Parallel 노드는 이러한 한계를 근본적으로 해소한다.</p>
+<h2>2. 기본 구조</h2>
+<p>이동과 감시의 동시 실행 패턴의 기본 구조는 다음과 같다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── NavigateToGoal    →  목표 지점까지 경로 추종 (RUNNING 유지)
+└── MonitorCondition  →  조건 정상 시 RUNNING, 이상 시 FAILURE
+</code></pre>
+<p>이 구조에서 <code>NavigateToGoal</code> 노드는 목표 지점에 도달할 때까지 <code>RUNNING</code> 상태를 유지하며, <code>MonitorCondition</code> 노드는 감시 대상 조건이 정상인 동안 <code>RUNNING</code>을 반환하고, 이상 조건이 감지되면 <code>FAILURE</code>를 반환한다.</p>
+<p><code>FAILURE_ONE</code> 정책에 의해 감시 노드가 <code>FAILURE</code>를 반환하는 즉시 Parallel 노드 전체가 실패로 종료되고, 이동 행동 노드에 Halt가 전파되어 로봇의 이동이 즉시 중단된다. 반면 이동 행동이 정상적으로 완료되어 <code>SUCCESS</code>를 반환하면, <code>SUCCESS_ALL</code> 정책에 의해 감시 노드의 상태도 함께 평가된다. 감시 노드가 여전히 <code>RUNNING</code> 상태이므로 Parallel 노드는 <code>RUNNING</code>을 유지하게 되는데, 이는 이동 완료 후 감시 노드를 정리하기 위한 후속 처리가 필요함을 의미한다.</p>
+<h2>3. 장애물 감시를 포함한 이동 패턴</h2>
+<p>이동 중 동적 장애물의 출현을 감시하는 패턴은 가장 빈번하게 사용되는 형태이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── NavigateToWaypoint
+│   input: "target_waypoint"
+│   output: "navigation_status"
+└── CheckObstacleClearance
+    input: "min_clearance_distance"
+    output: "obstacle_distance"
+</code></pre>
+<p><code>CheckObstacleClearance</code> 노드는 매 Tick마다 LiDAR 또는 초음파 센서 데이터를 분석하여 로봇 전방의 최근접 장애물까지의 거리를 산출한다. 이 거리가 사전 설정된 최소 안전 거리(minimum clearance distance)보다 작아지면 <code>FAILURE</code>를 반환하여 이동을 즉시 중단시킨다. 이를 통해 정적 경로 계획 단계에서 예측하지 못한 동적 장애물에 대한 실시간 대응이 가능하다.</p>
+<h2>4. 배터리 감시를 포함한 이동 패턴</h2>
+<p>장거리 이동 임무에서는 배터리 잔량의 지속적 감시가 필수적이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── NavigateToGoal
+│   input: "goal_position"
+└── MonitorBatteryLevel
+    input: "min_battery_threshold"
+</code></pre>
+<p><code>MonitorBatteryLevel</code> 노드는 매 Tick마다 배터리 관리 시스템(Battery Management System, BMS)으로부터 잔량 정보를 조회한다. 배터리 잔량이 임계값 이하로 감소하면 <code>FAILURE</code>를 반환하여 이동을 중단시키고, 상위 행동 트리에서 충전 기지로의 귀환 행동을 개시할 수 있도록 한다. 임계값은 현재 위치에서 충전 기지까지의 복귀에 필요한 최소 에너지량에 안전 마진(safety margin)을 합산하여 결정하는 것이 일반적이다.</p>
+<h2>5. 통신 상태 감시를 포함한 이동 패턴</h2>
+<p>원격 관제 환경에서 운용되는 로봇은 관제 시스템과의 통신 연결 상태를 지속적으로 감시하여야 한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── NavigateToGoal
+│   input: "goal_position"
+└── MonitorCommunication
+    input: "heartbeat_timeout"
+</code></pre>
+<p><code>MonitorCommunication</code> 노드는 관제 시스템으로부터의 심장 박동 신호(heartbeat signal)를 감시한다. 지정된 타임아웃 시간 이내에 심장 박동 신호가 수신되지 않으면 통신 두절로 판정하여 <code>FAILURE</code>를 반환한다. 통신 두절 시 로봇의 동작 정책은 응용 도메인에 따라 즉시 정지, 마지막 수신 명령 유지, 또는 사전 정의된 안전 지점으로의 귀환 중 하나를 적용한다.</p>
+<h2>6. 다중 감시 조건의 동시 적용</h2>
+<p>실제 로봇 시스템에서는 단일 감시 조건만으로는 충분하지 않으며, 복수의 감시 조건을 동시에 적용하여야 한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── NavigateToGoal
+├── CheckObstacleClearance
+├── MonitorBatteryLevel
+├── MonitorCommunication
+└── CheckLocalizationQuality
+</code></pre>
+<p>이 구조에서 어떤 감시 노드든 하나라도 <code>FAILURE</code>를 반환하면 <code>FAILURE_ONE</code> 정책에 의해 전체 이동이 즉시 중단된다. <code>CheckLocalizationQuality</code> 노드는 위치 추정의 불확실성(covariance)이 허용 범위를 초과하면 <code>FAILURE</code>를 반환하여, 위치 추정 품질이 저하된 상태에서의 맹목적 이동을 방지한다.</p>
+<p>다중 감시 조건 적용 시 각 감시 노드의 Tick 연산 비용에 주의하여야 한다. 감시 노드의 수가 증가할수록 단일 Tick 주기 내 총 연산 시간이 증가하므로, 행동 트리의 실시간 성능 요구 사항을 충족하는 범위 내에서 감시 노드의 수와 각 노드의 연산 복잡도를 관리하여야 한다.</p>
+<h2>7. XML 정의 예시</h2>
+<p>BehaviorTree.CPP 프레임워크에서 이동과 감시의 동시 실행 패턴을 XML로 정의하는 예시는 다음과 같다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;NavigateToWaypoint goal="{target_waypoint}" /&gt;
+    &lt;MonitorBatteryLevel threshold="{min_battery}" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p><code>success_count="2"</code>는 두 자식 모두 성공하여야 Parallel 노드가 성공으로 종료됨을 의미하며, <code>failure_count="1"</code>은 하나의 자식이라도 실패하면 전체가 실패로 종료됨을 의미한다. 포트 바인딩에서 중괄호(<code>{}</code>)로 감싼 값은 블랙보드 키를 참조한다.</p>
+<h2>8. 감시 노드의 설계 원칙</h2>
+<p>이동과 감시의 동시 실행 패턴에서 감시 노드는 다음 원칙에 따라 설계하여야 한다.</p>
+<ol>
+<li>
+<p><strong>무부작용 원칙</strong>: 감시 노드는 로봇의 물리적 상태를 변경하지 않고 오직 조건 판정만을 수행하여야 한다. 감시 노드가 액추에이터 명령을 발행하면 이동 행동과의 간섭이 발생할 수 있다.</p>
+</li>
+<li>
+<p><strong>경량 연산 원칙</strong>: 감시 노드의 Tick 연산은 가능한 한 짧은 시간 내에 완료되어야 한다. 센서 데이터의 복잡한 후처리가 필요한 경우, 별도의 ROS2 노드에서 처리하고 감시 노드는 처리 결과만을 조회하는 구조를 채택하라.</p>
+</li>
+<li>
+<p><strong>임계값 설정 원칙</strong>: 감시 조건의 임계값은 블랙보드 또는 파라미터 서버를 통해 외부에서 설정 가능하도록 하여, 운용 환경에 따른 유연한 조정을 지원하여야 한다.</p>
+</li>
+<li>
+<p><strong>Halt 안전성 원칙</strong>: 감시 노드가 Halt 호출을 수신하면 내부 상태를 안전하게 초기화하고 즉시 반환하여야 한다. Parallel 노드의 조기 종료 시 모든 자식에 Halt가 전파되므로, 감시 노드의 Halt 처리가 신속하지 않으면 전체 시스템의 반응성이 저하된다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

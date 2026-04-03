@@ -115,6 +115,158 @@
             </header>
             <article>
                 <h1>1295.71 BehaviorTree.CPP에서의 Parallel 구현</h1>
+<h2>1. BehaviorTree.CPP 라이브러리 개요</h2>
+<p>BehaviorTree.CPP는 C++로 구현된 행동 트리 라이브러리로, ROS2 생태계에서 로봇 행동 제어의 사실상 표준(de facto standard)으로 사용되고 있다. 이 라이브러리는 Parallel, ReactiveSequence, ReactiveFallback을 포함한 다양한 제어 노드를 내장 제공하며, XML 기반의 트리 정의와 런타임 동적 로딩을 지원한다. 본 절에서는 BehaviorTree.CPP 버전 4.x에서의 Parallel 노드 구현을 분석한다.</p>
+<h2>2. ParallelAll 노드</h2>
+<p>BehaviorTree.CPP 4.x에서는 Parallel 노드가 <code>ParallelAll</code>이라는 이름으로 제공된다. 이 노드는 모든 자식에게 매 Tick에서 Tick을 전파하며, 설정된 성공 및 실패 임계값에 따라 결과를 결정한다.</p>
+<pre><code class="language-cpp">// BehaviorTree.CPP 4.x의 ParallelAll 노드 사용
+class ParallelAll : public ControlNode
+{
+public:
+    ParallelAll(const std::string&amp; name, const NodeConfig&amp; config);
+    
+    static PortsList providedPorts()
+    {
+        return {InputPort&lt;int&gt;("max_failures", 0, 
+                "허용되는 최대 실패 자식 수")};
+    }
+    
+private:
+    NodeStatus tick() override;
+    void halt() override;
+};
+</code></pre>
+<p><code>max_failures</code> 파라미터가 Parallel의 실패 정책을 결정한다. <code>max_failures = 0</code>이면 하나의 자식이라도 <code>FAILURE</code>를 반환하면 Parallel이 <code>FAILURE</code>를 반환한다(FAILURE_ONE 정책에 해당). <code>max_failures = N</code>이면 최대 <span class="math math-inline">N</span>개의 자식 실패가 허용된다.</p>
+<h2>3. XML에서의 Parallel 노드 정의</h2>
+<p>BehaviorTree.CPP에서 Parallel 노드를 XML로 정의하는 방식은 다음과 같다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree ID="ParallelExample"&gt;
+    &lt;ParallelAll max_failures="0"&gt;
+        &lt;NavigateToGoal goal="{target_position}" /&gt;
+        &lt;MonitorBattery threshold="15.0" /&gt;
+        &lt;RecordSensorData output_file="{log_path}" /&gt;
+    &lt;/ParallelAll&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>max_failures="0"</code>은 하나의 자식이라도 실패하면 전체가 실패하는 정책이다. 모든 자식이 <code>SUCCESS</code>를 반환하면 <code>ParallelAll</code>이 <code>SUCCESS</code>를 반환한다.</p>
+<h2>4. tick() 메서드의 구현 구조</h2>
+<p>BehaviorTree.CPP의 <code>ParallelAll::tick()</code> 메서드의 동작을 개념적으로 기술한다.</p>
+<pre><code>function ParallelAll.tick():
+    success_count ← 0
+    failure_count ← 0
+    
+    for each child in children:
+        if child.status() == SUCCESS:
+            success_count ← success_count + 1
+            continue  // 이미 완료된 자식은 재Tick하지 않음
+        
+        if child.status() == FAILURE:
+            failure_count ← failure_count + 1
+            continue
+        
+        child_status ← child.tick()
+        
+        if child_status == SUCCESS:
+            success_count ← success_count + 1
+        else if child_status == FAILURE:
+            failure_count ← failure_count + 1
+    
+    // 정책 평가
+    if failure_count &gt; max_failures:
+        haltAllRunningChildren()
+        return FAILURE
+    
+    if success_count == childrenCount():
+        return SUCCESS
+    
+    return RUNNING
+</code></pre>
+<p>이 구현에서 주목할 점은, 이미 <code>SUCCESS</code>나 <code>FAILURE</code>를 반환한 자식에게는 Tick을 재전파하지 않는다는 것이다. <code>RUNNING</code> 상태인 자식에게만 Tick이 전파된다.</p>
+<h2>5. halt() 메서드의 구현</h2>
+<pre><code>function ParallelAll.halt():
+    for each child in children:
+        if child.status() == RUNNING:
+            child.halt()
+    resetChildren()  // 모든 자식의 상태를 IDLE로 초기화
+</code></pre>
+<p>Halt 시 <code>RUNNING</code> 상태인 모든 자식에 Halt를 전파하고, 모든 자식의 상태를 <code>IDLE</code>로 초기화한다.</p>
+<h2>6. 이전 버전과의 차이</h2>
+<p>BehaviorTree.CPP 3.x에서는 <code>ParallelNode</code>라는 이름으로 Parallel 노드가 제공되었으며, 성공 임계값(<code>success_count</code>)과 실패 임계값(<code>failure_count</code>)을 별도로 설정할 수 있었다.</p>
+<pre><code class="language-xml">&lt;!-- BehaviorTree.CPP 3.x 방식 --&gt;
+&lt;Parallel success_count="3" failure_count="1"&gt;
+    &lt;Child1 /&gt;
+    &lt;Child2 /&gt;
+    &lt;Child3 /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>4.x에서는 <code>ParallelAll</code>로 명칭이 변경되고, <code>max_failures</code> 파라미터로 단순화되었다. 성공 정책은 항상 SUCCESS_ALL(모든 자식 성공)이다.</p>
+<h2>7. ROS2 Nav2에서의 사용</h2>
+<p>ROS2의 Nav2(Navigation2) 스택에서는 BehaviorTree.CPP를 활용하여 로봇의 항법 행동 트리를 구성한다. Nav2에서 Parallel 노드는 주로 다음의 용도로 사용된다.</p>
+<pre><code class="language-xml">&lt;!-- Nav2 행동 트리에서의 Parallel 사용 예시 --&gt;
+&lt;ParallelAll max_failures="1"&gt;
+    &lt;FollowPath path="{path}" controller_id="FollowPath" /&gt;
+    &lt;GoalChecker goal="{goal}" /&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<p>경로 추종과 목표 도달 검사를 동시에 수행한다. 경로 추종이 실행되는 동안 목표 도달 여부를 지속적으로 검사하여, 목표에 도달하면 <code>SUCCESS</code>를 반환한다.</p>
+<h2>8. 커스텀 Parallel 노드의 등록</h2>
+<p>BehaviorTree.CPP에서 커스텀 Parallel 변형 노드를 구현하여 등록할 수 있다.</p>
+<pre><code class="language-cpp">class CustomParallel : public BT::ControlNode
+{
+public:
+    CustomParallel(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : ControlNode(name, config) {}
+    
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort&lt;int&gt;("success_threshold", 1, 
+                "성공으로 간주할 최소 성공 자식 수")};
+    }
+    
+    BT::NodeStatus tick() override
+    {
+        int success_threshold;
+        getInput("success_threshold", success_threshold);
+        
+        int success_count = 0;
+        int failure_count = 0;
+        
+        for (size_t i = 0; i &lt; childrenCount(); i++)
+        {
+            auto child_status = children_nodes_[i]-&gt;executeTick();
+            
+            if (child_status == BT::NodeStatus::SUCCESS)
+                success_count++;
+            else if (child_status == BT::NodeStatus::FAILURE)
+                failure_count++;
+        }
+        
+        if (success_count &gt;= success_threshold)
+        {
+            haltChildren();
+            return BT::NodeStatus::SUCCESS;
+        }
+        
+        if (failure_count == childrenCount())
+            return BT::NodeStatus::FAILURE;
+        
+        return BT::NodeStatus::RUNNING;
+    }
+};
+</code></pre>
+<pre><code class="language-cpp">// 팩토리에 등록
+factory.registerNodeType&lt;CustomParallel&gt;("CustomParallel");
+</code></pre>
+<h2>9. 디버깅과 시각화</h2>
+<p>BehaviorTree.CPP는 Groot2 시각화 도구와 연동하여, Parallel 노드의 실행 상태를 실시간으로 모니터링할 수 있다. 각 자식의 상태(<code>RUNNING</code>, <code>SUCCESS</code>, <code>FAILURE</code>, <code>IDLE</code>)가 색상으로 구분되어 표시되며, 정책 충족 여부와 Halt 전파를 시각적으로 확인할 수 있다.</p>
+<pre><code class="language-cpp">// 로깅 활성화
+BT::StdCoutLogger logger(tree);
+
+// 또는 파일 로깅
+BT::FileLogger file_logger(tree, "bt_trace.fbl");
+
+// Groot2 실시간 모니터링
+BT::Groot2Publisher publisher(tree);
+</code></pre>
 
             </article>
             <footer>

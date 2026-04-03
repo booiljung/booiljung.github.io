@@ -115,6 +115,107 @@
             </header>
             <article>
                 <h1>Chapter 1296. 액션 노드 설계와 구현 (Action Node Design and Implementation)</h1>
+<h2>1. 액션 노드의 정의와 역할</h2>
+<p>행동 트리에서 액션 노드(Action Node)는 리프 노드(leaf node)의 한 유형으로, 로봇이 실제로 수행하는 행동을 캡슐화한다. 제어 노드(Sequence, Fallback, Parallel 등)가 트리의 실행 흐름을 결정하고, 조건 노드가 환경 상태를 판별하는 반면, 액션 노드는 모터 구동, 경로 추종, 센서 데이터 수집, ROS2 서비스 호출 등의 구체적 행동을 실행한다. 액션 노드는 행동 트리와 로봇 하드웨어/소프트웨어 시스템 사이의 인터페이스 계층에 해당한다.</p>
+<h2>2. BehaviorTree.CPP의 액션 노드 분류</h2>
+<p>BehaviorTree.CPP 라이브러리(버전 4.x)는 액션 노드를 실행 모델에 따라 다음과 같이 분류한다.</p>
+<h3>2.1 SyncActionNode</h3>
+<p><code>SyncActionNode</code>는 <code>tick()</code> 메서드가 호출되면 즉시 완료되어 SUCCESS 또는 FAILURE를 반환하는 동기 액션 노드이다. RUNNING 상태를 반환하지 않으므로, 단일 Tick 내에서 완료되는 경량 작업에 적합하다.</p>
+<pre><code class="language-cpp">class SetBlackboardValue : public BT::SyncActionNode
+{
+public:
+    SetBlackboardValue(const std::string&amp; name, 
+                       const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("key"),
+            BT::InputPort&lt;std::string&gt;("value")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto key = getInput&lt;std::string&gt;("key").value();
+        auto value = getInput&lt;std::string&gt;("value").value();
+        config().blackboard-&gt;set(key, value);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h3>2.2 StatefulActionNode</h3>
+<p><code>StatefulActionNode</code>는 다수의 Tick에 걸쳐 실행되는 비동기 액션 노드이다. <code>onStart()</code>, <code>onRunning()</code>, <code>onHalted()</code>의 세 가지 콜백을 제공하며, 행동의 시작, 진행 중 상태 확인, 외부 Halt 처리를 분리하여 구현한다.</p>
+<pre><code class="language-cpp">class NavigateToGoal : public BT::StatefulActionNode
+{
+public:
+    NavigateToGoal(const std::string&amp; name, 
+                   const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;Pose&gt;("goal", "목표 위치")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        auto goal = getInput&lt;Pose&gt;("goal").value();
+        sendNavigationGoal(goal);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (isNavigationComplete())
+            return BT::NodeStatus::SUCCESS;
+        if (isNavigationFailed())
+            return BT::NodeStatus::FAILURE;
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override
+    {
+        cancelNavigation();
+    }
+};
+</code></pre>
+<p><code>onStart()</code>는 최초 Tick에서 호출되어 행동을 시작하고 RUNNING을 반환한다. 이후 Tick에서는 <code>onRunning()</code>이 호출되어 진행 상태를 확인한다. 부모 노드가 Halt를 전파하면 <code>onHalted()</code>가 호출되어 진행 중인 행동을 취소한다.</p>
+<h3>2.3 ThreadedAction (BT 3.x 호환)</h3>
+<p>BehaviorTree.CPP 3.x에서는 <code>AsyncActionNode</code>가 별도의 스레드에서 <code>tick()</code>을 실행하는 모델을 제공하였다. 4.x에서는 <code>StatefulActionNode</code>가 이를 대체하며, <code>ThreadedAction</code>은 하위 호환을 위해 유지된다. 새로운 구현에서는 <code>StatefulActionNode</code>를 사용하는 것이 권장된다.</p>
+<h2>3. 액션 노드의 설계 원칙</h2>
+<h3>3.1 단일 책임 원칙</h3>
+<p>각 액션 노드는 하나의 명확한 행동만을 수행하여야 한다. 다수의 행동을 하나의 액션 노드에 결합하면 재사용성이 저하되고, 행동 트리의 구조적 장점이 상실된다.</p>
+<h3>3.2 비차단 실행 원칙</h3>
+<p>액션 노드의 <code>tick()</code> 또는 <code>onRunning()</code>은 Tick 주기 내에 반환되어야 한다. 장시간 차단(blocking)하는 연산은 전체 행동 트리의 Tick을 지연시킨다. ROS2 액션 서버 호출, 네트워크 요청 등의 비동기 작업은 <code>StatefulActionNode</code> 패턴으로 구현하여, 요청을 보낸 후 RUNNING을 반환하고 후속 Tick에서 완료를 확인한다.</p>
+<h3>3.3 Halt 안전성 원칙</h3>
+<p>모든 비동기 액션 노드는 <code>onHalted()</code> 메서드에서 진행 중인 외부 요청을 취소하고, 할당된 자원을 해제하여야 한다. Halt가 발생하는 시나리오는 Parallel 노드의 정책 충족, Reactive 노드의 조건 위반, 외부 트리 Halt 등 다양하며, 모든 시나리오에서 안전하게 정리되어야 한다.</p>
+<h3>3.4 포트 기반 데이터 교환</h3>
+<p>액션 노드는 블랙보드 포트(InputPort, OutputPort)를 통해 데이터를 교환한다. 전역 변수나 직접적인 노드 간 참조를 사용하지 않으며, 포트를 통한 간접적 데이터 교환은 노드 간 결합도를 낮추고 재사용성을 높인다.</p>
+<h2>4. 액션 노드의 상태 전이</h2>
+<p>액션 노드의 상태 전이 모델은 다음과 같다.</p>
+<pre><code>IDLE → (tick 호출) → RUNNING 또는 SUCCESS 또는 FAILURE
+RUNNING → (tick 호출) → RUNNING 또는 SUCCESS 또는 FAILURE
+RUNNING → (halt 호출) → IDLE
+SUCCESS → IDLE (부모에 의해 초기화)
+FAILURE → IDLE (부모에 의해 초기화)
+</code></pre>
+<p><code>SyncActionNode</code>는 RUNNING을 거치지 않고 직접 SUCCESS 또는 FAILURE를 반환한다. <code>StatefulActionNode</code>는 <code>onStart()</code>에서 RUNNING을 반환한 후, <code>onRunning()</code>에서 최종 결과를 반환한다.</p>
+<h2>5. 로봇공학에서의 액션 노드 유형</h2>
+<p>로봇공학에서 사용되는 전형적 액션 노드 유형을 정리한다.</p>
+<table><thead><tr><th>유형</th><th>구현 기반</th><th>예시</th></tr></thead><tbody>
+<tr><td>블랙보드 조작</td><td>SyncActionNode</td><td>값 설정, 계산, 변환</td></tr>
+<tr><td>로그 출력</td><td>SyncActionNode</td><td>상태 기록, 이벤트 발행</td></tr>
+<tr><td>ROS2 토픽 발행</td><td>SyncActionNode</td><td>속도 명령, LED 제어</td></tr>
+<tr><td>ROS2 서비스 호출</td><td>SyncActionNode 또는 StatefulActionNode</td><td>파라미터 조회, 모드 전환</td></tr>
+<tr><td>ROS2 액션 호출</td><td>StatefulActionNode</td><td>항법, 매니퓰레이션, 도킹</td></tr>
+<tr><td>타임아웃 대기</td><td>StatefulActionNode</td><td>지정 시간 대기</td></tr>
+<tr><td>센서 데이터 수집</td><td>StatefulActionNode</td><td>스캔 완료 대기</td></tr>
+</tbody></table>
+<p>이 분류에 기반하여, 각 유형의 구체적 설계와 구현 방법을 이후 절에서 상세히 다룬다.</p>
 
             </article>
             <footer>

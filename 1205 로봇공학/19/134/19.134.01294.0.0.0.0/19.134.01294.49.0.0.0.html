@@ -115,6 +115,160 @@
             </header>
             <article>
                 <h1>1294.49 ReactiveFallback의 실행 알고리즘</h1>
+<h2>1. 알고리즘의 개요</h2>
+<p>ReactiveFallback의 실행 알고리즘은 매 Tick에서 항상 첫 번째 자식(인덱스 0)부터 순차적으로 평가를 시작하며, 내부에 재진입 인덱스를 유지하지 않는다. ReactiveSequence 알고리즘의 대칭적 쌍대로서, SUCCESS와 FAILURE의 역할이 교환된 구조를 가진다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 알고리즘의 단계별 절차</h2>
+<h3>2.1 단계 1: 초기화</h3>
+<p>Tick이 수신되면, 반복 인덱스 <code>i</code>를 0으로 설정한다.</p>
+<pre><code>i ← 0
+</code></pre>
+<h3>2.2 단계 2: 자식 순차 평가</h3>
+<p>인덱스 <code>i</code>의 자식에 대해 <code>executeTick()</code>을 호출한다.</p>
+<pre><code>status ← children[i].executeTick()
+</code></pre>
+<h3>2.3 단계 3: 반환 상태에 따른 처리</h3>
+<p><strong>경우 1: FAILURE 반환</strong></p>
+<p>현재 자식이 FAILURE를 반환하면, 인덱스를 증가시키고 다음 자식의 평가로 진행한다.</p>
+<pre><code>if status == FAILURE:
+    i ← i + 1
+    if i == N:
+        return FAILURE
+    else:
+        단계 2로 이동
+</code></pre>
+<p><strong>경우 2: SUCCESS 반환</strong></p>
+<p>현재 자식이 SUCCESS를 반환하면, 이후에 RUNNING 상태인 자식이 있을 경우 해당 자식을 Halt하고, ReactiveFallback 전체가 SUCCESS를 반환한다.</p>
+<pre><code>if status == SUCCESS:
+    resetChildren()
+    return SUCCESS
+</code></pre>
+<p><strong>경우 3: RUNNING 반환</strong></p>
+<p>현재 자식이 RUNNING을 반환하면, 이후의 모든 자식을 Halt하고 RUNNING을 반환한다.</p>
+<pre><code>if status == RUNNING:
+    haltChildrenAfter(i)
+    return RUNNING
+</code></pre>
+<h2>3. 알고리즘의 형식적 기술</h2>
+<p><span class="math math-display">
+\text{ReactiveFallback.tick}() = \begin{cases}
+\text{FAILURE} &amp; \text{if } \forall i \in [0, N): c_i = \text{FAILURE} \\
+\text{SUCCESS} &amp; \text{if } \exists k: c_k = \text{SUCCESS} \land \forall j &lt; k: c_j = \text{FAILURE} \\
+\text{RUNNING} &amp; \text{if } \exists k: c_k = \text{RUNNING} \land \forall j &lt; k: c_j = \text{FAILURE}
+\end{cases}
+</span></p>
+<p>이 형식적 정의는 ReactiveSequence의 정의에서 SUCCESS와 FAILURE가 교환된 대칭 구조이다.</p>
+<h2>4. ReactiveSequence 알고리즘과의 대칭적 대응</h2>
+<table><thead><tr><th>알고리즘 요소</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>시작 인덱스</td><td>항상 0</td><td>항상 0</td></tr>
+<tr><td>계속 진행 조건</td><td>SUCCESS</td><td>FAILURE</td></tr>
+<tr><td>조기 종료 (종료)</td><td>FAILURE</td><td>SUCCESS</td></tr>
+<tr><td>전체 완료 반환</td><td>모든 자식 SUCCESS → SUCCESS</td><td>모든 자식 FAILURE → FAILURE</td></tr>
+<tr><td>RUNNING 처리</td><td>Halt 후속, RUNNING 반환</td><td>Halt 후속, RUNNING 반환</td></tr>
+</tbody></table>
+<h2>5. 실행 추적 예시</h2>
+<h3>5.1 정상 실행: 대안 순차 탐색</h3>
+<pre><code>자식: [CondA, CondB, AsyncAct]
+
+Tick 1:
+  i=0: CondA.executeTick() → FAILURE
+  i=1: CondB.executeTick() → FAILURE
+  i=2: AsyncAct.executeTick() → RUNNING
+  haltChildrenAfter(2): (더 이상 자식 없음)
+  → return RUNNING
+</code></pre>
+<h3>5.2 우선순위 전환: 앞쪽 조건 성공</h3>
+<pre><code>Tick 2:
+  i=0: CondA.executeTick() → SUCCESS    (재평가에서 변화 감지)
+  resetChildren():
+    children[2](AsyncAct): RUNNING → halt()
+  → return SUCCESS
+</code></pre>
+<h3>5.3 대안 변경: RUNNING 자식의 이동</h3>
+<pre><code>자식: [CondA, AsyncAct1, AsyncAct2]
+
+Tick 1:
+  i=0: CondA → FAILURE
+  i=1: AsyncAct1 → RUNNING
+  haltChildrenAfter(1):
+    children[2](AsyncAct2): IDLE → 건너뜀
+  → return RUNNING
+
+Tick 2 (AsyncAct1 실패):
+  i=0: CondA → FAILURE
+  i=1: AsyncAct1 → FAILURE
+  i=2: AsyncAct2 → RUNNING
+  → return RUNNING
+</code></pre>
+<h3>5.4 모든 대안 소진</h3>
+<pre><code>Tick 3:
+  i=0: CondA → FAILURE
+  i=1: AsyncAct1 → FAILURE
+  i=2: AsyncAct2 → FAILURE
+  resetChildren()
+  → return FAILURE
+</code></pre>
+<h2>6. 알고리즘의 시간 복잡도</h2>
+<h3>6.1 최선의 경우</h3>
+<p>첫 번째 자식이 SUCCESS를 반환하면, 1개의 노드만 평가된다.</p>
+<p><span class="math math-display">T_{best} = O(1)</span></p>
+<h3>최악의 경우</h3>
+<p>모든 자식이 FAILURE를 반환하거나 마지막 자식이 RUNNING을 반환하면, <span class="math math-inline">N</span>개의 노드가 평가된다.</p>
+<p><span class="math math-display">T_{worst} = O(N)</span></p>
+<h3>6.2 RUNNING 지속 시의 총 비용</h3>
+<p>비동기 액션이 인덱스 <span class="math math-inline">k</span>에 위치하고 <span class="math math-inline">M</span> Tick 동안 RUNNING을 유지하는 경우:</p>
+<p><span class="math math-display">T_{total} = (k + 1) \times M</span></p>
+<h2>BehaviorTree.CPP v4에서의 알고리즘 구현</h2>
+<p>BehaviorTree.CPP v4에서 ReactiveFallback의 <code>tick()</code> 메서드는 다음과 같이 구현된다(Faconti, 2022).</p>
+<pre><code class="language-cpp">NodeStatus ReactiveFallback::tick()
+{
+    bool all_skipped = true;
+    for (size_t i = 0; i &lt; childrenCount(); i++)
+    {
+        TreeNode* child = children_nodes_[i];
+        const NodeStatus child_status = child-&gt;executeTick();
+
+        switch (child_status)
+        {
+            case NodeStatus::RUNNING:
+                for (size_t j = i + 1; j &lt; childrenCount(); j++)
+                {
+                    haltChild(j);
+                }
+                return NodeStatus::RUNNING;
+
+            case NodeStatus::SUCCESS:
+                resetChildren();
+                return NodeStatus::SUCCESS;
+
+            case NodeStatus::FAILURE:
+                all_skipped = false;
+                break;
+
+            case NodeStatus::SKIPPED:
+                break;
+
+            case NodeStatus::IDLE:
+                throw LogicError("Child node returned IDLE");
+        }
+    }
+    resetChildren();
+    return all_skipped ? NodeStatus::SKIPPED : NodeStatus::FAILURE;
+}
+</code></pre>
+<p>이 구현에서 RUNNING 자식이 발견되면 해당 인덱스 이후의 모든 자식에 대해 <code>haltChild()</code>를 호출한다.</p>
+<h2>알고리즘의 불변 조건</h2>
+<ol>
+<li><strong>단일 RUNNING 자식</strong>: 매 Tick 종료 시, 최대 하나의 자식만 RUNNING 상태를 유지한다.</li>
+<li><strong>순차적 평가 보장</strong>: 인덱스 <span class="math math-inline">i</span>의 자식은 인덱스 <span class="math math-inline">0</span>부터 <span class="math math-inline">i-1</span>까지의 모든 자식이 FAILURE를 반환한 후에만 평가된다.</li>
+<li><strong>Halt 완전성</strong>: SUCCESS 반환 시, 모든 RUNNING 자식이 Halt된다.</li>
+<li><strong>우선순위 유효성</strong>: RUNNING 상태가 유지되는 동안, 모든 앞쪽 대안이 매 Tick마다 재평가된다.</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

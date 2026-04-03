@@ -115,6 +115,141 @@
             </header>
             <article>
                 <h1>1295.47 비상 대응 우선순위 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>비상 대응 우선순위 패턴은 ReactiveFallback의 최상위 자식에 비상 상황 감지 조건과 비상 대응 행동을 배치하여, 어떤 임무를 수행 중이든 비상 상황이 감지되는 즉시 현재 행동을 중단하고 비상 대응 행동으로 전환하는 설계 패턴이다. 이 패턴은 로봇 시스템의 안전 아키텍처에서 소프트웨어 수준의 최종 방어선 역할을 수행한다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>ReactiveFallback
+├── Sequence [비상 대응: 최고 우선순위]
+│   ├── IsEmergencyDetected
+│   └── ExecuteEmergencyResponse
+├── [기타 우선순위 수준들]
+│   ├── ...
+└── NormalOperation [정상 운용: 최저 우선순위]
+</code></pre>
+<p><code>IsEmergencyDetected</code> 조건 노드는 매 Tick에서 가장 먼저 평가된다. 비상 상황이 감지되면 <code>SUCCESS</code>를 반환하고, <code>ExecuteEmergencyResponse</code>가 즉시 실행된다. 이 시점에서 하위에서 실행 중이던 모든 행동에 Halt가 전파된다.</p>
+<h2>3. 비상 상황의 유형과 대응</h2>
+<h3>3.1 비상 상황의 분류</h3>
+<table><thead><tr><th>비상 유형</th><th>감지 방법</th><th>대응 행동</th><th>심각도</th></tr></thead><tbody>
+<tr><td>E-Stop 활성화</td><td>하드웨어 신호</td><td>즉시 정지, 전력 유지</td><td>최고</td></tr>
+<tr><td>물리적 충돌 감지</td><td>힘/토크 센서, 범퍼</td><td>즉시 정지, 후퇴</td><td>최고</td></tr>
+<tr><td>화재/연기 감지</td><td>연기 감지기, 온도 센서</td><td>안전 구역으로 이동</td><td>최고</td></tr>
+<tr><td>시스템 장애</td><td>자체 진단</td><td>안전 모드 전환</td><td>높음</td></tr>
+<tr><td>통신 완전 두절</td><td>심장 박동 타임아웃</td><td>사전 정의 안전 행동</td><td>높음</td></tr>
+</tbody></table>
+<h3>3.2 다단계 비상 대응 구조</h3>
+<p>비상 상황의 심각도에 따라 차별화된 대응을 수행하기 위해, 비상 대응 자체를 다단계로 구성할 수 있다.</p>
+<pre><code>ReactiveFallback
+├── Sequence [심각도 1: E-Stop]
+│   ├── IsEStopActive
+│   └── ImmediateStop
+├── Sequence [심각도 2: 충돌 감지]
+│   ├── IsCollisionDetected
+│   └── StopAndRetract
+├── Sequence [심각도 3: 시스템 장애]
+│   ├── IsCriticalSystemFailure
+│   └── SafeShutdownSequence
+├── [일반 우선순위 수준들]
+└── NormalOperation
+</code></pre>
+<p>E-Stop은 가장 높은 심각도로, 모든 동작을 즉시 정지시킨다. 충돌 감지는 정지 후 후퇴 동작을 수행한다. 시스템 장애는 안전 종료 시퀀스를 실행한다. 각 비상 유형이 독립적인 우선순위 수준을 가지므로, 복수의 비상 상황이 동시에 발생하더라도 가장 높은 심각도의 대응이 선택된다.</p>
+<h2>4. 비상 감지 조건 노드의 설계</h2>
+<h3>4.1 복합 비상 조건</h3>
+<p>단일 센서에 의존하지 않고 다수의 비상 지표를 종합하여 판정하는 복합 비상 조건이다.</p>
+<pre><code>function IsEmergencyDetected.tick():
+    // 다중 비상 지표 확인
+    estop ← blackboard.get("estop_status")
+    collision ← blackboard.get("collision_detected")
+    system_fault ← blackboard.get("critical_fault")
+    
+    if estop == ACTIVE or collision == true or system_fault == true:
+        blackboard.set("emergency_type", 
+                       determineEmergencyType(estop, collision, system_fault))
+        return SUCCESS
+    
+    return FAILURE
+</code></pre>
+<h3>4.2 비상 유형 기록</h3>
+<p>비상 감지 시 비상 유형을 블랙보드에 기록하면, 비상 대응 행동 노드가 유형에 따라 적절한 대응 전략을 선택할 수 있다.</p>
+<pre><code>function ExecuteEmergencyResponse.tick():
+    emergency_type ← blackboard.get("emergency_type")
+    
+    switch emergency_type:
+        case ESTOP:
+            return executeImmediateStop()
+        case COLLISION:
+            return executeStopAndRetract()
+        case SYSTEM_FAULT:
+            return executeSafeShutdown()
+        default:
+            return executeImmediateStop()  // 안전 방향 기본값
+</code></pre>
+<h2>5. 비상 해소 후 복귀</h2>
+<p>비상 상황이 해소된 후 정상 운용으로 복귀하는 과정은 ReactiveFallback의 재평가 메커니즘에 의해 자연스럽게 처리된다.</p>
+<pre><code>Tick t:   IsEmergencyDetected → SUCCESS → EmergencyResponse 실행
+Tick t+1: IsEmergencyDetected → SUCCESS → EmergencyResponse 계속
+...
+Tick t+k: IsEmergencyDetected → FAILURE → 비상 해소
+          → 차순위 조건 평가 → 정상 운용 복귀
+</code></pre>
+<p>비상 조건이 <code>FAILURE</code>를 반환하면, ReactiveFallback은 다음 우선순위 수준으로 진행하여 현재 상황에 적합한 행동을 선택한다. 비상 대응 행동에는 자동으로 Halt가 전파되어 정리된다.</p>
+<p>다만, 비상 해소 직후 즉시 이전 임무로 복귀하는 것이 항상 안전하지는 않다. 비상 후 안전 점검 단계를 거쳐야 하는 경우, 다음과 같은 구조를 사용한다.</p>
+<pre><code>ReactiveFallback
+├── Sequence [비상 대응]
+│   ├── IsEmergencyDetected
+│   └── ExecuteEmergencyResponse
+├── Sequence [비상 후 점검]
+│   ├── IsPostEmergencyCheckRequired
+│   └── PerformSafetyCheck
+├── [일반 우선순위 수준들]
+└── NormalOperation
+</code></pre>
+<p><code>IsPostEmergencyCheckRequired</code> 조건은 최근에 비상이 발생하였고 아직 안전 점검이 완료되지 않았음을 나타낸다. 이 조건이 성립하는 동안 안전 점검이 수행되며, 점검이 완료되면 조건이 해소되어 정상 운용으로 복귀한다.</p>
+<h2>6. 비상 대응 행동의 구현 요구 사항</h2>
+<ol>
+<li>
+<p><strong>즉시 실행</strong>: 비상 대응 행동은 최초 Tick에서 즉시 물리적 대응 명령을 발행하여야 한다. 초기화나 준비 단계에서 시간을 소비하면 안전 대응이 지연된다.</p>
+</li>
+<li>
+<p><strong>자기 완결적</strong>: 비상 대응 행동은 외부 서비스나 다른 노드에 의존하지 않고 독립적으로 동작하여야 한다. 비상 상황에서는 외부 서비스가 가용하지 않을 수 있다.</p>
+</li>
+<li>
+<p><strong>Halt 안전성</strong>: 비상 대응 행동 자체에 Halt가 호출되는 경우(더 높은 심각도의 비상 발생 등)에도 안전한 상태를 유지하여야 한다.</p>
+</li>
+<li>
+<p><strong>로깅</strong>: 비상 감지 시각, 비상 유형, 대응 행동, 로봇 상태 등을 기록하여 사후 분석에 활용할 수 있도록 하라.</p>
+</li>
+</ol>
+<h2>7. XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;!-- 비상 대응 계층 --&gt;
+    &lt;Sequence&gt;
+        &lt;IsEStopActive /&gt;
+        &lt;ImmediateStop /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsCollisionDetected /&gt;
+        &lt;StopAndRetract distance="0.2" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsCriticalSystemFault /&gt;
+        &lt;SafeShutdownSequence /&gt;
+    &lt;/Sequence&gt;
+    
+    &lt;!-- 일반 우선순위 계층 --&gt;
+    &lt;Sequence&gt;
+        &lt;IsObstacleNear distance="1.5" /&gt;
+        &lt;AvoidObstacle /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryLow threshold="15.0" /&gt;
+        &lt;ReturnToBase /&gt;
+    &lt;/Sequence&gt;
+    
+    &lt;!-- 기본 임무 --&gt;
+    &lt;ExecuteMission goal="{current_goal}" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>비상 대응 조건이 최상위에, 일반 우선순위가 중간에, 기본 임무가 최하위에 배치된 전형적인 비상 대응 우선순위 패턴이다.</p>
 
             </article>
             <footer>

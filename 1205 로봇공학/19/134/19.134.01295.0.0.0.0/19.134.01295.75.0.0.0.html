@@ -115,6 +115,183 @@
             </header>
             <article>
                 <h1>1295.75 BehaviorTree.CPP에서의 ReactiveSequence 구현</h1>
+<h2>1. ReactiveSequence 클래스</h2>
+<p>BehaviorTree.CPP에서 ReactiveSequence는 <code>ControlNode</code>를 상속하는 내장 제어 노드로 제공된다. 이 노드는 메모리 없는 Sequence로, 매 Tick에서 항상 첫 번째 자식부터 순차적으로 평가한다.</p>
+<pre><code class="language-cpp">class ReactiveSequence : public ControlNode
+{
+public:
+    ReactiveSequence(const std::string&amp; name)
+        : ControlNode(name, {}) {}
+    
+    ReactiveSequence(const std::string&amp; name, const NodeConfig&amp; config)
+        : ControlNode(name, config) {}
+
+private:
+    NodeStatus tick() override;
+    void halt() override;
+};
+</code></pre>
+<p>ReactiveSequence는 추가 포트를 정의하지 않는다. 성공/실패 정책이나 임계값 같은 설정 파라미터가 필요 없기 때문이다.</p>
+<h2>2. tick() 메서드의 구현</h2>
+<p>BehaviorTree.CPP에서 ReactiveSequence의 <code>tick()</code> 메서드는 다음과 같은 구조로 구현되어 있다.</p>
+<pre><code class="language-cpp">NodeStatus ReactiveSequence::tick()
+{
+    bool all_success = true;
+    
+    for (size_t index = 0; index &lt; childrenCount(); index++)
+    {
+        TreeNode* current_child = children_nodes_[index];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status)
+        {
+            case NodeStatus::RUNNING:
+            {
+                // 이후의 RUNNING 자식에 Halt 전파
+                for (size_t j = index + 1; j &lt; childrenCount(); j++)
+                {
+                    if (children_nodes_[j]-&gt;status() == NodeStatus::RUNNING)
+                    {
+                        haltChild(j);
+                    }
+                }
+                return NodeStatus::RUNNING;
+            }
+            
+            case NodeStatus::FAILURE:
+            {
+                // 이후의 RUNNING 자식에 Halt 전파
+                for (size_t j = index + 1; j &lt; childrenCount(); j++)
+                {
+                    if (children_nodes_[j]-&gt;status() == NodeStatus::RUNNING)
+                    {
+                        haltChild(j);
+                    }
+                }
+                return NodeStatus::FAILURE;
+            }
+            
+            case NodeStatus::SUCCESS:
+            {
+                // 다음 자식으로 계속
+                break;
+            }
+            
+            default:
+                break;
+        }
+    }
+    
+    // 모든 자식이 SUCCESS
+    return NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>핵심 특성을 정리한다.</p>
+<ol>
+<li><strong>항상 인덱스 0부터 시작</strong>: <code>for</code> 루프가 <code>index = 0</code>에서 시작한다. 이전 Tick의 상태를 기억하지 않는다.</li>
+<li><strong>단축 평가</strong>: <code>RUNNING</code> 또는 <code>FAILURE</code> 반환 시 루프가 즉시 종료된다.</li>
+<li><strong>Halt 전파</strong>: 현재 인덱스 이후의 <code>RUNNING</code> 상태 자식에 Halt를 전파한다.</li>
+</ol>
+<h2>3. halt() 메서드의 구현</h2>
+<pre><code class="language-cpp">void ReactiveSequence::halt()
+{
+    haltChildren();
+    ControlNode::halt();
+}
+</code></pre>
+<p><code>haltChildren()</code> 메서드가 모든 <code>RUNNING</code> 상태의 자식에 Halt를 전파하고, <code>ControlNode::halt()</code>가 노드의 상태를 <code>IDLE</code>로 설정한다.</p>
+<h2>4. haltChild() 메서드</h2>
+<p>BehaviorTree.CPP의 <code>ControlNode</code>는 개별 자식에 Halt를 전파하는 <code>haltChild()</code> 메서드를 제공한다.</p>
+<pre><code class="language-cpp">void ControlNode::haltChild(size_t index)
+{
+    auto child = children_nodes_[index];
+    if (child-&gt;status() == NodeStatus::RUNNING)
+    {
+        child-&gt;halt();
+    }
+    child-&gt;setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<p>Halt 호출 후 자식의 상태를 <code>IDLE</code>로 설정하여, 다음 Tick에서 깨끗한 상태로 시작하도록 보장한다.</p>
+<h2>5. XML에서의 ReactiveSequence 정의</h2>
+<pre><code class="language-xml">&lt;BehaviorTree ID="ReactiveSequenceExample"&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;IsSafe /&gt;
+        &lt;IsLocalized /&gt;
+        &lt;NavigateToGoal goal="{target_position}" /&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>&lt;ReactiveSequence&gt;</code> 태그는 추가 속성 없이 자식 노드만을 포함한다.</p>
+<h2>6. 일반 Sequence와의 코드 차이</h2>
+<p>BehaviorTree.CPP에서 일반 <code>SequenceNode</code>는 <code>running_child_</code> 멤버 변수를 통해 이전 <code>RUNNING</code> 자식의 인덱스를 기억한다.</p>
+<pre><code class="language-cpp">// SequenceNode의 tick() (개념적)
+NodeStatus SequenceNode::tick()
+{
+    for (size_t index = running_child_; index &lt; childrenCount(); index++)
+    {
+        // ...
+        if (child_status == NodeStatus::RUNNING)
+        {
+            running_child_ = index;  // 인덱스 기억
+            return NodeStatus::RUNNING;
+        }
+        // ...
+    }
+    running_child_ = 0;
+    return NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>ReactiveSequence에는 <code>running_child_</code> 변수가 없다. 이것이 코드 수준에서의 핵심 차이이다.</p>
+<h2>7. executeTick()과 tick()의 관계</h2>
+<p>BehaviorTree.CPP에서 외부 코드가 노드를 Tick할 때는 <code>executeTick()</code>을 호출한다. <code>executeTick()</code>은 <code>tick()</code>을 내부적으로 호출하며, 전후로 다음의 처리를 수행한다.</p>
+<pre><code class="language-cpp">NodeStatus TreeNode::executeTick()
+{
+    // 사전 조건(PreCondition) 확인 (4.x)
+    auto pre_status = checkPreConditions();
+    if (pre_status.has_value())
+    {
+        return pre_status.value();
+    }
+    
+    // 실제 tick() 호출
+    NodeStatus status = tick();
+    
+    // 사후 조건(PostCondition) 처리 (4.x)
+    auto post_status = checkPostConditions(status);
+    if (post_status.has_value())
+    {
+        status = post_status.value();
+    }
+    
+    // 상태 변경 콜백 발생
+    setStatus(status);
+    
+    return status;
+}
+</code></pre>
+<p>BehaviorTree.CPP 4.x에서 도입된 사전 조건과 사후 조건 메커니즘에 의해, <code>tick()</code>이 호출되기 전에 노드의 실행이 건너뛰어질 수 있다.</p>
+<h2>8. ROS2 Nav2에서의 ReactiveSequence 사용</h2>
+<p>Nav2의 기본 행동 트리에서 ReactiveSequence는 이동 중 경로 유효성 감시에 사용된다.</p>
+<pre><code class="language-xml">&lt;!-- Nav2 행동 트리에서의 ReactiveSequence 사용 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;GoalUpdated /&gt;
+    &lt;FollowPath path="{path}" controller_id="FollowPath" /&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><code>GoalUpdated</code>는 목표가 갱신되면 <code>SUCCESS</code>를, 그렇지 않으면 <code>FAILURE</code>를 반환하는 조건 노드이다. 목표가 갱신되면 <code>FollowPath</code>가 Halt되고 새 경로로 재시작된다.</p>
+<h2>9. 주의 사항</h2>
+<ol>
+<li>
+<p><strong>조건 노드의 RUNNING 반환 금지</strong>: ReactiveSequence의 선행 위치에 배치되는 조건 노드가 <code>RUNNING</code>을 반환하면, 후행 자식이 Tick을 수신하지 못한다. 조건 노드는 반드시 <code>SUCCESS</code> 또는 <code>FAILURE</code>만을 반환하도록 구현하라.</p>
+</li>
+<li>
+<p><strong>중간 위치의 상태 있는 행동 금지</strong>: ReactiveSequence의 중간 위치에 <code>RUNNING</code>을 반환하는 상태 있는 행동을 배치하면, 매 Tick에서 재평가되어 후행 자식이 반복적으로 Halt되는 문제가 발생한다.</p>
+</li>
+<li>
+<p><strong>Halt의 안전한 구현</strong>: ReactiveSequence 하위의 행동 노드는 언제든 Halt를 수신할 수 있다. 물리적 동작의 안전한 정지와 자원 해제를 Halt 메서드에 구현하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

@@ -115,6 +115,85 @@
             </header>
             <article>
                 <h1>1294.34 Fallback 노드의 Failure 반환 조건</h1>
+<h2>1. FAILURE 반환의 정의</h2>
+<p>Fallback 노드가 FAILURE를 반환하는 조건은 “모든 자식이 FAILURE를 반환하는 것“이다. 이는 Fallback의 OR 의미론에서 모든 피연산자가 거짓(false)인 경우에 해당하며, 시도 가능한 모든 대안이 실패했음을 의미한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 형식적 조건</h2>
+<p>자식 <span class="math math-inline">c_1, c_2, ..., c_N</span>을 가진 Fallback이 FAILURE를 반환하는 필요충분조건은 다음과 같다:</p>
+<p><span class="math math-display">\forall i \in [1, N]: c_i = \text{FAILURE}</span></p>
+<p>모든 자식이 평가되어야 하므로, FAILURE 반환은 항상 <span class="math math-inline">N</span>개의 자식이 모두 평가된 후에 발생한다. 이는 Fallback의 조기 종료가 SUCCESS에서만 발생하고, FAILURE에서는 발생하지 않음을 의미한다.</p>
+<h2>FAILURE 반환의 실행 흐름</h2>
+<h3>모든 자식 평가 완료</h3>
+<pre><code>children: [A, B, C]
+
+tick():
+  A.executeTick() → FAILURE    (대안 1 실패)
+  B.executeTick() → FAILURE    (대안 2 실패)
+  C.executeTick() → FAILURE    (대안 3 실패)
+  → return FAILURE             (모든 대안 소진)
+</code></pre>
+<p>Fallback의 FAILURE는 항상 마지막 자식의 평가 후에 결정된다. 중간에 FAILURE가 발생해도 다음 자식으로 진행한다는 점에서, Sequence의 FAILURE(중간 자식의 FAILURE에서 즉시 종료)와 대비된다.</p>
+<h3>자식 수에 따른 FAILURE 결정</h3>
+<table><thead><tr><th>자식 수</th><th>FAILURE 결정 시 평가된 자식 수</th></tr></thead><tbody>
+<tr><td>1</td><td>1개 전부</td></tr>
+<tr><td>3</td><td>3개 전부</td></tr>
+<tr><td>N</td><td>N개 전부</td></tr>
+</tbody></table>
+<h2>FAILURE의 의미론적 해석</h2>
+<h3>모든 대안의 소진</h3>
+<p>Fallback의 FAILURE는 “시도 가능한 모든 대안이 실패했다“는 의미이다. 이는 로봇이 더 이상 취할 수 있는 행동이 없음을 상위 노드에 보고하는 것에 해당한다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="OpenWithKey"/&gt;       &lt;!-- 실패: 열쇠 없음 --&gt;
+    &lt;Action ID="OpenWithCard"/&gt;      &lt;!-- 실패: 카드 인식 불가 --&gt;
+    &lt;Action ID="CallForHelp"/&gt;       &lt;!-- 실패: 통신 두절 --&gt;
+&lt;/Fallback&gt;
+&lt;!-- → FAILURE: 문을 열 수 있는 모든 방법이 실패 --&gt;
+</code></pre>
+<h3>상위 노드로의 FAILURE 전파</h3>
+<p>Fallback의 FAILURE는 상위 노드로 전파된다. 상위 노드가 Sequence인 경우, 해당 Sequence도 FAILURE를 반환한다. 상위 노드가 또 다른 Fallback인 경우, 다음 대안으로 진행한다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;                          &lt;!-- 상위 Fallback --&gt;
+    &lt;Fallback&gt;                      &lt;!-- 하위 Fallback: 모든 자식 FAILURE --&gt;
+        &lt;Action ID="MethodA"/&gt;
+        &lt;Action ID="MethodB"/&gt;
+    &lt;/Fallback&gt;                     &lt;!-- → FAILURE → 상위 Fallback의 다음 자식으로 --&gt;
+    &lt;Action ID="MethodC"/&gt;          &lt;!-- 상위 Fallback의 다음 대안 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>WithMemory에서의 FAILURE 반환</h2>
+<p>FallbackWithMemory에서 FAILURE가 반환되면, <code>current_child_idx</code>가 0으로 초기화된다. 다음 Tick에서는 첫 번째 자식부터 다시 평가가 시작된다.</p>
+<pre><code>Tick 1: A→F, B→R (idx=1)    → RUNNING
+Tick 2: B→F (idx=1)
+        C→F                   → FAILURE (idx←0)
+Tick 3: A→F, B→F, C→F       → FAILURE (처음부터 재시작)
+</code></pre>
+<p>FAILURE 반환 시 인덱스가 초기화되므로, 다음 기회에 첫 번째 대안부터 다시 시도할 수 있다.</p>
+<h2>ReactiveFallback에서의 FAILURE 반환</h2>
+<p>ReactiveFallback에서 FAILURE는 매 Tick에서 모든 자식이 FAILURE를 반환한 경우에 발생한다. 이전 Tick에서 SUCCESS였던 자식도 재평가되므로, 이전에 성공했던 대안이 현재 Tick에서 실패로 전환될 수 있다.</p>
+<pre><code>Tick 1: A→S                  → SUCCESS
+Tick 2: A→F, B→F, C→F       → FAILURE (A가 FAILURE로 변경)
+</code></pre>
+<h2>Sequence의 FAILURE와의 비교</h2>
+<table><thead><tr><th>특성</th><th>Sequence의 FAILURE</th><th>Fallback의 FAILURE</th></tr></thead><tbody>
+<tr><td>조건</td><td>하나의 자식 FAILURE</td><td>모든 자식 FAILURE</td></tr>
+<tr><td>의미</td><td>“하나의 단계 실패”</td><td>“모든 대안 소진”</td></tr>
+<tr><td>평가된 자식 수</td><td>1개~N개</td><td>항상 N개</td></tr>
+<tr><td>조기 종료 여부</td><td>예 (FAILURE에서 종료)</td><td>아니오 (끝까지 평가)</td></tr>
+</tbody></table>
+<p>Sequence의 FAILURE는 하나의 자식 FAILURE에서 즉시 발생하는 반면, Fallback의 FAILURE는 모든 자식을 소진한 후에야 발생한다. 이 차이는 AND와 OR 의미론의 대칭적 성질에서 비롯된다.</p>
+<h2>FAILURE 반환과 안전 설계</h2>
+<p>Fallback의 FAILURE는 로봇이 더 이상 대응할 수 있는 방법이 없음을 나타내므로, 상위 트리에서 반드시 처리해야 하는 중대한 신호이다. 최상위 수준의 Fallback이 FAILURE를 반환하면, 이는 행동 트리 전체가 실패한 것을 의미하며, 비상 정지 등의 안전 메커니즘이 개입해야 할 수 있다(Faconti, 2022).</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;SubTree ID="NormalOperation"/&gt;    &lt;!-- 정상 운용 --&gt;
+    &lt;SubTree ID="RecoveryBehavior"/&gt;   &lt;!-- 복구 시도 --&gt;
+    &lt;Action ID="EmergencyStop"/&gt;       &lt;!-- 최후 수단: 비상 정지 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조에서 EmergencyStop까지 FAILURE를 반환하는 경우는 비상 정지조차 실패한 극단적 상황이며, 시스템 수준의 안전 장치가 동작해야 한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

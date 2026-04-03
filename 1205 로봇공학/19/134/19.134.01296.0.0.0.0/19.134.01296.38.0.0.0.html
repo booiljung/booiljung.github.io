@@ -115,6 +115,310 @@
             </header>
             <article>
                 <h1>1296.38 포트를 통한 데이터 읽기 (getInput)</h1>
+<h2>1. getInput() 메서드의 개요</h2>
+<p><code>getInput()</code>은 BehaviorTree.CPP 라이브러리에서 노드가 입력 포트(<code>InputPort</code>) 또는 양방향 포트(<code>BidirectionalPort</code>)를 통해 블랙보드의 데이터를 읽기 위해 호출하는 메서드이다. 이 메서드는 <code>TreeNode</code> 기반 클래스에 정의되어 있으며, 모든 액션 노드, 조건 노드, 데코레이터 노드에서 사용 가능하다. <code>getInput()</code>은 포트 명칭을 인자로 받아, XML에서 해당 포트에 매핑된 블랙보드 키의 값 또는 리터럴 값을 반환한다(Faconti, 2022).</p>
+<h2>2. getInput()의 호출 형식</h2>
+<p>BehaviorTree.CPP 4.x에서 <code>getInput()</code>은 두 가지 오버로드를 제공한다.</p>
+<h3>2.1 참조 반환 형식</h3>
+<pre><code class="language-cpp">template &lt;typename T&gt;
+bool getInput(const std::string&amp; port_name, T&amp; destination);
+</code></pre>
+<p>포트의 값을 <code>destination</code>에 대입하고, 성공 시 <code>true</code>, 실패 시 <code>false</code>를 반환한다.</p>
+<pre><code class="language-cpp">geometry_msgs::msg::PoseStamped goal;
+if (!getInput("goal_pose", goal))
+{
+    // 실패 처리
+    return BT::NodeStatus::FAILURE;
+}
+// goal에 유효한 값이 대입됨
+</code></pre>
+<h3>2.2 Expected 반환 형식</h3>
+<pre><code class="language-cpp">template &lt;typename T&gt;
+BT::Expected&lt;T&gt; getInput(const std::string&amp; port_name);
+</code></pre>
+<p><code>BT::Expected&lt;T&gt;</code>를 반환하며, 성공 시 값을 포함하고 실패 시 오류 메시지를 포함한다.</p>
+<pre><code class="language-cpp">auto result = getInput&lt;double&gt;("timeout_sec");
+if (!result)
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "timeout_sec 읽기 실패: %s",
+        result.error().c_str());
+    return BT::NodeStatus::FAILURE;
+}
+double timeout = result.value();
+</code></pre>
+<p><code>Expected</code> 형식은 실패 원인을 문자열로 제공하므로 디버깅에 유리하다.</p>
+<h2>3. 내부 동작 과정</h2>
+<p><code>getInput()</code> 호출 시의 내부 동작을 단계별로 기술한다.</p>
+<h3>3.1 단계: 포트 매핑 조회</h3>
+<p>노드의 포트 구성(NodeConfig)에서 지정된 포트 명칭의 매핑 정보를 조회한다. 매핑 정보는 XML 파싱 시 결정되며, 블랙보드 키 참조 또는 리터럴 값의 형태이다.</p>
+<h3>3.2 단계: 값의 해석</h3>
+<p>매핑 정보의 형태에 따라 다른 경로로 값을 해석한다.</p>
+<pre><code>getInput("port_name", destination)
+    │
+    ├─ 매핑 정보 조회
+    │       │
+    │       ├─ 블랙보드 키 참조 ("{key}")
+    │       │       │
+    │       │       ├─ 블랙보드에서 "key" 조회
+    │       │       │       │
+    │       │       │       ├─ 키 존재, 타입 일치 → 값 대입 → 성공
+    │       │       │       │
+    │       │       │       ├─ 키 존재, 타입 불일치 → 변환 시도
+    │       │       │       │       │
+    │       │       │       │       ├─ 변환 성공 → 값 대입 → 성공
+    │       │       │       │       │
+    │       │       │       │       └─ 변환 실패 → 실패
+    │       │       │       │
+    │       │       │       └─ 키 미존재 → 실패
+    │       │       │
+    │       │       └─ 결과 반환
+    │       │
+    │       ├─ 리터럴 값 ("30.0")
+    │       │       │
+    │       │       ├─ convertFromString&lt;T&gt;("30.0") 호출
+    │       │       │       │
+    │       │       │       ├─ 변환 성공 → 값 대입 → 성공
+    │       │       │       │
+    │       │       │       └─ 변환 실패 → 실패
+    │       │       │
+    │       │       └─ 결과 반환
+    │       │
+    │       ├─ 기본값 (XML 미지정, 기본값 존재)
+    │       │       │
+    │       │       └─ 기본값 문자열로 변환 → 위와 동일
+    │       │
+    │       └─ 미지정 (XML 미지정, 기본값 없음) → 실패
+    │
+    └─ 최종 결과
+</code></pre>
+<h3>3.3 단계: 타입 변환</h3>
+<p>블랙보드에 저장된 값의 타입이 요청 타입 <code>T</code>와 정확히 일치하면 직접 대입된다. 일치하지 않는 경우, 블랙보드의 <code>Any</code> 타입 저장소가 <code>convertFromString&lt;T&gt;()</code> 또는 등록된 변환 함수를 통해 변환을 시도한다.</p>
+<h2>4. 실패 원인과 진단</h2>
+<p><code>getInput()</code> 실패의 주요 원인을 분류한다.</p>
+<table><thead><tr><th>실패 원인</th><th>상황</th><th>Expected 오류 메시지 예시</th></tr></thead><tbody>
+<tr><td>포트 미지정</td><td>XML에서 해당 포트가 설정되지 않고 기본값도 없음</td><td><code>"port 'X' not found"</code></td></tr>
+<tr><td>블랙보드 키 미존재</td><td>참조한 블랙보드 키에 값이 저장되지 않음</td><td><code>"key 'X' not found in blackboard"</code></td></tr>
+<tr><td>타입 변환 실패</td><td>리터럴 값의 문자열-타입 변환 실패</td><td><code>"cannot convert 'abc' to double"</code></td></tr>
+<tr><td>타입 불일치</td><td>블랙보드 값과 포트 타입 불일치</td><td><code>"type mismatch for key 'X'"</code></td></tr>
+</tbody></table>
+<h3>4.1 실패 진단 패턴</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    auto goal_result = getInput&lt;
+        geometry_msgs::msg::PoseStamped&gt;("goal_pose");
+
+    if (!goal_result)
+    {
+        // 오류 메시지로 실패 원인 진단
+        std::string error = goal_result.error();
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "goal_pose 읽기 실패: %s", error.c_str());
+
+        // 실패 원인에 따른 구체적 로그
+        if (error.find("not found") != std::string::npos)
+        {
+            RCLCPP_ERROR(node_-&gt;get_logger(),
+                "블랙보드에 값이 설정되지 않음");
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto goal = goal_result.value();
+    // ...
+}
+</code></pre>
+<h2>5. 노드 유형별 getInput() 사용 패턴</h2>
+<h3>5.1 SyncActionNode</h3>
+<pre><code class="language-cpp">class ComputeDistance : public BT::SyncActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;geometry_msgs::msg::Point&gt;("point_a"),
+            BT::InputPort&lt;geometry_msgs::msg::Point&gt;("point_b"),
+            BT::OutputPort&lt;double&gt;("distance")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        geometry_msgs::msg::Point a, b;
+        if (!getInput("point_a", a) || !getInput("point_b", b))
+            return BT::NodeStatus::FAILURE;
+
+        double dist = std::hypot(b.x - a.x, b.y - a.y);
+        setOutput("distance", dist);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p><code>SyncActionNode</code>에서는 <code>tick()</code> 시작부에서 입력을 읽는다. <code>tick()</code>은 매 호출마다 독립적이므로, 매번 최신 블랙보드 값을 읽는다.</p>
+<h3>5.2 StatefulActionNode</h3>
+<pre><code class="language-cpp">class NavigateToPose : public BT::StatefulActionNode
+{
+    geometry_msgs::msg::PoseStamped goal_;
+    double timeout_;
+
+    BT::NodeStatus onStart() override
+    {
+        // onStart()에서 모든 입력을 읽어 멤버에 저장
+        if (!getInput("goal_pose", goal_))
+            return BT::NodeStatus::FAILURE;
+
+        getInput("timeout_sec", timeout_);
+
+        sendNavigationGoal(goal_);
+        start_time_ = std::chrono::steady_clock::now();
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        // onRunning()에서는 저장된 멤버 사용
+        // getInput()을 다시 호출하지 않음
+        if (isComplete())
+            return BT::NodeStatus::SUCCESS;
+
+        auto elapsed = std::chrono::steady_clock::now()
+                     - start_time_;
+        if (elapsed &gt; std::chrono::duration&lt;double&gt;(timeout_))
+            return BT::NodeStatus::FAILURE;
+
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override { cancelNavigation(); }
+};
+</code></pre>
+<p><code>StatefulActionNode</code>에서는 <code>onStart()</code>에서 입력을 읽어 멤버 변수에 저장하고, <code>onRunning()</code>에서는 저장된 값을 사용한다. 이 패턴은 실행 중 블랙보드 값의 변경에 의한 비일관성을 방지한다.</p>
+<h3>5.3 ThreadedAction</h3>
+<pre><code class="language-cpp">class BlockingAction : public BT::ThreadedAction
+{
+    BT::NodeStatus tick() override
+    {
+        // tick() 시작부에서 입력을 지역 변수에 복사
+        std::string target;
+        if (!getInput("target", target))
+            return BT::NodeStatus::FAILURE;
+
+        double timeout;
+        getInput("timeout_sec", timeout);
+
+        // 차단 호출 수행 (블랙보드 미접근)
+        auto result = performBlockingCall(target, timeout);
+
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+
+        return result.success
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<p><code>ThreadedAction</code>에서는 <code>tick()</code> 시작부에서 입력을 지역 변수에 복사한 후, 이후 차단 호출 동안에는 블랙보드에 접근하지 않는다. 이는 스레드 안전성을 확보하기 위한 패턴이다.</p>
+<h2>6. 다중 입력 포트의 읽기</h2>
+<p>다수의 입력 포트를 읽을 때의 패턴을 제시한다.</p>
+<h3>6.1 순차적 검증</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    Pose target;
+    if (!getInput("goal_pose", target))
+    {
+        RCLCPP_ERROR(logger_, "'goal_pose' 누락");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double speed;
+    if (!getInput("speed", speed))
+    {
+        RCLCPP_ERROR(logger_, "'speed' 누락");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 모든 입력 유효
+    startAction(target, speed);
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>6.2 일괄 검증</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    bool valid = true;
+    Pose target;
+    double speed;
+    std::string frame;
+
+    if (!getInput("goal_pose", target))
+    { RCLCPP_ERROR(logger_, "'goal_pose' 누락"); valid = false; }
+
+    if (!getInput("speed", speed))
+    { RCLCPP_ERROR(logger_, "'speed' 누락"); valid = false; }
+
+    if (!getInput("frame_id", frame))
+    { RCLCPP_ERROR(logger_, "'frame_id' 누락"); valid = false; }
+
+    if (!valid)
+        return BT::NodeStatus::FAILURE;
+
+    startAction(target, speed, frame);
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>일괄 검증 패턴은 다수의 필수 입력이 누락된 경우 모든 누락 항목을 한 번에 보고하므로, 디버깅 효율이 높다.</p>
+<h2>7. 블랙보드의 스레드 안전성과 getInput()</h2>
+<p>BehaviorTree.CPP 4.x의 블랙보드는 내부적으로 <code>std::mutex</code>에 의해 보호된다. 따라서 <code>getInput()</code> 호출 자체는 스레드 안전하다. 그러나 <code>getInput()</code>과 후속 처리의 조합은 원자적이지 않다.</p>
+<table><thead><tr><th>노드 유형</th><th style="text-align: center">getInput() 안전성</th><th>비고</th></tr></thead><tbody>
+<tr><td>SyncActionNode</td><td style="text-align: center">안전</td><td>메인 스레드 단독</td></tr>
+<tr><td>StatefulActionNode</td><td style="text-align: center">안전</td><td>메인 스레드 단독</td></tr>
+<tr><td>CoroActionNode</td><td style="text-align: center">안전</td><td>메인 스레드 단독</td></tr>
+<tr><td>ThreadedAction</td><td style="text-align: center">호출 자체는 안전</td><td>복합 연산은 비원자적</td></tr>
+</tbody></table>
+<p><code>ThreadedAction</code>에서 <code>getInput()</code>을 <code>tick()</code> 시작부에서 호출하여 지역 변수에 복사한 후, 이후에는 블랙보드에 접근하지 않는 것이 권장되는 패턴이다.</p>
+<h2>8. getInput()과 타입 변환</h2>
+<h3>8.1 기본 타입 변환</h3>
+<p>기본 타입(<code>int</code>, <code>double</code>, <code>bool</code>, <code>std::string</code> 등)은 BehaviorTree.CPP에 내장된 <code>convertFromString&lt;T&gt;()</code> 함수에 의해 자동으로 변환된다.</p>
+<pre><code class="language-cpp">// XML: timeout_sec="30.0"
+double timeout;
+getInput("timeout_sec", timeout);  // "30.0" → 30.0
+</code></pre>
+<h3>8.2 사용자 정의 타입 변환</h3>
+<p>사용자 정의 타입은 <code>BT::convertFromString&lt;T&gt;()</code> 템플릿 특수화를 등록하여야 한다.</p>
+<pre><code class="language-cpp">namespace BT
+{
+template &lt;&gt;
+inline MyPose convertFromString(StringView str)
+{
+    auto parts = splitString(str, ';');
+    MyPose p;
+    p.x = convertFromString&lt;double&gt;(parts[0]);
+    p.y = convertFromString&lt;double&gt;(parts[1]);
+    return p;
+}
+}
+</code></pre>
+<h3>8.3 블랙보드 키 참조 시의 타입</h3>
+<p>블랙보드 키 참조(<code>{key}</code>)를 통해 값을 읽는 경우, 블랙보드에 저장된 값의 실제 타입과 <code>getInput()</code>에서 요청한 타입 <code>T</code>가 일치하여야 한다. 일치하지 않는 경우 <code>Any</code> 타입 저장소가 <code>convertFromString&lt;T&gt;()</code> 또는 등록된 변환 함수를 통해 변환을 시도하며, 변환이 불가능하면 실패한다.</p>
+<h2>9. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>반환값의 필수적 검사</strong>: 모든 <code>getInput()</code> 호출의 반환값을 검사한다. 반환값 무시는 유효하지 않은 데이터에 의한 미정의 동작을 유발할 수 있다.</p>
+</li>
+<li>
+<p><strong>입력 읽기의 시점 집중</strong>: 입력 포트의 읽기를 콜백의 시작부에 집중하여, 데이터 의존성을 명확히 하고 블랙보드 접근을 최소화한다.</p>
+</li>
+<li>
+<p><strong>Expected 형식의 활용</strong>: 디버깅이 필요한 경우 <code>Expected</code> 반환 형식을 사용하여 실패 원인을 구체적으로 파악한다.</p>
+</li>
+<li>
+<p><strong>StatefulActionNode에서 onStart() 읽기</strong>: <code>onStart()</code>에서 입력을 읽어 멤버 변수에 저장하고, <code>onRunning()</code>에서는 블랙보드에 재접근하지 않는다.</p>
+</li>
+<li>
+<p><strong>ThreadedAction에서 지역 복사</strong>: <code>tick()</code> 시작부에서 입력을 지역 변수에 복사하고, 이후 차단 호출 동안에는 블랙보드에 접근하지 않는다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

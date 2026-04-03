@@ -115,6 +115,143 @@
             </header>
             <article>
                 <h1>1294.75 Sequence 노드에서의 오류 전파</h1>
+<h2>1. 오류 전파의 기본 원리</h2>
+<p>Sequence 노드에서의 오류 전파(error propagation)란, 자식 노드가 FAILURE를 반환했을 때 그 실패 상태가 Sequence 노드를 통해 부모 노드로 전달되는 과정을 의미한다. Sequence의 AND 의미론에 의해, 어떤 자식이든 FAILURE를 반환하면 Sequence 자체가 FAILURE를 반환하며, 이 FAILURE는 트리 구조를 따라 상위로 전파된다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 단일 계층에서의 오류 전파</h2>
+<h3>2.1 FAILURE의 즉시 전파</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="Step1"/&gt;
+    &lt;Action ID="Step2"/&gt;    &lt;!-- FAILURE 발생 --&gt;
+    &lt;Action ID="Step3"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick: Step1→S, Step2→F → Sequence: FAILURE
+     Step3→(미실행)
+</code></pre>
+<p>Step2가 FAILURE를 반환하면, Sequence는 Step3을 실행하지 않고 즉시 FAILURE를 반환한다. 이는 Sequence의 조기 종료(short-circuit) 특성에 의한 것이다. Sequence의 FAILURE는 “순차적 작업 체인에서 하나의 단계가 실패했으므로 전체 작업이 실패했다“는 의미를 가진다.</p>
+<h3>2.2 조건 노드의 FAILURE 전파</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Condition ID="IsPreconditionMet"/&gt;    &lt;!-- FAILURE 발생 --&gt;
+    &lt;Action ID="PerformAction"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick: IsPreconditionMet→F → Sequence: FAILURE
+     PerformAction→(미실행)
+</code></pre>
+<p>전제 조건이 충족되지 않으면 행동이 실행되지 않고, Sequence 전체가 FAILURE를 반환한다. 이 FAILURE는 “전제 조건이 충족되지 않았으므로 행동을 수행할 수 없다“는 의미를 가진다.</p>
+<h2>3. 다중 계층에서의 오류 전파</h2>
+<h3>3.1 중첩 Sequence에서의 상향 전파</h3>
+<pre><code class="language-xml">&lt;Sequence name="Root"&gt;
+    &lt;Action ID="Step1"/&gt;
+    &lt;Sequence name="SubSequence"&gt;
+        &lt;Action ID="SubStep1"/&gt;
+        &lt;Action ID="SubStep2"/&gt;    &lt;!-- FAILURE 발생 --&gt;
+        &lt;Action ID="SubStep3"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="Step3"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick: Step1→S
+     SubStep1→S, SubStep2→F → SubSequence: FAILURE
+     → Root Sequence: FAILURE
+     Step3→(미실행)
+</code></pre>
+<p>SubStep2의 FAILURE가 SubSequence를 통해 Root Sequence로 전파된다. 각 Sequence 계층에서 FAILURE는 상위 계층으로 즉시 전달되며, 전파 과정에서 변환이나 소멸 없이 그대로 유지된다.</p>
+<h3>3.2 전파 경로의 시각화</h3>
+<pre><code>SubStep2 → FAILURE
+    ↓
+SubSequence → FAILURE (자식 FAILURE로 인한 조기 종료)
+    ↓
+Root Sequence → FAILURE (자식 FAILURE로 인한 조기 종료)
+    ↓
+부모 노드로 전파
+</code></pre>
+<p>오류는 발생 지점에서 루트까지 경로 상의 모든 Sequence 노드를 FAILURE로 만들며 상향 전파한다.</p>
+<h2>4. Sequence 변형별 오류 전파 특성</h2>
+<h3>4.1 SequenceWithMemory에서의 오류 전파</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="Step1"/&gt;
+    &lt;Action ID="Step2"/&gt;    &lt;!-- Tick N에서 FAILURE --&gt;
+    &lt;Action ID="Step3"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<pre><code>Tick 1: Step1→S, Step2→R (idx=1)
+Tick 2: Step2→R           (Step1 건너뜀)
+Tick 3: Step2→F           → FAILURE (idx 초기화)
+Tick 4: Step1→?           (idx=0에서 재시작)
+</code></pre>
+<p>SequenceWithMemory에서 자식이 FAILURE를 반환하면, <code>current_child_idx</code>가 0으로 초기화되고 Sequence가 FAILURE를 반환한다. 다음 Tick에서는 첫 번째 자식부터 다시 시작한다.</p>
+<h3>4.2 ReactiveSequence에서의 오류 전파</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsSafe"/&gt;
+    &lt;Action ID="PerformTask"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<pre><code>Tick 1: IsSafe→S, PerformTask→R → RUNNING
+Tick 2: IsSafe→F                 → FAILURE (PerformTask Halt)
+Tick 3: IsSafe→S, PerformTask→R → RUNNING (처음부터 재시작)
+</code></pre>
+<p>ReactiveSequence에서는 매 Tick 첫 번째 자식부터 재평가하므로, 조건 노드의 FAILURE가 매 Tick 감지될 수 있다. FAILURE 발생 시 RUNNING 상태의 후속 자식은 Halt된다.</p>
+<h2>5. 오류 전파와 Fallback의 상호작용</h2>
+<h3>5.1 Fallback에 의한 오류 차단</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPreconditionMet"/&gt;
+        &lt;Action ID="PrimaryAction"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="FallbackAction"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>Tick: IsPreconditionMet→F → Sequence: FAILURE
+     FallbackAction→R     → Fallback: RUNNING
+</code></pre>
+<p>Sequence의 FAILURE가 Fallback에 도달하면, Fallback은 다음 자식을 시도한다. 따라서 Sequence의 오류가 Fallback에 의해 차단(intercept)되어 상위 노드로 전파되지 않는다. 이것이 Sequence와 Fallback의 조합이 오류 처리의 기본 패턴이 되는 이유이다.</p>
+<h3>5.2 오류 전파의 차단 위치</h3>
+<pre><code class="language-xml">&lt;Sequence name="Mission"&gt;
+    &lt;Action ID="Step1"/&gt;
+    &lt;Fallback&gt;                        &lt;!-- 오류 차단 지점 --&gt;
+        &lt;Action ID="PrimaryStep2"/&gt;
+        &lt;Action ID="AlternativeStep2"/&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="Step3"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>PrimaryStep2가 실패하면 Fallback이 AlternativeStep2를 시도하고, AlternativeStep2가 성공하면 Mission Sequence는 Step3으로 진행한다. Fallback이 오류를 차단하여 Mission Sequence의 진행이 유지된다.</p>
+<h2>6. 오류 전파의 부수 효과</h2>
+<h3>6.1 RUNNING 자식의 Halt</h3>
+<p>Sequence에서 FAILURE가 발생하면, 해당 Tick에서 RUNNING 상태인 다른 자식 노드가 존재할 수 있다. 특히 ReactiveSequence에서 조건 노드의 FAILURE는 뒤쪽의 RUNNING 액션 노드를 Halt시킨다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsSafe"/&gt;        &lt;!-- Tick K에서 FAILURE --&gt;
+    &lt;Action ID="LongRunningTask"/&gt;  &lt;!-- Tick K-1에서 RUNNING → Halt --&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<pre><code>Tick K-1: IsSafe→S, LongRunningTask→R → RUNNING
+Tick K:   IsSafe→F                     → FAILURE
+          LongRunningTask→Halt          (onHalted() 호출)
+</code></pre>
+<h3>6.2 부수 효과의 비가역성</h3>
+<p>FAILURE로 인해 Halt된 액션의 부수 효과(모터 이동, 데이터 전송 등)는 자동으로 롤백되지 않는다. 예를 들어, 네비게이션 중 안전 조건 위반으로 Halt된 경우, 로봇은 Halt 시점의 위치에 정지하며 출발 위치로 자동 복귀하지 않는다. 부수 효과의 정리는 <code>onHalted()</code> 메서드 또는 상위 트리의 복구 행동에서 명시적으로 처리해야 한다.</p>
+<h2>7. 오류 전파의 설계 고려 사항</h2>
+<ol>
+<li>
+<p><strong>오류 차단 지점의 설계</strong>: 오류가 전파되어야 하는 범위를 결정하고, 적절한 위치에 Fallback을 배치하여 오류를 차단한다. 과도한 차단은 심각한 오류를 숨기고, 불충분한 차단은 불필요한 전체 실패를 유발한다.</p>
+</li>
+<li>
+<p><strong>오류 원인의 구분</strong>: Sequence의 FAILURE만으로는 어떤 자식이 실패했는지 알 수 없다. 블랙보드에 오류 정보를 기록하거나, 로깅을 통해 오류 원인을 추적할 수 있도록 설계해야 한다.</p>
+</li>
+<li>
+<p><strong>Halt 시 상태 정리</strong>: FAILURE로 인한 Halt에서 물리적 상태(모터, 액추에이터 등)를 안전하게 정리하는 <code>onHalted()</code> 구현이 필수적이다.</p>
+</li>
+<li>
+<p><strong>복구 가능성의 보장</strong>: 오류 전파 후 시스템이 복구 가능한 상태에 있도록 설계해야 한다. 비가역적 부수 효과가 발생한 경우, 복구 행동을 통해 시스템을 안전한 상태로 되돌려야 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

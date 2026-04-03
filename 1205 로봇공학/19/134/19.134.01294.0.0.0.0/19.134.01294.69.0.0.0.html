@@ -115,6 +115,222 @@
             </header>
             <article>
                 <h1>1294.69 드론의 이륙-비행-착륙 Sequence</h1>
+<h2>1. 드론 비행 임무의 순차적 구조</h2>
+<p>무인 항공기(UAV, Unmanned Aerial Vehicle)의 비행 임무는 이륙(takeoff), 비행(flight), 착륙(landing)의 3단계로 구성되는 엄격한 순차적 구조를 가진다. 이 세 단계는 물리적으로 선후 관계가 강제되며, 이전 단계가 완료되지 않으면 다음 단계를 시작할 수 없다. Sequence 노드는 이러한 순차적 의존 관계를 자연스럽게 표현한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 기본 이륙-비행-착륙 시퀀스</h2>
+<h3>2.1 최소 구조</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="ArmMotors"/&gt;
+    &lt;Action ID="Takeoff" altitude="{cruise_altitude}"/&gt;
+    &lt;Action ID="FlyMission"/&gt;
+    &lt;Action ID="Land"/&gt;
+    &lt;Action ID="DisarmMotors"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>모터 시동(Arm) → 이륙 → 임무 비행 → 착륙 → 모터 정지(Disarm)의 5단계로 구성된다. SequenceWithMemory를 사용하여, 이륙이 완료된 후에는 재이륙을 시도하지 않고 비행 단계부터 이어서 진행한다.</p>
+<h3>2.2 Tick별 실행 흐름</h3>
+<pre><code>Tick 1:  ArmMotors→R                  (모터 시동 중)
+Tick 2:  ArmMotors→S, Takeoff→R       (이륙 시작)
+Tick 3:  Takeoff→R                    (상승 중, 목표 고도 미도달)
+Tick 4:  Takeoff→R                    (상승 중)
+Tick 5:  Takeoff→S, FlyMission→R      (목표 고도 도달, 임무 시작)
+...
+Tick N:  FlyMission→S, Land→R         (임무 완료, 착륙 시작)
+Tick N+1: Land→R                      (하강 중)
+Tick N+2: Land→S, DisarmMotors→R      (접지 완료, 모터 정지 중)
+Tick N+3: DisarmMotors→S              → SUCCESS (임무 완료)
+</code></pre>
+<h2>3. 사전 점검을 포함한 비행 시퀀스</h2>
+<h3>3.1 비행 전 점검(Pre-flight Check) 시퀀스</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;!-- 1단계: 비행 전 점검 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsGPSFixValid"/&gt;
+        &lt;Condition ID="IsIMUCalibrated"/&gt;
+        &lt;Condition ID="IsBatteryAbove80Percent"/&gt;
+        &lt;Condition ID="IsRCLinkActive"/&gt;
+        &lt;Condition ID="IsGeofenceConfigured"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2단계: 이륙 --&gt;
+    &lt;Action ID="ArmMotors"/&gt;
+    &lt;Action ID="Takeoff" altitude="{cruise_altitude}"/&gt;
+    &lt;!-- 3단계: 임무 비행 --&gt;
+    &lt;SubTree ID="FlightMission"/&gt;
+    &lt;!-- 4단계: 착륙 및 종료 --&gt;
+    &lt;Action ID="ReturnToLaunch"/&gt;
+    &lt;Action ID="Land"/&gt;
+    &lt;Action ID="DisarmMotors"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>비행 전 점검에서 GPS 수신, IMU 교정, 배터리 잔량, RC 링크, 지오펜스 설정을 확인한다. 모든 조건이 충족되어야 이륙이 진행된다. 조건 노드는 즉시 반환하므로 내부 Sequence에 기본 Sequence를 사용한다.</p>
+<h2>4. 안전 감시를 포함한 비행 시퀀스</h2>
+<h3>4.1 ReactiveSequence를 이용한 비행 중 안전 감시</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;!-- 지속 감시 조건 --&gt;
+    &lt;Condition ID="IsGeofenceNotViolated"/&gt;
+    &lt;Condition ID="IsBatteryAbove20Percent"/&gt;
+    &lt;Condition ID="IsRCLinkActive"/&gt;
+    &lt;Condition ID="IsIMUHealthy"/&gt;
+    &lt;!-- 비행 임무 --&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;Action ID="ArmMotors"/&gt;
+        &lt;Action ID="Takeoff" altitude="{cruise_altitude}"/&gt;
+        &lt;SubTree ID="FlightMission"/&gt;
+        &lt;Action ID="ReturnToLaunch"/&gt;
+        &lt;Action ID="Land"/&gt;
+        &lt;Action ID="DisarmMotors"/&gt;
+    &lt;/SequenceWithMemory&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>외부 ReactiveSequence가 매 Tick마다 지오펜스, 배터리, RC 링크, IMU 상태를 검사한다. 비행 중 어느 조건이든 위반되면 내부 SequenceWithMemory 전체가 Halt되어 비행이 즉시 중단된다.</p>
+<h3>4.2 안전 위반 시 비상 대응 통합</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 정상 비행 --&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsGeofenceNotViolated"/&gt;
+        &lt;Condition ID="IsBatteryAbove20Percent"/&gt;
+        &lt;Condition ID="IsRCLinkActive"/&gt;
+        &lt;SequenceWithMemory&gt;
+            &lt;Action ID="ArmMotors"/&gt;
+            &lt;Action ID="Takeoff" altitude="{cruise_altitude}"/&gt;
+            &lt;SubTree ID="FlightMission"/&gt;
+            &lt;Action ID="ReturnToLaunch"/&gt;
+            &lt;Action ID="Land"/&gt;
+            &lt;Action ID="DisarmMotors"/&gt;
+        &lt;/SequenceWithMemory&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;!-- 비상 대응 --&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsBatteryLow"/&gt;
+            &lt;Action ID="EmergencyReturnToLaunch"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsRCLinkLost"/&gt;
+            &lt;Action ID="LoiterAndWaitForRC"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="EmergencyLand"/&gt;
+    &lt;/Fallback&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>배터리 부족 시 긴급 복귀, RC 링크 상실 시 선회 대기, 그 외 비상 상황 시 긴급 착륙을 수행한다.</p>
+<h2>5. 경유지 기반 비행 임무 시퀀스</h2>
+<h3>5.1 다중 경유지 비행</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="ArmMotors"/&gt;
+    &lt;Action ID="Takeoff" altitude="50"/&gt;
+    &lt;!-- 경유지 순차 방문 --&gt;
+    &lt;Action ID="FlyToWaypoint" wp="{waypoint_1}"/&gt;
+    &lt;Action ID="FlyToWaypoint" wp="{waypoint_2}"/&gt;
+    &lt;Action ID="FlyToWaypoint" wp="{waypoint_3}"/&gt;
+    &lt;Action ID="FlyToWaypoint" wp="{waypoint_4}"/&gt;
+    &lt;!-- 복귀 및 착륙 --&gt;
+    &lt;Action ID="ReturnToLaunch"/&gt;
+    &lt;Action ID="Land"/&gt;
+    &lt;Action ID="DisarmMotors"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<h3>5.2 경유지별 임무 수행</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="ArmMotors"/&gt;
+    &lt;Action ID="Takeoff" altitude="30"/&gt;
+    &lt;!-- 경유지 1: 항공 촬영 --&gt;
+    &lt;Action ID="FlyToWaypoint" wp="{photo_point_1}"/&gt;
+    &lt;Action ID="CaptureImage"/&gt;
+    &lt;!-- 경유지 2: 항공 촬영 --&gt;
+    &lt;Action ID="FlyToWaypoint" wp="{photo_point_2}"/&gt;
+    &lt;Action ID="CaptureImage"/&gt;
+    &lt;!-- 경유지 3: 정밀 조사 --&gt;
+    &lt;Action ID="FlyToWaypoint" wp="{inspection_point}"/&gt;
+    &lt;Action ID="DescendToInspectionAltitude"/&gt;
+    &lt;Action ID="PerformDetailedInspection"/&gt;
+    &lt;Action ID="AscendToCruiseAltitude"/&gt;
+    &lt;!-- 복귀 --&gt;
+    &lt;Action ID="ReturnToLaunch"/&gt;
+    &lt;Action ID="Land"/&gt;
+    &lt;Action ID="DisarmMotors"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>각 경유지에서 서로 다른 임무(촬영, 정밀 조사 등)를 수행하며, 모든 임무는 이륙과 착륙 사이의 순차적 흐름 내에서 실행된다.</p>
+<h2>6. 서브트리를 활용한 모듈화</h2>
+<h3>6.1 비행 단계별 서브트리 분해</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;SubTree ID="PreFlightCheck"/&gt;
+    &lt;SubTree ID="TakeoffProcedure"/&gt;
+    &lt;SubTree ID="FlightMission"/&gt;
+    &lt;SubTree ID="LandingProcedure"/&gt;
+    &lt;SubTree ID="PostFlightShutdown"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>각 서브트리의 내부 구조:</p>
+<pre><code class="language-xml">&lt;!-- TakeoffProcedure 서브트리 --&gt;
+&lt;BehaviorTree ID="TakeoffProcedure"&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="SetFlightMode" mode="GUIDED"/&gt;
+        &lt;Action ID="ArmMotors"/&gt;
+        &lt;Action ID="Takeoff" altitude="{cruise_altitude}"/&gt;
+        &lt;Action ID="WaitForAltitudeReached"/&gt;
+        &lt;Action ID="SetFlightMode" mode="AUTO"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<pre><code class="language-xml">&lt;!-- LandingProcedure 서브트리 --&gt;
+&lt;BehaviorTree ID="LandingProcedure"&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="SetFlightMode" mode="GUIDED"/&gt;
+        &lt;Action ID="NavigateToLandingZone"/&gt;
+        &lt;Action ID="DescendToApproachAltitude"/&gt;
+        &lt;Action ID="PrecisionLand"/&gt;
+        &lt;Action ID="WaitForTouchdown"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>7. 이륙 및 착륙 단계의 상세 시퀀스</h2>
+<h3>7.1 이륙 시퀀스의 세부 단계</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="SetHomePosition"/&gt;
+    &lt;Action ID="EnablePropellerGuard"/&gt;
+    &lt;Action ID="SetFlightMode" mode="GUIDED"/&gt;
+    &lt;Action ID="ArmMotors"/&gt;
+    &lt;Action ID="ThrottleUp" target_altitude="{cruise_altitude}"/&gt;
+    &lt;Condition ID="IsAltitudeReached" tolerance="0.5"/&gt;
+    &lt;Action ID="StabilizeHover" duration="3000"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>홈 위치 설정 → 프로펠러 가드 활성화 → 비행 모드 설정 → 모터 시동 → 상승 → 고도 확인 → 호버링 안정화의 단계를 거친다.</p>
+<h3>7.2 착륙 시퀀스의 세부 단계</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="NavigateToLandingZone"/&gt;
+    &lt;Action ID="DescendTo" altitude="10"/&gt;
+    &lt;Action ID="ActivatePrecisionLanding"/&gt;
+    &lt;Action ID="DescendTo" altitude="0.5"/&gt;
+    &lt;Action ID="CutThrottle"/&gt;
+    &lt;Action ID="DisarmMotors"/&gt;
+    &lt;Action ID="LogFlightData"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>착륙 구역으로 이동 → 접근 고도까지 하강 → 정밀 착륙 활성화 → 최종 하강 → 스로틀 차단 → 모터 정지 → 비행 데이터 기록의 단계로 착륙을 수행한다.</p>
+<h2>8. 설계 시 고려 사항</h2>
+<ol>
+<li>
+<p><strong>Sequence 변형 선택</strong>: 이륙-비행-착륙의 전체 흐름에는 SequenceWithMemory를 사용하고, 비행 중 안전 감시에는 ReactiveSequence를 외부 래퍼로 사용한다. 이 조합이 진행 상황 유지와 안전 감시를 동시에 제공한다.</p>
+</li>
+<li>
+<p><strong>halt() 구현의 중요성</strong>: 비행 중 Halt가 발생하면 드론이 안전한 상태(호버링 또는 착륙)로 전이해야 한다. Halt 시 모터가 즉시 정지되면 추락할 수 있으므로, <code>onHalted()</code> 메서드에서 안전한 비행 모드 전환을 구현해야 한다.</p>
+</li>
+<li>
+<p><strong>타임아웃 적용</strong>: 이륙, 착륙, 경유지 비행 등 각 단계에 타임아웃을 적용하여 무한 대기를 방지한다. 특히 GPS 수신 대기, 고도 도달 대기에 타임아웃이 필수적이다.</p>
+</li>
+<li>
+<p><strong>블랙보드 활용</strong>: 순항 고도, 경유지 좌표, 홈 위치 등의 비행 파라미터는 블랙보드를 통해 관리하여, 런타임에 동적으로 변경할 수 있도록 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

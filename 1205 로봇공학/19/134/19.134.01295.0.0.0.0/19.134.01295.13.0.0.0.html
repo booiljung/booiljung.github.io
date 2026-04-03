@@ -115,6 +115,199 @@
             </header>
             <article>
                 <h1>1295.13 Parallel 노드의 의사 코드</h1>
+<h2>1. 기본 의사 코드</h2>
+<p>Parallel 노드의 핵심 동작을 의사 코드(pseudocode)로 표현하면 다음과 같다. 이 의사 코드는 Colledanchise와 Ögren(2018)의 형식적 정의를 기반으로 하되, BehaviorTree.CPP의 구현 세부 사항을 반영한다.</p>
+<pre><code>Algorithm: ParallelNode::tick()
+Input: children[1..N], success_threshold M, failure_threshold K
+Output: NodeStatus {SUCCESS, FAILURE, RUNNING}
+
+1   success_count ← 0
+2   failure_count ← 0
+3
+4   for i ← 1 to N do
+5       if completed[i] = true then
+6           status ← last_status[i]
+7       else
+8           status ← children[i].executeTick()
+9           if status ≠ RUNNING then
+10              completed[i] ← true
+11              last_status[i] ← status
+12          end if
+13      end if
+14
+15      if status = SUCCESS then
+16          success_count ← success_count + 1
+17      else if status = FAILURE then
+18          failure_count ← failure_count + 1
+19      end if
+20  end for
+21
+22  if success_count ≥ M then
+23      haltRunningChildren()
+24      resetCompletedFlags()
+25      return SUCCESS
+26  end if
+27
+28  if failure_count ≥ K then
+29      haltRunningChildren()
+30      resetCompletedFlags()
+31      return FAILURE
+32  end if
+33
+34  return RUNNING
+</code></pre>
+<h2>2. 각 단계의 상세 설명</h2>
+<h3>2.1 -2행: 카운터 초기화</h3>
+<p>매 틱마다 성공 카운터와 실패 카운터를 0으로 초기화한다. 이 카운터들은 현재 틱 시점의 전체 자식 상태를 집계하기 위한 임시 변수이다.</p>
+<h3>2.2 -20행: 자식 틱 전파 및 상태 수집 루프</h3>
+<p>모든 자식 <span class="math math-inline">C_1</span>부터 <span class="math math-inline">C_N</span>까지 순서대로 반복한다. 핵심 분기는 해당 자식이 이미 완료되었는지 여부에 따라 결정된다.</p>
+<ul>
+<li><strong>5-6행</strong>: 이전 틱에서 이미 최종 상태(SUCCESS 또는 FAILURE)를 반환한 자식은 재틱하지 않고, 저장된 마지막 상태를 그대로 사용한다. 이는 불필요한 재실행을 방지하는 최적화이다.</li>
+<li><strong>8행</strong>: 아직 완료되지 않은 자식에 <code>executeTick()</code>을 호출하여 틱을 전달한다.</li>
+<li><strong>9-11행</strong>: 반환된 상태가 RUNNING이 아니면(즉, SUCCESS 또는 FAILURE이면) 해당 자식을 완료 상태로 표시하고 마지막 상태를 저장한다.</li>
+<li><strong>15-19행</strong>: 반환된 상태에 따라 해당 카운터를 증가시킨다.</li>
+</ul>
+<h3>2.3 -26행: 성공 정책 평가</h3>
+<p>성공 카운터가 임계값 <span class="math math-inline">M</span> 이상이면 SUCCESS를 반환한다. 반환 전에 아직 RUNNING 상태인 자식들을 중단(<code>haltRunningChildren</code>)하고, 완료 플래그를 초기화(<code>resetCompletedFlags</code>)한다.</p>
+<h3>2.4 -32행: 실패 정책 평가</h3>
+<p>실패 카운터가 임계값 <span class="math math-inline">K</span> 이상이면 FAILURE를 반환한다. 마찬가지로 RUNNING 상태의 자식을 중단하고 플래그를 초기화한다.</p>
+<h3>2.5 행: RUNNING 반환</h3>
+<p>성공 조건도 실패 조건도 충족되지 않으면 RUNNING을 반환한다.</p>
+<h2>3. 보조 절차의 의사 코드</h2>
+<h3>3.1 haltRunningChildren</h3>
+<pre><code>Procedure: haltRunningChildren()
+1   for i ← 1 to N do
+2       if completed[i] = false then
+3           children[i].haltNode()
+4       end if
+5   end for
+</code></pre>
+<p>완료되지 않은(즉, RUNNING 상태인) 모든 자식에 <code>haltNode()</code>를 호출한다. <code>haltNode()</code>는 자식 노드의 내부 상태를 정리하고, ROS2 액션 클라이언트와 연동된 경우 목표 취소 요청을 전송하며, 노드 상태를 IDLE로 재설정한다.</p>
+<h3>3.2 resetCompletedFlags</h3>
+<pre><code>Procedure: resetCompletedFlags()
+1   for i ← 1 to N do
+2       completed[i] ← false
+3       last_status[i] ← IDLE
+4   end for
+</code></pre>
+<p>모든 자식의 완료 플래그와 저장된 상태를 초기화한다. 이 절차는 Parallel 노드가 SUCCESS 또는 FAILURE를 반환한 후 호출되어, 다음 번 실행에서 모든 자식이 초기 상태부터 시작하도록 보장한다.</p>
+<h3>3.3 ParallelNode::halt</h3>
+<pre><code>Procedure: ParallelNode::halt()
+1   for i ← 1 to N do
+2       children[i].haltNode()
+3   end for
+4   resetCompletedFlags()
+5   setStatus(IDLE)
+</code></pre>
+<p>상위 노드에 의해 Parallel 노드 자체가 중단되는 경우, 모든 자식을 무조건 중단하고 내부 상태를 초기화한다.</p>
+<h2>4. C++ 구현 코드</h2>
+<p>위 의사 코드를 BehaviorTree.CPP의 API 스타일에 맞추어 C++로 표현하면 다음과 같다.</p>
+<pre><code class="language-cpp">NodeStatus ParallelNode::tick()
+{
+    size_t success_count = 0;
+    size_t failure_count = 0;
+
+    for (size_t i = 0; i &lt; childrenCount(); i++)
+    {
+        TreeNode* child = children_nodes_[i];
+
+        if (completed_[i])
+        {
+            // 이미 완료된 자식은 저장된 상태 사용
+            if (last_status_[i] == NodeStatus::SUCCESS)
+                success_count++;
+            else if (last_status_[i] == NodeStatus::FAILURE)
+                failure_count++;
+            continue;
+        }
+
+        NodeStatus child_status = child-&gt;executeTick();
+
+        switch (child_status)
+        {
+            case NodeStatus::SUCCESS:
+                success_count++;
+                completed_[i] = true;
+                last_status_[i] = NodeStatus::SUCCESS;
+                break;
+            case NodeStatus::FAILURE:
+                failure_count++;
+                completed_[i] = true;
+                last_status_[i] = NodeStatus::FAILURE;
+                break;
+            case NodeStatus::RUNNING:
+                // 계속 실행 중
+                break;
+        }
+    }
+
+    if (success_count &gt;= success_threshold_)
+    {
+        haltRunningChildren();
+        resetCompletedFlags();
+        return NodeStatus::SUCCESS;
+    }
+
+    if (failure_count &gt;= failure_threshold_)
+    {
+        haltRunningChildren();
+        resetCompletedFlags();
+        return NodeStatus::FAILURE;
+    }
+
+    return NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>5. 매 틱 재실행 변형의 의사 코드</h2>
+<p>완료된 자식도 매 틱마다 재실행하는 변형은 다음과 같이 단순화된다.</p>
+<pre><code>Algorithm: ParallelAllNode::tick()
+Input: children[1..N], success_threshold M, failure_threshold K
+Output: NodeStatus {SUCCESS, FAILURE, RUNNING}
+
+1   success_count ← 0
+2   failure_count ← 0
+3
+4   for i ← 1 to N do
+5       status ← children[i].executeTick()
+6       if status = SUCCESS then
+7           success_count ← success_count + 1
+8       else if status = FAILURE then
+9           failure_count ← failure_count + 1
+10      end if
+11  end for
+12
+13  if success_count ≥ M then
+14      haltRunningChildren()
+15      return SUCCESS
+16  end if
+17
+18  if failure_count ≥ K then
+19      haltRunningChildren()
+20      return FAILURE
+21  end if
+22
+23  return RUNNING
+</code></pre>
+<p>이 변형에서는 <code>completed</code> 배열이 필요 없고, 매 틱마다 모든 자식에 무조건 틱을 전달한다. 조건 노드와 같이 상태가 동적으로 변할 수 있는 자식에 적합하다.</p>
+<h2>6. 의사 코드와 형식적 정의의 대응</h2>
+<p>의사 코드의 각 부분이 Parallel 노드의 형식적 정의와 어떻게 대응되는지를 정리하면 다음과 같다.</p>
+<table><thead><tr><th>형식적 정의</th><th>의사 코드 대응</th><th>행 번호</th></tr></thead><tbody>
+<tr><td>모든 자식에 틱 전달</td><td><code>for i ← 1 to N</code> 루프</td><td>4-20</td></tr>
+<tr><td><span class="math math-inline">S = \lvert\{i : \text{status}(C_i) = \text{SUCCESS}\}\rvert</span></td><td><code>success_count</code> 누적</td><td>15-16</td></tr>
+<tr><td><span class="math math-inline">F = \lvert\{i : \text{status}(C_i) = \text{FAILURE}\}\rvert</span></td><td><code>failure_count</code> 누적</td><td>17-18</td></tr>
+<tr><td><span class="math math-inline">S \geq M \Rightarrow \text{SUCCESS}</span></td><td>성공 정책 평가</td><td>22-26</td></tr>
+<tr><td><span class="math math-inline">F \geq K \Rightarrow \text{FAILURE}</span></td><td>실패 정책 평가</td><td>28-32</td></tr>
+<tr><td>otherwise <span class="math math-inline">\Rightarrow \text{RUNNING}</span></td><td>RUNNING 반환</td><td>34</td></tr>
+</tbody></table>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

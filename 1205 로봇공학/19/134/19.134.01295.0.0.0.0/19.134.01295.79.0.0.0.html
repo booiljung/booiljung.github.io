@@ -115,6 +115,216 @@
             </header>
             <article>
                 <h1>1295.79 커스텀 Parallel 변형 노드의 구현</h1>
+<h2>1. 커스텀 Parallel의 필요성</h2>
+<p>BehaviorTree.CPP 4.x의 <code>ParallelAll</code> 노드는 SUCCESS_ALL 성공 정책과 <code>max_failures</code> 기반 실패 정책을 제공한다. 그러나 로봇공학의 실제 적용에서는 이 정책만으로 충분하지 않은 경우가 존재한다. SUCCESS_ONE(하나의 자식 성공 시 전체 성공), SUCCESS_COUNT(N개 이상 성공 시 전체 성공), 가중치 기반 정책 등의 변형이 필요할 수 있다. 이 경우 <code>ControlNode</code>를 상속하여 커스텀 Parallel 변형 노드를 구현한다.</p>
+<h2>2. ControlNode 상속 기반 구현</h2>
+<p>커스텀 Parallel 노드는 <code>BT::ControlNode</code>를 상속하고, <code>tick()</code>과 <code>halt()</code> 메서드를 구현한다.</p>
+<h3>2.1 SUCCESS_ONE 정책 Parallel</h3>
+<p>하나의 자식이 <code>SUCCESS</code>를 반환하면 즉시 전체가 <code>SUCCESS</code>를 반환하는 변형이다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/control_node.h"
+
+class ParallelOne : public BT::ControlNode
+{
+public:
+    ParallelOne(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : ControlNode(name, config) {}
+    
+    static BT::PortsList providedPorts()
+    {
+        return {};
+    }
+    
+    BT::NodeStatus tick() override
+    {
+        int failure_count = 0;
+        
+        for (size_t i = 0; i &lt; childrenCount(); i++)
+        {
+            auto* child = children_nodes_[i];
+            
+            // 이미 완료된 자식은 재Tick하지 않음
+            if (child-&gt;status() == BT::NodeStatus::SUCCESS)
+            {
+                haltChildren();
+                return BT::NodeStatus::SUCCESS;
+            }
+            if (child-&gt;status() == BT::NodeStatus::FAILURE)
+            {
+                failure_count++;
+                continue;
+            }
+            
+            auto status = child-&gt;executeTick();
+            
+            if (status == BT::NodeStatus::SUCCESS)
+            {
+                haltChildren();
+                return BT::NodeStatus::SUCCESS;
+            }
+            if (status == BT::NodeStatus::FAILURE)
+            {
+                failure_count++;
+            }
+        }
+        
+        // 모든 자식이 FAILURE이면 전체 FAILURE
+        if (failure_count == static_cast&lt;int&gt;(childrenCount()))
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+        
+        return BT::NodeStatus::RUNNING;
+    }
+    
+    void halt() override
+    {
+        haltChildren();
+        ControlNode::halt();
+    }
+};
+</code></pre>
+<h3>2.2 SUCCESS_COUNT(N) 정책 Parallel</h3>
+<p><span class="math math-inline">N</span>개 이상의 자식이 <code>SUCCESS</code>를 반환하면 전체가 <code>SUCCESS</code>를 반환하는 변형이다.</p>
+<pre><code class="language-cpp">class ParallelCount : public BT::ControlNode
+{
+public:
+    ParallelCount(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : ControlNode(name, config) {}
+    
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;int&gt;("success_threshold", 1, 
+                "SUCCESS로 간주할 최소 성공 자식 수"),
+            BT::InputPort&lt;int&gt;("max_failures", 0, 
+                "허용되는 최대 실패 자식 수")
+        };
+    }
+    
+    BT::NodeStatus tick() override
+    {
+        int success_threshold, max_failures;
+        getInput("success_threshold", success_threshold);
+        getInput("max_failures", max_failures);
+        
+        int success_count = 0;
+        int failure_count = 0;
+        
+        for (size_t i = 0; i &lt; childrenCount(); i++)
+        {
+            auto* child = children_nodes_[i];
+            
+            if (child-&gt;status() == BT::NodeStatus::SUCCESS)
+            {
+                success_count++;
+                continue;
+            }
+            if (child-&gt;status() == BT::NodeStatus::FAILURE)
+            {
+                failure_count++;
+                continue;
+            }
+            
+            auto status = child-&gt;executeTick();
+            
+            if (status == BT::NodeStatus::SUCCESS)
+                success_count++;
+            else if (status == BT::NodeStatus::FAILURE)
+                failure_count++;
+        }
+        
+        // 성공 임계값 도달
+        if (success_count &gt;= success_threshold)
+        {
+            haltChildren();
+            return BT::NodeStatus::SUCCESS;
+        }
+        
+        // 실패 한계 초과
+        if (failure_count &gt; max_failures)
+        {
+            haltChildren();
+            return BT::NodeStatus::FAILURE;
+        }
+        
+        // 성공 달성이 불가능한 경우 (남은 자식으로 임계값 도달 불가)
+        int remaining = static_cast&lt;int&gt;(childrenCount()) 
+                       - success_count - failure_count;
+        if (success_count + remaining &lt; success_threshold)
+        {
+            haltChildren();
+            return BT::NodeStatus::FAILURE;
+        }
+        
+        return BT::NodeStatus::RUNNING;
+    }
+    
+    void halt() override
+    {
+        haltChildren();
+        ControlNode::halt();
+    }
+};
+</code></pre>
+<p><code>success_count + remaining &lt; success_threshold</code> 조건은 남은 <code>RUNNING</code> 자식이 모두 성공하더라도 임계값에 도달할 수 없는 경우를 조기에 감지하여, 불필요한 실행을 방지한다.</p>
+<h2>3. 노드 등록과 XML 사용</h2>
+<p>커스텀 노드를 팩토리에 등록하여 XML에서 사용한다.</p>
+<pre><code class="language-cpp">BT::BehaviorTreeFactory factory;
+
+// 커스텀 노드 등록
+factory.registerNodeType&lt;ParallelOne&gt;("ParallelOne");
+factory.registerNodeType&lt;ParallelCount&gt;("ParallelCount");
+</code></pre>
+<pre><code class="language-xml">&lt;!-- ParallelOne 사용 --&gt;
+&lt;ParallelOne&gt;
+    &lt;AttemptPlanA /&gt;
+    &lt;AttemptPlanB /&gt;
+    &lt;AttemptPlanC /&gt;
+&lt;/ParallelOne&gt;
+
+&lt;!-- ParallelCount 사용 --&gt;
+&lt;ParallelCount success_threshold="2" max_failures="1"&gt;
+    &lt;SensorA /&gt;
+    &lt;SensorB /&gt;
+    &lt;SensorC /&gt;
+&lt;/ParallelCount&gt;
+</code></pre>
+<h2>4. 완료된 자식의 재Tick 정책</h2>
+<p>커스텀 Parallel 구현에서 중요한 설계 결정은, 이미 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 반환한 자식을 다음 Tick에서 재Tick할 것인지의 여부이다.</p>
+<h3>4.1 재Tick하지 않는 방식 (기본)</h3>
+<p>이미 완료된 자식의 상태를 유지하고, <code>RUNNING</code> 상태인 자식에게만 Tick을 전파한다. 위의 예시가 이 방식을 따른다.</p>
+<p>장점: 완료된 행동을 불필요하게 재실행하지 않는다.<br />
+단점: 한 번 <code>SUCCESS</code>를 반환한 자식이 이후 상태가 변하여도 감지할 수 없다.</p>
+<h3>4.2 재Tick하는 방식</h3>
+<p>매 Tick에서 모든 자식에게 Tick을 전파한다.</p>
+<pre><code class="language-cpp">// 재Tick 방식
+for (size_t i = 0; i &lt; childrenCount(); i++)
+{
+    auto status = children_nodes_[i]-&gt;executeTick();  // 항상 Tick
+    // ...
+}
+</code></pre>
+<p>장점: 조건 성격의 자식의 상태 변화를 즉시 감지할 수 있다.<br />
+단점: 이미 완료된 행동이 재시작될 수 있다.</p>
+<p>적용 사례에 따라 적절한 방식을 선택하여야 한다.</p>
+<h2>5. 구현 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>haltChildren()의 올바른 호출</strong>: <code>SUCCESS</code>나 <code>FAILURE</code>를 반환하기 전에 <code>haltChildren()</code>을 호출하여, 나머지 <code>RUNNING</code> 자식이 정리되도록 하라.</p>
+</li>
+<li>
+<p><strong>halt() 메서드의 구현</strong>: 부모로부터의 Halt 시 모든 자식에 Halt를 전파하고, 자신의 상태를 <code>IDLE</code>로 설정하라.</p>
+</li>
+<li>
+<p><strong>포트의 유효성 검증</strong>: <code>getInput()</code>으로 읽은 포트 값의 유효성을 검증하라. <code>success_threshold</code>가 자식 수보다 큰 경우 등의 오류를 사전에 감지하라.</p>
+</li>
+<li>
+<p><strong>스레드 안전성</strong>: BehaviorTree.CPP의 기본 실행 모델은 단일 스레드이므로 동기화가 필요하지 않다. 그러나 비동기 행동 노드(<code>StatefulActionNode</code>)와 함께 사용하는 경우 스레드 안전성을 고려하라.</p>
+</li>
+<li>
+<p><strong>테스트 코드 작성</strong>: 커스텀 노드에 대해 다양한 자식 상태 조합을 테스트하는 단위 테스트를 작성하라. BehaviorTree.CPP는 테스트용 모의(mock) 노드를 제공한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

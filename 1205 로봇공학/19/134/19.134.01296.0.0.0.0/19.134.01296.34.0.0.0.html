@@ -115,6 +115,242 @@
             </header>
             <article>
                 <h1>1296.34 출력 포트 (OutputPort)의 정의와 활용</h1>
+<h2>1. OutputPort의 정의</h2>
+<p><code>BT::OutputPort&lt;T&gt;</code>는 BehaviorTree.CPP 라이브러리에서 노드가 블랙보드에 데이터를 기록하기 위해 선언하는 포트이다. 출력 포트는 노드가 생성하거나 산출하는 데이터의 명칭, 타입, 설명을 정의하며, 노드의 <code>providedPorts()</code> 정적 메서드에서 선언된다. 노드 내부에서는 <code>setOutput()</code> 메서드를 통해 출력 포트에 값을 기록한다.</p>
+<p>출력 포트는 노드의 출력 인터페이스를 구성하며, 이 노드가 어떤 데이터를 생산하는지를 명시적으로 선언하는 역할을 수행한다. 출력 포트에 기록된 값은 블랙보드를 통해 다른 노드의 입력 포트로 전달되어, 노드 간의 데이터 흐름을 형성한다(Faconti, 2022).</p>
+<h2>2. OutputPort의 선언 형식</h2>
+<p><code>OutputPort&lt;T&gt;</code>의 선언 형식은 <code>InputPort&lt;T&gt;</code>보다 단순하다. 출력 포트에는 기본값의 개념이 없으며, 포트 명칭과 설명만을 지정한다.</p>
+<pre><code class="language-cpp">BT::OutputPort&lt;T&gt;(포트명, 설명)
+</code></pre>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::OutputPort&lt;nav_msgs::msg::Path&gt;(
+            "path",
+            "계산된 경로"),
+        BT::OutputPort&lt;int&gt;(
+            "error_code",
+            "경로 계산 오류 코드"),
+        BT::OutputPort&lt;double&gt;(
+            "path_length",
+            "경로 총 길이 (미터)")
+    };
+}
+</code></pre>
+<h2>3. setOutput()에 의한 값 기록</h2>
+<p>출력 포트에 값을 기록하는 것은 <code>setOutput()</code> 메서드에 의해 수행된다.</p>
+<pre><code class="language-cpp">template &lt;typename T&gt;
+void setOutput(const std::string&amp; port_name, const T&amp; value);
+</code></pre>
+<h3>3.1 기본 사용</h3>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    if (isPathComputed())
+    {
+        auto path = getComputedPath();
+        setOutput("path", path);
+        setOutput("path_length", computePathLength(path));
+        setOutput("error_code", 0);
+        return BT::NodeStatus::SUCCESS;
+    }
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>setOutput()</code>은 포트 명칭에 매핑된 블랙보드 키에 값을 기록한다. 매핑은 XML 트리 정의에서 <code>{키명}</code> 형식으로 지정된다.</p>
+<h3>3.2 XML에서의 출력 포트 매핑</h3>
+<pre><code class="language-xml">&lt;ComputePathToPose goal="{target}"
+                    path="{nav_path}"
+                    error_code="{path_error}"
+                    path_length="{path_len}" /&gt;
+
+&lt;!-- setOutput("path", ...)의 결과가 블랙보드 키 "nav_path"에 저장 --&gt;
+&lt;!-- setOutput("error_code", ...)의 결과가 블랙보드 키 "path_error"에 저장 --&gt;
+</code></pre>
+<p>출력 포트의 XML 속성에는 반드시 블랙보드 키 참조(<code>{키명}</code>)를 지정하여야 한다. 리터럴 값의 지정은 의미가 없으며, BehaviorTree.CPP에서 오류로 처리된다.</p>
+<h2>4. 값의 기록 과정</h2>
+<p><code>setOutput()</code> 호출 시의 내부 동작을 단계별로 기술한다.</p>
+<pre><code>setOutput("path", computed_path)
+    │
+    ├─ 포트 "path"의 블랙보드 키 조회
+    │       │
+    │       ├─ XML에서 path="{nav_path}" → 키 = "nav_path"
+    │       │
+    │       └─ XML에서 미지정 → 기록하지 않음 (무시)
+    │
+    ├─ 블랙보드의 "nav_path" 키에 computed_path 값 저장
+    │
+    └─ 완료
+</code></pre>
+<p>출력 포트가 XML에서 매핑되지 않은 경우, <code>setOutput()</code> 호출은 무시된다. 이 동작에 의해 출력 포트의 사용이 선택적이 된다. 노드의 호출자가 특정 출력을 필요로 하지 않으면, XML에서 해당 출력 포트를 생략할 수 있다.</p>
+<h2>5. 출력 포트의 기록 시점</h2>
+<p>출력 포트에 값을 기록하는 적절한 시점은 노드 유형과 출력의 성격에 따라 다르다.</p>
+<h3>5.1 최종 결과의 기록</h3>
+<p>노드의 행동이 완료되어 SUCCESS 또는 FAILURE를 반환하기 직전에 최종 결과를 기록한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    if (isNavigationComplete())
+    {
+        // 최종 결과 기록 후 반환
+        setOutput("final_pose", getCurrentPose());
+        setOutput("error_code", getNavigationErrorCode());
+        return BT::NodeStatus::SUCCESS;
+    }
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>5.2 중간 피드백의 기록</h3>
+<p>비동기 노드에서 행동이 진행 중인 동안(RUNNING 상태) 중간 피드백을 출력 포트에 기록할 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    if (isNavigationComplete())
+    {
+        setOutput("error_code", 0);
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    // 중간 피드백 기록 (매 Tick)
+    setOutput("distance_remaining", getDistanceRemaining());
+    setOutput("estimated_time", getEstimatedTime());
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>중간 피드백의 기록은 Parallel 노드의 다른 자식이 실행 중인 노드의 진행 상황을 참조하는 경우에 유용하다.</p>
+<h3>5.3 기록 시점의 요약</h3>
+<table><thead><tr><th>기록 시점</th><th style="text-align: center">적합한 출력 유형</th><th>예시</th></tr></thead><tbody>
+<tr><td>SUCCESS 반환 직전</td><td style="text-align: center">최종 결과</td><td>계산된 경로, 검출된 객체</td></tr>
+<tr><td>FAILURE 반환 직전</td><td style="text-align: center">오류 정보</td><td>오류 코드, 실패 원인</td></tr>
+<tr><td>RUNNING 반환 시 (매 Tick)</td><td style="text-align: center">중간 피드백</td><td>남은 거리, 진행률</td></tr>
+<tr><td>onStart()</td><td style="text-align: center">초기 상태</td><td>시작 시각, 초기 위치</td></tr>
+</tbody></table>
+<h2>6. 출력 포트와 노드 간 데이터 흐름</h2>
+<p>출력 포트의 핵심적 역할은 노드 간의 명시적 데이터 흐름을 형성하는 것이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 1단계: 경로 계산 (출력: path) --&gt;
+    &lt;ComputePathToPose goal="{target}"
+                        path="{nav_path}" /&gt;
+
+    &lt;!-- 2단계: 경로 추종 (입력: path) --&gt;
+    &lt;FollowPath path="{nav_path}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이 예에서 <code>ComputePathToPose</code>의 출력 포트 <code>path</code>가 블랙보드 키 <code>nav_path</code>에 기록한 값을, <code>FollowPath</code>의 입력 포트 <code>path</code>가 동일한 블랙보드 키에서 읽는다. 데이터 흐름이 XML에서 명시적으로 가시화되므로, 트리의 동작을 노드의 구현 코드를 확인하지 않고도 파악할 수 있다.</p>
+<h3>6.1 다대일 데이터 흐름</h3>
+<p>다수의 노드가 동일한 블랙보드 키에 출력을 기록할 수 있다. 이 경우 마지막으로 기록한 노드의 값이 유효하다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;ComputePathToPose goal="{target}"
+                        planner_id="GridBased"
+                        path="{nav_path}" /&gt;
+    &lt;ComputePathToPose goal="{target}"
+                        planner_id="SmacPlanner"
+                        path="{nav_path}" /&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>Fallback의 특성에 의해 첫 번째 <code>ComputePathToPose</code>가 실패하면 두 번째가 실행되며, 두 번째의 출력이 <code>nav_path</code>에 기록된다. 첫 번째가 성공하면 첫 번째의 출력이 유지된다.</p>
+<h3>6.2 일대다 데이터 흐름</h3>
+<p>하나의 노드의 출력이 다수의 노드의 입력으로 참조될 수 있다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;DetectObject object_id="{id}"
+                   object_pose="{obj_pose}" /&gt;
+    &lt;NavigateToPose goal_pose="{obj_pose}" /&gt;
+    &lt;LogPose pose="{obj_pose}" label="detected_object" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p><code>DetectObject</code>가 기록한 <code>obj_pose</code>를 <code>NavigateToPose</code>와 <code>LogPose</code>가 각각 읽는다.</p>
+<h2>7. 출력 포트의 선택적 사용</h2>
+<p>출력 포트가 XML에서 매핑되지 않은 경우 <code>setOutput()</code>은 무시된다. 이 특성에 의해 출력 포트의 사용은 항상 선택적이다.</p>
+<pre><code class="language-xml">&lt;!-- error_code 출력을 사용하지 않음 (생략) --&gt;
+&lt;ComputePathToPose goal="{target}" path="{nav_path}" /&gt;
+
+&lt;!-- error_code 출력을 사용함 --&gt;
+&lt;ComputePathToPose goal="{target}" path="{nav_path}"
+                    error_code="{err}" /&gt;
+</code></pre>
+<p>노드의 구현 코드에서 <code>setOutput("error_code", ...)</code>는 두 경우 모두 호출되나, 첫 번째 경우에서는 블랙보드에 기록되지 않는다. 이 동작은 노드의 재사용성을 향상시킨다.</p>
+<h2>8. ROS2 인터페이스 결과의 출력 패턴</h2>
+<h3>8.1 ROS2 액션 결과의 출력</h3>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    if (isActionComplete())
+    {
+        auto result = getActionResult();
+        setOutput("error_code", result-&gt;error_code);
+        setOutput("total_time",
+            result-&gt;total_time.sec
+            + result-&gt;total_time.nanosec * 1e-9);
+        return (result-&gt;error_code == 0)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    // 피드백 출력
+    auto feedback = getLatestFeedback();
+    if (feedback)
+    {
+        setOutput("distance_remaining",
+            feedback-&gt;distance_remaining);
+    }
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>8.2 ROS2 서비스 응답의 출력</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    auto request = std::make_shared&lt;ServiceType::Request&gt;();
+    getInput("request_data", request-&gt;data);
+
+    auto response = callService(request);
+    if (response)
+    {
+        setOutput("response_data", response-&gt;result);
+        setOutput("success", response-&gt;success);
+        return response-&gt;success
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>9. 출력 포트 설계 시 고려 사항</h2>
+<h3>9.1 출력의 일관성</h3>
+<p>노드가 SUCCESS를 반환하는 경우, 선언된 모든 결과 출력 포트에 유효한 값이 기록되어야 한다. FAILURE를 반환하는 경우, 오류 관련 출력 포트에 실패 원인 정보를 기록하는 것이 권장된다.</p>
+<table><thead><tr><th>반환 상태</th><th style="text-align: center">결과 출력 포트</th><th style="text-align: center">오류 출력 포트</th></tr></thead><tbody>
+<tr><td>SUCCESS</td><td style="text-align: center">유효한 값 기록 필수</td><td style="text-align: center">기록 선택적 (0 또는 성공 코드)</td></tr>
+<tr><td>FAILURE</td><td style="text-align: center">기록 불필요</td><td style="text-align: center">실패 원인 기록 권장</td></tr>
+<tr><td>RUNNING</td><td style="text-align: center">기록 선택적 (피드백)</td><td style="text-align: center">기록 불필요</td></tr>
+</tbody></table>
+<h3>9.2 출력 포트의 명명</h3>
+<p>출력 포트의 명칭은 데이터의 성격과 출처를 반영하여야 한다.</p>
+<pre><code class="language-cpp">// 권장: 구체적 명칭
+BT::OutputPort&lt;nav_msgs::msg::Path&gt;("computed_path", "계산된 경로")
+BT::OutputPort&lt;int&gt;("navigation_error_code", "내비게이션 오류 코드")
+BT::OutputPort&lt;double&gt;("distance_remaining", "남은 거리 (미터)")
+
+// 지양: 범용적 명칭
+BT::OutputPort&lt;nav_msgs::msg::Path&gt;("output", "출력")
+BT::OutputPort&lt;int&gt;("code", "코드")
+BT::OutputPort&lt;double&gt;("value", "값")
+</code></pre>
+<h2>10. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>결과와 피드백의 구분</strong>: 행동 완료 시의 최종 결과와 진행 중의 중간 피드백을 별도의 출력 포트로 선언한다.</p>
+</li>
+<li>
+<p><strong>오류 정보의 출력</strong>: FAILURE 시 실패 원인을 전달하기 위한 오류 코드 또는 오류 메시지 출력 포트를 제공한다.</p>
+</li>
+<li>
+<p><strong>성공 시 출력의 완전성</strong>: SUCCESS 반환 전에 모든 결과 출력 포트에 유효한 값을 기록한다.</p>
+</li>
+<li>
+<p><strong>선택적 사용 허용</strong>: 출력 포트의 XML 매핑이 생략될 수 있음을 전제하고 설계한다. <code>setOutput()</code>의 호출이 매핑 여부에 무관하게 안전하게 동작함을 활용한다.</p>
+</li>
+<li>
+<p><strong>설명의 단위 포함</strong>: 물리량 출력의 설명에 단위를 명시한다.</p>
+</li>
+<li>
+<p><strong>과도한 출력 지양</strong>: 노드의 주된 결과와 직접 관련된 데이터만을 출력 포트로 제공하고, 부수적 데이터의 출력은 최소 부작용 원칙에 따라 제한한다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

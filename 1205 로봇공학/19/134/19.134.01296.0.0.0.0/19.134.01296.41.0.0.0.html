@@ -115,6 +115,327 @@
             </header>
             <article>
                 <h1>1296.41 ROS2 액션 골 (Goal) 전송 액션 노드</h1>
+<h2>1. 골 전송의 개요</h2>
+<p>ROS2 액션 클라이언트 기반 행동 트리 액션 노드에서 골(Goal) 전송은 노드가 최초로 Tick될 때 수행되는 핵심 동작이다. 골 전송은 블랙보드의 입력 포트로부터 파라미터를 읽어 ROS2 액션 골 메시지를 구성하고, 이를 액션 서버에 비동기적으로 전달하는 과정으로 이루어진다. 이 과정은 <code>StatefulActionNode</code>의 <code>onStart()</code> 콜백 내에서 완결되며, 골 전송의 성공 여부에 따라 RUNNING 또는 FAILURE를 반환한다(Macenski et al., 2020).</p>
+<h2>2. 골 전송의 단계별 과정</h2>
+<p>골 전송은 다음의 다섯 단계로 구성된다.</p>
+<pre><code>골 전송 과정
+    │
+    ├─ 1단계: 입력 포트 읽기
+    │       │
+    │       ├─ getInput()으로 골 파라미터 획득
+    │       │
+    │       └─ 필수 입력 누락 → FAILURE 반환
+    │
+    ├─ 2단계: 액션 서버 가용성 확인
+    │       │
+    │       ├─ wait_for_action_server() 호출
+    │       │
+    │       └─ 서버 미가용 → FAILURE 반환
+    │
+    ├─ 3단계: 골 메시지 구성
+    │       │
+    │       └─ 입력 포트 값 → Goal 메시지 필드 매핑
+    │
+    ├─ 4단계: 콜백 설정 및 골 전송
+    │       │
+    │       ├─ SendGoalOptions 구성
+    │       │
+    │       └─ async_send_goal() 호출
+    │
+    └─ 5단계: 골 수락 확인
+            │
+            ├─ 골 핸들 획득 → RUNNING 반환
+            │
+            ├─ 골 거부 → FAILURE 반환
+            │
+            └─ 전송 실패 → FAILURE 반환
+</code></pre>
+<h2>3. 단계: 입력 포트로부터 골 파라미터 읽기</h2>
+<p>골 메시지의 구성에 필요한 데이터를 블랙보드의 입력 포트로부터 읽는다. 필수 입력의 누락은 골 전송을 시도하기 전에 검출하여 조기에 FAILURE를 반환한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    // 필수 입력: 목표 위치
+    geometry_msgs::msg::PoseStamped goal_pose;
+    if (!getInput("goal_pose", goal_pose))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "필수 입력 'goal_pose' 누락");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 선택 입력: 행동 트리 파일 (기본값: 빈 문자열)
+    std::string behavior_tree;
+    getInput("behavior_tree", behavior_tree);
+
+    // 이후 단계 진행...
+}
+</code></pre>
+<h3>3.1 복합 골 파라미터의 읽기</h3>
+<p>액션 골이 다수의 필드를 포함하는 경우, 각 필드를 개별 입력 포트로부터 읽어 골 메시지에 조합한다.</p>
+<pre><code class="language-cpp">// ComputePathToPose 액션의 골 구성
+bool populateGoal(
+    nav2_msgs::action::ComputePathToPose::Goal&amp; goal)
+{
+    geometry_msgs::msg::PoseStamped start, target;
+
+    if (!getInput("start_pose", start))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "'start_pose' 누락");
+        return false;
+    }
+
+    if (!getInput("goal_pose", target))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "'goal_pose' 누락");
+        return false;
+    }
+
+    goal.start = start;
+    goal.goal = target;
+
+    std::string planner_id;
+    getInput("planner_id", planner_id);
+    goal.planner_id = planner_id;
+
+    return true;
+}
+</code></pre>
+<h3>3.2 골 메시지 전체를 단일 포트로 수신</h3>
+<p>골 메시지 자체를 하나의 입력 포트로 수신하는 패턴은 블랙보드의 이전 노드가 골을 사전 구성한 경우에 적용된다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;nav2_msgs::action::NavigateToPose::Goal&gt;(
+            "goal_msg", "사전 구성된 골 메시지"),
+        BT::InputPort&lt;std::string&gt;(
+            "server_name", "navigate_to_pose",
+            "액션 서버 이름")
+    };
+}
+</code></pre>
+<p>이 패턴은 골 구성 로직을 별도의 동기 액션 노드에 분리하여 단일 책임 원칙을 적용하는 경우에 유용하다.</p>
+<h2>4. 단계: 액션 서버 가용성 확인</h2>
+<p>골 전송 전에 액션 서버의 가용성을 확인한다. <code>wait_for_action_server()</code>는 지정된 타임아웃 동안 서버의 탐색을 시도한다.</p>
+<pre><code class="language-cpp">if (!action_client_-&gt;wait_for_action_server(
+        std::chrono::milliseconds(100)))
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "액션 서버 '%s' 미가용 (100ms 대기 초과)",
+        server_name.c_str());
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>4.1 타임아웃의 설정 기준</h3>
+<p>서버 가용성 확인의 타임아웃은 행동 트리의 Tick 주기에 대한 영향을 고려하여 설정한다. 과도하게 긴 타임아웃은 트리의 반응성을 저하시킨다.</p>
+<table><thead><tr><th style="text-align: center">타임아웃 설정</th><th>적합한 상황</th><th style="text-align: center">트리 반응성 영향</th></tr></thead><tbody>
+<tr><td style="text-align: center">50–100ms</td><td>서버가 이미 실행 중인 경우</td><td style="text-align: center">최소</td></tr>
+<tr><td style="text-align: center">500ms–1s</td><td>서버 시작에 약간의 지연이 있는 경우</td><td style="text-align: center">보통</td></tr>
+<tr><td style="text-align: center">1s 이상</td><td>권장하지 않음</td><td style="text-align: center">심각</td></tr>
+</tbody></table>
+<p>서버가 간헐적으로 미가용한 환경에서는 행동 트리의 상위에서 재시도 로직(Retry 데코레이터)을 적용하는 것이 서버 대기 타임아웃을 증가시키는 것보다 바람직하다.</p>
+<h2>5. 단계: 골 메시지 구성</h2>
+<p>입력 포트의 값을 ROS2 액션 골 메시지의 필드에 매핑한다.</p>
+<h3>5.1 필드 단위 매핑</h3>
+<pre><code class="language-cpp">auto goal_msg = nav2_msgs::action::NavigateToPose::Goal();
+
+geometry_msgs::msg::PoseStamped pose;
+getInput("goal_pose", pose);
+goal_msg.pose = pose;
+
+std::string bt_xml;
+getInput("behavior_tree", bt_xml);
+goal_msg.behavior_tree = bt_xml;
+</code></pre>
+<h3>5.2 입력 포트와 골 필드의 대응 관계</h3>
+<table><thead><tr><th>입력 포트</th><th>골 메시지 필드</th><th>타입</th><th style="text-align: center">필수 여부</th></tr></thead><tbody>
+<tr><td><code>goal_pose</code></td><td><code>goal.pose</code></td><td><code>PoseStamped</code></td><td style="text-align: center">필수</td></tr>
+<tr><td><code>behavior_tree</code></td><td><code>goal.behavior_tree</code></td><td><code>string</code></td><td style="text-align: center">선택</td></tr>
+<tr><td><code>planner_id</code></td><td><code>goal.planner_id</code></td><td><code>string</code></td><td style="text-align: center">선택</td></tr>
+<tr><td><code>controller_id</code></td><td><code>goal.controller_id</code></td><td><code>string</code></td><td style="text-align: center">선택</td></tr>
+</tbody></table>
+<p>골 메시지의 필드 중 기본값이 적합한 필드는 선택 입력 포트로 선언하여, XML에서의 지정을 생략할 수 있게 한다.</p>
+<h2>6. 단계: 콜백 설정 및 비동기 골 전송</h2>
+<p><code>SendGoalOptions</code> 구조체를 통해 골 응답 콜백, 피드백 콜백, 결과 콜백을 설정한 후, <code>async_send_goal()</code>로 골을 비동기적으로 전송한다.</p>
+<h3>6.1 SendGoalOptions의 구성</h3>
+<pre><code class="language-cpp">auto send_goal_options =
+    rclcpp_action::Client&lt;ActionT&gt;::SendGoalOptions();
+
+// 골 응답 콜백: 서버가 골을 수락/거부했을 때
+send_goal_options.goal_response_callback =
+    [this](const%20typename%20GoalHandle::SharedPtr&amp;%20goal_handle)
+    {
+        if (!goal_handle)
+        {
+            RCLCPP_WARN(node_-&gt;get_logger(),
+                "골이 서버에 의해 거부됨");
+            goal_rejected_ = true;
+        }
+    };
+
+// 피드백 콜백: 서버가 피드백을 전송할 때마다
+send_goal_options.feedback_callback =
+    [this](typename%20GoalHandle::SharedPtr,
+%20%20%20%20%20%20%20%20%20%20%20const%20std::shared_ptr&lt;const%20Feedback&gt;%20feedback)
+    {
+        latest_feedback_ = feedback;
+    };
+
+// 결과 콜백: 액션이 완료되었을 때
+send_goal_options.result_callback =
+    [this](const%20typename%20GoalHandle::WrappedResult&amp;%20result)
+    {
+        result_ = std::make_shared&lt;Result&gt;(*result.result);
+        result_code_ = result.code;
+        goal_completed_ = true;
+    };
+</code></pre>
+<h3>6.2 세 가지 콜백의 호출 시점과 역할</h3>
+<table><thead><tr><th>콜백</th><th>호출 시점</th><th>역할</th></tr></thead><tbody>
+<tr><td><code>goal_response_callback</code></td><td>서버가 골을 수락/거부한 직후</td><td>골 수락 여부 확인</td></tr>
+<tr><td><code>feedback_callback</code></td><td>서버가 피드백을 발행할 때마다</td><td>진행 상태 갱신</td></tr>
+<tr><td><code>result_callback</code></td><td>액션이 완료(성공/중단/취소)되었을 때</td><td>최종 결과 저장</td></tr>
+</tbody></table>
+<h3>6.3 async_send_goal() 호출</h3>
+<pre><code class="language-cpp">auto goal_handle_future =
+    action_client_-&gt;async_send_goal(goal_msg, send_goal_options);
+</code></pre>
+<p><code>async_send_goal()</code>은 <code>std::shared_future&lt;GoalHandle::SharedPtr&gt;</code>를 반환한다. 이 future가 완료되면 서버의 골 수락/거부 결과를 나타내는 골 핸들을 획득할 수 있다.</p>
+<h2>7. 단계: 골 수락 확인</h2>
+<p>골 전송 후 서버의 골 수락 응답을 확인한다. 이 확인은 <code>onStart()</code> 내에서 짧은 타임아웃으로 동기적으로 수행하거나, 다음 Tick에서 비동기적으로 수행하는 두 가지 접근이 존재한다.</p>
+<h3>7.1 동기적 골 수락 확인</h3>
+<pre><code class="language-cpp">// onStart() 내에서 골 수락을 동기적으로 확인
+auto status = rclcpp::spin_until_future_complete(
+    node_, goal_handle_future,
+    std::chrono::milliseconds(200));
+
+if (status != rclcpp::FutureReturnCode::SUCCESS)
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "골 수락 응답 대기 타임아웃");
+    return BT::NodeStatus::FAILURE;
+}
+
+goal_handle_ = goal_handle_future.get();
+if (!goal_handle_)
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "골이 서버에 의해 거부됨");
+    return BT::NodeStatus::FAILURE;
+}
+
+return BT::NodeStatus::RUNNING;
+</code></pre>
+<p>동기적 확인은 <code>onStart()</code>의 반환 시점에서 골의 수락 여부가 확정되므로, 이후 <code>onRunning()</code>에서의 상태 관리가 단순해진다.</p>
+<h3>7.2 비동기적 골 수락 확인</h3>
+<pre><code class="language-cpp">// onStart()에서 future를 저장하고 RUNNING 반환
+goal_handle_future_ = 
+    action_client_-&gt;async_send_goal(goal_msg, send_goal_options);
+waiting_for_acceptance_ = true;
+return BT::NodeStatus::RUNNING;
+</code></pre>
+<pre><code class="language-cpp">// onRunning()에서 골 수락을 비동기적으로 확인
+BT::NodeStatus onRunning() override
+{
+    if (waiting_for_acceptance_)
+    {
+        if (goal_handle_future_.wait_for(
+                std::chrono::milliseconds(0))
+            == std::future_status::ready)
+        {
+            goal_handle_ = goal_handle_future_.get();
+            if (!goal_handle_)
+            {
+                RCLCPP_ERROR(node_-&gt;get_logger(),
+                    "골이 서버에 의해 거부됨");
+                return BT::NodeStatus::FAILURE;
+            }
+            waiting_for_acceptance_ = false;
+        }
+        else
+        {
+            return BT::NodeStatus::RUNNING;
+        }
+    }
+
+    // 이후 결과 확인 로직...
+}
+</code></pre>
+<p>비동기적 확인은 <code>onStart()</code>에서 메인 스레드를 전혀 차단하지 않으나, <code>onRunning()</code>의 상태 관리가 복잡해진다.</p>
+<h3>7.3 두 접근의 비교</h3>
+<table><thead><tr><th>특성</th><th style="text-align: center">동기적 확인</th><th style="text-align: center">비동기적 확인</th></tr></thead><tbody>
+<tr><td>onStart() 차단 시간</td><td style="text-align: center">짧은 타임아웃만큼</td><td style="text-align: center">없음</td></tr>
+<tr><td>onRunning() 복잡도</td><td style="text-align: center">단순</td><td style="text-align: center">골 수락 대기 상태 관리 필요</td></tr>
+<tr><td>골 거부 시 반환 시점</td><td style="text-align: center">onStart()에서 즉시 FAILURE</td><td style="text-align: center">onRunning()에서 FAILURE</td></tr>
+<tr><td>Nav2 채택 방식</td><td style="text-align: center">동기적 확인</td><td style="text-align: center">-</td></tr>
+</tbody></table>
+<p>Nav2의 <code>BtActionNode</code>는 동기적 확인 방식을 채택하며, 골 수락 대기 타임아웃을 짧게 설정하여 메인 스레드의 차단을 최소화한다(Macenski et al., 2020).</p>
+<h2>8. 골 전송 실패의 원인과 처리</h2>
+<p>골 전송 과정에서 발생할 수 있는 실패 원인을 분류한다.</p>
+<table><thead><tr><th>실패 원인</th><th style="text-align: center">발생 단계</th><th>처리</th></tr></thead><tbody>
+<tr><td>필수 입력 포트 누락</td><td style="text-align: center">1단계</td><td>오류 로그 + FAILURE</td></tr>
+<tr><td>액션 서버 미가용</td><td style="text-align: center">2단계</td><td>오류 로그 + FAILURE</td></tr>
+<tr><td>골 메시지 구성 실패</td><td style="text-align: center">3단계</td><td>오류 로그 + FAILURE</td></tr>
+<tr><td>골 전송 네트워크 오류</td><td style="text-align: center">4단계</td><td>오류 로그 + FAILURE</td></tr>
+<tr><td>서버에 의한 골 거부</td><td style="text-align: center">5단계</td><td>경고 로그 + FAILURE</td></tr>
+<tr><td>골 수락 응답 타임아웃</td><td style="text-align: center">5단계</td><td>오류 로그 + FAILURE</td></tr>
+</tbody></table>
+<h3>8.1 오류 코드 출력</h3>
+<p>골 전송 실패 시 오류 정보를 출력 포트를 통해 블랙보드에 기록하면, 상위 트리에서 실패 원인에 따른 분기 처리가 가능하다.</p>
+<pre><code class="language-cpp">enum class GoalSendError : int
+{
+    INPUT_MISSING = 100,
+    SERVER_UNAVAILABLE = 101,
+    GOAL_REJECTED = 102,
+    SEND_TIMEOUT = 103
+};
+
+// onStart() 내 실패 처리
+if (!action_client_-&gt;wait_for_action_server(
+        std::chrono::milliseconds(100)))
+{
+    setOutput("error_code",
+        static_cast&lt;int&gt;(GoalSendError::SERVER_UNAVAILABLE));
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>9. XML에서의 골 파라미터 지정</h2>
+<pre><code class="language-xml">&lt;!-- 블랙보드 키를 통한 동적 골 지정 --&gt;
+&lt;NavigateToPose goal_pose="{target_pose}"
+                 server_name="navigate_to_pose" /&gt;
+
+&lt;!-- 이전 노드의 출력을 골로 사용 --&gt;
+&lt;Sequence&gt;
+    &lt;ComputeTargetPose target="{computed_target}" /&gt;
+    &lt;NavigateToPose goal_pose="{computed_target}" /&gt;
+&lt;/Sequence&gt;
+
+&lt;!-- 다수의 골 파라미터 지정 --&gt;
+&lt;ComputePathToPose start_pose="{current_pose}"
+                    goal_pose="{target_pose}"
+                    planner_id="GridBased" /&gt;
+</code></pre>
+<p>블랙보드 키 참조(<code>{key}</code>)를 통한 골 파라미터 지정은 노드 간 데이터 흐름을 형성하여, 트리의 유연성을 확보한다.</p>
+<h2>10. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>입력 검증의 조기 수행</strong>: 모든 필수 입력 포트의 검증을 골 전송 시도 이전에 완료하여, 불필요한 서버 통신을 방지한다.</p>
+</li>
+<li>
+<p><strong>서버 가용성 확인의 짧은 타임아웃</strong>: 서버 탐색에 100–200ms의 짧은 타임아웃을 적용하여, 서버 미가용 시 트리의 반응성을 유지한다. 재시도는 트리 수준에서 처리한다.</p>
+</li>
+<li>
+<p><strong>동기적 골 수락 확인의 채택</strong>: 골 수락 확인을 <code>onStart()</code> 내에서 동기적으로 수행하여, <code>onRunning()</code>의 상태 관리를 단순화한다.</p>
+</li>
+<li>
+<p><strong>골 구성 로직의 분리</strong>: 복잡한 골 구성이 필요한 경우 별도의 동기 액션 노드에서 골 메시지를 사전 구성하여 블랙보드에 기록하고, 전송 노드에서 이를 읽어 사용한다.</p>
+</li>
+<li>
+<p><strong>실패 원인의 구분 출력</strong>: 골 전송 실패의 원인을 오류 코드 출력 포트를 통해 블랙보드에 기록하여, 상위 트리에서의 분기 처리를 지원한다(Macenski et al., 2020; Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

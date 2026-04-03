@@ -115,6 +115,90 @@
             </header>
             <article>
                 <h1>1294.45 ReactiveFallback의 개념</h1>
+<h2>1. ReactiveFallback의 정의</h2>
+<p>ReactiveFallback은 Fallback 노드의 변형으로, 매 Tick마다 첫 번째 자식(인덱스 0)부터 모든 자식을 순차적으로 재평가하는 제어 흐름 노드이다. FallbackWithMemory와 달리, 이전 Tick에서 FAILURE를 반환한 자식도 다음 Tick에서 다시 평가된다. 이를 통해 우선순위가 높은 대안의 가용성 변화를 매 Tick마다 감지하고, 더 나은 대안이 가용해지면 현재 진행 중인 대안을 즉시 중단하고 전환할 수 있다(Colledanchise &amp; Ogren, 2018).</p>
+<p>“Reactive“라는 명칭은 ReactiveSequence와 동일하게 환경 변화에 대한 반응성(reactivity)을 강조한 것으로, 조건 및 대안의 가용성 변화에 즉각적으로 반응하는 능력을 의미한다.</p>
+<h2>2. ReactiveFallback의 핵심 특성</h2>
+<h3>2.1 매 Tick 전면 재평가</h3>
+<p>ReactiveFallback은 내부에 <code>current_child_idx</code> 상태를 유지하지 않는다. 매 Tick에서 항상 인덱스 0의 자식부터 순차적으로 평가를 시작한다.</p>
+<pre><code>매 Tick의 실행:
+  항상 children[0]부터 시작 → children[1] → ... → children[k]
+</code></pre>
+<h3>2.2 우선순위 기반 대안 전환</h3>
+<p>앞쪽에 배치된 자식(더 높은 우선순위)이 매 Tick마다 재평가되므로, 이전에 FAILURE였던 앞쪽 자식이 SUCCESS로 변하면 즉시 감지된다. 이 경우 뒤쪽에서 RUNNING 상태인 자식이 Halt되고, Fallback은 SUCCESS를 반환한다.</p>
+<pre><code>Tick N:   CondA→F  ActB→R          → RUNNING
+Tick N+1: CondA→S                   → SUCCESS (ActB를 Halt)
+</code></pre>
+<h3>2.3 RUNNING 자식의 Halt</h3>
+<p>앞쪽 자식의 재평가에서 SUCCESS가 발생하면, 뒤쪽에서 RUNNING이었던 자식에게 Halt를 전달하여 진행 중인 비동기 작업을 즉시 중단시킨다.</p>
+<h2>3. FallbackWithMemory와의 비교</h2>
+<pre><code>동일한 트리: [CondA, AsyncActB, ActC]
+
+FallbackWithMemory:
+  Tick 1: CondA→F, AsyncActB→R  → RUNNING (idx=1)
+  Tick 2: AsyncActB→R            → RUNNING (CondA 건너뜀)
+  Tick 3: AsyncActB→S            → SUCCESS
+
+ReactiveFallback:
+  Tick 1: CondA→F, AsyncActB→R  → RUNNING
+  Tick 2: CondA→S                → SUCCESS (AsyncActB Halt)
+</code></pre>
+<p>ReactiveFallback에서는 Tick 2에서 CondA의 변화를 감지하여 더 우선순위가 높은 대안으로 즉시 전환한다. FallbackWithMemory에서는 CondA를 건너뛰므로 이 변화를 감지하지 못한다.</p>
+<h2>4. ReactiveSequence와의 대칭적 관계</h2>
+<p>ReactiveFallback과 ReactiveSequence는 동일한 “Reactive” 패턴을 공유하며, SUCCESS와 FAILURE의 역할이 교환된 대칭 관계이다.</p>
+<table><thead><tr><th>특성</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>매 Tick 재평가</td><td>예</td><td>예</td></tr>
+<tr><td>조기 종료 조건</td><td>FAILURE</td><td>SUCCESS</td></tr>
+<tr><td>계속 진행 조건</td><td>SUCCESS</td><td>FAILURE</td></tr>
+<tr><td>RUNNING 자식 Halt 트리거</td><td>앞쪽 자식 FAILURE</td><td>앞쪽 자식 SUCCESS</td></tr>
+<tr><td>전형적 앞쪽 노드</td><td>조건 (안전 감시)</td><td>조건 (목표 달성 확인)</td></tr>
+</tbody></table>
+<h2>5. ReactiveFallback의 전형적 사용 패턴</h2>
+<h3>5.1 우선순위 기반 조건부 행동 선택</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Condition ID="IsGoalAlreadyAchieved"/&gt;   &lt;!-- 1순위: 이미 달성? --&gt;
+    &lt;Action ID="AchieveGoalMethodA"/&gt;          &lt;!-- 2순위: 방법 A --&gt;
+    &lt;Action ID="AchieveGoalMethodB"/&gt;          &lt;!-- 3순위: 방법 B --&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>매 Tick마다 목표 달성 여부가 재검사되며, 방법 A나 B를 수행하는 도중 목표가 달성되면(다른 요인에 의해) 현재 작업이 즉시 중단된다.</p>
+<h3>5.2 동적 대안 전환</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPrimaryPathClear"/&gt;
+        &lt;Action ID="UsePrimaryPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="UseDetourPath"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>우회 경로를 사용하는 도중 주 경로가 정리되면, 우회를 중단하고 주 경로로 즉시 전환한다.</p>
+<h3>5.3 조건 기반 행동 재개</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Condition ID="IsTaskComplete"/&gt;
+    &lt;Condition ID="IsRecharging"/&gt;
+    &lt;Action ID="PerformTask"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>작업 수행 중 충전 상태가 되거나 작업이 완료되면 즉시 감지된다.</p>
+<h2>6. ReactiveFallback의 대가</h2>
+<h3>6.1 Tick 비용 증가</h3>
+<p>매 Tick마다 첫 번째 자식부터 재평가하므로, RUNNING 상태가 지속되는 동안 Tick당 방문 노드 수가 FallbackWithMemory보다 많다.</p>
+<h3>6.2 앞쪽 액션의 반복 실행 위험</h3>
+<p>ReactiveSequence와 마찬가지로, 앞쪽에 부수 효과가 있는 액션 노드를 배치하면 매 Tick마다 재실행되어 의도하지 않은 동작이 발생할 수 있다. ReactiveFallback에서도 앞쪽에는 조건 노드만 배치하는 것이 일반적 관례이다.</p>
+<h2>7. BehaviorTree.CPP v4에서의 표현</h2>
+<p>BehaviorTree.CPP v4에서 ReactiveFallback은 <code>&lt;ReactiveFallback&gt;</code> XML 태그로 정의된다(Faconti, 2022).</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Condition ID="IsAtGoal"/&gt;
+    &lt;Action ID="NavigateToGoal"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>기본 <code>&lt;Fallback&gt;</code> 태그(WithMemory 동작)와 명확히 구분되며, 개발자가 의도적으로 ReactiveFallback을 선택해야 한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

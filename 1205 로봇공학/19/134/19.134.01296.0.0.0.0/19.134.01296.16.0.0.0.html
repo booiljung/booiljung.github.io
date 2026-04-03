@@ -115,6 +115,200 @@
             </header>
             <article>
                 <h1>1296.16 비동기 액션 노드의 onHalted() 콜백</h1>
+<h2>1. onHalted() 콜백의 정의</h2>
+<p><code>onHalted()</code>는 <code>StatefulActionNode</code>의 세 가지 콜백 중 세 번째로, RUNNING 상태에서 외부에 의해 행동이 중단될 때 호출되는 순수 가상 메서드이다. 이 콜백은 진행 중인 행동을 안전하게 중단하고, 할당된 자원을 정리하는 역할을 수행한다.</p>
+<pre><code class="language-cpp">virtual void onHalted() = 0;
+</code></pre>
+<p><code>onHalted()</code>는 반환값이 없다(<code>void</code>). Halt는 행동의 결과가 아닌 외부 개입에 의한 강제 중단이므로, SUCCESS나 FAILURE를 반환할 필요가 없다. <code>onHalted()</code> 호출 후 노드의 상태는 라이브러리에 의해 자동으로 IDLE로 설정된다.</p>
+<h2>2. onHalted()의 호출 조건</h2>
+<p><code>onHalted()</code>가 호출되는 조건은 노드의 상태가 RUNNING이고 외부에서 <code>halt()</code>가 호출되는 경우이다. <code>StatefulActionNode</code>의 <code>halt()</code> 메서드는 다음과 같이 구현되어 있다.</p>
+<pre><code class="language-cpp">void StatefulActionNode::halt()
+{
+    if (status() == NodeStatus::RUNNING)
+    {
+        onHalted();
+    }
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<p><code>halt()</code>는 <code>final</code>로 선언되어 파생 클래스에서 오버라이드할 수 없다. 파생 클래스는 <code>onHalted()</code>에서 중단 로직을 구현한다.</p>
+<h2>3. Halt가 발생하는 시나리오</h2>
+<p>노드가 Halt되는 시나리오를 분류한다.</p>
+<h3>3.1 ReactiveSequence에서의 조건 실패</h3>
+<p>ReactiveSequence의 선행 조건 노드가 FAILURE를 반환하면, RUNNING 상태의 후속 자식이 Halt된다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;IsBatteryOK/&gt;              &lt;!-- FAILURE → NavigateToGoal Halt --&gt;
+    &lt;NavigateToGoal goal="{g}"/&gt;&lt;!-- RUNNING 상태에서 Halt --&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><code>IsBatteryOK</code>가 FAILURE를 반환하면, ReactiveSequence는 <code>NavigateToGoal</code>의 <code>halt()</code>를 호출하고, 이에 의해 <code>onHalted()</code>가 실행된다.</p>
+<h3>3.2 ReactiveFallback에서의 선점</h3>
+<p>ReactiveFallback의 상위 우선순위 자식이 SUCCESS를 반환하면, RUNNING 상태의 하위 우선순위 자식이 Halt된다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;QuickPlan/&gt;                &lt;!-- SUCCESS → DetailedPlan Halt --&gt;
+    &lt;DetailedPlan goal="{g}"/&gt;  &lt;!-- RUNNING 상태에서 Halt --&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<h3>3.3 Parallel의 정책 충족</h3>
+<p>Parallel 노드의 성공/실패 정책이 충족되면, 아직 RUNNING 상태인 나머지 자식이 Halt된다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="1" failure_count="1"&gt;
+    &lt;TaskA/&gt;  &lt;!-- SUCCESS → TaskB Halt --&gt;
+    &lt;TaskB/&gt;  &lt;!-- RUNNING 상태에서 Halt --&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<h3>3.4 외부 Halt</h3>
+<p>트리의 루트 노드에서 <code>haltTree()</code>가 호출되면, 전체 트리의 RUNNING 상태 노드가 재귀적으로 Halt된다. 이는 비상 정지, 모드 전환, 트리 교체 등의 시나리오에서 발생한다.</p>
+<h3>3.5 데코레이터에 의한 Halt</h3>
+<p>데코레이터 노드(예: Timeout, ForceFailure)가 자식의 Halt를 유발하는 경우이다.</p>
+<pre><code class="language-xml">&lt;Timeout msec="5000"&gt;
+    &lt;NavigateToGoal goal="{g}"/&gt;  &lt;!-- 5초 초과 시 Halt --&gt;
+&lt;/Timeout&gt;
+</code></pre>
+<h2>4. onHalted()의 역할</h2>
+<h3>4.1 ROS2 액션 취소</h3>
+<p><code>onHalted()</code>의 가장 중요한 역할은 진행 중인 ROS2 액션을 취소하는 것이다. 행동 트리에서 노드가 Halt되면, 외부 시스템에서 실행 중인 행동도 중단되어야 한다.</p>
+<pre><code class="language-cpp">void NavigateToPose::onHalted()
+{
+    RCLCPP_INFO(logger_, "내비게이션 Halt: 액션 취소 요청");
+    
+    if (goal_handle_)
+    {
+        auto cancel_future = 
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+        
+        // 취소 응답을 짧은 타임아웃으로 대기 (선택적)
+        if (cancel_future.wait_for(std::chrono::milliseconds(100))
+            == std::future_status::ready)
+        {
+            RCLCPP_INFO(logger_, "액션 취소 확인됨");
+        }
+    }
+    
+    goal_handle_.reset();
+}
+</code></pre>
+<p><code>async_cancel_goal()</code>은 ROS2 액션 서버에 취소 요청을 전송한다. Halt는 가능한 한 빠르게 완료되어야 하므로, 취소 응답의 대기 시간은 짧게 제한한다.</p>
+<h3>4.2 자원 정리</h3>
+<p><code>onHalted()</code>에서 할당된 자원을 정리하여 자원 누수(resource leak)를 방지한다.</p>
+<pre><code class="language-cpp">void RecordData::onHalted()
+{
+    // 파일 핸들 닫기
+    if (output_file_.is_open())
+    {
+        output_file_.flush();
+        output_file_.close();
+    }
+
+    // 타이머 중지
+    if (recording_timer_)
+    {
+        recording_timer_-&gt;cancel();
+    }
+}
+</code></pre>
+<h3>4.3 안전 상태 설정</h3>
+<p>로봇의 안전을 위해 중단 시 안전한 상태로 전환하는 것이 필요한 경우가 있다.</p>
+<pre><code class="language-cpp">void MoveArm::onHalted()
+{
+    // 매니퓰레이터 정지 명령 발행
+    auto stop_msg = control_msgs::msg::JointJog();
+    stop_msg.header.stamp = node_-&gt;now();
+    for (const auto&amp; joint : joint_names_)
+    {
+        stop_msg.joint_names.push_back(joint);
+        stop_msg.velocities.push_back(0.0);
+    }
+    jog_publisher_-&gt;publish(stop_msg);
+
+    // 진행 중인 액션 취소
+    if (goal_handle_)
+    {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+}
+</code></pre>
+<p>매니퓰레이터 동작이 Halt되면, 관절 속도를 0으로 설정하는 정지 명령을 발행하여 안전 상태를 확보한다.</p>
+<h3>4.4 상태 변수 초기화</h3>
+<p><code>onHalted()</code> 후 노드는 IDLE로 전이하며, 이후 다시 Tick되면 <code>onStart()</code>가 호출된다. <code>onStart()</code>에서 모든 멤버 변수를 초기화하는 것이 권장되나, <code>onHalted()</code>에서도 잔여 상태를 정리하여 일관성을 유지하는 것이 바람직하다.</p>
+<pre><code class="language-cpp">void NavigateToGoal::onHalted()
+{
+    if (goal_handle_)
+    {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+
+    // 상태 변수 초기화
+    goal_handle_.reset();
+    goal_accepted_ = false;
+}
+</code></pre>
+<h2>5. onHalted()가 호출되지 않는 경우</h2>
+<p><code>onHalted()</code>는 RUNNING 상태에서만 호출된다. 다음의 경우에는 <code>onHalted()</code>가 호출되지 않는다.</p>
+<ol>
+<li><strong><code>onStart()</code>에서 FAILURE 반환</strong>: 행동이 시작되지 않았으므로 RUNNING 상태에 진입하지 않는다.</li>
+<li><strong><code>onStart()</code>에서 SUCCESS 반환</strong>: 단일 Tick 내에서 완료되었으므로 RUNNING 상태를 거치지 않는다.</li>
+<li><strong><code>onRunning()</code>에서 SUCCESS/FAILURE 반환</strong>: 행동이 정상적으로 완료되었으므로, Halt가 아닌 정상 종료이다.</li>
+</ol>
+<p>중요한 설계 함의는 <code>onRunning()</code>에서 FAILURE를 반환하는 경우 <code>onHalted()</code>가 호출되지 않는다는 점이다. 따라서 FAILURE 반환 전에 필요한 정리 작업을 <code>onRunning()</code> 내부에서 직접 수행하여야 한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    if (hasError())
+    {
+        // onHalted()가 호출되지 않으므로 여기서 직접 정리
+        if (goal_handle_)
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+        goal_handle_.reset();
+        
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+</code></pre>
+<h2>6. onHalted()의 실행 시간 제약</h2>
+<p><code>onHalted()</code>는 메인 스레드에서 동기적으로 실행되므로, 실행 시간이 길어지면 트리의 Halt 전파가 지연된다. 특히 트리의 다수 노드가 동시에 Halt되는 경우, 각 노드의 <code>onHalted()</code> 실행 시간이 누적된다.</p>
+<pre><code>Halt 전파 시간 = Σ T_onHalted(i)   (모든 RUNNING 노드 i에 대해)
+</code></pre>
+<p><code>onHalted()</code> 내부에서 차단적 대기를 수행하면 안 된다. ROS2 액션 취소 요청은 비동기적으로 전송하고(<code>async_cancel_goal()</code>), 취소 완료를 기다리지 않는 것이 원칙이다. 취소 응답의 확인이 필요한 경우에도 짧은 타임아웃(수십 ms 이내)을 설정한다.</p>
+<h2>7. 빈 onHalted() 구현</h2>
+<p>행동이 외부 시스템과 상호 작용하지 않는 경우, <code>onHalted()</code>를 빈 구현으로 둘 수 있다.</p>
+<pre><code class="language-cpp">void WaitForDuration::onHalted()
+{
+    // 타이머는 내부 멤버 변수에 의한 시간 비교이므로
+    // 특별한 정리가 필요 없음
+}
+</code></pre>
+<p>순수 가상 함수이므로 구현은 반드시 제공하여야 하나, 정리할 자원이 없으면 빈 함수로 두는 것이 적절하다. 빈 <code>onHalted()</code>는 해당 행동이 외부 부작용 없이 즉시 중단 가능함을 나타낸다.</p>
+<h2>8. onHalted()의 설계 지침</h2>
+<ol>
+<li>
+<p><strong>비차단 실행</strong>: <code>onHalted()</code> 내부에서 차단 호출을 수행하지 않는다. 외부 시스템에 대한 취소 요청은 비동기적으로 전송한다.</p>
+</li>
+<li>
+<p><strong>예외 방지</strong>: <code>onHalted()</code> 내부에서 예외가 발생하면 Halt 전파가 중단될 수 있다. 예외 발생 가능한 연산은 <code>try-catch</code>로 감싸야 한다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    try
+    {
+        if (goal_handle_)
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+    catch (const std::exception&amp; ex)
+    {
+        RCLCPP_ERROR(logger_, "Halt 중 오류: %s", ex.what());
+    }
+    goal_handle_.reset();
+}
+</code></pre>
+</li>
+</ol>
+<pre><code>
+3. **멱등성 보장**: `onHalted()`는 한 번만 호출되는 것이 일반적이나, 방어적으로 멱등적 구현을 유지한다. 이미 취소된 액션에 대해 다시 취소를 요청하여도 오류가 발생하지 않도록 한다.
+
+4. **안전 우선**: 로봇의 물리적 행동과 관련된 노드에서는 `onHalted()`가 안전한 상태로의 전환을 보장하여야 한다. 모터 정지, 그리퍼 보호 위치 이동 등의 안전 조치를 포함한다.
+
+5. **로그 기록**: 디버깅을 위해 `onHalted()` 호출 시 로그를 남기는 것이 권장된다. Halt의 빈도와 시점을 추적하면 행동 트리의 동작을 이해하는 데 유용하다.
+
+6. **순수 가상 함수의 준수**: `onHalted()`는 순수 가상 함수이므로 파생 클래스에서 반드시 구현하여야 한다. 이 강제는 Halt 처리 누락을 방지하기 위한 BehaviorTree.CPP의 의도적 설계이다(Faconti, 2022).</code></pre>
 
             </article>
             <footer>

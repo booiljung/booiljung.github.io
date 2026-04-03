@@ -115,6 +115,146 @@
             </header>
             <article>
                 <h1>1295.68 ReactiveSequence 내부의 Parallel 중첩</h1>
+<h2>1. 중첩 구조의 의미</h2>
+<p>ReactiveSequence의 마지막 자식으로 Parallel을 배치하면, 선행 조건이 모두 충족되는 동안 복수의 행동을 동시에 수행하는 구조가 형성된다. ReactiveSequence가 전제 조건의 지속적 보장을 담당하고, Parallel이 행동의 동시 실행을 담당한다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>ReactiveSequence
+├── Condition₁           // 전제 조건 1
+├── Condition₂           // 전제 조건 2
+└── Parallel (정책)       // 동시 행동
+    ├── Action_A
+    ├── Action_B
+    └── Action_C
+</code></pre>
+<p>이 구조의 의미론: “Condition₁과 Condition₂가 모두 참인 동안, Action_A, Action_B, Action_C를 동시에 수행하라.”</p>
+<h2>3. Tick 흐름의 추적</h2>
+<pre><code>ReactiveSequence
+├── IsSafe               // 안전 조건
+├── IsLocalized          // 위치 추정 유효
+└── Parallel (SUCCESS_ALL)
+    ├── NavigateToGoal   // 목표 이동
+    └── MapEnvironment   // 환경 매핑
+</code></pre>
+<h3>3.1 정상 실행</h3>
+<pre><code>Tick 1:
+  IsSafe.tick() → SUCCESS
+  IsLocalized.tick() → SUCCESS
+  Parallel.tick():
+    NavigateToGoal.tick() → RUNNING
+    MapEnvironment.tick() → RUNNING
+    → Parallel → RUNNING
+  → ReactiveSequence → RUNNING
+</code></pre>
+<p>모든 조건이 <code>SUCCESS</code>이므로 Parallel이 Tick을 수신하고, 내부의 두 행동이 동시에 진행된다.</p>
+<h3>3.2 조건 위반 시</h3>
+<pre><code>Tick 3:
+  IsSafe.tick() → FAILURE
+  → Parallel은 Tick을 수신하지 않음
+  → Parallel.halt() 호출:
+      NavigateToGoal.halt()
+      MapEnvironment.halt()
+  → ReactiveSequence → FAILURE
+</code></pre>
+<p><code>IsSafe</code>가 <code>FAILURE</code>를 반환하면, Parallel과 그 내부의 모든 행동에 Halt가 전파된다. 두 행동 모두 즉시 중단된다.</p>
+<h3>3.3 조건 복원 시</h3>
+<pre><code>Tick 4:
+  IsSafe.tick() → SUCCESS
+  IsLocalized.tick() → SUCCESS
+  Parallel.tick():
+    NavigateToGoal.tick() → RUNNING (새로 시작)
+    MapEnvironment.tick() → RUNNING (새로 시작)
+    → Parallel → RUNNING
+  → ReactiveSequence → RUNNING
+</code></pre>
+<p>조건이 복원되면 Parallel이 다시 Tick을 수신하고, 내부 행동들이 새로 시작된다. 이전의 진행 상태는 Halt에 의해 초기화되었으므로 처음부터 재개된다.</p>
+<h2>4. Parallel 정책의 상호 작용</h2>
+<p>ReactiveSequence 내부의 Parallel 정책이 전체 구조의 동작에 미치는 영향을 분석한다.</p>
+<h3>4.1 SUCCESS_ALL 정책</h3>
+<pre><code>ReactiveSequence
+├── IsSafe
+└── Parallel (SUCCESS_ALL)
+    ├── Task_A → SUCCESS (완료)
+    └── Task_B → RUNNING (진행 중)
+</code></pre>
+<p><code>Task_A</code>가 완료되어도 <code>Task_B</code>가 <code>RUNNING</code>이므로 Parallel은 <code>RUNNING</code>을 반환한다. ReactiveSequence도 <code>RUNNING</code>을 반환하며, 다음 Tick에서 조건이 재평가된다. <code>Task_A</code>는 이미 <code>SUCCESS</code>이므로 Parallel 구현에 따라 재Tick되지 않거나, Tick되어도 <code>SUCCESS</code>를 즉시 반환한다.</p>
+<h3>4.2 FAILURE_ONE 정책</h3>
+<pre><code>ReactiveSequence
+├── IsSafe
+└── Parallel (FAILURE_ONE)
+    ├── Task_A → RUNNING
+    └── Task_B → FAILURE
+</code></pre>
+<p><code>Task_B</code>가 <code>FAILURE</code>를 반환하면 FAILURE_ONE 정책에 의해 Parallel이 <code>FAILURE</code>를 반환한다. 이 <code>FAILURE</code>는 ReactiveSequence로 전파되어 ReactiveSequence도 <code>FAILURE</code>를 반환한다.</p>
+<p>이 경우 ReactiveSequence의 조건은 모두 <code>SUCCESS</code>였으나, Parallel 내부 행동의 실패에 의해 ReactiveSequence가 <code>FAILURE</code>를 반환한다. 이는 ReactiveSequence의 <code>FAILURE</code>가 반드시 조건 위반에 의해서만 발생하는 것이 아님을 의미한다.</p>
+<h2>5. 적용 사례</h2>
+<h3>5.1 안전 감시 하의 SLAM</h3>
+<p>위치 추정이 유효하고 안전 조건이 충족되는 동안, 이동과 동시 위치 추정 및 지도 작성(SLAM)을 동시에 수행한다.</p>
+<pre><code>ReactiveSequence
+├── IsHardwareNormal
+├── IsIMUCalibrated
+└── Parallel (SUCCESS_ALL)
+    ├── FollowExplorationPath
+    ├── UpdateSLAMMap
+    └── PublishOdometry
+</code></pre>
+<p>하드웨어 이상이나 IMU 캘리브레이션 손실 시, 탐사, SLAM 갱신, 오도메트리 발행이 모두 즉시 중단된다.</p>
+<h3>5.2 조건부 드론 임무</h3>
+<p>비행 안전 조건 하에서 비행, 촬영, 데이터 전송을 동시에 수행한다.</p>
+<pre><code>ReactiveSequence
+├── IsBatteryAboveMinimum
+├── IsGPSAccurate
+├── IsWindAcceptable
+└── Parallel (SUCCESS_ALL)
+    ├── FlyWaypoints
+    ├── CaptureAerialImages
+    └── TransmitDataToBase
+</code></pre>
+<p>배터리 부족, GPS 정확도 저하, 풍속 초과 중 하나라도 발생하면 비행, 촬영, 전송이 모두 중단된다.</p>
+<h3>5.3 조건부 협업 작업</h3>
+<p>작업 공간 안전과 통신 유효성이 보장되는 동안, 복수 로봇의 협업 작업을 동시에 수행한다.</p>
+<pre><code>ReactiveSequence
+├── IsWorkspaceSafe
+├── IsInterRobotCommAlive
+└── Parallel (SUCCESS_ALL, FAILURE_ONE)
+    ├── RobotA_Task
+    └── RobotB_Task
+</code></pre>
+<p>FAILURE_ONE 정책에 의해, 한 로봇의 작업이 실패하면 다른 로봇의 작업도 즉시 중단된다. 협업 작업에서 한쪽의 실패가 다른 쪽에 영향을 미치는 경우에 적합하다.</p>
+<h2>6. Halt 전파의 계층적 경로</h2>
+<p>이 중첩 구조에서 Halt가 전파되는 경로는 세 가지이다.</p>
+<h3>6.1 경로 1: 조건 위반에 의한 Halt</h3>
+<pre><code>IsSafe → FAILURE
+→ ReactiveSequence가 Parallel에 halt() 호출
+  → Parallel이 NavigateToGoal에 halt() 호출
+  → Parallel이 MapEnvironment에 halt() 호출
+</code></pre>
+<h3>6.2 경로 2: Parallel 정책 충족에 의한 Halt</h3>
+<pre><code>NavigateToGoal → FAILURE (경로 추종 실패)
+→ Parallel (FAILURE_ONE) → FAILURE
+  → MapEnvironment.halt()
+→ ReactiveSequence → FAILURE
+</code></pre>
+<h3>6.3 경로 3: 부모로부터의 Halt</h3>
+<pre><code>ReactiveSequence의 부모가 halt() 호출
+→ ReactiveSequence가 모든 자식에 halt() 호출
+  → IsSafe.halt() (조건 노드, 효과 없음)
+  → IsLocalized.halt() (조건 노드, 효과 없음)
+  → Parallel.halt()
+    → NavigateToGoal.halt()
+    → MapEnvironment.halt()
+</code></pre>
+<h2>7. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>Parallel 정책의 의미론적 적합성</strong>: ReactiveSequence 내부의 Parallel 정책은 “조건 위반이 아닌 행동 실패 시 어떻게 처리할 것인가“를 결정한다. 이 결정은 행동 간의 의존성에 기반하여야 한다.</p>
+</li>
+<li>
+<p><strong>행동 재시작의 비용</strong>: 조건이 빈번히 위반되고 복원되면, Parallel 내의 모든 행동이 반복적으로 처음부터 재시작된다. 재시작 비용이 높은 행동(예: SLAM 초기화)이 포함된 경우, 조건의 안정성(히스테리시스 적용 등)을 확보하여야 한다.</p>
+</li>
+<li>
+<p><strong>조건과 Parallel 행동의 블랙보드 분리</strong>: 조건 노드가 읽는 블랙보드 엔트리와 Parallel 내 행동이 쓰는 블랙보드 엔트리가 중첩되지 않도록 주의하라. Parallel 내 행동이 조건 노드의 입력 데이터를 변경하면 예기치 않은 조건 변동이 발생할 수 있다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

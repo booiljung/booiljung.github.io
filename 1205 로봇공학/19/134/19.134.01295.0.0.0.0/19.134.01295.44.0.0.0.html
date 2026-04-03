@@ -115,6 +115,122 @@
             </header>
             <article>
                 <h1>1295.44 ReactiveFallback과 일반 Fallback의 차이 심화</h1>
+<h2>1. 근본적 동작 차이</h2>
+<p>일반 Fallback(Selector)과 ReactiveFallback의 근본적 차이는 Tick 시작 위치에 있다. 일반 Fallback은 이전 Tick에서 <code>RUNNING</code>을 반환한 자식의 인덱스를 기억(memory)하고 해당 인덱스부터 Tick을 재개한다. ReactiveFallback은 이러한 기억을 유지하지 않으며, 매 Tick에서 항상 인덱스 0부터 Tick을 시작한다.</p>
+<p>이 차이는 단순해 보이지만, 행동 트리의 실행 의미론에 근본적인 영향을 미친다.</p>
+<h2>2. 상세 동작 비교</h2>
+<h3>2.1 시나리오 설정</h3>
+<p>다음과 같은 동일한 자식 구성을 두 노드 유형에 각각 적용하여 비교한다.</p>
+<pre><code>[Fallback 또는 ReactiveFallback]
+├── C_0: Sequence
+│       ├── ConditionA
+│       └── ActionA
+├── C_1: Sequence
+│       ├── ConditionB
+│       └── ActionB
+└── C_2: DefaultAction
+</code></pre>
+<p>초기 상태: ConditionA = FAILURE, ConditionB = FAILURE</p>
+<h3>2.2 Tick 1: 동일 동작</h3>
+<pre><code>일반 Fallback:                    ReactiveFallback:
+  C_0 → FAILURE                    C_0 → FAILURE
+  C_1 → FAILURE                    C_1 → FAILURE
+  C_2 → RUNNING                    C_2 → RUNNING
+  current_index = 2                [기억 없음]
+  반환: RUNNING                    반환: RUNNING
+</code></pre>
+<p>두 노드 모두 DefaultAction을 실행한다. 여기까지는 동작이 동일하다.</p>
+<h3>2.3 Tick 2: ConditionA 성립 (핵심 차이)</h3>
+<pre><code>일반 Fallback:                    ReactiveFallback:
+  [current_index = 2 → C_2부터]    [항상 C_0부터 시작]
+  C_2.tick() → RUNNING             C_0: ConditionA → SUCCESS
+  반환: RUNNING                     C_0: ActionA → RUNNING
+                                    C_0: Sequence → RUNNING
+                                    [C_2가 RUNNING → Halt 전파]
+                                    C_2.halt()
+                                    반환: RUNNING
+</code></pre>
+<p><strong>일반 Fallback</strong>: C_0의 조건 변경을 감지하지 못한다. C_2가 계속 실행된다. ConditionA가 성립하였음에도 ActionA가 실행되지 않는다.</p>
+<p><strong>ReactiveFallback</strong>: C_0부터 재평가하여 ConditionA의 성립을 즉시 감지한다. ActionA가 실행되고, DefaultAction은 Halt된다.</p>
+<h3>2.4 Tick 3: ConditionA 해소</h3>
+<pre><code>일반 Fallback:                    ReactiveFallback:
+  [current_index = 2]              [C_0부터 시작]
+  C_2.tick() → RUNNING             C_0: ConditionA → FAILURE
+  반환: RUNNING                     C_0: Sequence → FAILURE
+                                    C_1: ConditionB → FAILURE
+                                    C_1: Sequence → FAILURE
+                                    C_2.tick() → RUNNING  ← 재시작
+                                    반환: RUNNING
+</code></pre>
+<p><strong>일반 Fallback</strong>: 여전히 C_2에서 계속 실행. 조건 변화를 인식하지 못한다.</p>
+<p><strong>ReactiveFallback</strong>: ConditionA 해소를 감지하고, ActionA에 Halt를 전파한 후 DefaultAction으로 복귀한다.</p>
+<h2>3. 차이점의 체계적 비교</h2>
+<table><thead><tr><th>비교 항목</th><th>일반 Fallback</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>Tick 시작 위치</td><td>기억된 인덱스</td><td>항상 0</td></tr>
+<tr><td>기억 상태</td><td>current_index 유지</td><td>무기억 (memoryless)</td></tr>
+<tr><td>상위 조건 변화 반영</td><td>현재 행동 완료 후</td><td>즉시 (다음 Tick)</td></tr>
+<tr><td>하위 행동 Halt</td><td>자체 Halt 시에만</td><td>상위 비실패 시 자동</td></tr>
+<tr><td>행동 안정성</td><td>높음 (중단 없음)</td><td>낮음 (빈번한 전환 가능)</td></tr>
+<tr><td>환경 반응성</td><td>낮음</td><td>높음</td></tr>
+<tr><td>Tick당 조건 평가 횟수</td><td>0~1회</td><td>0~N회</td></tr>
+<tr><td>적합한 환경</td><td>정적 또는 저빈도 변화</td><td>동적, 고빈도 변화</td></tr>
+</tbody></table>
+<h2>4. 행동 완료 보장의 차이</h2>
+<p>일반 Fallback에서는 한번 <code>RUNNING</code>을 반환한 자식이 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 반환할 때까지 해당 자식에 계속 Tick이 전파된다. 이는 행동의 완료를 보장한다는 장점이 있다. 장시간 소요되는 행동이 중단 없이 완료될 수 있다.</p>
+<p>ReactiveFallback에서는 상위 조건이 성립하면 현재 실행 중인 행동이 즉시 Halt되므로, 행동의 완료가 보장되지 않는다. 이는 환경 변화에 대한 즉각적 반응을 가능하게 하지만, 장시간 행동이 반복적으로 중단될 위험이 있다.</p>
+<pre><code>일반 Fallback 시나리오:
+  Tick 1: ActionB 시작 → RUNNING
+  Tick 2: [ConditionA 성립, 감지 못함] ActionB 계속 → RUNNING
+  Tick 3: ActionB 완료 → SUCCESS
+  Tick 4: C_1 → SUCCESS → Fallback → SUCCESS
+
+ReactiveFallback 시나리오:
+  Tick 1: ActionB 시작 → RUNNING
+  Tick 2: [ConditionA 성립] ActionB.halt(), ActionA 시작
+  Tick 3: [ConditionA 해소] ActionA.halt(), ActionB 재시작 (처음부터)
+  Tick 4: ActionB 계속 → RUNNING
+</code></pre>
+<p>ReactiveFallback에서 ActionB는 Tick 2에서 Halt된 후 Tick 3에서 처음부터 재시작된다. 진행 상태가 유실되므로, 행동의 총 완료 시간이 증가할 수 있다.</p>
+<h2>5. 적용 기준</h2>
+<h3>5.1 일반 Fallback을 사용하여야 하는 경우</h3>
+<ol>
+<li>
+<p><strong>행동 완료 보장이 필요한 경우</strong>: 한번 시작된 행동이 반드시 완료되어야 하는 시나리오. 예: 데이터 전송, 로그 기록, 원자적(atomic) 작업.</p>
+</li>
+<li>
+<p><strong>조건 변화가 드문 환경</strong>: 환경이 정적이거나 조건 변화 빈도가 낮은 경우. 재평가의 이점이 크지 않으므로 불필요한 연산 오버헤드를 회피한다.</p>
+</li>
+<li>
+<p><strong>대체 전략의 순차 시도</strong>: 첫 번째 행동이 실패하면 두 번째를 시도하고, 두 번째도 실패하면 세 번째를 시도하는 순차적 대체 전략. 각 행동에 완료까지의 기회를 부여한다.</p>
+</li>
+</ol>
+<h3>5.2 ReactiveFallback을 사용하여야 하는 경우</h3>
+<ol>
+<li>
+<p><strong>즉각적 환경 반응이 필요한 경우</strong>: 안전 조건, 장애물 출현 등 환경 변화에 대한 즉시 대응이 요구되는 시나리오.</p>
+</li>
+<li>
+<p><strong>우선순위 기반 행동 선택이 필요한 경우</strong>: 비상 → 회피 → 임무 → 유휴의 우선순위 체계를 구현하는 시나리오.</p>
+</li>
+<li>
+<p><strong>동적 환경에서의 운용</strong>: 환경이 빈번하게 변화하며, 로봇이 변화에 지속적으로 적응하여야 하는 시나리오.</p>
+</li>
+</ol>
+<h2>6. 혼합 사용 패턴</h2>
+<p>실제 행동 트리 설계에서는 두 유형을 계층적으로 혼합하여 사용하는 것이 일반적이다.</p>
+<pre><code>ReactiveFallback              ← 최상위: 환경 반응형
+├── Sequence
+│   ├── IsEmergency
+│   └── EmergencyAction
+├── Sequence
+│   ├── IsObstacleNear
+│   └── AvoidObstacle
+└── Fallback                   ← 하위: 순차적 대체 전략
+    ├── NavigateViaMainRoute
+    ├── NavigateViaAlternateRoute
+    └── WaitAndRetry
+</code></pre>
+<p>최상위에 ReactiveFallback을 배치하여 안전 및 환경 조건에 즉각 반응하고, 하위에 일반 Fallback을 배치하여 임무 수행 전략의 순차적 시도를 구현한다. 이 혼합 구조는 반응성과 행동 완료 보장을 모두 확보한다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,104 @@
             </header>
             <article>
                 <h1>1294.48 ReactiveFallback의 우선순위 기반 조건 재검사</h1>
+<h2>1. 우선순위 기반 조건 재검사의 개념</h2>
+<p>ReactiveFallback의 우선순위 기반 조건 재검사(priority-based condition re-checking)란, 매 Tick마다 앞쪽에 배치된 조건 노드들이 재평가되어, 더 높은 우선순위의 대안이 가용해졌는지를 지속적으로 확인하는 기능이다. ReactiveSequence의 조건 재검사가 “안전 조건의 지속적 유효성“을 감시하는 것과 대칭적으로, ReactiveFallback의 조건 재검사는 “우선 대안의 가용성“을 감시한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 우선순위 재검사의 동작 구조</h2>
+<h3>2.1 우선순위 감시 패턴</h3>
+<p>ReactiveFallback에서 조건 노드는 “우선순위 감시자(priority monitor)” 역할을, 뒤쪽 액션 노드는 “차선 대안(fallback alternative)” 역할을 수행한다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;!-- 우선순위 감시자: 매 Tick 재검사 --&gt;
+    &lt;Condition ID="IsGoalAlreadyAchieved"/&gt;
+    &lt;Condition ID="IsFastPathAvailable"/&gt;
+    &lt;!-- 차선 대안: 비동기 작업 수행 --&gt;
+    &lt;Action ID="UseSlowPath"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>매 Tick에서의 동작:</p>
+<ol>
+<li><code>IsGoalAlreadyAchieved</code> 평가 → SUCCESS이면 모든 대안 불필요</li>
+<li><code>IsFastPathAvailable</code> 평가 → SUCCESS이면 빠른 경로 가용</li>
+<li><code>UseSlowPath</code> 평가 → RUNNING 유지 또는 완료</li>
+</ol>
+<p>감시자 중 하나라도 SUCCESS를 반환하면 차선 대안이 Halt된다.</p>
+<h2>3. 우선순위 변화 감지의 시나리오</h2>
+<h3>3.1 빠른 경로 가용성 감지</h3>
+<pre><code>Tick 1: FastPath=불가 → IsFastPathAvailable → F, UseSlowPath → R
+Tick 2: FastPath=불가 → IsFastPathAvailable → F, UseSlowPath → R
+Tick 3: FastPath=가용 → IsFastPathAvailable → S → UseSlowPath Halt
+        ReactiveFallback → SUCCESS
+</code></pre>
+<p>빠른 경로가 가용해지는 즉시(해당 Tick에서) 느린 경로가 중단된다.</p>
+<h3>3.2 목표 달성 감지</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Condition ID="IsObjectInHand"/&gt;
+    &lt;Action ID="GraspObject"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<pre><code>Tick 1: 물체 미파지 → IsObjectInHand → F, GraspObject → R
+Tick 2: 물체 미파지 → IsObjectInHand → F, GraspObject → R
+Tick 3: 물체 파지됨 → IsObjectInHand → S → GraspObject Halt
+        ReactiveFallback → SUCCESS
+</code></pre>
+<p>외부 요인에 의해(예: 다른 노드의 작업, 센서 오류 정정 등) 목표가 달성되면 즉시 파지 동작이 중단된다.</p>
+<h2>4. 다중 조건의 우선순위 순차 재검사</h2>
+<p>ReactiveFallback에 다수의 조건이 배치된 경우, 왼쪽에서 오른쪽으로 순차적으로 재검사된다. 앞쪽 조건이 SUCCESS를 반환하면 뒤쪽 조건은 평가되지 않는다(조기 종료).</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Condition ID="IsTaskComplete"/&gt;        &lt;!-- 1순위 검사 --&gt;
+    &lt;Condition ID="IsQuickFixAvailable"/&gt;   &lt;!-- 2순위 검사 --&gt;
+    &lt;Condition ID="IsPartialSolutionOK"/&gt;   &lt;!-- 3순위 검사 --&gt;
+    &lt;Action ID="PerformFullSolution"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<pre><code>Tick N:
+  IsTaskComplete       → FAILURE
+  IsQuickFixAvailable  → FAILURE
+  IsPartialSolutionOK  → FAILURE
+  PerformFullSolution  → RUNNING
+  → RUNNING
+
+Tick N+1:
+  IsTaskComplete       → FAILURE
+  IsQuickFixAvailable  → SUCCESS   ← 2순위에서 성공
+  IsPartialSolutionOK  → (미평가 — 조기 종료)
+  PerformFullSolution  → Halt
+  → SUCCESS
+</code></pre>
+<p>이 순차적 검사에서 조건의 배치 순서는 우선순위를 반영해야 한다. 가장 바람직한 상태의 확인을 첫 번째에, 덜 바람직한 대안의 확인을 뒤에 배치한다.</p>
+<h2>5. ReactiveSequence 조건 재검사와의 대칭성</h2>
+<table><thead><tr><th>특성</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>감시 대상</td><td>안전 조건의 유효성</td><td>대안의 가용성</td></tr>
+<tr><td>감시 방향</td><td>“조건이 여전히 참인가?”</td><td>“더 나은 대안이 있는가?”</td></tr>
+<tr><td>트리거 상태</td><td>FAILURE (조건 위반)</td><td>SUCCESS (대안 가용)</td></tr>
+<tr><td>트리거 결과</td><td>RUNNING 자식 Halt, FAILURE 반환</td><td>RUNNING 자식 Halt, SUCCESS 반환</td></tr>
+<tr><td>전형적 앞쪽 노드</td><td>안전 조건</td><td>목표 달성 조건 / 우선 대안 조건</td></tr>
+</tbody></table>
+<p>ReactiveSequence는 “위험 감지 시 작업 중단“을, ReactiveFallback은 “더 나은 방법 발견 시 현재 방법 중단“을 구현한다. 두 노드는 동일한 메커니즘(매 Tick 재평가 + RUNNING 자식 Halt)을 SUCCESS/FAILURE가 교환된 형태로 적용한다.</p>
+<h2>6. 조건 재검사의 빈도와 Tick 주기</h2>
+<p>조건 재검사의 빈도는 Tick 주기와 동일하다. 10 Hz Tick에서는 우선순위 조건이 초당 10회 재검사되고, 100 Hz에서는 초당 100회 재검사된다. 대안 가용성 변화의 감지 지연은 최대 1 Tick 주기이다.</p>
+<p><span class="math math-display">\text{최대 감지 지연} = T_{period}</span></p>
+<h2>우선순위 재검사와 효율적 대안 전환</h2>
+<p>우선순위 기반 조건 재검사는 로봇이 항상 가용한 최선의 대안을 사용하도록 보장하는 메커니즘이다. 차선의 대안으로 작업을 수행하는 동안에도 더 나은 대안의 가용성을 지속적으로 확인함으로써, 자원 낭비를 최소화하고 임무 수행 효율을 극대화한다(Faconti, 2022).</p>
+<pre><code class="language-xml">&lt;!-- 효율적 대안 전환 패턴 --&gt;
+&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsHighBandwidthAvailable"/&gt;
+        &lt;Action ID="StreamHighQuality"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsMediumBandwidthAvailable"/&gt;
+        &lt;Action ID="StreamMediumQuality"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="StreamLowQuality"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>이 구조에서 로봇은 현재 가용한 최고 대역폭에 맞는 스트리밍 품질을 자동으로 선택하며, 대역폭이 변화하면 즉시 적절한 품질로 전환한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

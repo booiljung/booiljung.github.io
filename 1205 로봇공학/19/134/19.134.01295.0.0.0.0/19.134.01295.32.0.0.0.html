@@ -115,6 +115,136 @@
             </header>
             <article>
                 <h1>1295.32 매니퓰레이터 동작과 힘 감시의 동시 실행 패턴</h1>
+<h2>1. 패턴의 정의와 필요성</h2>
+<p>매니퓰레이터 동작과 힘 감시의 동시 실행 패턴은 로봇 팔(manipulator)이 궤적 추종, 파지(grasp), 삽입(insertion), 연마(polishing) 등의 동작을 수행하는 동안, 엔드 이펙터(end effector) 또는 관절에 가해지는 힘과 토크를 지속적으로 감시하는 행동 트리 설계 패턴이다. Parallel 노드를 활용하여 동작 제어 행동과 힘 감시 행동이 매 Tick마다 동시에 실행되도록 구성한다.</p>
+<p>산업용 매니퓰레이터와 협동 로봇(collaborative robot)에서 힘 감시는 안전성과 작업 품질 모두에 직결되는 핵심 기능이다. 과도한 접촉력은 작업 대상물의 파손, 공구의 마모, 로봇 관절의 기계적 손상을 유발할 수 있으며, 협동 로봇의 경우 인간 작업자의 신체적 안전에 직접적인 위협이 된다. ISO 10218 및 ISO/TS 15066 규격에서는 협동 로봇의 접촉력에 대한 명시적 한계값을 규정하고 있으며, 이러한 규격 준수를 행동 트리 수준에서 보장하기 위해 본 패턴이 필수적이다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteMotion
+│   input: "target_pose", "velocity_profile"
+│   output: "motion_status"
+└── MonitorForce
+    input: "force_limit", "torque_limit"
+    output: "measured_force"
+</code></pre>
+<p><code>ExecuteMotion</code> 노드는 목표 자세(target pose)까지의 궤적을 추종하며, 목표에 도달하면 <code>SUCCESS</code>를 반환한다. <code>MonitorForce</code> 노드는 매 Tick마다 힘/토크 센서(Force/Torque sensor, F/T sensor)의 측정값을 읽어 설정된 한계값과 비교한다.</p>
+<p><code>FAILURE_ONE</code> 정책에 의해 힘 한계 초과가 감지되면 즉시 Parallel 노드 전체가 실패로 종료되고, 동작 제어 노드에 Halt가 전파되어 매니퓰레이터의 동작이 즉시 중단된다.</p>
+<h2>3. 힘 감시 노드의 상세 설계</h2>
+<h3>3.1 힘 크기 기반 감시</h3>
+<p>가장 기본적인 힘 감시 방법은 측정된 힘 벡터의 크기(magnitude)가 임계값을 초과하는지 확인하는 것이다.</p>
+<pre><code>function MonitorForce.tick():
+    wrench ← readFTSensor()
+    force_magnitude ← sqrt(wrench.fx² + wrench.fy² + wrench.fz²)
+    torque_magnitude ← sqrt(wrench.tx² + wrench.ty² + wrench.tz²)
+    
+    if force_magnitude &gt; force_limit or torque_magnitude &gt; torque_limit:
+        blackboard.set("failure_reason", "FORCE_EXCEEDED")
+        blackboard.set("measured_force", force_magnitude)
+        return FAILURE
+    else:
+        blackboard.set("measured_force", force_magnitude)
+        return RUNNING
+</code></pre>
+<p>힘 벡터 <span class="math math-inline">\mathbf{f} = [f_x, f_y, f_z]^T</span>에 대해 크기 <span class="math math-inline">\|\mathbf{f}\| = \sqrt{f_x^2 + f_y^2 + f_z^2}</span>를 산출하고, 이를 허용 한계 <span class="math math-inline">f_{max}</span>와 비교한다. 토크 벡터 <span class="math math-inline">\boldsymbol{\tau} = [\tau_x, \tau_y, \tau_z]^T</span>에 대해서도 동일한 방식으로 크기를 산출하여 <span class="math math-inline">\tau_{max}</span>와 비교한다.</p>
+<h3>3.2 방향별 힘 성분 감시</h3>
+<p>특정 작업에서는 특정 방향의 힘 성분만을 감시하는 것이 적합할 수 있다. 예를 들어, 수직 삽입(vertical insertion) 작업에서는 삽입 방향(z축)의 힘은 허용하되, 수평 방향(x, y축)의 과도한 힘은 정렬 불량(misalignment)을 의미하므로 감시 대상이 된다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteInsertion
+│   input: "insertion_depth", "insertion_speed"
+└── MonitorLateralForce
+    input: "max_lateral_force"
+</code></pre>
+<p><code>MonitorLateralForce</code> 노드는 <span class="math math-inline">\sqrt{f_x^2 + f_y^2}</span>로 산출되는 수평 방향 힘 성분만을 감시한다. 수평 힘이 임계값을 초과하면 삽입 핀과 구멍의 정렬이 불량한 것으로 판정하여 동작을 중단시킨다.</p>
+<h3>3.3 힘 변화율 감시</h3>
+<p>접촉력의 절대값뿐 아니라 시간에 따른 변화율(rate of change)도 중요한 감시 대상이다. 급격한 힘 증가는 충돌이나 구속(jamming)을 나타내는 지표이다.</p>
+<pre><code>function MonitorForceRate.tick():
+    current_force ← readForceMagnitude()
+    force_rate ← (current_force - previous_force) / dt
+    previous_force ← current_force
+    
+    if force_rate &gt; max_force_rate:
+        return FAILURE
+    else:
+        return RUNNING
+</code></pre>
+<p>힘 변화율 <span class="math math-inline">\dot{f} = \frac{df}{dt}</span>가 허용 한계 <span class="math math-inline">\dot{f}_{max}</span>를 초과하면 비정상적 접촉 상태로 판정한다. 이 감시 방법은 점진적인 힘 증가는 허용하되 급격한 충격을 감지하는 데 효과적이다.</p>
+<h2>4. 작업별 적용 사례</h2>
+<h3>4.1 파지 작업</h3>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteGrasp
+│   input: "grasp_pose", "grasp_width"
+│   output: "grasp_result"
+├── MonitorGripForce
+│   input: "max_grip_force", "min_grip_force"
+└── MonitorSlippage
+    input: "slip_threshold"
+</code></pre>
+<p>파지 작업에서는 과도한 파지력과 부족한 파지력 모두를 감시하여야 한다. <code>MonitorGripForce</code> 노드는 파지력이 최대 허용값을 초과하면 물체 파손 방지를 위해 <code>FAILURE</code>를 반환하고, <code>MonitorSlippage</code> 노드는 미끄러짐(slippage)이 감지되면 파지력이 부족한 것으로 판정하여 <code>FAILURE</code>를 반환한다. 상위 행동 트리에서 실패 원인에 따라 파지력을 조정하는 복구 전략을 구현할 수 있다.</p>
+<h3>4.2 연마/연삭 작업</h3>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecutePolishing
+│   input: "polishing_trajectory", "target_force"
+│   output: "polishing_status"
+├── MonitorNormalForce
+│   input: "force_tolerance_band"
+└── MonitorVibration
+    input: "max_vibration_amplitude"
+</code></pre>
+<p>연마 작업에서는 공구가 작업 표면에 가하는 법선 방향 힘(normal force)이 목표값 주위의 허용 대역(tolerance band) 내에 유지되어야 한다. 법선력이 대역을 이탈하면 연마 품질이 저하되므로 동작을 중단시킨다. <code>MonitorVibration</code> 노드는 이상 진동(chatter vibration)을 감지하여 공구 마모나 공정 불안정을 조기에 발견한다.</p>
+<h3>4.3 조립 작업 (Peg-in-Hole)</h3>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecutePegInsertion
+│   input: "hole_position", "insertion_force_limit"
+│   output: "insertion_depth"
+├── MonitorLateralForce
+│   input: "max_lateral_force"
+├── MonitorInsertionForce
+│   input: "max_insertion_force"
+└── MonitorTorque
+    input: "max_insertion_torque"
+</code></pre>
+<p>핀-홀(peg-in-hole) 조립에서는 삽입 방향 힘, 수평 방향 힘, 토크를 각각 독립적으로 감시한다. 수평 힘 또는 토크가 과도하면 핀과 홀의 정렬이 불량한 상태에서 무리하게 삽입을 시도하는 것이므로, 동작을 중단하고 정렬 보정 루틴을 실행하여야 한다.</p>
+<h2>5. 다중 감시 조건의 체계적 구성</h2>
+<p>복잡한 매니퓰레이션 작업에서는 힘 이외에도 관절 한계, 모터 전류, 온도 등 다양한 조건을 동시에 감시하여야 한다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteMotion
+├── MonitorForce
+├── MonitorJointLimits
+├── MonitorMotorCurrent
+└── MonitorTemperature
+</code></pre>
+<table><thead><tr><th>감시 대상</th><th>센서</th><th>위험 조건</th><th>임계값 기준</th></tr></thead><tbody>
+<tr><td>접촉력</td><td>F/T 센서</td><td>물체 파손, 관절 손상</td><td>ISO 10218, 작업 사양</td></tr>
+<tr><td>관절 위치</td><td>엔코더</td><td>관절 기계적 한계 도달</td><td>로봇 사양서</td></tr>
+<tr><td>모터 전류</td><td>전류 센서</td><td>모터 과부하</td><td>모터 정격 전류</td></tr>
+<tr><td>온도</td><td>온도 센서</td><td>모터/감속기 과열</td><td>부품 허용 온도</td></tr>
+</tbody></table>
+<h2>6. XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;Parallel success_count="3" failure_count="1"&gt;
+    &lt;ExecuteCartesianMotion target="{target_pose}" 
+                            velocity="{max_velocity}" /&gt;
+    &lt;MonitorForce force_limit="50.0" 
+                  torque_limit="10.0" 
+                  output_force="{current_force}" /&gt;
+    &lt;MonitorJointLimits margin="0.05" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<h2>7. Halt 시 매니퓰레이터 안전 처리</h2>
+<p>힘 한계 초과로 인해 Parallel 노드가 실패하고 동작 제어 노드에 Halt가 전파되면, 매니퓰레이터의 안전한 정지가 보장되어야 한다. Halt 처리 시 다음 사항을 준수하여야 한다.</p>
+<ol>
+<li>
+<p><strong>즉시 정지</strong>: 현재 궤적 추종을 즉시 중단하고 매니퓰레이터를 현재 위치에서 정지시킨다. 급격한 감속으로 인한 관성력이 추가적인 힘 초과를 유발하지 않도록 감속 프로파일을 적용하여야 한다.</p>
+</li>
+<li>
+<p><strong>파지 해제 판단</strong>: 파지 작업 중 과도한 힘이 감지된 경우, 즉시 파지를 해제할 것인지 현재 파지 상태를 유지할 것인지를 작업 맥락에 따라 판단하여야 한다. 물체를 높은 위치에서 파지하고 있는 경우 즉시 해제하면 낙하 사고가 발생할 수 있다.</p>
+</li>
+<li>
+<p><strong>상태 기록</strong>: Halt 시점의 관절 각도, 접촉력, 동작 진행률 등을 블랙보드에 기록하여, 상위 행동 트리에서 복구 전략을 수립하는 데 활용할 수 있도록 한다.</p>
+</li>
+<li>
+<p><strong>ROS2 액션 취소</strong>: 동작 제어가 ROS2 액션 서버를 통해 실행되는 경우, Halt 호출 시 액션 목표 취소(cancel goal) 요청을 전송하여 액션 서버 측에서도 안전한 정지가 이루어지도록 하여야 한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

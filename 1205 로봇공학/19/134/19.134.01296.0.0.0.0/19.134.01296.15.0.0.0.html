@@ -115,6 +115,263 @@
             </header>
             <article>
                 <h1>1296.15 비동기 액션 노드의 onRunning() 콜백</h1>
+<h2>1. onRunning() 콜백의 정의</h2>
+<p><code>onRunning()</code>은 <code>StatefulActionNode</code>의 세 가지 콜백 중 두 번째로, RUNNING 상태에서 매 Tick마다 호출되는 순수 가상 메서드이다. 노드의 상태가 RUNNING일 때 <code>executeTick()</code>이 호출되면, 내부적으로 <code>onRunning()</code>을 호출하여 행동의 진행 상태를 확인한다.</p>
+<pre><code class="language-cpp">virtual NodeStatus onRunning() = 0;
+</code></pre>
+<p><code>onRunning()</code>은 <code>NodeStatus::SUCCESS</code>, <code>NodeStatus::FAILURE</code>, <code>NodeStatus::RUNNING</code> 중 하나를 반환하여야 하며, <code>NodeStatus::IDLE</code>을 반환하면 <code>LogicError</code> 예외가 발생한다.</p>
+<h2>2. onRunning()의 호출 조건과 빈도</h2>
+<p><code>onRunning()</code>은 <code>onStart()</code>가 RUNNING을 반환한 이후, 노드의 상태가 RUNNING인 한 매 Tick마다 호출된다. 호출 빈도는 트리의 Tick 주기에 의해 결정된다.</p>
+<pre><code>Tick 주기: 100 ms (10 Hz)
+
+Tick 1: onStart()   → RUNNING
+Tick 2: onRunning() → RUNNING    (100 ms 후)
+Tick 3: onRunning() → RUNNING    (200 ms 후)
+Tick 4: onRunning() → RUNNING    (300 ms 후)
+Tick 5: onRunning() → SUCCESS    (400 ms 후)
+</code></pre>
+<p>ReactiveSequence의 자식인 경우, 선행 조건 노드의 실패에 의해 Halt된 후 다시 시작되면, <code>onRunning()</code>이 아닌 <code>onStart()</code>부터 호출된다. <code>onRunning()</code>은 오직 상태가 RUNNING으로 유지되는 연속적인 Tick에서만 호출된다.</p>
+<h2>3. onRunning()의 역할</h2>
+<h3>3.1 비차단 완료 확인</h3>
+<p><code>onRunning()</code>의 주된 역할은 외부 시스템에서 진행 중인 행동의 완료 여부를 비차단 방식으로 확인하는 것이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus NavigateToPose::onRunning()
+{
+    // 목표 수락 확인 (비차단)
+    if (!goal_accepted_)
+    {
+        if (goal_handle_future_.wait_for(
+                std::chrono::milliseconds(0)) 
+            == std::future_status::ready)
+        {
+            goal_handle_ = goal_handle_future_.get();
+            if (!goal_handle_)
+                return BT::NodeStatus::FAILURE;
+            
+            goal_accepted_ = true;
+            result_future_ = 
+                action_client_-&gt;async_get_result(goal_handle_);
+        }
+        else
+        {
+            return BT::NodeStatus::RUNNING;
+        }
+    }
+
+    // 결과 확인 (비차단)
+    if (result_future_.wait_for(std::chrono::milliseconds(0))
+        == std::future_status::ready)
+    {
+        auto wrapped_result = result_future_.get();
+        if (wrapped_result.code == 
+            rclcpp_action::ResultCode::SUCCEEDED)
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>wait_for(std::chrono::milliseconds(0))</code>은 비차단 폴링의 표준 패턴이다. future가 준비되었으면 즉시 결과를 취득하고, 준비되지 않았으면 RUNNING을 반환하여 다음 Tick에서 다시 확인한다.</p>
+<h3>3.2 피드백 정보의 출력 포트 갱신</h3>
+<p><code>onRunning()</code>에서 행동의 진행 상태를 출력 포트에 기록하여 다른 노드에 전달할 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus FollowPath::onRunning()
+{
+    // 피드백을 통한 진행률 갱신
+    if (last_feedback_)
+    {
+        double distance = last_feedback_-&gt;distance_remaining;
+        setOutput("distance_remaining", distance);
+
+        double progress = 1.0 - (distance / initial_distance_);
+        setOutput("progress", std::clamp(progress, 0.0, 1.0));
+    }
+
+    // 결과 확인
+    if (result_future_.wait_for(std::chrono::milliseconds(0))
+        == std::future_status::ready)
+    {
+        auto result = result_future_.get();
+        if (result.code == rclcpp_action::ResultCode::SUCCEEDED)
+            return BT::NodeStatus::SUCCESS;
+        return BT::NodeStatus::FAILURE;
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>RUNNING 상태에서 출력 포트를 갱신하면, Parallel 노드의 다른 자식이나 ReactiveSequence의 조건 노드가 진행 상태를 참조할 수 있다.</p>
+<h3>3.3 타임아웃 검사</h3>
+<p><code>onRunning()</code>에서 행동의 실행 시간이 허용 범위를 초과하는지 검사하여, 무한 대기를 방지한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus MoveArm::onRunning()
+{
+    // 타임아웃 검사
+    auto elapsed = std::chrono::steady_clock::now() - start_time_;
+    if (elapsed &gt; timeout_duration_)
+    {
+        RCLCPP_WARN(logger_, "타임아웃 발생: %.1f초 초과",
+            std::chrono::duration&lt;double&gt;(timeout_duration_).count());
+        
+        // 진행 중인 액션 취소
+        if (goal_handle_)
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+        
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 결과 확인
+    if (isCompleted())
+        return resultToStatus();
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>타임아웃 검사는 <code>onRunning()</code>의 매 호출에서 수행되며, 타임아웃 발생 시 진행 중인 외부 작업을 취소하고 FAILURE를 반환한다.</p>
+<h2>4. onRunning()의 반환값 분석</h2>
+<h3>4.1 RUNNING 반환</h3>
+<p>행동이 아직 진행 중이며 추가 Tick이 필요함을 나타낸다. 이 반환값이 가장 빈번하게 사용되며, 다음 Tick에서 <code>onRunning()</code>이 다시 호출된다.</p>
+<h3>4.2 SUCCESS 반환</h3>
+<p>행동이 성공적으로 완료되었음을 나타낸다. SUCCESS가 반환되면 노드의 상태가 SUCCESS로 설정되고, 부모 제어 노드에 의해 이후 IDLE로 초기화된다. 후속 <code>onRunning()</code> 호출은 발생하지 않는다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    if (result_future_.wait_for(std::chrono::milliseconds(0))
+        == std::future_status::ready)
+    {
+        auto result = result_future_.get();
+        if (result.code == rclcpp_action::ResultCode::SUCCEEDED)
+        {
+            setOutput("result", result.result);
+            return BT::NodeStatus::SUCCESS;
+        }
+        setOutput("error_code", result.code);
+        return BT::NodeStatus::FAILURE;
+    }
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>SUCCESS 반환 직전에 행동의 결과를 출력 포트에 기록하는 것이 일반적이다.</p>
+<h3>4.3 FAILURE 반환</h3>
+<p>행동이 실패하였음을 나타낸다. 외부 시스템에서의 오류, 타임아웃, 유효하지 않은 상태 등이 원인이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    // 액션 서버로부터 중단(abort) 수신
+    if (goal_handle_ &amp;&amp; 
+        goal_handle_-&gt;get_status() == 
+        action_msgs::msg::GoalStatus::STATUS_ABORTED)
+    {
+        RCLCPP_ERROR(logger_, "액션 서버가 목표를 중단함");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // ...
+}
+</code></pre>
+<p>FAILURE 반환 시 진행 중인 외부 작업이 자동으로 취소되지는 않는다. 필요한 경우 FAILURE를 반환하기 전에 명시적으로 취소 요청을 전송하여야 한다.</p>
+<h2>5. 다단계 폴링 패턴</h2>
+<p>ROS2 액션 클라이언트를 래핑하는 경우, <code>onRunning()</code>은 다단계 폴링(multi-phase polling) 패턴을 따른다. 목표 전송 → 목표 수락 확인 → 결과 수신의 단계를 순차적으로 폴링한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    switch (phase_)
+    {
+    case Phase::WAITING_FOR_GOAL_ACCEPTANCE:
+    {
+        if (goal_handle_future_.wait_for(
+                std::chrono::milliseconds(0)) 
+            != std::future_status::ready)
+        {
+            return BT::NodeStatus::RUNNING;
+        }
+        goal_handle_ = goal_handle_future_.get();
+        if (!goal_handle_)
+        {
+            RCLCPP_ERROR(logger_, "목표 거부됨");
+            return BT::NodeStatus::FAILURE;
+        }
+        result_future_ = 
+            action_client_-&gt;async_get_result(goal_handle_);
+        phase_ = Phase::WAITING_FOR_RESULT;
+        return BT::NodeStatus::RUNNING;
+    }
+
+    case Phase::WAITING_FOR_RESULT:
+    {
+        if (result_future_.wait_for(
+                std::chrono::milliseconds(0)) 
+            != std::future_status::ready)
+        {
+            return BT::NodeStatus::RUNNING;
+        }
+        auto result = result_future_.get();
+        if (result.code == 
+            rclcpp_action::ResultCode::SUCCEEDED)
+        {
+            setOutput("result", result.result);
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+    }
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p><code>phase_</code> 멤버 변수는 현재 폴링 단계를 추적하며, 각 단계에서 비차단 폴링을 수행한다. 이 패턴은 <code>onStart()</code>에서 <code>phase_</code>를 <code>WAITING_FOR_GOAL_ACCEPTANCE</code>로 초기화하고, 단계 진행에 따라 갱신한다.</p>
+<h2>6. onRunning()의 멱등성</h2>
+<p><code>onRunning()</code>은 RUNNING이 반환되는 한 반복적으로 호출되므로, 각 호출이 멱등적(idempotent)이어야 한다. 멱등성이란 동일한 상태에서 <code>onRunning()</code>을 반복 호출하여도 부작용이 누적되지 않는 것을 의미한다.</p>
+<pre><code class="language-cpp">// 멱등적이지 않은 구현 (잘못된 예)
+BT::NodeStatus onRunning() override
+{
+    retry_count_++;  // 매 Tick마다 증가: 의도하지 않은 누적
+    publisher_-&gt;publish(status_msg_);  // 매 Tick마다 발행: 과도한 메시지
+    // ...
+}
+</code></pre>
+<pre><code class="language-cpp">// 멱등적인 구현 (올바른 예)
+BT::NodeStatus onRunning() override
+{
+    // 상태 확인만 수행, 부작용 없음
+    if (result_future_.wait_for(std::chrono::milliseconds(0))
+        == std::future_status::ready)
+    {
+        return processResult(result_future_.get());
+    }
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>onRunning()</code>의 이상적인 구현은 외부 상태를 확인하고 반환값을 결정하는 순수 관찰(pure observation) 연산이다. 부작용이 필요한 경우(주기적 상태 발행 등), 발행 빈도를 제어하는 로직을 포함하여야 한다.</p>
+<h2>7. onRunning()의 실행 시간 제약</h2>
+<p><code>onRunning()</code>은 메인 스레드에서 실행되므로, 실행 시간이 Tick 주기를 초과하면 트리 전체의 실시간성이 저해된다.</p>
+<table><thead><tr><th>연산 유형</th><th style="text-align: center">예상 실행 시간</th><th style="text-align: center">적합성</th></tr></thead><tbody>
+<tr><td>future.wait_for(0)</td><td style="text-align: center">&lt; 1 μs</td><td style="text-align: center">적합</td></tr>
+<tr><td>콜백 결과 확인</td><td style="text-align: center">&lt; 10 μs</td><td style="text-align: center">적합</td></tr>
+<tr><td>출력 포트 갱신</td><td style="text-align: center">&lt; 50 μs</td><td style="text-align: center">적합</td></tr>
+<tr><td>로그 출력</td><td style="text-align: center">&lt; 100 μs</td><td style="text-align: center">적합 (빈도 제한 시)</td></tr>
+<tr><td>동기적 서비스 호출</td><td style="text-align: center">&gt; 1 ms</td><td style="text-align: center">부적합</td></tr>
+<tr><td>차단적 future.get()</td><td style="text-align: center">불확정</td><td style="text-align: center">부적합</td></tr>
+<tr><td>복잡한 수학 연산</td><td style="text-align: center">&gt; 1 ms</td><td style="text-align: center">부적합</td></tr>
+</tbody></table>
+<p><code>onRunning()</code> 내부에서의 차단 호출은 <code>StatefulActionNode</code>의 설계 원칙에 근본적으로 위배된다. 차단 호출이 필요한 경우 <code>ThreadedAction</code>을 사용하여야 한다.</p>
+<h2>8. onRunning()의 설계 지침</h2>
+<ol>
+<li>
+<p><strong>비차단 폴링</strong>: 외부 시스템의 완료를 확인할 때 차단 대기를 사용하지 않는다. <code>wait_for(0)</code>, 콜백 플래그 확인, 상태 변수 검사 등의 비차단 방식을 사용한다.</p>
+</li>
+<li>
+<p><strong>멱등적 구현</strong>: RUNNING 반환 시 호출 간에 부작용이 누적되지 않도록 한다. 상태 확인과 반환값 결정에 집중한다.</p>
+</li>
+<li>
+<p><strong>타임아웃 구현</strong>: 행동의 최대 실행 시간을 제한하여 RUNNING 상태의 무한 지속을 방지한다. <code>onStart()</code>에서 시작 시간을 기록하고, <code>onRunning()</code>에서 경과 시간을 검사한다.</p>
+</li>
+<li>
+<p><strong>진행 상태 갱신</strong>: 피드백 정보가 가용한 경우, 출력 포트를 통해 진행 상태를 다른 노드에 전달한다. 이는 모니터링과 디버깅에 유용하다.</p>
+</li>
+<li>
+<p><strong>정리 후 실패 반환</strong>: FAILURE를 반환하기 전에 진행 중인 외부 작업을 취소하고 할당된 자원을 정리한다. FAILURE 반환 후에는 <code>onHalted()</code>가 호출되지 않으므로, <code>onRunning()</code> 내부에서 직접 정리를 수행하여야 한다.</p>
+</li>
+<li>
+<p><strong>IDLE 반환 금지</strong>: <code>onRunning()</code>에서 <code>NodeStatus::IDLE</code>을 반환하면 <code>LogicError</code> 예외가 발생한다. IDLE은 실행 결과가 아닌 초기 상태를 나타낸다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

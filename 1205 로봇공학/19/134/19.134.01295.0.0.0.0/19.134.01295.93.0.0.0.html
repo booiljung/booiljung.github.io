@@ -115,6 +115,274 @@
             </header>
             <article>
                 <h1>1295.93 불필요한 재평가 방지 전략</h1>
+<h2>1. 불필요한 재평가의 발생 조건</h2>
+<p>Reactive 노드의 매 Tick 재평가는 환경 변화에 즉각 반응하기 위한 설계이다. 그러나 모든 조건이 항상 변화하는 것은 아니다. 조건의 상태가 수십~수백 Tick 동안 변하지 않는 경우, 매 Tick의 재평가는 동일한 결과를 반복적으로 산출하는 불필요한 연산이 된다. 이러한 불필요한 재평가를 식별하고 제거하는 전략을 체계적으로 정리한다.</p>
+<h2>2. 시간 기반 캐싱 전략</h2>
+<p>조건의 상태가 특정 시간 간격보다 빠르게 변하지 않는 경우, 캐싱을 통해 재평가 빈도를 줄인다.</p>
+<h3>2.1 고정 주기 캐싱</h3>
+<pre><code class="language-cpp">class TimeCachedCondition : public BT::ConditionNode
+{
+public:
+    TimeCachedCondition(const std::string&amp; name,
+                        const BT::NodeConfig&amp; config)
+        : ConditionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;int&gt;("cache_ms", 100,
+                "캐시 유효 시간 (밀리초)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        int cache_ms;
+        getInput("cache_ms", cache_ms);
+
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast&lt;
+            std::chrono::milliseconds&gt;(now - last_eval_);
+
+        if (elapsed.count() &lt; cache_ms &amp;&amp; evaluated_)
+        {
+            return cached_result_;
+        }
+
+        cached_result_ = evaluate();
+        last_eval_ = now;
+        evaluated_ = true;
+        return cached_result_;
+    }
+
+protected:
+    virtual BT::NodeStatus evaluate() = 0;
+
+private:
+    BT::NodeStatus cached_result_ = BT::NodeStatus::FAILURE;
+    std::chrono::steady_clock::time_point last_eval_;
+    bool evaluated_ = false;
+};
+</code></pre>
+<p>캐시 유효 시간을 XML에서 조건별로 설정할 수 있다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;IsBatteryOk cache_ms="5000"/&gt;    &lt;!-- 5초마다 재평가 --&gt;
+    &lt;IsLocalized cache_ms="100"/&gt;      &lt;!-- 100ms마다 재평가 --&gt;
+    &lt;NavigateToGoal goal="{target}"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>배터리 상태는 수 초 단위로 변하므로 5초 캐싱이 적절하고, 위치 추정 상태는 100 ms 단위의 갱신이 필요하다.</p>
+<h3>2.2 이벤트 기반 캐시 무효화</h3>
+<p>조건과 연관된 블랙보드 값이 변경될 때만 캐시를 무효화하는 방식이다.</p>
+<pre><code class="language-cpp">class EventDrivenCondition : public BT::ConditionNode
+{
+public:
+    EventDrivenCondition(const std::string&amp; name,
+                         const BT::NodeConfig&amp; config)
+        : ConditionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("sensor_value")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double current_value;
+        getInput("sensor_value", current_value);
+
+        // 값이 변경되었을 때만 재평가
+        if (std::abs(current_value - last_value_) &gt; epsilon_)
+        {
+            last_value_ = current_value;
+            cached_result_ = evaluateCondition(current_value);
+        }
+
+        return cached_result_;
+    }
+
+private:
+    BT::NodeStatus evaluateCondition(double value)
+    {
+        // 조건 판정 로직
+        return (value &gt; threshold_) ? BT::NodeStatus::SUCCESS
+                                     : BT::NodeStatus::FAILURE;
+    }
+
+    double last_value_ = std::numeric_limits&lt;double&gt;::quiet_NaN();
+    double epsilon_ = 0.01;
+    double threshold_ = 0.0;
+    BT::NodeStatus cached_result_ = BT::NodeStatus::FAILURE;
+};
+</code></pre>
+<p>블랙보드 값의 변화량이 임계값(<code>epsilon_</code>) 이내이면 캐시된 결과를 반환한다. 이 방식은 센서 잡음에 의한 미세한 값 변동에서의 불필요한 재평가를 방지한다.</p>
+<h2>3. Tick 분할 전략</h2>
+<p>모든 조건을 매 Tick에서 평가하지 않고, 조건별로 다른 Tick 주기를 적용한다.</p>
+<pre><code class="language-cpp">class TickDividedReactiveSequence : public BT::ControlNode
+{
+public:
+    TickDividedReactiveSequence(const std::string&amp; name,
+                                const BT::NodeConfig&amp; config)
+        : ControlNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("tick_divisors",
+                "쉼표로 구분된 자식별 Tick 분할 계수")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        auto divisors = parseDivisors();
+        tick_count_++;
+
+        for (size_t i = 0; i &lt; childrenCount(); i++)
+        {
+            int divisor = (i &lt; divisors.size()) ? divisors[i] : 1;
+
+            BT::NodeStatus status;
+            if (tick_count_ % divisor == 0 || 
+                last_status_[i] == BT::NodeStatus::IDLE)
+            {
+                status = children_nodes_[i]-&gt;executeTick();
+                last_status_[i] = status;
+            }
+            else
+            {
+                status = last_status_[i];
+            }
+
+            if (status == BT::NodeStatus::FAILURE)
+            {
+                haltChildren(i + 1);
+                return BT::NodeStatus::FAILURE;
+            }
+            if (status == BT::NodeStatus::RUNNING)
+            {
+                return BT::NodeStatus::RUNNING;
+            }
+        }
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    // ...
+
+private:
+    int tick_count_ = 0;
+    std::vector&lt;BT::NodeStatus&gt; last_status_;
+    // ...
+};
+</code></pre>
+<pre><code class="language-xml">&lt;TickDividedReactiveSequence tick_divisors="1,5,1"&gt;
+    &lt;IsEmergency/&gt;     &lt;!-- 매 Tick (divisor=1) --&gt;
+    &lt;IsBatteryOk/&gt;     &lt;!-- 5 Tick마다 (divisor=5) --&gt;
+    &lt;NavigateToGoal/&gt;  &lt;!-- 매 Tick (divisor=1) --&gt;
+&lt;/TickDividedReactiveSequence&gt;
+</code></pre>
+<p>비상 조건은 매 Tick마다, 배터리 조건은 5 Tick마다 평가한다. 이로써 배터리 조건의 재평가 비용이 1/5로 감소한다.</p>
+<h2>4. 조건 변화율 기반 적응형 전략</h2>
+<p>조건의 상태 변화 빈도를 런타임에서 측정하여, 변화가 빈번한 조건은 매 Tick마다, 변화가 드문 조건은 낮은 주기로 재평가하는 적응형 전략이다.</p>
+<pre><code class="language-cpp">class AdaptiveCondition : public BT::ConditionNode
+{
+public:
+    AdaptiveCondition(const std::string&amp; name,
+                      const BT::NodeConfig&amp; config)
+        : ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        eval_count_++;
+
+        // 적응형 스킵: 최근 변화율에 따라 스킵 빈도 조정
+        if (eval_count_ % skip_interval_ != 0 &amp;&amp; evaluated_)
+        {
+            return cached_result_;
+        }
+
+        BT::NodeStatus result = evaluateCondition();
+
+        if (result != cached_result_)
+        {
+            change_count_++;
+            cached_result_ = result;
+        }
+
+        evaluated_ = true;
+
+        // 변화율 갱신 (최근 100회 평가 기준)
+        if (eval_count_ % 100 == 0)
+        {
+            double change_rate = static_cast&lt;double&gt;(change_count_)
+                                 / eval_count_;
+            updateSkipInterval(change_rate);
+            change_count_ = 0;
+            eval_count_ = 0;
+        }
+
+        return cached_result_;
+    }
+
+private:
+    void updateSkipInterval(double change_rate)
+    {
+        if (change_rate &gt; 0.1)
+            skip_interval_ = 1;       // 변화 빈번: 매 Tick
+        else if (change_rate &gt; 0.01)
+            skip_interval_ = 5;       // 변화 보통: 5 Tick마다
+        else
+            skip_interval_ = 10;      // 변화 드문: 10 Tick마다
+    }
+
+    virtual BT::NodeStatus evaluateCondition() = 0;
+
+    BT::NodeStatus cached_result_ = BT::NodeStatus::FAILURE;
+    int skip_interval_ = 1;
+    int eval_count_ = 0;
+    int change_count_ = 0;
+    bool evaluated_ = false;
+};
+</code></pre>
+<p>이 적응형 전략은 환경 조건이 안정적인 구간에서는 재평가 빈도를 자동으로 줄이고, 조건이 빈번하게 변하는 구간에서는 매 Tick 평가로 복귀한다.</p>
+<h2>5. 안전 조건의 예외 처리</h2>
+<p>안전 관련 조건(비상 정지, 충돌 감지, 하드웨어 이상 등)은 캐싱이나 Tick 분할의 적용 대상에서 제외하여야 한다. 안전 조건의 감지 지연은 인명 피해나 장비 손상으로 직결되므로, 성능 최적화보다 즉시성이 우선한다.</p>
+<pre><code class="language-cpp">// 안전 조건: 캐싱 없이 항상 즉시 평가
+class SafetyCondition : public BT::ConditionNode
+{
+public:
+    BT::NodeStatus tick() override
+    {
+        // 캐싱 없이 항상 직접 평가
+        return evaluateSafetyCondition();
+    }
+};
+</code></pre>
+<p>조건의 분류 기준이다.</p>
+<table><thead><tr><th>분류</th><th>예시</th><th>재평가 전략</th></tr></thead><tbody>
+<tr><td>안전 필수</td><td>비상 정지, 충돌 감지</td><td>매 Tick 직접 평가 (캐싱 금지)</td></tr>
+<tr><td>시스템 보호</td><td>배터리, 온도, 통신 상태</td><td>시간 기반 캐싱 (100 ms ~ 1 s)</td></tr>
+<tr><td>임무 관련</td><td>목표 도달 여부, 경로 유효성</td><td>Tick 분할 또는 적응형</td></tr>
+<tr><td>환경 정보</td><td>기상 조건, 조도</td><td>장주기 캐싱 (5 s ~ 30 s)</td></tr>
+</tbody></table>
+<h2>6. 전략 선택 지침</h2>
+<ol>
+<li>
+<p><strong>조건의 변화 주기를 파악하라</strong>: 조건의 상태가 변하는 최소 주기를 파악하고, 그보다 짧은 주기의 재평가는 불필요하다.</p>
+</li>
+<li>
+<p><strong>안전 조건은 항상 즉시 평가하라</strong>: 안전 관련 조건에는 어떠한 캐싱도 적용하지 않는다.</p>
+</li>
+<li>
+<p><strong>캐싱과 감지 지연의 균형을 유지하라</strong>: 캐싱 주기가 길수록 오버헤드는 감소하지만, 조건 변화의 감지 지연이 증가한다. 응용의 요구 사항에 맞추어 적절한 균형점을 설정한다.</p>
+</li>
+<li>
+<p><strong>프로파일링을 통해 병목을 식별하라</strong>: 모든 조건에 일괄적으로 최적화를 적용하지 말고, 프로파일링을 통해 실제 병목이 되는 조건을 식별하여 선택적으로 최적화한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

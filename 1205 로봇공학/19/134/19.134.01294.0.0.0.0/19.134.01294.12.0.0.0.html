@@ -115,6 +115,147 @@
             </header>
             <article>
                 <h1>1294.12 Sequence 노드의 의사 코드 (Pseudocode)</h1>
+<h2>1. 기본 Sequence의 의사 코드</h2>
+<p>행동 트리의 Sequence 노드에 대한 표준 의사 코드를 제시한다. 이 의사 코드는 Colledanchise와 Ogren(2018)이 정의한 형식적 의미론에 기반하며, 모든 Sequence 변형의 기초가 된다.</p>
+<h3>1.1 가장 기본적인 형태</h3>
+<pre><code>Algorithm: Sequence.tick()
+
+  for i ← 0 to N-1 do
+      status ← children[i].tick()
+      
+      if status = RUNNING then
+          return RUNNING
+      end if
+      
+      if status = FAILURE then
+          return FAILURE
+      end if
+  end for
+  
+  return SUCCESS
+</code></pre>
+<p>이 의사 코드는 가장 단순한 형태의 Sequence로, 매 Tick마다 첫 번째 자식부터 순차적으로 평가한다. RUNNING 또는 FAILURE를 수신하면 즉시 해당 상태를 반환하고, 모든 자식이 SUCCESS를 반환하면 SUCCESS를 반환한다.</p>
+<h2>2. WithMemory Sequence의 의사 코드</h2>
+<p>WithMemory 변형은 이전 Tick에서 SUCCESS를 반환한 자식을 건너뛰고, 마지막으로 RUNNING이었던 자식부터 재개한다.</p>
+<pre><code>Algorithm: SequenceWithMemory.tick()
+
+  for i ← current_index to N-1 do
+      status ← children[i].tick()
+      
+      if status = RUNNING then
+          current_index ← i
+          return RUNNING
+      end if
+      
+      if status = FAILURE then
+          haltChildren(i+1, N-1)
+          current_index ← 0
+          return FAILURE
+      end if
+  end for
+  
+  current_index ← 0
+  return SUCCESS
+</code></pre>
+<p>주요 동작:</p>
+<ul>
+<li><code>current_index</code>는 멤버 변수로 유지되며, 다음 Tick에서의 시작 위치를 결정한다.</li>
+<li>RUNNING을 수신하면 <code>current_index</code>를 해당 자식의 인덱스로 갱신한다.</li>
+<li>FAILURE를 수신하면 <code>current_index</code>를 0으로 초기화한다.</li>
+<li>모든 자식이 SUCCESS를 반환하면 <code>current_index</code>를 0으로 초기화한다.</li>
+</ul>
+<h2>3. ReactiveSequence의 의사 코드</h2>
+<p>ReactiveSequence는 매 Tick마다 첫 번째 자식부터 재평가한다. RUNNING 중이던 자식보다 앞의 조건이 FAILURE로 변하면, RUNNING 자식을 Halt한다.</p>
+<pre><code>Algorithm: ReactiveSequence.tick()
+
+  for i ← 0 to N-1 do
+      status ← children[i].tick()
+      
+      if status = RUNNING then
+          // i 이후의 RUNNING 자식이 있다면 Halt
+          for j ← i+1 to N-1 do
+              if children[j].status() = RUNNING then
+                  children[j].halt()
+              end if
+          end for
+          return RUNNING
+      end if
+      
+      if status = FAILURE then
+          // 모든 RUNNING 자식을 Halt
+          haltRunningChildren()
+          return FAILURE
+      end if
+  end for
+  
+  return SUCCESS
+</code></pre>
+<p>ReactiveSequence에서 핵심은 FAILURE 수신 시 이전에 RUNNING이었던 자식들을 Halt하는 것이다. 이를 통해 조건 변화에 따른 즉각적인 작업 중단이 보장된다.</p>
+<h2>4. BehaviorTree.CPP v4의 실제 구현</h2>
+<p>BehaviorTree.CPP v4에서 <code>SequenceNode</code>의 <code>tick()</code> 함수는 다음과 같은 구조를 가진다(Faconti, 2022).</p>
+<pre><code class="language-cpp">NodeStatus SequenceNode::tick() {
+    const size_t children_count = children_nodes_.size();
+    
+    if (status() == NodeStatus::IDLE) {
+        skipped_count_ = 0;
+    }
+    
+    setStatus(NodeStatus::RUNNING);
+    
+    while (current_child_idx_ &lt; children_count) {
+        TreeNode* current_child = children_nodes_[current_child_idx_];
+        
+        auto child_status = current_child-&gt;executeTick();
+        
+        switch (child_status) {
+            case NodeStatus::RUNNING:
+                return NodeStatus::RUNNING;
+                
+            case NodeStatus::FAILURE:
+                resetChildren();
+                current_child_idx_ = 0;
+                return NodeStatus::FAILURE;
+                
+            case NodeStatus::SUCCESS:
+                current_child_idx_++;
+                break;
+                
+            case NodeStatus::SKIPPED:
+                current_child_idx_++;
+                skipped_count_++;
+                break;
+                
+            case NodeStatus::IDLE:
+                throw LogicError("Child returned IDLE");
+        }
+    }
+    
+    // 모든 자식이 완료됨
+    if (skipped_count_ == children_count) {
+        return NodeStatus::SKIPPED;
+    }
+    
+    resetChildren();
+    current_child_idx_ = 0;
+    return NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>이 구현에서 BehaviorTree.CPP v4는 SKIPPED 상태를 추가로 지원한다. 조건에 의해 노드가 건너뛰어진 경우를 표현하며, 모든 자식이 SKIPPED이면 Sequence도 SKIPPED를 반환한다.</p>
+<h2>5. 의사 코드와 실제 구현의 차이</h2>
+<p>의사 코드는 알고리즘의 논리적 구조를 명확히 표현하지만, 실제 구현에서는 다음의 추가적인 고려가 필요하다.</p>
+<table><thead><tr><th>항목</th><th>의사 코드</th><th>실제 구현</th></tr></thead><tbody>
+<tr><td>Halt 처리</td><td>개념적</td><td><code>haltChild()</code> 메서드 호출</td></tr>
+<tr><td>상태 초기화</td><td>암묵적</td><td><code>resetChildren()</code> 명시적 호출</td></tr>
+<tr><td>SKIPPED 상태</td><td>미포함</td><td>v4에서 지원</td></tr>
+<tr><td>예외 처리</td><td>미포함</td><td>IDLE 반환 시 예외 발생</td></tr>
+<tr><td>스레드 안전성</td><td>미고려</td><td>구현에 따라 보호 필요</td></tr>
+</tbody></table>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,146 @@
             </header>
             <article>
                 <h1>1295.56 ReactiveSequence의 조건 위반 시 행동 Halt</h1>
+<h2>1. 조건 위반과 Halt의 관계</h2>
+<p>ReactiveSequence에서 선행 조건 노드가 <code>FAILURE</code>를 반환하면, 해당 조건 이후에 위치하면서 <code>RUNNING</code> 상태인 행동 노드에 Halt가 즉시 전파된다. 이 메커니즘은 전제 조건이 무효화된 상태에서 행동이 계속 실행되는 것을 방지하는 안전 장치이다. Halt는 행동 노드에게 현재 진행 중인 작업을 중단하고 내부 상태를 정리할 것을 요청하는 신호이다.</p>
+<h2>2. Halt 전파의 발생 조건</h2>
+<p>Halt가 전파되는 정확한 조건은 다음과 같다.</p>
+<p><strong>필요 조건</strong>: 조건 노드 <span class="math math-inline">C_i</span> (<span class="math math-inline">i &lt; k</span>)가 현재 Tick에서 <code>FAILURE</code>를 반환하여야 한다.</p>
+<p><strong>대상 조건</strong>: 행동 노드 <span class="math math-inline">C_k</span> (<span class="math math-inline">k &gt; i</span>)가 이전 Tick에서 <code>RUNNING</code> 상태였어야 한다.</p>
+<p>이 두 조건이 동시에 충족되면 <span class="math math-inline">C_k.\text{halt}()</span>가 호출된다.</p>
+<pre><code>ReactiveSequence
+├── C₀: IsPathSafe      (조건)
+├── C₁: IsLocalized     (조건)
+└── C₂: FollowPath      (행동)
+</code></pre>
+<table><thead><tr><th>Tick</th><th><span class="math math-inline">C_0</span> 결과</th><th><span class="math math-inline">C_1</span> 결과</th><th><span class="math math-inline">C_2</span> 결과</th><th><span class="math math-inline">C_2</span> Halt 여부</th><th>ReactiveSequence 결과</th></tr></thead><tbody>
+<tr><td><span class="math math-inline">t</span></td><td>SUCCESS</td><td>SUCCESS</td><td>RUNNING</td><td>아니오</td><td>RUNNING</td></tr>
+<tr><td><span class="math math-inline">t+1</span></td><td>FAILURE</td><td>(미평가)</td><td>(미평가)</td><td>예</td><td>FAILURE</td></tr>
+<tr><td><span class="math math-inline">t+2</span></td><td>SUCCESS</td><td>FAILURE</td><td>(미평가)</td><td>아니오 (<span class="math math-inline">C_2</span>가 IDLE)</td><td>FAILURE</td></tr>
+<tr><td><span class="math math-inline">t+3</span></td><td>SUCCESS</td><td>SUCCESS</td><td>RUNNING</td><td>아니오</td><td>RUNNING</td></tr>
+<tr><td><span class="math math-inline">t+4</span></td><td>SUCCESS</td><td>FAILURE</td><td>(미평가)</td><td>예</td><td>FAILURE</td></tr>
+</tbody></table>
+<p>Tick <span class="math math-inline">t+1</span>에서 <span class="math math-inline">C_0</span>가 <code>FAILURE</code>이므로 <span class="math math-inline">C_2</span>(이전 RUNNING)에 Halt가 전파된다. Tick <span class="math math-inline">t+2</span>에서 <span class="math math-inline">C_1</span>이 <code>FAILURE</code>이지만, <span class="math math-inline">C_2</span>는 이전 Tick에서 Halt되어 <code>IDLE</code> 상태이므로 추가 Halt는 발생하지 않는다. Tick <span class="math math-inline">t+4</span>에서 <span class="math math-inline">C_1</span>이 <code>FAILURE</code>이고 <span class="math math-inline">C_2</span>는 Tick <span class="math math-inline">t+3</span>에서 <code>RUNNING</code>이었으므로 Halt가 전파된다.</p>
+<h2>3. Halt 처리의 구현 요구 사항</h2>
+<p>행동 노드의 <code>halt()</code> 메서드는 다음의 요구 사항을 충족하여야 한다.</p>
+<h3>3.1  물리적 행동의 안전한 중단</h3>
+<p>로봇의 물리적 동작(모터 구동, 관절 이동, 이동체 주행 등)을 안전하게 정지시켜야 한다. 단순히 명령 전송을 중단하는 것만으로는 부족할 수 있다. 관성에 의해 로봇이 계속 이동하거나, 매니퓰레이터가 중력에 의해 낙하할 수 있기 때문이다.</p>
+<pre><code>function FollowPath.halt():
+    // 이동 명령 정지
+    publishVelocityCommand(0, 0, 0)
+    
+    // ROS2 액션 목표 취소 (비동기 행동인 경우)
+    if action_goal_handle is not null:
+        action_goal_handle.cancel()
+    
+    // 내부 상태 초기화
+    current_waypoint_index ← 0
+    path_initialized ← false
+    
+    setStatus(IDLE)
+</code></pre>
+<h3>3.2  비동기 요청의 취소</h3>
+<p>행동 노드가 ROS2 액션 서버, 서비스 클라이언트, 또는 기타 비동기 인터페이스를 통해 외부 시스템에 요청을 발행한 경우, Halt 시 해당 요청을 취소하여야 한다. 취소하지 않으면 외부 시스템이 행동 트리의 의도와 무관하게 동작을 계속 수행한다.</p>
+<pre><code>function MoveToGoal.halt():
+    // ROS2 액션 목표 취소
+    if goal_active:
+        navigation_client.async_cancel_goal(goal_handle)
+        goal_active ← false
+    
+    // 속도 명령 정지
+    publishZeroVelocity()
+    
+    setStatus(IDLE)
+</code></pre>
+<h3>3.3  자원의 해제</h3>
+<p>행동 노드가 점유한 자원(센서 독점 사용권, 통신 채널, 파일 핸들 등)을 Halt 시 해제하여야 한다. 자원을 해제하지 않으면 다른 행동이 해당 자원을 사용할 수 없는 교착 상태(deadlock)가 발생할 수 있다.</p>
+<h3>3.4  블랙보드 상태의 정리</h3>
+<p>행동 노드가 블랙보드에 기록한 임시 상태를 Halt 시 적절히 정리하여야 한다. 다만, 다른 노드가 참조하는 상태는 무분별하게 삭제하지 않아야 한다.</p>
+<h2>4. 안전하지 않은 Halt의 위험</h2>
+<p>Halt 처리가 부적절하면 로봇 시스템에 심각한 문제가 발생할 수 있다.</p>
+<h3>4.1 위험 사례 1: 모터 명령 미정지</h3>
+<pre><code>function UnsafeAction.halt():
+    // 모터 정지 명령 누락
+    setStatus(IDLE)  // 상태만 변경
+</code></pre>
+<p>이 경우 Halt 후에도 마지막 모터 명령이 유지되어 로봇이 계속 이동한다. 전제 조건이 위반된(예: 경로가 안전하지 않은) 상태에서 로봇이 이동을 계속하는 것은 안전 사고를 유발한다.</p>
+<h3>4.2 위험 사례 2: 액션 목표 미취소</h3>
+<pre><code>function UnsafeNavigation.halt():
+    publishZeroVelocity()
+    // 액션 목표 취소 누락
+    setStatus(IDLE)
+</code></pre>
+<p>속도 명령은 정지하였으나 내비게이션 액션 서버의 목표를 취소하지 않은 경우, 조건이 복원되어 행동이 재시작될 때 이전 목표와 새 목표가 충돌할 수 있다.</p>
+<h3>4.3 위험 사례 3: 매니퓰레이터의 중력 낙하</h3>
+<p>매니퓰레이터가 물체를 파지(grasp)한 상태에서 Halt가 호출되면, 단순히 모터 전력을 차단하면 매니퓰레이터가 중력에 의해 낙하하여 물체를 떨어뜨리거나 주변 물체와 충돌할 수 있다. 이 경우 Halt 시 현재 관절 각도를 유지하는 위치 유지 모드로 전환하여야 한다.</p>
+<pre><code>function GraspAndLift.halt():
+    if isHoldingObject():
+        // 현재 위치 유지 모드로 전환
+        holdCurrentJointPositions()
+    else:
+        // 물체를 파지하지 않은 경우 안전 위치로 이동
+        moveToSafePosition()
+    
+    setStatus(IDLE)
+</code></pre>
+<h2>5. Halt 후 행동 재시작의 동작</h2>
+<p>조건이 복원되어 ReactiveSequence가 다시 행동 노드를 Tick하면, 행동 노드는 <code>IDLE</code> 상태에서 새로 시작된다. Halt에 의해 내부 상태가 초기화되었으므로, 행동은 처음부터 실행을 재개한다.</p>
+<p>이전 진행 상태를 보존하여 중단된 지점부터 재개하려면, 행동 노드가 진행 상태를 블랙보드에 저장하고 <code>tick()</code> 최초 호출 시 이를 복원하는 메커니즘을 구현하여야 한다.</p>
+<pre><code>function ResumableAction.tick():
+    if status == IDLE:
+        // 블랙보드에서 이전 진행 상태 복원 시도
+        saved_state ← blackboard.get("action_progress")
+        if saved_state is not null:
+            restoreState(saved_state)
+        else:
+            initializeFromStart()
+    
+    // 행동 수행
+    result ← executeStep()
+    
+    // 진행 상태 저장
+    blackboard.set("action_progress", getCurrentState())
+    
+    return result
+
+function ResumableAction.halt():
+    // 진행 상태는 블랙보드에 이미 저장되어 있으므로 삭제하지 않음
+    stopPhysicalAction()
+    setStatus(IDLE)
+</code></pre>
+<p>이 패턴을 적용하면 Halt 후 재시작 시 이전 진행 상태가 복원되어, 처음부터 다시 시작하지 않아도 된다.</p>
+<h2>6. Halt 전파의 시간적 보장</h2>
+<p>ReactiveSequence에서 조건 위반 시 Halt 전파는 동일한 Tick 내에서 수행된다. 조건 평가와 Halt 호출 사이에 추가적인 Tick이 개입하지 않는다.</p>
+<pre><code>단일 Tick 내 처리 순서:
+1. C₀.tick() → FAILURE 반환
+2. haltChildren(1) 호출
+3.   C₂.status() == RUNNING 확인
+4.   C₂.halt() 호출
+5.     C₂ 내부: 물리적 정지 명령 발행
+6.     C₂ 내부: setStatus(IDLE)
+7. ReactiveSequence → FAILURE 반환
+</code></pre>
+<p>이 모든 과정이 단일 Tick의 실행 시간 내에 완료된다. 따라서 조건 위반과 행동 중단 사이의 최대 지연은 하나의 Tick 주기에 Halt 처리 시간을 합산한 것이다.</p>
+<p><span class="math math-display">\Delta t_{halt} \leq T_{tick} + t_{halt\_execution}</span></p>
+<p><span class="math math-inline">t_{halt\_execution}</span>은 <code>halt()</code> 메서드의 실행 시간이다. Halt 메서드가 블로킹(blocking) 연산을 포함하면 이 시간이 증가하므로, Halt 메서드는 가능한 한 비블로킹(non-blocking)으로 구현하여야 한다.</p>
+<h2>설계 지침</h2>
+<ol>
+<li>
+<p><strong>Halt는 반드시 구현하라</strong>: 모든 행동 노드에 <code>halt()</code> 메서드를 명시적으로 구현하라. 기본 구현(아무것도 하지 않음)에 의존하면 안전 문제가 발생한다.</p>
+</li>
+<li>
+<p><strong>Halt에서 물리적 정지를 보장하라</strong>: 로봇의 물리적 동작을 수반하는 행동은 Halt 시 반드시 정지 명령을 발행하라.</p>
+</li>
+<li>
+<p><strong>Halt는 비블로킹으로 구현하라</strong>: Halt 메서드 내에서 장시간 블로킹되는 연산을 수행하지 마라. 비동기 취소 요청을 발행하고 즉시 반환하라.</p>
+</li>
+<li>
+<p><strong>Halt의 멱등성을 보장하라</strong>: <code>halt()</code> 메서드가 여러 번 호출되어도 동일한 결과를 산출하도록 구현하라. 동일한 정지 명령이 중복 발행되어도 부작용이 없어야 한다.</p>
+</li>
+<li>
+<p><strong>Halt 후 상태를 IDLE로 설정하라</strong>: Halt 처리 완료 후 노드의 상태를 <code>IDLE</code>로 설정하여, 다음 Tick에서 깨끗한 상태로 재시작될 수 있도록 하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

@@ -115,6 +115,198 @@
             </header>
             <article>
                 <h1>1294.24 ReactiveSequence의 의사 코드</h1>
+<h2>1. 기본 의사 코드</h2>
+<p>ReactiveSequence의 <code>tick()</code> 함수는 매 호출 시 항상 첫 번째 자식부터 순차적으로 평가하며, 내부에 재진입 인덱스를 유지하지 않는다. 다음은 ReactiveSequence의 기본 의사 코드이다(Colledanchise &amp; Ogren, 2018).</p>
+<pre><code>function ReactiveSequence.tick():
+    for i ← 0 to N-1:
+        status ← children[i].executeTick()
+        if status == RUNNING:
+            // i 이후의 RUNNING 자식을 Halt
+            for j ← i+1 to N-1:
+                if children[j].status() == RUNNING:
+                    children[j].halt()
+            return RUNNING
+        else if status == FAILURE:
+            // 모든 RUNNING 자식을 Halt
+            for j ← i+1 to N-1:
+                if children[j].status() == RUNNING:
+                    children[j].halt()
+            return FAILURE
+    // 모든 자식이 SUCCESS
+    return SUCCESS
+</code></pre>
+<p>이 의사 코드의 핵심은 <code>for</code> 루프의 시작 인덱스가 항상 0이라는 점이다. SequenceWithMemory의 의사 코드에서 <code>current_child_idx</code>부터 시작하는 것과 대비된다.</p>
+<h2>2. SequenceWithMemory 의사 코드와의 대조</h2>
+<p>두 변형의 의사 코드를 나란히 배치하면 구조적 차이가 명확하게 드러난다.</p>
+<pre><code>// SequenceWithMemory
+function SequenceWithMemory.tick():
+    for i ← current_child_idx to N-1:    // ← 기억된 인덱스부터 시작
+        status ← children[i].executeTick()
+        if status == RUNNING:
+            current_child_idx ← i        // ← 인덱스 기억
+            return RUNNING
+        else if status == FAILURE:
+            current_child_idx ← 0        // ← 인덱스 초기화
+            return FAILURE
+    current_child_idx ← 0
+    return SUCCESS
+
+// ReactiveSequence
+function ReactiveSequence.tick():
+    for i ← 0 to N-1:                    // ← 항상 0부터 시작
+        status ← children[i].executeTick()
+        if status == RUNNING:
+            haltChildrenAfter(i)          // ← 후속 RUNNING 자식 Halt
+            return RUNNING
+        else if status == FAILURE:
+            haltChildrenAfter(i)          // ← 후속 RUNNING 자식 Halt
+            return FAILURE
+    return SUCCESS
+</code></pre>
+<p>SequenceWithMemory에서는 <code>current_child_idx</code>라는 상태 변수가 Tick 간에 유지되지만, ReactiveSequence에서는 이러한 상태 변수가 존재하지 않는다.</p>
+<h2>3. Halt 처리를 포함한 확장 의사 코드</h2>
+<p>ReactiveSequence에서 RUNNING 자식의 Halt 처리는 안전성의 핵심 요소이다. Halt 로직을 명시적으로 포함한 확장 의사 코드는 다음과 같다.</p>
+<pre><code>function ReactiveSequence.tick():
+    for i ← 0 to N-1:
+        status ← children[i].executeTick()
+
+        switch status:
+            case SUCCESS:
+                continue                     // 다음 자식으로 진행
+
+            case RUNNING:
+                haltChildrenAfter(i)
+                return RUNNING
+
+            case FAILURE:
+                haltChildrenAfter(i)
+                return FAILURE
+
+            case IDLE:
+                throw LogicError             // IDLE 반환은 프로토콜 위반
+
+    resetAllChildren()                       // 모든 자식을 IDLE로 복원
+    return SUCCESS
+
+function haltChildrenAfter(index):
+    for j ← index+1 to N-1:
+        if children[j].status() != IDLE:
+            children[j].halt()
+            children[j].setStatus(IDLE)
+</code></pre>
+<p><code>haltChildrenAfter()</code> 함수에서 IDLE이 아닌 모든 자식을 Halt하는 이유는, 이전 Tick에서 RUNNING이었던 자식이 현재 Tick에서 더 앞쪽 자식의 FAILURE나 RUNNING으로 인해 평가되지 않은 채 남아 있을 수 있기 때문이다.</p>
+<h2>4. SKIPPED 상태를 포함한 BehaviorTree.CPP v4 의사 코드</h2>
+<p>BehaviorTree.CPP v4에서는 SKIPPED 상태가 추가되어, 전조건(precondition)에 의해 자식의 평가가 건너뛰어질 수 있다. 이를 반영한 의사 코드는 다음과 같다(Faconti, 2022).</p>
+<pre><code>function ReactiveSequence.tick():
+    all_success ← true
+
+    for i ← 0 to N-1:
+        status ← children[i].executeTick()
+
+        switch status:
+            case SUCCESS:
+                // all_success 유지, 계속 진행
+                continue
+
+            case RUNNING:
+                // i 이후의 모든 자식 Halt
+                for j ← i+1 to N-1:
+                    haltChild(j)
+                return RUNNING
+
+            case FAILURE:
+                // 모든 자식 상태 초기화
+                resetChildren()
+                return FAILURE
+
+            case SKIPPED:
+                all_success ← false
+                // 다음 자식으로 계속 진행
+                continue
+
+            case IDLE:
+                throw LogicError("Child returned IDLE")
+
+    resetChildren()
+    if all_success:
+        return SUCCESS
+    else:
+        return SKIPPED
+</code></pre>
+<p>SKIPPED 상태의 처리 규칙은 다음과 같다:</p>
+<ul>
+<li>SKIPPED를 반환한 자식은 실행되지 않은 것으로 간주하되, FAILURE와는 구별된다.</li>
+<li>하나 이상의 자식이 SKIPPED를 반환하면, 최종 반환값이 SUCCESS 대신 SKIPPED가 된다.</li>
+<li>SKIPPED는 RUNNING이나 FAILURE처럼 조기 종료를 유발하지 않는다.</li>
+</ul>
+<h2>5. 의사 코드의 실행 추적</h2>
+<h3>5.1 시나리오 1: 정상 완료</h3>
+<pre><code>자식: [CondA, CondB, SyncAct]
+
+tick() 호출:
+  i=0: CondA.executeTick() → SUCCESS → continue
+  i=1: CondB.executeTick() → SUCCESS → continue
+  i=2: SyncAct.executeTick() → SUCCESS → continue
+  루프 종료
+  resetAllChildren()
+  → return SUCCESS
+</code></pre>
+<h3>5.2 시나리오 2: 비동기 액션 진행 중</h3>
+<pre><code>자식: [CondA, CondB, AsyncAct]
+
+tick() 호출:
+  i=0: CondA.executeTick() → SUCCESS → continue
+  i=1: CondB.executeTick() → SUCCESS → continue
+  i=2: AsyncAct.executeTick() → RUNNING
+       haltChildrenAfter(2): (i+1=3, 더 이상 자식 없음)
+  → return RUNNING
+</code></pre>
+<h3>5.3 시나리오 3: 조건 실패로 인한 Halt</h3>
+<pre><code>자식: [CondA, CondB, AsyncAct]
+(이전 Tick에서 AsyncAct가 RUNNING 상태)
+
+tick() 호출:
+  i=0: CondA.executeTick() → FAILURE
+       haltChildrenAfter(0):
+         children[1](CondB): status=IDLE → 건너뜀
+         children[2](AsyncAct): status=RUNNING → halt(), setStatus(IDLE)
+  → return FAILURE
+</code></pre>
+<h3>5.4 시나리오 4: RUNNING 자식의 변경</h3>
+<pre><code>자식: [CondA, AsyncAct1, AsyncAct2]
+
+Tick N:
+  i=0: CondA → SUCCESS → continue
+  i=1: AsyncAct1 → RUNNING
+       haltChildrenAfter(1):
+         children[2](AsyncAct2): status=IDLE → 건너뜀
+  → return RUNNING
+
+Tick N+1 (AsyncAct1 완료):
+  i=0: CondA → SUCCESS → continue
+  i=1: AsyncAct1 → SUCCESS → continue
+  i=2: AsyncAct2 → RUNNING
+       haltChildrenAfter(2): (더 이상 자식 없음)
+  → return RUNNING
+</code></pre>
+<p>이 시나리오는 ReactiveSequence에서도 Sequence의 기본 순차 실행 의미론이 유지됨을 보여준다.</p>
+<h2>6. 의사 코드와 구현의 대응</h2>
+<p>의사 코드의 각 부분이 BehaviorTree.CPP v4의 실제 C++ 구현과 어떻게 대응되는지를 정리하면 다음과 같다.</p>
+<table><thead><tr><th>의사 코드</th><th>C++ 구현</th></tr></thead><tbody>
+<tr><td><code>for i ← 0 to N-1</code></td><td><code>for(size_t i=0; i&lt;childrenCount(); i++)</code></td></tr>
+<tr><td><code>children[i].executeTick()</code></td><td><code>child-&gt;executeTick()</code></td></tr>
+<tr><td><code>haltChildrenAfter(i)</code></td><td><code>for(j=i+1;...) haltChild(j)</code></td></tr>
+<tr><td><code>resetAllChildren()</code></td><td><code>resetChildren()</code></td></tr>
+<tr><td><code>throw LogicError</code></td><td><code>throw LogicError(...)</code></td></tr>
+<tr><td><code>all_success</code> 플래그</td><td><code>bool all_success = true</code></td></tr>
+</tbody></table>
+<p>의사 코드의 추상적 구조와 실제 구현 사이에 직접적인 일대일 대응이 성립하며, 이는 ReactiveSequence의 알고리즘이 구현 수준에서도 단순하고 명확함을 의미한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

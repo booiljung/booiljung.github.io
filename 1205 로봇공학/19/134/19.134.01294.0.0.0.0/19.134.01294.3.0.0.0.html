@@ -115,6 +115,140 @@
             </header>
             <article>
                 <h1>1294.3 제어 흐름 노드의 공통 인터페이스</h1>
+<h2>1. 공통 인터페이스의 필요성</h2>
+<p>행동 트리의 다양한 제어 흐름 노드(Sequence, Fallback, Parallel 등)는 각각 고유한 실행 의미론을 가지지만, 자식 노드 관리, Tick 처리, Halt 전파 등의 기본 메커니즘은 공유한다. 이 공통 메커니즘을 추상 기반 클래스로 정의하여, 모든 제어 흐름 노드가 일관된 인터페이스를 따르도록 보장한다. 이를 통해 트리 순회 알고리즘, 시각화 도구, 로깅 프레임워크 등이 제어 노드의 구체적 유형에 의존하지 않고 동작할 수 있다(Faconti, 2022).</p>
+<h2>2. BehaviorTree.CPP v4의 ControlNode 기반 클래스</h2>
+<p>BehaviorTree.CPP v4에서 모든 제어 흐름 노드는 <code>BT::ControlNode</code> 추상 클래스를 상속한다. 이 클래스는 <code>BT::TreeNode</code>를 상속하며, 자식 관리를 위한 추가 인터페이스를 제공한다.</p>
+<pre><code class="language-cpp">class ControlNode : public TreeNode {
+public:
+    ControlNode(const std::string&amp; name, const NodeConfig&amp; config);
+
+    // 자식 노드 추가
+    void addChild(TreeNode* child);
+
+    // 자식 목록 접근
+    size_t childrenCount() const;
+    const std::vector&lt;TreeNode*&gt;&amp; children() const;
+    
+    // 특정 인덱스의 자식에 대한 Halt
+    void haltChild(size_t index);
+    
+    // 모든 자식에 대한 Halt
+    void haltChildren();
+    
+    // 인덱스 범위의 자식에 대한 Halt
+    void haltChildren(size_t first, size_t last);
+
+    // 제어 노드의 Halt 시 기본 동작
+    void halt() override;
+
+protected:
+    std::vector&lt;TreeNode*&gt; children_nodes_;
+};
+</code></pre>
+<h2>3. TreeNode 기반 인터페이스</h2>
+<p>모든 제어 흐름 노드는 <code>TreeNode</code>로부터 다음의 공통 인터페이스를 상속받는다.</p>
+<h3>3.1 상태 관리</h3>
+<pre><code class="language-cpp">// 현재 상태 조회
+NodeStatus status() const;
+
+// 상태 설정 (내부 사용)
+void setStatus(NodeStatus status);
+
+// Tick 실행 (외부에서 호출)
+NodeStatus executeTick();
+</code></pre>
+<p><code>executeTick()</code>은 노드의 상태 전이를 관리하는 래퍼 함수이다. IDLE 상태의 노드가 처음 Tick될 때 적절한 초기화를 수행하고, 내부의 <code>tick()</code> 가상 함수를 호출한다.</p>
+<h3>3.2 tick() 가상 함수</h3>
+<p>제어 흐름 노드의 핵심 로직은 <code>tick()</code> 순수 가상 함수에서 구현된다. 각 제어 노드 변형(Sequence, Fallback 등)은 이 함수를 오버라이드하여 고유한 자식 Tick 전달과 상태 조합 규칙을 정의한다.</p>
+<pre><code class="language-cpp">// 각 제어 노드가 구현해야 하는 핵심 함수
+virtual NodeStatus tick() = 0;
+</code></pre>
+<h3>3.3 노드 메타데이터</h3>
+<pre><code class="language-cpp">// 노드 이름
+const std::string&amp; name() const;
+
+// 노드 유형
+NodeType type() const;  // CONTROL, ACTION, CONDITION, DECORATOR 중 하나
+
+// 고유 식별자
+uint16_t UID() const;
+
+// 등록된 이름 (팩토리에서의 타입 이름)
+const std::string&amp; registrationName() const;
+</code></pre>
+<h2>4. 자식 관리 인터페이스</h2>
+<h3>4.1 addChild</h3>
+<p>트리 생성 과정에서 팩토리가 호출하는 함수이다. 자식 노드의 포인터를 내부 벡터에 추가한다. 실행 중에는 호출되지 않는다.</p>
+<h3>4.2 children / childrenCount</h3>
+<p>자식 목록에 대한 읽기 전용 접근을 제공한다. 시각화 도구나 로거가 트리 구조를 탐색할 때 사용한다.</p>
+<h3>4.3 haltChild / haltChildren</h3>
+<p>특정 자식 또는 자식 범위에 대한 Halt를 수행한다. 제어 노드의 <code>tick()</code> 구현에서 조기 종료 시 RUNNING 상태의 자식을 중단할 때 호출한다.</p>
+<pre><code class="language-cpp">// 인덱스 i 이후의 모든 RUNNING 자식을 Halt
+void haltChildrenAfter(size_t i) {
+    for (size_t j = i + 1; j &lt; children_nodes_.size(); j++) {
+        if (children_nodes_[j]-&gt;status() == NodeStatus::RUNNING) {
+            haltChild(j);
+        }
+    }
+}
+</code></pre>
+<h2>5. halt() 기본 구현</h2>
+<p><code>ControlNode::halt()</code>는 모든 자식에 대해 Halt를 전파하고, 자신의 상태를 IDLE로 설정하는 기본 동작을 제공한다.</p>
+<pre><code class="language-cpp">void ControlNode::halt() {
+    haltChildren();
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<p>각 제어 노드 변형은 필요에 따라 이 기본 동작 위에 추가 정리 로직을 구현할 수 있다. 예를 들어, WithMemory 모드의 노드는 Halt 시 기억하고 있던 자식 인덱스를 초기화해야 한다.</p>
+<h2>6. 포트 인터페이스</h2>
+<p>제어 흐름 노드도 블랙보드 포트를 가질 수 있다. 예를 들어, <code>ParallelNode</code>의 성공 임계값이나, <code>SwitchNode</code>의 조건 변수 등은 입력 포트를 통해 설정된다.</p>
+<pre><code class="language-cpp">static PortsList providedPorts() {
+    return {
+        InputPort&lt;int&gt;("success_count", 
+                        "Number of children that must succeed")
+    };
+}
+</code></pre>
+<p>그러나 기본 Sequence와 Fallback 노드는 별도의 포트를 가지지 않으며, 동작이 전적으로 자식 노드의 반환 상태에 의해 결정된다.</p>
+<h2>7. 공통 인터페이스의 설계 의의</h2>
+<h3>7.1 다형성에 의한 트리 순회</h3>
+<p>트리 순회 알고리즘은 <code>TreeNode</code> 포인터를 통해 동작하며, 구체적인 노드 유형을 알 필요가 없다. 제어 노드인 경우 <code>children()</code> 메서드를 통해 자식을 재귀적으로 탐색할 수 있다.</p>
+<pre><code class="language-cpp">void visitTree(TreeNode* node) {
+    processNode(node);
+    
+    if (auto* control = dynamic_cast&lt;ControlNode*&gt;(node)) {
+        for (auto* child : control-&gt;children()) {
+            visitTree(child);
+        }
+    }
+}
+</code></pre>
+<h3>7.2 로거와 옵저버의 범용 적용</h3>
+<p><code>StatusChangeLogger</code>와 <code>TreeObserver</code> 등의 관찰 메커니즘은 <code>TreeNode</code>의 공통 인터페이스를 통해 모든 노드의 상태 변화를 균일하게 관찰한다. 제어 노드의 구체적 유형에 따른 특수 처리가 필요하지 않다.</p>
+<h3>7.3 커스텀 제어 노드의 확장</h3>
+<p>개발자가 새로운 제어 흐름 노드를 정의할 때, <code>ControlNode</code>를 상속하고 <code>tick()</code> 함수만 구현하면 된다. 자식 관리, Halt 전파, 상태 관리 등의 공통 기능은 기반 클래스에서 제공되므로, 개발자는 고유한 실행 의미론에만 집중할 수 있다(Colledanchise &amp; Ogren, 2018).</p>
+<pre><code class="language-cpp">class CustomControl : public BT::ControlNode {
+public:
+    CustomControl(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ControlNode(name, config) {}
+
+    BT::NodeStatus tick() override {
+        // 고유한 자식 Tick 전달 및 상태 조합 로직
+        for (size_t i = 0; i &lt; childrenCount(); i++) {
+            auto status = children_nodes_[i]-&gt;executeTick();
+            // 상태에 따른 처리...
+        }
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

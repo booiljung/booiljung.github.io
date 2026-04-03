@@ -115,6 +115,161 @@
             </header>
             <article>
                 <h1>1296.6 동기 액션 노드 (SyncActionNode)의 정의</h1>
+<h2>1. SyncActionNode의 정의</h2>
+<p><code>BT::SyncActionNode</code>는 BehaviorTree.CPP 라이브러리에서 제공하는 동기(synchronous) 액션 노드의 기반 클래스이다. “동기“란 <code>tick()</code> 메서드가 호출되면 즉시 완료되어 SUCCESS 또는 FAILURE를 반환함을 의미한다. RUNNING 상태를 반환하지 않으므로, 단일 Tick 내에서 완료되는 경량 작업에 사용한다.</p>
+<h2>2. 클래스 인터페이스</h2>
+<pre><code class="language-cpp">class SyncActionNode : public ActionNodeBase
+{
+public:
+    SyncActionNode(const std::string&amp; name, 
+                   const NodeConfig&amp; config);
+
+    // 사용자가 구현하여야 하는 순수 가상 메서드
+    virtual NodeStatus tick() = 0;
+
+    // SyncActionNode는 halt가 의미 없음 (RUNNING 상태 불가)
+    virtual void halt() override final
+    {
+        setStatus(NodeStatus::IDLE);
+    }
+
+    // executeTick() 내부에서 RUNNING 반환 시 예외 발생
+    NodeStatus executeTick() override;
+};
+</code></pre>
+<p>핵심 특성은 다음과 같다.</p>
+<ol>
+<li>
+<p><strong><code>tick()</code> 순수 가상 메서드</strong>: 파생 클래스에서 반드시 구현하여야 한다. SUCCESS 또는 FAILURE만 반환한다.</p>
+</li>
+<li>
+<p><strong><code>halt()</code> final 메서드</strong>: <code>halt()</code>는 <code>final</code>로 선언되어 파생 클래스에서 오버라이드할 수 없다. SyncActionNode는 RUNNING 상태를 가지지 않으므로, Halt 시 특별한 정리가 필요 없다.</p>
+</li>
+<li>
+<p><strong>RUNNING 반환 금지</strong>: <code>executeTick()</code> 내부에서 <code>tick()</code>의 반환값이 RUNNING인지 검사하며, RUNNING이면 <code>LogicError</code> 예외를 발생시킨다.</p>
+</li>
+</ol>
+<h2>3. 구현 패턴</h2>
+<h3>3.1 블랙보드 값 설정</h3>
+<pre><code class="language-cpp">class SetBlackboardEntry : public BT::SyncActionNode
+{
+public:
+    SetBlackboardEntry(const std::string&amp; name, 
+                       const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("key", "블랙보드 키"),
+            BT::InputPort&lt;std::string&gt;("value", "설정할 값")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string key, value;
+        if (!getInput("key", key) || !getInput("value", value))
+            return BT::NodeStatus::FAILURE;
+
+        config().blackboard-&gt;set(key, value);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h3>3.2 수학적 계산</h3>
+<pre><code class="language-cpp">class ComputeDistance : public BT::SyncActionNode
+{
+public:
+    ComputeDistance(const std::string&amp; name, 
+                   const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;Pose&gt;("pose_a"),
+            BT::InputPort&lt;Pose&gt;("pose_b"),
+            BT::OutputPort&lt;double&gt;("distance")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        Pose a, b;
+        if (!getInput("pose_a", a) || !getInput("pose_b", b))
+            return BT::NodeStatus::FAILURE;
+
+        double dx = a.x - b.x;
+        double dy = a.y - b.y;
+        double dist = std::sqrt(dx * dx + dy * dy);
+
+        setOutput("distance", dist);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h3>3.3 ROS2 토픽 단일 발행</h3>
+<pre><code class="language-cpp">class PublishVelocity : public BT::SyncActionNode
+{
+public:
+    PublishVelocity(const std::string&amp; name, 
+                    const BT::NodeConfig&amp; config,
+                    rclcpp::Publisher&lt;geometry_msgs::msg::Twist&gt;::SharedPtr pub)
+        : SyncActionNode(name, config), publisher_(pub) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("linear_x", 0.0),
+            BT::InputPort&lt;double&gt;("angular_z", 0.0)
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double linear_x, angular_z;
+        getInput("linear_x", linear_x);
+        getInput("angular_z", angular_z);
+
+        geometry_msgs::msg::Twist cmd;
+        cmd.linear.x = linear_x;
+        cmd.angular.z = angular_z;
+        publisher_-&gt;publish(cmd);
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    rclcpp::Publisher&lt;geometry_msgs::msg::Twist&gt;::SharedPtr publisher_;
+};
+</code></pre>
+<h2>4. SyncActionNode의 적용 범위</h2>
+<p>SyncActionNode가 적합한 작업과 부적합한 작업을 정리한다.</p>
+<table><thead><tr><th>적합한 작업</th><th>부적합한 작업</th></tr></thead><tbody>
+<tr><td>블랙보드 값 읽기/쓰기</td><td>ROS2 액션 호출 (비동기)</td></tr>
+<tr><td>단순 수학 계산</td><td>경로 추종 (다중 Tick)</td></tr>
+<tr><td>ROS2 토픽 단일 발행</td><td>센서 데이터 수집 대기</td></tr>
+<tr><td>로그 메시지 출력</td><td>타임아웃 대기</td></tr>
+<tr><td>파라미터 읽기</td><td>외부 서비스 응답 대기</td></tr>
+<tr><td>플래그 설정/해제</td><td>모터 이동 완료 대기</td></tr>
+</tbody></table>
+<p>작업의 실행 시간이 Tick 주기의 수% 이내이고, 외부 시스템의 응답을 기다릴 필요가 없는 경우에 SyncActionNode를 선택한다.</p>
+<h2>5. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>Tick 시간 예산 준수</strong>: SyncActionNode의 <code>tick()</code>은 Tick 주기 내에서 완료되어야 한다. 10 ms Tick 주기에서 <code>tick()</code>이 5 ms를 소요하면, 트리의 다른 노드에 할당 가능한 시간이 절반으로 줄어든다.</p>
+</li>
+<li>
+<p><strong>예외의 적절한 처리</strong>: <code>tick()</code> 내부에서 발생하는 예외는 catch하여 FAILURE로 변환한다. 예외가 <code>tick()</code> 외부로 전파되면 트리 전체의 실행이 중단된다.</p>
+</li>
+<li>
+<p><strong>Halt의 자동 처리</strong>: SyncActionNode는 RUNNING 상태를 가지지 않으므로, <code>halt()</code> 시 특별한 정리가 필요 없다. <code>halt()</code>는 <code>final</code>로 선언되어 오버라이드할 수 없으며, 단순히 상태를 IDLE로 설정한다.</p>
+</li>
+<li>
+<p><strong>포트 값의 유효성 검증</strong>: <code>getInput()</code>의 반환값을 확인하여 포트 값이 유효한지 검증한다. 값이 유효하지 않으면 FAILURE를 반환한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

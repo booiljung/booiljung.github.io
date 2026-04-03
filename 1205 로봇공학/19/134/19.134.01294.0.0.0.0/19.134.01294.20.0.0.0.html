@@ -115,6 +115,79 @@
             </header>
             <article>
                 <h1>1294.20 ReactiveSequence의 매 Tick 재평가 규칙</h1>
+<h2>1. 매 Tick 재평가의 정의</h2>
+<p>ReactiveSequence의 매 Tick 재평가(per-tick re-evaluation) 규칙이란, Sequence가 RUNNING 상태인 동안 매번 Tick을 수신할 때마다 첫 번째 자식(인덱스 0)부터 순차적으로 모든 자식을 다시 평가하는 규칙이다. 이전 Tick에서의 자식 반환 결과는 기억되지 않으며, 매 Tick이 독립적인 완전한 평가 주기를 구성한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 재평가 규칙의 상세</h2>
+<h3>2.1 규칙 1: 항상 인덱스 0부터 시작</h3>
+<p>이전 Tick에서 어떤 자식이 RUNNING을 반환했는지와 무관하게, 매 Tick에서 인덱스 0의 자식부터 평가를 시작한다.</p>
+<pre><code>Tick N:   i=0 → i=1 → i=2(RUNNING) → RUNNING
+Tick N+1: i=0 → i=1 → i=2(RUNNING) → RUNNING  (0부터 재시작)
+Tick N+2: i=0 → i=1(FAILURE)        → FAILURE  (조건 변화 감지)
+</code></pre>
+<h3>2.2 규칙 2: SUCCESS 자식도 재평가</h3>
+<p>SequenceWithMemory에서 건너뛰어지는 SUCCESS 자식들이 ReactiveSequence에서는 매 Tick마다 다시 평가된다. 이를 통해 조건의 유효성을 지속적으로 확인한다.</p>
+<h3>2.3 규칙 3: FAILURE 발생 시 RUNNING 자식 Halt</h3>
+<p>재평가 과정에서 이전에 SUCCESS였던 자식이 FAILURE를 반환하면, 현재 RUNNING 상태인 후속 자식에게 Halt를 전달한다.</p>
+<pre><code>Tick N:
+  children[0]: CondA → SUCCESS
+  children[1]: ActB  → RUNNING
+  ReactiveSequence → RUNNING
+
+Tick N+1:
+  children[0]: CondA → FAILURE   ← 재평가에서 변화 감지
+  children[1]: ActB  → Halt      ← RUNNING 자식 중단
+  ReactiveSequence → FAILURE
+</code></pre>
+<h3>2.4 규칙 4: RUNNING 이후의 자식은 미평가</h3>
+<p>하나의 자식이 RUNNING을 반환하면, 그 이후의 자식에게는 Tick이 전달되지 않는다. 이 부분은 SequenceWithMemory와 동일하다.</p>
+<h2>3. 재평가에 의한 조건 감시</h2>
+<p>ReactiveSequence의 재평가 규칙은 조건 노드를 감시(monitor) 역할로 활용하는 패턴을 가능하게 한다. 조건 노드를 앞에, 액션 노드를 뒤에 배치하면, 액션 실행 중 조건을 지속적으로 감시하는 구조가 된다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;!-- 감시 조건들 --&gt;
+    &lt;Condition ID="IsNotEmergency"/&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Condition ID="IsCommsAlive"/&gt;
+    &lt;!-- 감시 대상 액션 --&gt;
+    &lt;Action ID="ExecuteMission"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>매 Tick마다 세 가지 조건이 모두 재평가되며, 하나라도 FAILURE를 반환하면 ExecuteMission이 즉시 Halt된다.</p>
+<h2>4. 재평가의 비용 분석</h2>
+<h3>4.1 Tick당 노드 방문 수</h3>
+<p>RUNNING 상태의 자식이 인덱스 <span class="math math-inline">k</span>에 위치할 때, 매 Tick마다 <span class="math math-inline">k+1</span>개의 노드가 방문된다.</p>
+<pre><code>자식 배열: [Cond₁, Cond₂, Cond₃, AsyncAct]
+AsyncAct가 RUNNING일 때:
+  매 Tick 방문: Cond₁, Cond₂, Cond₃, AsyncAct → 4개
+</code></pre>
+<p>SequenceWithMemory에서는 AsyncAct만 방문하므로 1개이다.</p>
+<h3>4.2 총 비용 비교</h3>
+<p>비동기 작업이 <span class="math math-inline">M</span> Tick 동안 RUNNING을 유지하는 경우:</p>
+<ul>
+<li><strong>ReactiveSequence</strong>: <span class="math math-inline">(k+1) \times M</span> 노드 방문</li>
+<li><strong>SequenceWithMemory</strong>: <span class="math math-inline">k + 1 + (M-1) \times 1 = k + M</span> 노드 방문</li>
+</ul>
+<p><span class="math math-inline">k</span>가 크고 <span class="math math-inline">M</span>이 긴 경우, ReactiveSequence의 비용이 유의미하게 높아진다.</p>
+<h2>5. 재평가와 액션 노드의 관계</h2>
+<p>ReactiveSequence에서 앞쪽에 배치된 액션 노드는 매 Tick마다 재실행된다. 이미 SUCCESS를 반환한 액션이 다시 실행되면, <code>onStart()</code>부터 다시 시작하여 의도하지 않은 동작이 발생할 수 있다. 따라서 ReactiveSequence에서는 앞쪽에 조건 노드(부수 효과 없는 순수 평가)만 배치하고, 비동기 액션은 마지막 자식에 배치하는 것이 설계 원칙이다(Faconti, 2022).</p>
+<pre><code class="language-xml">&lt;!-- 권장 패턴: 조건 → 조건 → 액션 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Condition ID="CondA"/&gt;
+    &lt;Condition ID="CondB"/&gt;
+    &lt;Action ID="AsyncAction"/&gt;    &lt;!-- 마지막에 배치 --&gt;
+&lt;/ReactiveSequence&gt;
+
+&lt;!-- 비권장 패턴: 액션이 앞에 위치 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;Action ID="SomeAction"/&gt;     &lt;!-- 매 Tick 재실행 — 위험 --&gt;
+    &lt;Action ID="AnotherAction"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

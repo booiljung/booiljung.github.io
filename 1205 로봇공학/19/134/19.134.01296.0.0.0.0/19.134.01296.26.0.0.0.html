@@ -115,6 +115,261 @@
             </header>
             <article>
                 <h1>1296.26 CoroActionNode의 yield 기반 Running 반환</h1>
+<h2>1. yield 기반 Running 반환의 개요</h2>
+<p><code>CoroActionNode</code>에서 RUNNING 상태의 반환은 <code>setStatusRunningAndYield()</code> 메서드의 호출에 의해 수행된다. 이 메서드는 노드의 상태를 RUNNING으로 설정하는 동시에 코루틴의 실행을 중단(yield)하여, 제어를 <code>executeTick()</code>의 호출자에게 반환한다. 이 메커니즘은 <code>StatefulActionNode</code>에서 콜백이 <code>NodeStatus::RUNNING</code>을 명시적으로 반환하는 방식과 근본적으로 다른 실행 모델을 형성한다.</p>
+<h2>2. setStatusRunningAndYield()의 내부 동작</h2>
+<p><code>setStatusRunningAndYield()</code>의 내부 동작을 단계별로 분석한다.</p>
+<pre><code class="language-cpp">void CoroActionNode::setStatusRunningAndYield()
+{
+    // 1단계: 노드 상태를 RUNNING으로 설정
+    setStatus(NodeStatus::RUNNING);
+
+    // 2단계: 코루틴 실행을 중단하고 호출자에게 제어 반환
+    yield();  // 코루틴 라이브러리의 yield 호출
+}
+</code></pre>
+<h3>2.1 단계: 상태 설정</h3>
+<p><code>setStatus(NodeStatus::RUNNING)</code>에 의해 노드의 상태가 RUNNING으로 설정된다. 이 상태는 <code>executeTick()</code>의 반환값으로 전파되어, 부모 제어 노드에 이 액션이 아직 진행 중임을 통지한다.</p>
+<h3>2.2 단계: 코루틴 중단</h3>
+<p><code>yield()</code> 호출에 의해 코루틴의 실행이 현재 지점에서 중단된다. 제어는 코루틴을 재개한 <code>executeTick()</code>으로 반환되며, <code>executeTick()</code>은 RUNNING 상태를 반환한다. 코루틴의 실행 컨텍스트(프로그램 카운터, 스택 프레임, 지역 변수)는 코루틴 프레임에 보존된다.</p>
+<h2>3. executeTick()과 yield의 상호 작용</h2>
+<p><code>CoroActionNode</code>의 <code>executeTick()</code>은 코루틴의 상태에 따라 코루틴을 생성하거나 재개한다. 이 메서드는 <code>final</code>로 선언되어 있어 파생 클래스에서 오버라이드할 수 없다.</p>
+<pre><code class="language-cpp">NodeStatus CoroActionNode::executeTick()
+{
+    // 코루틴이 존재하지 않으면 새로 생성
+    if (!coroutine_)
+    {
+        coroutine_ = createCoroutine([this]()
+        {
+            setStatus(tick());  // tick()의 반환값으로 상태 설정
+        });
+    }
+
+    // 코루틴 재개
+    coroutine_.resume();
+
+    // 코루틴이 완료되었으면 정리
+    if (coroutine_.done())
+    {
+        coroutine_.reset();
+    }
+
+    return status();
+}
+</code></pre>
+<p><code>executeTick()</code>과 <code>tick()</code> 내의 <code>setStatusRunningAndYield()</code> 사이의 상호 작용을 시간 축에서 기술한다.</p>
+<pre><code>executeTick() 호출
+    │
+    ├─ 코루틴 미존재 → 코루틴 생성
+    │
+    ├─ coroutine_.resume()
+    │       │
+    │       ├─ tick() 실행 시작 또는 재개
+    │       │       │
+    │       │       ├─ 사용자 코드 실행 ...
+    │       │       │
+    │       │       ├─ setStatusRunningAndYield() 호출
+    │       │       │       ├─ setStatus(RUNNING)
+    │       │       │       └─ yield() → 제어 반환 ←─── 중단 지점
+    │       │       │
+    │       └─ resume() 반환
+    │
+    ├─ coroutine_.done() → false (아직 중단 상태)
+    │
+    └─ return status() → RUNNING
+</code></pre>
+<p>다음 Tick에서 <code>executeTick()</code>이 다시 호출되면 동일한 과정이 반복되되, 코루틴이 이미 존재하므로 생성 단계가 생략되고 중단 지점에서 실행이 재개된다.</p>
+<h2>4. yield와 return의 의미론적 차이</h2>
+<p><code>CoroActionNode</code>에서 RUNNING의 반환은 <code>setStatusRunningAndYield()</code>에 의한 yield로 수행되고, SUCCESS와 FAILURE의 반환은 <code>tick()</code> 메서드의 <code>return</code> 문으로 수행된다. 이 두 메커니즘의 의미론적 차이를 분석한다.</p>
+<h3>4.1 yield: 일시 중단</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    doSomething();
+    setStatusRunningAndYield();  // 실행 중단, 다음 Tick에서 재개
+    doSomethingElse();           // 다음 Tick에서 이 지점부터 실행
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p><code>setStatusRunningAndYield()</code> 이후의 코드는 삭제되지 않으며, 다음 Tick에서 정확히 이 지점부터 실행이 재개된다. 코루틴의 실행 컨텍스트가 보존되므로, <code>doSomething()</code>에서 설정된 지역 변수의 값이 <code>doSomethingElse()</code>에서 그대로 참조 가능하다.</p>
+<h3>4.2 return: 완료</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    doSomething();
+    return BT::NodeStatus::SUCCESS;  // 코루틴 종료
+    // 이후 코드는 도달 불가
+}
+</code></pre>
+<p><code>return</code> 문에 의해 코루틴이 완료(done) 상태가 되고, <code>executeTick()</code>에서 코루틴이 정리된다. 다음 <code>executeTick()</code> 호출 시 새로운 코루틴이 생성되어 <code>tick()</code>이 처음부터 실행된다.</p>
+<table><thead><tr><th>메커니즘</th><th>동작</th><th style="text-align: center">코루틴 상태</th><th style="text-align: center">다음 Tick 동작</th></tr></thead><tbody>
+<tr><td><code>setStatusRunningAndYield()</code></td><td>중단 후 RUNNING 반환</td><td style="text-align: center">중단됨 (suspended)</td><td style="text-align: center">중단 지점에서 재개</td></tr>
+<tr><td><code>return SUCCESS</code></td><td>완료 후 SUCCESS 반환</td><td style="text-align: center">완료됨 (done)</td><td style="text-align: center">새 코루틴 생성, tick() 처음부터</td></tr>
+<tr><td><code>return FAILURE</code></td><td>완료 후 FAILURE 반환</td><td style="text-align: center">완료됨 (done)</td><td style="text-align: center">새 코루틴 생성, tick() 처음부터</td></tr>
+</tbody></table>
+<h2>5. 다중 yield 지점의 활용</h2>
+<p>단일 <code>tick()</code> 메서드 내에 다수의 <code>setStatusRunningAndYield()</code> 호출을 배치하여, 다단계 행동을 순차적으로 기술할 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // Phase 1: 목표 전송
+    auto goal = createGoal();
+    sendGoal(goal);
+    setStatusRunningAndYield();  // yield 지점 1
+
+    // Phase 2: 목표 수락 대기
+    while (!isGoalAccepted())
+    {
+        if (isGoalRejected())
+            return BT::NodeStatus::FAILURE;
+        setStatusRunningAndYield();  // yield 지점 2 (루프)
+    }
+
+    // Phase 3: 실행 완료 대기
+    while (!isExecutionDone())
+    {
+        auto feedback = getLatestFeedback();
+        setOutput("progress", feedback.percent_complete);
+        setStatusRunningAndYield();  // yield 지점 3 (루프)
+    }
+
+    // Phase 4: 결과 처리
+    auto result = getResult();
+    setOutput("result", result);
+    return result.success ? BT::NodeStatus::SUCCESS
+                          : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>이 구현에서 각 yield 지점은 Tick 경계를 형성한다. 코루틴이 어느 yield 지점에서 중단되었는지는 코루틴 프레임의 프로그램 카운터에 의해 추적되며, 개발자가 현재 단계를 별도의 변수로 관리할 필요가 없다.</p>
+<h3>5.1 Tick별 실행 추적</h3>
+<p>위 코드의 Tick별 실행 흐름을 추적한다.</p>
+<table><thead><tr><th>Tick</th><th>실행 구간</th><th style="text-align: center">yield 지점</th><th style="text-align: center">반환 상태</th></tr></thead><tbody>
+<tr><td>1</td><td>Phase 1 (목표 전송)</td><td style="text-align: center">yield 지점 1</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td>2</td><td>Phase 2 (수락 확인, 미수락)</td><td style="text-align: center">yield 지점 2</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td>3</td><td>Phase 2 (수락 확인, 미수락)</td><td style="text-align: center">yield 지점 2</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td>4</td><td>Phase 2 (수락 확인, 수락됨) → Phase 3 (진행 중)</td><td style="text-align: center">yield 지점 3</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td>5</td><td>Phase 3 (진행 중)</td><td style="text-align: center">yield 지점 3</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td>6</td><td>Phase 3 (완료) → Phase 4 (결과 처리)</td><td style="text-align: center">—</td><td style="text-align: center">SUCCESS</td></tr>
+</tbody></table>
+<p>Tick 4에서 Phase 2의 조건이 충족되어 <code>while</code> 루프를 탈출한 후, 동일한 Tick 내에서 Phase 3으로 진입하여 yield 지점 3에서 중단된다. 이는 코루틴의 실행이 yield 호출에 의해서만 중단되며, <code>while</code> 루프의 탈출 자체는 중단을 유발하지 않음을 보여준다.</p>
+<h2>6. StatefulActionNode의 RUNNING 반환과의 비교</h2>
+<p><code>StatefulActionNode</code>에서 RUNNING의 반환은 콜백 메서드의 <code>return NodeStatus::RUNNING</code> 문에 의해 수행된다. 이 경우 콜백의 실행 컨텍스트는 파괴되며, 다음 Tick에서 <code>onRunning()</code> 콜백이 처음부터 실행된다.</p>
+<h3>6.1 StatefulActionNode의 RUNNING 반환</h3>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    // 매 Tick마다 처음부터 실행
+    switch (phase_)
+    {
+    case Phase::WAIT_ACCEPT:
+        if (isGoalAccepted())
+        {
+            phase_ = Phase::WAIT_COMPLETE;
+        }
+        return BT::NodeStatus::RUNNING;
+
+    case Phase::WAIT_COMPLETE:
+        if (isExecutionDone())
+        {
+            return getResult().success
+                ? BT::NodeStatus::SUCCESS
+                : BT::NodeStatus::FAILURE;
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>6.2 CoroActionNode의 yield 기반 RUNNING 반환</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 중단 지점에서 재개
+    while (!isGoalAccepted())
+    {
+        setStatusRunningAndYield();
+    }
+
+    while (!isExecutionDone())
+    {
+        setStatusRunningAndYield();
+    }
+
+    return getResult().success
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<table><thead><tr><th>비교 항목</th><th style="text-align: center">CoroActionNode yield</th><th style="text-align: center">StatefulActionNode return</th></tr></thead><tbody>
+<tr><td>실행 재개 위치</td><td style="text-align: center">yield 지점</td><td style="text-align: center">콜백 시작점</td></tr>
+<tr><td>지역 변수 보존</td><td style="text-align: center">자동</td><td style="text-align: center">불가 (멤버 변수 필요)</td></tr>
+<tr><td>단계 추적</td><td style="text-align: center">암묵적 (프로그램 카운터)</td><td style="text-align: center">명시적 (phase 변수)</td></tr>
+<tr><td>코드 구조</td><td style="text-align: center">순차적 흐름</td><td style="text-align: center">상태 분기</td></tr>
+<tr><td>RUNNING 반환 방법</td><td style="text-align: center">setStatusRunningAndYield()</td><td style="text-align: center">return RUNNING</td></tr>
+<tr><td>반환 후 코루틴/콜백 상태</td><td style="text-align: center">중단됨</td><td style="text-align: center">종료됨</td></tr>
+</tbody></table>
+<h2>7. yield와 Halt의 상호 작용</h2>
+<p>코루틴이 yield에 의해 중단된 상태에서 Halt가 발생하면, 코루틴이 파괴된다. 이 과정에서 코루틴 프레임에 저장된 지역 변수의 소멸자가 호출된다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    auto resource = std::make_unique&lt;Resource&gt;();
+
+    setStatusRunningAndYield();  // 중단 지점
+
+    // Halt가 발생하면 코루틴 파괴
+    // → resource의 소멸자 호출 → 자원 해제
+    // → 이 이후의 코드는 실행되지 않음
+
+    resource-&gt;process();
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>yield 지점에서 중단된 코루틴이 Halt에 의해 파괴되는 과정을 도식화한다.</p>
+<pre><code>코루틴 상태: 중단됨 (yield 지점에서)
+    │
+    ├─ halt() 호출
+    │       │
+    │       ├─ 코루틴 파괴 시작
+    │       │       ├─ 지역 변수 소멸자 호출 (역순)
+    │       │       │   └─ resource.~unique_ptr() → Resource 해제
+    │       │       └─ 코루틴 프레임 메모리 해제
+    │       │
+    │       └─ 코루틴 객체 초기화 (nullptr)
+    │
+    └─ 노드 상태: IDLE
+</code></pre>
+<p>RAII 패턴을 통한 자원 관리는 코루틴의 파괴 시에도 자원 누수를 방지한다. 그러나 원시 포인터(raw pointer)에 의한 자원 관리는 소멸자가 호출되지 않으므로, Halt 시 자원이 누수된다.</p>
+<pre><code class="language-cpp">// 위험: 원시 포인터 사용
+BT::NodeStatus tick() override
+{
+    Resource* resource = new Resource();
+
+    setStatusRunningAndYield();
+
+    // Halt 시 delete가 호출되지 않음 → 메모리 누수
+    delete resource;
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>따라서 <code>CoroActionNode</code>의 <code>tick()</code> 내부에서 관리하는 자원은 반드시 RAII 객체(<code>std::unique_ptr</code>, <code>std::lock_guard</code>, <code>std::shared_ptr</code> 등)를 통해 관리하여야 한다.</p>
+<h2>8. yield 빈도와 트리 반응성</h2>
+<p><code>setStatusRunningAndYield()</code> 호출의 빈도는 트리의 반응성에 직접적으로 영향을 미친다. yield 호출 사이의 실행 시간이 길어지면, 해당 시간 동안 메인 스레드가 점유되어 트리의 다른 노드가 실행되지 못한다.</p>
+<p>yield 사이의 최대 실행 시간을 <span class="math math-inline">T_{\text{segment}}</span>, Tick 주기를 <span class="math math-inline">T_{\text{period}}</span>, 동시에 RUNNING 상태인 코루틴 수를 <span class="math math-inline">n</span>이라 하면, 다음의 조건이 충족되어야 트리의 실시간성이 보장된다.</p>
+<p><span class="math math-display">n \cdot T_{\text{segment}} &lt; T_{\text{period}}</span></p>
+<p>이 조건에서 각 코루틴의 <span class="math math-inline">T_{\text{segment}}</span>는 가능한 한 짧게 유지하여야 하며, 비차단적 확인(non-blocking check)과 경량 연산만을 yield 사이에 배치하는 것이 권장된다.</p>
+<h2>설계 지침</h2>
+<ol>
+<li>
+<p><strong>RUNNING 반환에는 setStatusRunningAndYield()만 사용</strong>: <code>tick()</code> 내부에서 <code>return NodeStatus::RUNNING</code>을 사용하지 않는다. 이는 코루틴을 완료시키며, 다음 Tick에서 <code>tick()</code>이 처음부터 실행되어 의도하지 않은 동작이 발생한다.</p>
+</li>
+<li>
+<p><strong>yield 사이의 비차단성 보장</strong>: yield 호출 사이에 차단 호출을 배치하지 않는다. 비차단적 폴링과 경량 연산만을 수행한다.</p>
+</li>
+<li>
+<p><strong>RAII 기반 자원 관리</strong>: 지역 변수로 관리되는 자원은 RAII 패턴을 적용하여, Halt에 의한 코루틴 파괴 시에도 자원이 적절히 해제되도록 한다.</p>
+</li>
+<li>
+<p><strong>yield 빈도의 적절성</strong>: 장시간의 연산을 단일 yield 구간에 배치하지 않는다. 작업을 작은 단위로 분할하여 각 단위 사이에 yield를 삽입한다.</p>
+</li>
+<li>
+<p><strong>반환값의 명확성</strong>: <code>tick()</code>의 최종 반환은 SUCCESS 또는 FAILURE만 사용하며, RUNNING은 오직 <code>setStatusRunningAndYield()</code>를 통해서만 반환한다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

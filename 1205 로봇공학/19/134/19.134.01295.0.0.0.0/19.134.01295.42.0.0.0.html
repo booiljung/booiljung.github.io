@@ -115,6 +115,126 @@
             </header>
             <article>
                 <h1>1295.42 상위 우선순위 자식 Success 시 하위 자식 Halt</h1>
+<h2>1. 메커니즘의 핵심 동작</h2>
+<p>ReactiveFallback에서 상위 우선순위 자식이 <code>SUCCESS</code>를 반환하면, 해당 자식 이후에 <code>RUNNING</code> 상태인 모든 하위 자식에 Halt가 전파된다. 이 메커니즘은 ReactiveFallback의 반응형 우선순위 체계를 실현하는 핵심 동작으로, “더 높은 우선순위의 행동이 성공하면 더 낮은 우선순위의 진행 중인 행동을 즉시 억제한다“는 의미론을 구현한다.</p>
+<p>이 Halt 전파는 ReactiveFallback의 Tick 알고리즘 내에서 자동으로 수행되며, 개발자가 별도로 명시적 Halt 로직을 작성할 필요가 없다. Tick 함수가 비실패(non-failure) 자식을 발견한 후, 해당 자식 이후의 모든 <code>RUNNING</code> 자식을 순회하며 Halt를 호출하는 것이 알고리즘의 일부로 내장되어 있다.</p>
+<h2>2. 동작 과정의 상세 추적</h2>
+<p>다음 구조에서 상위 자식 Success에 의한 하위 자식 Halt 과정을 상세히 추적하라.</p>
+<pre><code>ReactiveFallback
+├── C_0: Sequence
+│       ├── IsHighPriority
+│       └── HighPriorityAction
+├── C_1: Sequence
+│       ├── IsMediumPriority
+│       └── MediumPriorityAction
+└── C_2: DefaultAction
+</code></pre>
+<h3>2.1 초기 상태: DefaultAction 실행 중</h3>
+<pre><code>Tick t:
+  C_0: IsHighPriority → FAILURE
+  C_0: Sequence → FAILURE
+  C_1: IsMediumPriority → FAILURE
+  C_1: Sequence → FAILURE
+  C_2: DefaultAction.tick() → RUNNING
+  
+  ReactiveFallback → RUNNING
+  활성 상태: C_2 = RUNNING
+</code></pre>
+<h3>2.2 상위 조건 성립: C_0 SUCCESS</h3>
+<pre><code>Tick t+1:
+  C_0: IsHighPriority → SUCCESS   ← 조건 변경
+  C_0: HighPriorityAction.tick() → RUNNING
+  C_0: Sequence → RUNNING         ← 비실패 (RUNNING)
+  
+  [Tick 전파 중단]
+  [C_2가 RUNNING 상태 → Halt 전파]
+  
+  C_2: DefaultAction.halt()        ← Halt 호출
+  C_2 상태: RUNNING → IDLE
+  
+  ReactiveFallback → RUNNING
+  활성 상태: C_0 = RUNNING
+</code></pre>
+<p>Tick t+1에서 C_0의 Sequence가 <code>RUNNING</code>을 반환하자, C_1과 C_2에 대한 Tick 전파가 중단된다. C_2가 이전 Tick에서 <code>RUNNING</code> 상태였으므로 Halt가 전파되어 DefaultAction이 중단된다. C_1은 이전 Tick에서 <code>FAILURE</code> 상태였으므로 Halt 대상이 아니다.</p>
+<h3>2.3 상위 행동 완료: C_0 SUCCESS</h3>
+<pre><code>Tick t+2:
+  C_0: IsHighPriority → SUCCESS
+  C_0: HighPriorityAction.tick() → SUCCESS  ← 행동 완료
+  C_0: Sequence → SUCCESS
+  
+  [Tick 전파 중단 (SUCCESS 발견)]
+  [RUNNING 상태 하위 자식 없음 → Halt 전파 불필요]
+  
+  ReactiveFallback → SUCCESS
+</code></pre>
+<p>C_0의 행동이 완료되어 Sequence가 <code>SUCCESS</code>를 반환하면, ReactiveFallback 전체가 <code>SUCCESS</code>를 반환한다.</p>
+<h2>3. SUCCESS와 RUNNING의 Halt 전파 차이</h2>
+<p>상위 자식이 <code>SUCCESS</code>를 반환하는 경우와 <code>RUNNING</code>을 반환하는 경우 모두 하위 <code>RUNNING</code> 자식에 Halt가 전파된다. 두 경우의 차이는 ReactiveFallback 자체의 반환값에 있다.</p>
+<table><thead><tr><th>상위 자식 반환값</th><th>하위 RUNNING 자식 Halt</th><th>ReactiveFallback 반환값</th></tr></thead><tbody>
+<tr><td>SUCCESS</td><td>전파됨</td><td>SUCCESS</td></tr>
+<tr><td>RUNNING</td><td>전파됨</td><td>RUNNING</td></tr>
+<tr><td>FAILURE</td><td>전파 없음 (다음 자식으로 진행)</td><td>다음 자식에 의존</td></tr>
+</tbody></table>
+<p><code>SUCCESS</code>와 <code>RUNNING</code> 모두 하위 자식의 Halt를 유발하지만, <code>SUCCESS</code>는 ReactiveFallback 전체를 완료시키고, <code>RUNNING</code>은 다음 Tick에서 재평가를 계속하게 한다.</p>
+<h2>4. 다단계 Halt 전파</h2>
+<p>하위 자식이 단일 액션 노드가 아닌 복합 구조(Sequence, Parallel, SubTree 등)인 경우, Halt는 해당 복합 구조 내부로 재귀적으로 전파된다.</p>
+<pre><code>ReactiveFallback
+├── C_0: IsEmergency
+├── C_1: Sequence
+│       ├── NavigateToGoal
+│       └── Parallel
+│           ├── PickObject
+│           └── MonitorForce
+└── C_2: IdleAction
+</code></pre>
+<p>C_0이 <code>SUCCESS</code>를 반환하면, C_1이 <code>RUNNING</code> 상태인 경우 C_1에 Halt가 전파된다. C_1(Sequence)은 내부에서 현재 활성 상태인 자식을 찾아 Halt를 재귀적으로 전파한다. 만약 Parallel 노드가 활성 상태였다면, Parallel의 Halt 핸들러가 PickObject와 MonitorForce 모두에 Halt를 전파한다.</p>
+<pre><code>Halt 전파 순서:
+  C_1.halt()
+  └── C_1.Sequence.halt()
+      └── C_1.Parallel.halt()
+          ├── PickObject.halt()
+          └── MonitorForce.halt()
+</code></pre>
+<p>이 재귀적 Halt 전파에 의해, 행동 트리의 깊이와 무관하게 모든 활성 노드가 안전하게 정리된다.</p>
+<h2>5. Halt 전파 시 자원 정리</h2>
+<p>하위 자식에 Halt가 전파될 때, 해당 자식이 보유한 외부 자원(ROS2 액션 클라이언트, 타이머, 발행자 등)이 적절히 정리되어야 한다. Halt 처리가 부실하면 다음과 같은 문제가 발생할 수 있다.</p>
+<ol>
+<li>
+<p><strong>ROS2 액션 미취소</strong>: 행동 트리에서 Halt되었으나 ROS2 액션 서버에서는 목표가 여전히 활성 상태로 남아, 로봇이 의도하지 않은 동작을 계속할 수 있다.</p>
+</li>
+<li>
+<p><strong>타이머 미정지</strong>: 타임아웃 타이머가 정지되지 않아 이후 재시작 시 부정확한 시간 측정이 이루어질 수 있다.</p>
+</li>
+<li>
+<p><strong>상태 미초기화</strong>: 내부 플래그나 카운터가 초기화되지 않아 재시작 시 비정상 동작이 발생할 수 있다.</p>
+</li>
+</ol>
+<p>따라서 ReactiveFallback의 자식으로 사용되는 모든 액션 노드는, Halt 핸들러 내에서 다음 사항을 반드시 처리하여야 한다.</p>
+<pre><code>function ActionNode.halt():
+    // 1. 외부 자원 정리
+    cancelActiveGoals()
+    stopTimers()
+    
+    // 2. 내부 상태 초기화
+    resetInternalState()
+    
+    // 3. 상태를 IDLE로 전환
+    setStatus(IDLE)
+</code></pre>
+<h2>6. XML 정의에서의 구조 예시</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsEmergencyDetected /&gt;
+        &lt;ExecuteEmergencyProtocol /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsObstacleNear distance="{min_obstacle_dist}" /&gt;
+        &lt;AvoidObstacle /&gt;
+    &lt;/Sequence&gt;
+    &lt;NavigateToGoal goal="{target_position}" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>이 XML 구조에서 <code>IsEmergencyDetected</code>가 <code>SUCCESS</code>를 반환하면, <code>AvoidObstacle</code>이나 <code>NavigateToGoal</code>이 <code>RUNNING</code> 상태인 경우 자동으로 Halt가 전파된다. 개발자는 ReactiveFallback의 자식 배치 순서만으로 우선순위 체계와 Halt 전파 동작을 정의할 수 있다.</p>
 
             </article>
             <footer>

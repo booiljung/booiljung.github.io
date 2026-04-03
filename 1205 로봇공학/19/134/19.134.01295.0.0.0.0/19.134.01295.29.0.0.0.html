@@ -115,6 +115,111 @@
             </header>
             <article>
                 <h1>1295.29 행동과 타임아웃 감시의 동시 실행 패턴</h1>
+<h2>1. 패턴의 정의와 필요성</h2>
+<p>행동과 타임아웃 감시의 동시 실행 패턴은 Parallel 노드를 활용하여 주 행동의 실행과 시간 제한(timeout) 감시를 동시에 수행하는 설계 패턴이다. 주 행동이 지정된 제한 시간 내에 완료되지 않으면, 타임아웃 노드가 <code>FAILURE</code>를 반환하여 주 행동을 강제로 중단시킨다.</p>
+<p>로봇 시스템에서 행동의 실행 시간에 상한을 설정하는 것은 시스템의 안정성과 예측 가능성을 보장하기 위해 필수적이다. 경로 추종 중 목표 지점에 도달하지 못하고 무한히 시도하는 상황, 센서 응답을 무기한 대기하는 상황, 또는 외부 서비스의 응답이 지연되는 상황 등에서 타임아웃 메커니즘이 없으면 로봇은 교착 상태(deadlock)에 빠지거나 후속 임무를 수행하지 못하게 된다.</p>
+<h2>2. 기본 구조</h2>
+<pre><code>Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+├── PrimaryAction   →  주 행동 실행
+└── TimeoutTimer    →  제한 시간 경과 시 FAILURE 반환
+</code></pre>
+<p>이 구조에서 핵심적인 정책 설정은 <code>SUCCESS_ONE</code>이다. 주 행동이 타임아웃 이전에 완료되어 <code>SUCCESS</code>를 반환하면, <code>SUCCESS_ONE</code> 정책에 의해 Parallel 노드 전체가 즉시 성공으로 종료되고, 타임아웃 타이머 노드에 Halt가 전파된다. 반대로 타임아웃 타이머가 먼저 제한 시간에 도달하여 <code>FAILURE</code>를 반환하면, <code>FAILURE_ONE</code> 정책에 의해 전체가 실패로 종료되고 주 행동에 Halt가 전파된다.</p>
+<h2>3. 타임아웃 타이머 노드의 동작 원리</h2>
+<p>타임아웃 타이머 노드는 최초 Tick 시점에서 시작 시각을 기록하고, 이후 매 Tick마다 경과 시간을 산출하여 제한 시간과 비교한다.</p>
+<pre><code>function TimeoutTimer.tick():
+    if first_tick:
+        start_time ← current_time()
+        first_tick ← false
+    
+    elapsed ← current_time() - start_time
+    
+    if elapsed &gt;= timeout_duration:
+        return FAILURE
+    else:
+        return RUNNING
+</code></pre>
+<p>타임아웃 타이머 노드는 제한 시간에 도달하지 않은 동안 <code>RUNNING</code>을 반환하여 Parallel 노드의 실행을 유지하고, 제한 시간에 도달하면 <code>FAILURE</code>를 반환하여 전체 Parallel 노드의 실패를 유발한다. Halt 호출 시에는 <code>first_tick</code> 플래그를 초기화하여, 다음 실행 시 타이머가 새로 시작되도록 하여야 한다.</p>
+<h2>4. Parallel 기반 타임아웃과 데코레이터 기반 타임아웃의 비교</h2>
+<p>행동 트리에서 타임아웃 기능은 Parallel 노드를 활용하는 방법 외에도 데코레이터(Decorator) 노드를 활용하는 방법이 존재한다. BehaviorTree.CPP에서는 <code>Timeout</code> 데코레이터 노드를 기본 제공하며, 이는 자식 노드를 감싸서 제한 시간을 설정한다.</p>
+<pre><code>Timeout (msec="30000")
+└── PrimaryAction
+</code></pre>
+<p>두 접근 방식의 차이는 다음과 같다.</p>
+<table><thead><tr><th>특성</th><th>Parallel 기반 타임아웃</th><th>데코레이터 기반 타임아웃</th></tr></thead><tbody>
+<tr><td>구조적 복잡도</td><td>높음 (2개 자식 노드)</td><td>낮음 (단일 데코레이터)</td></tr>
+<tr><td>타임아웃 로직 커스터마이징</td><td>유연함 (별도 노드로 구현)</td><td>제한적 (프레임워크 제공 기능 범위 내)</td></tr>
+<tr><td>추가 감시 조건 병합</td><td>용이함 (자식 추가로 확장)</td><td>어려움 (별도 구조 필요)</td></tr>
+<tr><td>타임아웃 값 동적 변경</td><td>블랙보드를 통해 가능</td><td>구현에 따라 다름</td></tr>
+</tbody></table>
+<p>Parallel 기반 타임아웃의 주된 이점은 타임아웃 감시와 다른 감시 조건을 동일한 Parallel 구조 내에서 자연스럽게 결합할 수 있다는 점이다. 단순한 고정 시간 타임아웃만 필요한 경우에는 데코레이터 기반 접근이 더 간결하다.</p>
+<h2>5. 복합 타임아웃 패턴</h2>
+<h3>5.1 타임아웃과 조건 감시의 결합</h3>
+<p>타임아웃 감시와 조건 감시를 동시에 적용하는 복합 패턴이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+├── NavigateToGoal
+├── TimeoutTimer(60s)
+└── MonitorBatteryLevel
+</code></pre>
+<p>이 구조에서 이동 행동은 다음 세 가지 조건 중 하나가 발생하면 종료된다: (1) 목표 지점 도달 시 <code>SUCCESS</code>로 종료, (2) 60초 경과 시 타임아웃에 의해 <code>FAILURE</code>로 종료, (3) 배터리 잔량 부족 시 <code>FAILURE</code>로 종료. 이처럼 Parallel 기반 타임아웃은 다른 감시 조건과의 결합이 구조적으로 자연스럽다.</p>
+<h3>5.2 단계별 타임아웃 패턴</h3>
+<p>복잡한 행동의 각 단계에 개별적인 타임아웃을 적용하는 패턴이다.</p>
+<pre><code>Sequence
+├── Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+│   ├── ApproachTarget
+│   └── TimeoutTimer(30s)
+├── Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+│   ├── AlignWithTarget
+│   └── TimeoutTimer(10s)
+└── Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+    ├── ExecuteGrasp
+    └── TimeoutTimer(5s)
+</code></pre>
+<p>접근(approach), 정렬(align), 파지(grasp)의 각 단계에 서로 다른 제한 시간을 설정하여, 단계별 실행 시간을 개별적으로 관리한다. 이 구조는 각 단계의 예상 소요 시간이 상이한 다단계 임무에서 유용하다.</p>
+<h3>5.3 동적 타임아웃 패턴</h3>
+<p>제한 시간이 고정값이 아닌, 런타임에 블랙보드를 통해 동적으로 결정되는 패턴이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+├── NavigateToGoal
+│   input: "goal_position"
+└── DynamicTimeout
+    input: "timeout_duration"
+</code></pre>
+<p><code>timeout_duration</code> 블랙보드 키의 값은 목표 지점까지의 거리, 현재 속도, 환경 복잡도 등을 고려하여 사전에 산출된다. 예를 들어, 거리 <span class="math math-inline">d</span>와 예상 평균 속도 <span class="math math-inline">\bar{v}</span>에 기반하여 <span class="math math-inline">t_{timeout} = \alpha \cdot \frac{d}{\bar{v}}</span>로 산출할 수 있다. 여기서 <span class="math math-inline">\alpha &gt; 1</span>은 안전 계수(safety factor)로, 예상 소요 시간에 여유를 부여한다. 일반적으로 <span class="math math-inline">\alpha = 1.5 \sim 2.0</span> 범위의 값이 사용된다.</p>
+<h2>6. XML 정의 예시</h2>
+<p>BehaviorTree.CPP에서의 XML 정의 예시는 다음과 같다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="1" failure_count="1"&gt;
+    &lt;NavigateToWaypoint goal="{target_waypoint}" /&gt;
+    &lt;Timeout msec="30000"&gt;
+        &lt;AlwaysRunning /&gt;
+    &lt;/Timeout&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>위 예시에서 <code>Timeout</code> 데코레이터와 <code>AlwaysRunning</code> 노드의 조합으로 타임아웃 타이머를 구현하였다. <code>AlwaysRunning</code> 노드는 항상 <code>RUNNING</code>을 반환하며, <code>Timeout</code> 데코레이터가 30초 경과 시 <code>FAILURE</code>를 반환한다. <code>success_count="1"</code>은 하나의 자식이 성공하면 전체가 성공으로 종료됨을 의미한다.</p>
+<h2>7. 타임아웃 실패 시 복구 전략</h2>
+<p>타임아웃에 의해 행동이 중단된 경우, 상위 행동 트리에서 적절한 복구 전략을 수립하여야 한다. 일반적으로 적용되는 복구 전략은 다음과 같다.</p>
+<ol>
+<li>
+<p><strong>재시도(retry)</strong>: 동일한 행동을 제한된 횟수만큼 재시도한다. Fallback 노드와 결합하여 구현할 수 있다.</p>
+</li>
+<li>
+<p><strong>대안 행동(alternative action)</strong>: 타임아웃된 행동 대신 대안적인 행동을 시도한다. 예를 들어, 주 경로로의 이동이 타임아웃되면 우회 경로를 시도한다.</p>
+</li>
+<li>
+<p><strong>안전 상태 복귀(safe state return)</strong>: 타임아웃 시 로봇을 사전 정의된 안전 상태(홈 위치, 대기 자세 등)로 복귀시킨다.</p>
+</li>
+<li>
+<p><strong>상위 계층 보고(escalation)</strong>: 임무 관리 시스템에 타임아웃 발생을 보고하고, 상위 계층의 재계획(replanning) 결정을 대기한다.</p>
+</li>
+</ol>
+<pre><code>Fallback
+├── Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+│   ├── NavigateViaMainRoute
+│   └── TimeoutTimer(60s)
+├── Parallel (success_policy: SUCCESS_ONE, failure_policy: FAILURE_ONE)
+│   ├── NavigateViaAlternateRoute
+│   └── TimeoutTimer(90s)
+└── ReturnToSafePosition
+</code></pre>
+<p>위 구조는 주 경로 이동(60초 타임아웃) 실패 시 우회 경로 이동(90초 타임아웃)을 시도하고, 이마저도 실패하면 안전 위치로 복귀하는 단계적 복구 전략을 구현한다.</p>
 
             </article>
             <footer>

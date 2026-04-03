@@ -115,6 +115,103 @@
             </header>
             <article>
                 <h1>1294.15 SequenceWithMemory의 마지막 Running 자식 기억</h1>
+<h2>1. Running 자식 기억의 메커니즘</h2>
+<p>SequenceWithMemory의 핵심 메커니즘은 마지막으로 RUNNING을 반환한 자식의 인덱스를 내부 상태로 기억하는 것이다. 이 인덱스는 <code>current_child_idx_</code>라는 멤버 변수에 저장되며, 다음 Tick의 시작 위치를 결정한다. 자식 <span class="math math-inline">C_i</span>가 RUNNING을 반환하면 <code>current_child_idx_</code>는 <span class="math math-inline">i</span>로 설정되고, 다음 Tick에서 <span class="math math-inline">C_i</span>부터 실행이 재개된다(Faconti, 2022).</p>
+<h2>2. 기억의 생성과 소멸</h2>
+<h3>2.1 기억의 생성</h3>
+<p>RUNNING을 반환하는 자식이 존재할 때, 해당 자식의 인덱스가 기억된다.</p>
+<pre><code>Tick N:
+  children[0] → SUCCESS
+  children[1] → SUCCESS  
+  children[2] → RUNNING   ← current_child_idx_ = 2 (기억 생성)
+  Sequence → RUNNING
+</code></pre>
+<h3>2.2 기억의 유지</h3>
+<p>후속 Tick에서 같은 자식이 계속 RUNNING을 반환하면 기억이 유지된다.</p>
+<pre><code>Tick N+1:
+  children[2] → RUNNING   ← current_child_idx_ = 2 (기억 유지)
+  Sequence → RUNNING
+</code></pre>
+<h3>2.3 기억의 갱신</h3>
+<p>RUNNING이었던 자식이 SUCCESS를 반환하고 다음 자식이 RUNNING을 반환하면, 기억이 갱신된다.</p>
+<pre><code>Tick N+2:
+  children[2] → SUCCESS   ← 기존 기억 해소
+  children[3] → RUNNING   ← current_child_idx_ = 3 (기억 갱신)
+  Sequence → RUNNING
+</code></pre>
+<h3>2.4 기억의 초기화</h3>
+<p>Sequence가 최종 상태(SUCCESS 또는 FAILURE)를 반환하거나 Halt가 호출되면 기억이 초기화된다.</p>
+<pre><code>Tick N+3:
+  children[3] → SUCCESS   ← 마지막 자식 완료
+  current_child_idx_ = 0   ← 기억 초기화
+  Sequence → SUCCESS
+</code></pre>
+<h2>3. 기억에 의한 건너뛰기 동작</h2>
+<p>기억된 인덱스보다 앞에 위치한 자식들은 다음 Tick에서 Tick을 수신하지 않는다. 이 자식들은 “이미 SUCCESS를 반환했으므로 다시 평가할 필요가 없다“는 가정 하에 건너뛰어진다.</p>
+<pre><code>Sequence [A, B, C, D] — current_child_idx_ = 2인 경우:
+
+Tick N+1의 실행:
+  A: (건너뜀 — 이전 SUCCESS)
+  B: (건너뜀 — 이전 SUCCESS)
+  C: executeTick() 호출    ← 여기서부터 실행
+  D: (C의 결과에 따라)
+</code></pre>
+<h2>4. 기억과 비동기 작업의 관계</h2>
+<p>비동기 액션 노드는 작업 완료까지 여러 Tick에 걸쳐 RUNNING을 반환한다. 기억 메커니즘에 의해, RUNNING 중인 액션 노드는 매 Tick마다 정확히 재방문되어 작업 완료 여부를 확인한다. 이전에 완료된 작업은 재실행되지 않는다.</p>
+<pre><code>5단계 임무 (각 작업 3 Tick 소요):
+
+Tick 1-3:   A(RUNNING) → current_idx = 0
+Tick 3:     A(SUCCESS), B(RUNNING) → current_idx = 1
+Tick 4-5:   B(RUNNING) → current_idx = 1
+Tick 5:     B(SUCCESS), C(RUNNING) → current_idx = 2
+...
+
+총 Tick 수: ~15 Tick (WithMemory)
+비교: ReactiveSequence에서는 매 Tick마다 A부터 재평가하므로 추가 비용 발생
+</code></pre>
+<h2>5. 다중 RUNNING 자식의 불가능성</h2>
+<p>SequenceWithMemory의 순차 실행 특성에 의해, 동시에 2개 이상의 자식이 RUNNING 상태가 되는 것은 불가능하다. 하나의 자식이 RUNNING을 반환하면 Sequence가 즉시 RUNNING을 반환하고, 이후의 자식에게 Tick을 전달하지 않기 때문이다. 따라서 기억해야 하는 인덱스는 항상 정확히 하나이다.</p>
+<h2>6. 기억의 구현</h2>
+<pre><code class="language-cpp">class SequenceNode : public ControlNode {
+private:
+    size_t current_child_idx_{0};  // Running 자식의 인덱스 기억
+
+public:
+    NodeStatus tick() override {
+        // current_child_idx_부터 실행 재개
+        for (size_t i = current_child_idx_; i &lt; childrenCount(); i++) {
+            auto status = children_nodes_[i]-&gt;executeTick();
+            
+            if (status == NodeStatus::RUNNING) {
+                current_child_idx_ = i;  // 기억 저장
+                return NodeStatus::RUNNING;
+            }
+            if (status == NodeStatus::FAILURE) {
+                current_child_idx_ = 0;  // 기억 초기화
+                haltChildren();
+                return NodeStatus::FAILURE;
+            }
+            // SUCCESS → 다음 자식으로 계속
+        }
+        
+        current_child_idx_ = 0;  // 기억 초기화
+        haltChildren();
+        return NodeStatus::SUCCESS;
+    }
+
+    void halt() override {
+        current_child_idx_ = 0;  // 기억 초기화
+        ControlNode::halt();
+    }
+};
+</code></pre>
+<p><code>current_child_idx_</code>는 SequenceWithMemory의 유일한 내부 상태이며, 이 변수의 값이 재진입 동작의 전부를 결정한다(Colledanchise &amp; Ogren, 2018).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

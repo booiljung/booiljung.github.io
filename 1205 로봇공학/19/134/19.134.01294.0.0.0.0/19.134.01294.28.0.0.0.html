@@ -115,6 +115,112 @@
             </header>
             <article>
                 <h1>1294.28 SequenceStar 노드의 개념과 동작</h1>
+<h2>1. SequenceStar의 정의</h2>
+<p>SequenceStar(Sequence*)는 행동 트리 문헌에서 SequenceWithMemory의 원래 명칭으로, 별표(*)가 메모리 기능의 존재를 표시한다. Colledanchise와 Ogren(2018)의 원저에서 도입된 이 표기법은, 기본 Sequence와 구별하여 RUNNING 상태의 자식 인덱스를 기억하고 다음 Tick에서 해당 인덱스부터 재진입하는 변형을 지칭한다.</p>
+<h2>2. 명칭의 유래와 표기 규약</h2>
+<h3>2.1 별표(*)의 의미</h3>
+<p>별표(*)는 “with memory“를 축약한 표기이다. 행동 트리 학술 문헌에서는 다음과 같은 표기 규약이 사용된다.</p>
+<table><thead><tr><th>표기</th><th>의미</th><th>메모리</th></tr></thead><tbody>
+<tr><td>Sequence (→)</td><td>기본 Sequence</td><td>없음 (매 Tick 처음부터)</td></tr>
+<tr><td>Sequence* (→*)</td><td>Memory가 있는 Sequence</td><td>있음 (재진입)</td></tr>
+</tbody></table>
+<p>학술 논문에서 화살표 기호를 사용할 때, →는 기본 Sequence를, →*는 SequenceStar를 나타낸다. 이 표기법은 행동 트리의 그래픽 표현에서 노드 내부에 기호를 배치할 때 사용된다(Colledanchise &amp; Ogren, 2018).</p>
+<h3>2.2 프레임워크별 명칭 대응</h3>
+<p>다양한 행동 트리 프레임워크에서 SequenceStar에 해당하는 구현체는 서로 다른 명칭을 사용한다.</p>
+<table><thead><tr><th>프레임워크</th><th>명칭</th><th>설명</th></tr></thead><tbody>
+<tr><td>학술 문헌</td><td>Sequence*</td><td>원래 명칭</td></tr>
+<tr><td>BehaviorTree.CPP v4</td><td>SequenceNode (기본 Sequence)</td><td><code>&lt;Sequence&gt;</code> 태그가 WithMemory 동작</td></tr>
+<tr><td>BehaviorTree.CPP v3</td><td>SequenceStarNode</td><td>명시적 Star 명칭 사용</td></tr>
+<tr><td>Unreal Engine</td><td>Sequence (기본 동작이 WithMemory)</td><td>메모리가 기본</td></tr>
+</tbody></table>
+<p>BehaviorTree.CPP v4에서는 <code>&lt;Sequence&gt;</code> 태그가 기본적으로 WithMemory 동작을 수행하므로, SequenceStar라는 별도의 클래스가 존재하지 않는다. v3에서 v4로의 전환 과정에서 SequenceStarNode가 기본 SequenceNode로 통합되었다(Faconti, 2022).</p>
+<h2>3. SequenceStar의 동작 원리</h2>
+<h3>3.1 메모리 메커니즘</h3>
+<p>SequenceStar는 내부에 <code>current_child_idx</code> 상태 변수를 유지한다. 이 변수는 다음 Tick에서 평가를 시작할 자식의 인덱스를 기억한다.</p>
+<pre><code>초기 상태: current_child_idx = 0
+
+Tick 1:
+  children[0] → SUCCESS
+  children[1] → SUCCESS
+  children[2] → RUNNING
+  current_child_idx ← 2
+  → RUNNING
+
+Tick 2:
+  children[2] → RUNNING   (인덱스 2부터 재개, 0과 1 건너뜀)
+  current_child_idx = 2   (유지)
+  → RUNNING
+
+Tick 3:
+  children[2] → SUCCESS
+  current_child_idx ← 0   (초기화)
+  → SUCCESS
+</code></pre>
+<h3>3.2 상태 전이 규칙</h3>
+<p>SequenceStar의 <code>current_child_idx</code>는 다음 규칙에 따라 갱신된다:</p>
+<ol>
+<li><strong>자식이 SUCCESS 반환</strong>: <code>current_child_idx</code>를 다음 인덱스로 증가시킨다.</li>
+<li><strong>자식이 RUNNING 반환</strong>: <code>current_child_idx</code>를 현재 인덱스로 유지한다.</li>
+<li><strong>자식이 FAILURE 반환</strong>: <code>current_child_idx</code>를 0으로 초기화한다.</li>
+<li><strong>모든 자식이 SUCCESS</strong>: <code>current_child_idx</code>를 0으로 초기화하고 SUCCESS를 반환한다.</li>
+<li><strong>Halt 호출 시</strong>: <code>current_child_idx</code>를 0으로 초기화한다.</li>
+</ol>
+<h3>3.3 의사 코드</h3>
+<pre><code>function SequenceStar.tick():
+    for i ← current_child_idx to N-1:
+        status ← children[i].executeTick()
+        if status == RUNNING:
+            current_child_idx ← i
+            return RUNNING
+        else if status == FAILURE:
+            current_child_idx ← 0
+            haltChildren()
+            return FAILURE
+    current_child_idx ← 0
+    return SUCCESS
+
+function SequenceStar.halt():
+    current_child_idx ← 0
+    haltChildren()
+</code></pre>
+<h2>4. SequenceStar와 기본 Sequence의 비교</h2>
+<p>학술 문헌에서의 “기본 Sequence”(메모리 없음)와 SequenceStar의 동작 차이를 비교한다.</p>
+<h3>4.1 기본 Sequence (메모리 없음)</h3>
+<pre><code>Tick 1: children[0]→S, children[1]→S, children[2]→R  → RUNNING
+Tick 2: children[0]→S, children[1]→S, children[2]→R  → RUNNING (처음부터)
+</code></pre>
+<p>기본 Sequence는 매 Tick에서 인덱스 0부터 다시 평가한다. 이 동작은 ReactiveSequence와 동일하다.</p>
+<h3>4.2 SequenceStar (메모리 있음)</h3>
+<pre><code>Tick 1: children[0]→S, children[1]→S, children[2]→R  → RUNNING
+Tick 2: children[2]→R                                  → RUNNING (인덱스 2부터)
+</code></pre>
+<p>SequenceStar는 RUNNING 자식의 인덱스를 기억하고, 다음 Tick에서 해당 인덱스부터 재개한다.</p>
+<h2>5. BehaviorTree.CPP 버전 간의 변화</h2>
+<h3>5.1 v3에서의 SequenceStar</h3>
+<p>BehaviorTree.CPP v3에서는 SequenceStarNode가 명시적으로 존재하였으며, 기본 SequenceNode와 구분되었다.</p>
+<pre><code class="language-cpp">// v3 — 두 개의 별도 클래스
+class SequenceNode : public ControlNode { ... };     // 매 Tick 처음부터
+class SequenceStarNode : public ControlNode { ... }; // 메모리 기반
+</code></pre>
+<h3>5.2 v4에서의 통합</h3>
+<p>BehaviorTree.CPP v4에서는 기본 <code>&lt;Sequence&gt;</code> 태그가 WithMemory 동작을 수행하도록 변경되었으며, SequenceStarNode라는 별도의 클래스는 제거되었다(Faconti, 2022).</p>
+<pre><code class="language-cpp">// v4 — SequenceNode가 WithMemory 동작을 기본으로 수행
+class SequenceNode : public ControlNode { ... };      // WithMemory 동작
+class ReactiveSequence : public ControlNode { ... };  // 매 Tick 처음부터
+</code></pre>
+<p>이 변경의 근거는, 실무에서 메모리 기반 Sequence가 더 자주 사용되며 기본 동작으로 적합하다는 판단이었다. 매 Tick 처음부터 재평가하는 동작이 필요한 경우에는 명시적으로 ReactiveSequence를 선택해야 한다.</p>
+<h2>6. 학술 문헌 참조 시의 주의사항</h2>
+<p>행동 트리 관련 학술 논문을 읽을 때, “Sequence“라는 용어가 메모리 유무에 따라 다른 의미로 사용될 수 있음에 유의해야 한다. Colledanchise와 Ogren(2018)의 원저에서는 기본 Sequence가 매 Tick 처음부터 재평가하는 ReactiveSequence 동작을 수행하며, 메모리가 있는 변형을 Sequence*로 별도 표기한다. 반면 BehaviorTree.CPP v4에서는 <code>&lt;Sequence&gt;</code> 태그가 WithMemory 동작을 수행한다. 따라서 학술 논문의 “Sequence“와 BehaviorTree.CPP v4의 <code>&lt;Sequence&gt;</code>는 서로 다른 동작을 지칭할 수 있으므로, 맥락에 따른 해석이 필요하다.</p>
+<table><thead><tr><th>출처</th><th>“Sequence” 의미</th><th>“Sequence*” 의미</th></tr></thead><tbody>
+<tr><td>Colledanchise &amp; Ogren (2018)</td><td>매 Tick 처음부터 (Reactive)</td><td>메모리 기반 (WithMemory)</td></tr>
+<tr><td>BehaviorTree.CPP v4</td><td>메모리 기반 (WithMemory)</td><td>해당 없음 (통합됨)</td></tr>
+</tbody></table>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

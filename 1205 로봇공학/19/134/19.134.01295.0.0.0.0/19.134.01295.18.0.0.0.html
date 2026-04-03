@@ -115,6 +115,77 @@
             </header>
             <article>
                 <h1>1295.18 실패 정책 충족 시 나머지 자식 Halt</h1>
+<h2>1. 실패 충족 시 Halt의 필요성</h2>
+<p>Parallel 노드가 실패 정책을 충족하여 FAILURE를 반환할 때, 아직 RUNNING 상태에 있는 자식 노드와 이미 SUCCESS를 반환한 자식 노드 모두에 대해 적절한 종료 처리가 필요하다. 실패 정책 충족 시의 Halt는 성공 정책 충족 시와 동일한 메커니즘을 따르되, 안전성 측면에서 더욱 신중한 처리가 요구된다(Colledanchise &amp; Ögren, 2018).</p>
+<h2>2. Halt 대상의 식별</h2>
+<p>실패 정책이 충족된 시점에서 Halt 대상은 성공 충족 시와 동일하게, 아직 완료되지 않은(RUNNING 상태인) 모든 자식 노드이다.</p>
+<p><span class="math math-display">
+\text{Halt 대상} = \{C_i : \text{completed}[i] = \text{false}\}
+</span></p>
+<h3>2.1 정책별 Halt 대상 분석</h3>
+<table><thead><tr><th>정책</th><th>실패 충족 시점</th><th>예상 Halt 대상 수</th></tr></thead><tbody>
+<tr><td>FAILURE_ONE (<span class="math math-inline">K = 1</span>)</td><td>첫 FAILURE 반환 시</td><td>최대 <span class="math math-inline">N - 1</span></td></tr>
+<tr><td>FAILURE_COUNT(<span class="math math-inline">K</span>)</td><td><span class="math math-inline">K</span>번째 FAILURE 반환 시</td><td>최대 <span class="math math-inline">N - K</span></td></tr>
+<tr><td>FAILURE_ALL (<span class="math math-inline">K = N</span>)</td><td>모든 자식 FAILURE 시</td><td>0 (Halt 불필요)</td></tr>
+</tbody></table>
+<p>FAILURE_ONE 정책에서는 단 하나의 자식 실패로 즉시 종료되므로, 나머지 <span class="math math-inline">N - 1</span>개의 자식(RUNNING 상태 및 이미 SUCCESS를 반환한 자식의 잔류 리소스)이 Halt 대상이 된다.</p>
+<h2>3. 성공 정책 충족 시와의 차이</h2>
+<p>실패에 의한 Halt는 성공에 의한 Halt와 구조적으로는 동일하지만, 의미론적으로는 차이가 있다.</p>
+<table><thead><tr><th>구분</th><th>성공 충족 시 Halt</th><th>실패 충족 시 Halt</th></tr></thead><tbody>
+<tr><td>종료 이유</td><td>목표 달성 완료</td><td>오류 또는 불가능 판정</td></tr>
+<tr><td>후속 행동</td><td>다음 행동으로 진행</td><td>대안 탐색 또는 복구</td></tr>
+<tr><td>중단된 자식의 결과</td><td>불필요 (목표 달성됨)</td><td>복구에 필요할 수 있음</td></tr>
+<tr><td>안전 고려</td><td>정상 종료</td><td>비상 중단 가능성</td></tr>
+</tbody></table>
+<p>실패에 의한 중단은 시스템이 비정상 상태에 있을 가능성이 높으므로, 중단 후 시스템 상태의 안전한 복원이 더욱 중요하다.</p>
+<h2>4. Halt 절차의 상세</h2>
+<pre><code>Procedure: haltOnFailure()
+1   for i ← 1 to N do
+2       if completed[i] = false then
+3           children[i].haltNode()
+4           children[i].setStatus(IDLE)
+5       end if
+6   end for
+7   resetCompletedFlags()
+</code></pre>
+<p>이 절차는 성공 시 Halt와 동일한 코드 경로를 따른다. BehaviorTree.CPP에서 <code>haltRunningChildren()</code> 메서드는 성공과 실패 양쪽에서 공유되는 단일 구현이다.</p>
+<h2>5. 안전 민감 시스템에서의 실패 Halt</h2>
+<p>로봇 시스템에서 FAILURE_ONE 정책을 적용한 안전 감시 패턴에서, 실패에 의한 Halt는 안전 비상 정지(emergency stop)와 유사한 역할을 한다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;MoveToTarget/&gt;
+    &lt;MonitorSafetyZone/&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p><code>MonitorSafetyZone</code>이 안전 영역 위반을 감지하여 FAILURE를 반환하면, <code>failure_count="1"</code>에 의해 Parallel 노드가 즉시 FAILURE를 반환한다. 이때 <code>MoveToTarget</code>에 대한 Halt가 수행되며, 이 Halt는 다음을 포함한다.</p>
+<ol>
+<li>내비게이션 목표의 취소(ROS2 Nav2 액션 서버에 cancel 요청)</li>
+<li>속도 명령의 즉시 중단(cmd_vel 토픽에 영속도 발행)</li>
+<li>내부 상태 초기화</li>
+</ol>
+<p>이 과정에서 Halt의 즉시성과 완전성은 로봇의 물리적 안전에 직결되므로, <code>halt()</code> 구현의 정확성이 매우 중요하다.</p>
+<h2>6. 부분 성공 결과의 처리</h2>
+<p>실패 정책 충족 시, 일부 자식은 이미 SUCCESS를 반환한 상태일 수 있다. 이러한 부분 성공 결과의 처리는 상위 행동 트리의 복구 전략에 따라 달라진다.</p>
+<h3>6.1 결과 유지 전략</h3>
+<p>성공한 자식이 블랙보드에 기록한 결과를 유지하여, 상위 복구 노드에서 활용할 수 있도록 한다. 예를 들어, 다중 센서 수집에서 일부 센서만 성공한 경우, 수집된 데이터를 부분적으로 활용할 수 있다.</p>
+<h3>6.2 결과 폐기 전략</h3>
+<p>실패에 의한 중단이므로, 성공한 자식의 결과도 포함하여 전체 결과를 폐기한다. 완전성이 보장되지 않는 부분 결과의 사용이 위험한 경우에 적합하다.</p>
+<h2>7. Halt 실패 시의 대처</h2>
+<p><code>halt()</code> 호출이 예외를 발생시키거나, 비동기 취소가 실패하는 경우의 대처도 고려해야 한다.</p>
+<ol>
+<li><strong>재시도</strong>: 일정 횟수만큼 <code>halt()</code> 호출을 재시도한다.</li>
+<li><strong>강제 중단</strong>: 재시도 실패 시 노드 상태를 강제로 IDLE로 설정한다.</li>
+<li><strong>오류 보고</strong>: 상위 시스템에 Halt 실패를 보고하여 수동 개입을 요청한다.</li>
+</ol>
+<p>BehaviorTree.CPP에서는 <code>halt()</code> 내부의 예외가 포착되지 않으면 상위로 전파되어 전체 행동 트리의 실행이 중단된다. 따라서 <code>halt()</code> 구현에서는 모든 예외를 내부적으로 처리하는 것이 권장된다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

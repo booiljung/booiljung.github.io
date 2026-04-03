@@ -115,6 +115,77 @@
             </header>
             <article>
                 <h1>1294.11 Sequence 노드의 조기 종료 (Short-Circuit) 동작</h1>
+<h2>1. 조기 종료의 정의</h2>
+<p>조기 종료(short-circuit)란, Sequence 노드가 자식의 평가 과정에서 최종 결과를 확정할 수 있는 시점에 도달하면, 나머지 자식의 평가를 생략하고 즉시 결과를 반환하는 동작이다. Sequence에서 조기 종료는 자식이 FAILURE 또는 RUNNING을 반환할 때 발생한다. 이 시점에서 나머지 자식이 어떤 상태를 반환하든 Sequence의 최종 결과가 변하지 않으므로, 추가 평가는 불필요하다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 조기 종료의 조건</h2>
+<h3>2.1 FAILURE에 의한 조기 종료</h3>
+<p>Sequence의 AND 의미론에서, 하나의 자식이 FAILURE를 반환하면 전체 Sequence의 결과는 반드시 FAILURE이다. 따라서 FAILURE를 수신한 시점에서 이후의 자식 평가를 생략한다.</p>
+<pre><code>자식 5개 Sequence:
+  children[0] → SUCCESS
+  children[1] → SUCCESS
+  children[2] → FAILURE  ← 조기 종료 발생
+  children[3] → (평가되지 않음)
+  children[4] → (평가되지 않음)
+  Sequence → FAILURE
+</code></pre>
+<h3>2.2 RUNNING에 의한 조기 종료</h3>
+<p>자식이 RUNNING을 반환하면, 이후의 자식은 아직 실행할 차례가 아니므로 Tick을 수신하지 않는다. Sequence는 RUNNING을 반환하고, 다음 Tick에서 해당 자식부터 재개한다.</p>
+<pre><code>자식 3개 Sequence:
+  children[0] → SUCCESS
+  children[1] → RUNNING  ← 조기 종료 (다음 Tick에서 재개)
+  children[2] → (평가되지 않음)
+  Sequence → RUNNING
+</code></pre>
+<h2>3. 프로그래밍 언어의 단축 평가와의 비교</h2>
+<p>Sequence의 조기 종료는 프로그래밍 언어의 논리 AND 연산에서의 단축 평가(short-circuit evaluation)와 구조적으로 동일하다.</p>
+<pre><code class="language-cpp">// C++의 단축 평가
+if (condA() &amp;&amp; condB() &amp;&amp; condC()) {
+    // condA()가 false이면 condB(), condC()는 호출되지 않음
+}
+</code></pre>
+<pre><code class="language-xml">&lt;!-- 행동 트리의 조기 종료 --&gt;
+&lt;Sequence&gt;
+    &lt;Condition ID="CondA"/&gt;  &lt;!-- FAILURE이면 CondB, CondC는 평가되지 않음 --&gt;
+    &lt;Condition ID="CondB"/&gt;
+    &lt;Condition ID="CondC"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>4. 조기 종료의 성능 이점</h2>
+<p>조기 종료는 불필요한 노드 방문을 방지하여 Tick 실행 시간을 절감한다. 특히, 비용이 큰 액션 노드가 후방에 위치하고 전방의 조건 노드가 빈번하게 FAILURE를 반환하는 경우, 성능 이점이 크다.</p>
+<pre><code>조기 종료 없는 경우: 매 Tick 5개 노드 방문
+조기 종료 있는 경우: 평균 2.3개 노드 방문 (조건 실패 시)
+</code></pre>
+<p>이 이점을 극대화하기 위해, FAILURE 확률이 높은 조건 노드를 Sequence의 앞쪽에 배치하는 것이 권장된다.</p>
+<h2>5. 조기 종료와 Halt의 관계</h2>
+<p>조기 종료가 발생할 때, RUNNING 상태인 후속 자식이 존재하면 해당 자식에게 Halt를 전달해야 한다. 이 상황은 ReactiveSequence에서 이전 Tick에서 RUNNING을 반환한 자식보다 앞의 조건이 FAILURE로 바뀐 경우에 발생한다.</p>
+<pre><code>ReactiveSequence:
+  Tick N:
+    children[0]: CondA → SUCCESS
+    children[1]: ActB  → RUNNING
+    Sequence → RUNNING
+
+  Tick N+1:
+    children[0]: CondA → FAILURE  ← 조기 종료
+    children[1]: ActB  → Halt 호출 (RUNNING → IDLE)
+    Sequence → FAILURE
+</code></pre>
+<p>조기 종료에 의한 Halt는 진행 중인 비동기 작업(ROS2 액션 등)의 취소를 포함해야 하며, 이는 노드의 <code>onHalted()</code> 구현에서 처리된다.</p>
+<h2>6. 조기 종료와 보호 패턴</h2>
+<p>조기 종료는 보호(guard) 패턴의 핵심 메커니즘이다. 전제 조건을 Sequence의 앞에 배치하면, 조건 불충족 시 조기 종료에 의해 위험한 작업이 실행되지 않는다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Condition ID="IsArmCalibrated"/&gt;   &lt;!-- 보호 조건 1 --&gt;
+    &lt;Condition ID="IsGripperReady"/&gt;     &lt;!-- 보호 조건 2 --&gt;
+    &lt;Condition ID="IsObjectDetected"/&gt;   &lt;!-- 보호 조건 3 --&gt;
+    &lt;Action ID="GraspObject"/&gt;           &lt;!-- 보호되는 작업 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>세 가지 보호 조건 중 하나라도 FAILURE를 반환하면, <code>GraspObject</code>는 실행되지 않는다. 이는 안전 관련 전제 조건의 구현에 있어 행동 트리의 중요한 설계 패턴이다(Faconti, 2022).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,294 @@
             </header>
             <article>
                 <h1>1295.87 Parallel 자식 동시 실행 추적</h1>
+<h2>1. 동시 실행 추적의 필요성</h2>
+<p>Parallel 노드는 모든 자식에게 Tick을 전파하여 논리적 동시 실행을 구현한다. 그러나 실제로는 단일 스레드에서 자식이 순차적으로 Tick되므로, 각 자식의 실행 순서, 소요 시간, 상태 변화를 추적하는 것이 디버깅과 성능 분석에 필수적이다. 특히 다수의 자식이 있는 Parallel 노드에서 특정 자식의 지연이 전체 Tick 시간에 미치는 영향을 파악하기 위해서는 자식별 실행 추적이 요구된다.</p>
+<h2>2. Tick 단위 실행 추적 로거</h2>
+<p>Parallel 노드의 각 자식이 Tick되는 순서와 소요 시간을 추적하는 로거를 구현한다.</p>
+<pre><code class="language-cpp">class ParallelExecutionTracer : public BT::StatusChangeLogger
+{
+public:
+    struct TickRecord
+    {
+        int tick_number;
+        std::string child_name;
+        BT::NodeStatus before;
+        BT::NodeStatus after;
+        std::chrono::microseconds duration;
+    };
+
+    ParallelExecutionTracer(const BT::Tree&amp; tree)
+        : StatusChangeLogger(tree.rootNode()) {}
+
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev_status,
+                  BT::NodeStatus status) override
+    {
+        auto* parent = node.getParent();
+        if (!parent) return;
+
+        // Parallel 노드의 직접 자식인 경우만 추적
+        if (parent-&gt;registrationName() == "ParallelAll" ||
+            parent-&gt;registrationName() == "ParallelNode")
+        {
+            TickRecord record;
+            record.tick_number = current_tick_;
+            record.child_name = node.name();
+            record.before = prev_status;
+            record.after = status;
+            record.duration = std::chrono::duration_cast&lt;
+                std::chrono::microseconds&gt;(timestamp - last_timestamp_);
+
+            records_.push_back(record);
+            last_timestamp_ = timestamp;
+        }
+    }
+
+    void onNewTick() { current_tick_++; }
+    const std::vector&lt;TickRecord&gt;&amp; records() const { return records_; }
+    void flush() override {}
+
+private:
+    std::vector&lt;TickRecord&gt; records_;
+    int current_tick_ = 0;
+    BT::Duration last_timestamp_{};
+};
+</code></pre>
+<h2>3. 상태 행렬 기반 추적</h2>
+<p>Parallel 노드의 모든 자식 상태를 Tick별 행렬(matrix)로 기록하면, 자식 간의 상태 변화 패턴을 한눈에 파악할 수 있다.</p>
+<pre><code class="language-cpp">class ParallelStateMatrix
+{
+public:
+    using StateRow = std::vector&lt;BT::NodeStatus&gt;;
+
+    void recordTick(const BT::ControlNode* parallel_node)
+    {
+        StateRow row;
+        for (size_t i = 0; i &lt; parallel_node-&gt;childrenCount(); i++)
+        {
+            row.push_back(parallel_node-&gt;child(i)-&gt;status());
+        }
+        matrix_.push_back(row);
+    }
+
+    void printMatrix(
+        const std::vector&lt;std::string&gt;&amp; child_names) const
+    {
+        // 헤더 출력
+        std::cout &lt;&lt; std::setw(6) &lt;&lt; "Tick";
+        for (const auto&amp; name : child_names)
+            std::cout &lt;&lt; std::setw(12) &lt;&lt; name;
+        std::cout &lt;&lt; std::endl;
+
+        // 행 출력
+        for (size_t tick = 0; tick &lt; matrix_.size(); tick++)
+        {
+            std::cout &lt;&lt; std::setw(6) &lt;&lt; tick;
+            for (const auto&amp; status : matrix_[tick])
+            {
+                std::cout &lt;&lt; std::setw(12) &lt;&lt; BT::toStr(status);
+            }
+            std::cout &lt;&lt; std::endl;
+        }
+    }
+
+    // 특정 자식의 상태 전이 시점 탐색
+    int findTransitionTick(size_t child_index,
+                           BT::NodeStatus from,
+                           BT::NodeStatus to) const
+    {
+        for (size_t tick = 1; tick &lt; matrix_.size(); tick++)
+        {
+            if (matrix_[tick - 1][child_index] == from &amp;&amp;
+                matrix_[tick][child_index] == to)
+            {
+                return static_cast&lt;int&gt;(tick);
+            }
+        }
+        return -1;  // 전이 미발견
+    }
+
+private:
+    std::vector&lt;StateRow&gt; matrix_;
+};
+</code></pre>
+<p>상태 행렬의 출력 예시는 다음과 같다.</p>
+<pre><code>  Tick  NavigateToGoal  MonitorBattery  MonitorSafety
+     0         IDLE           IDLE          IDLE
+     1       RUNNING        RUNNING       RUNNING
+     2       RUNNING        SUCCESS       RUNNING
+     3       RUNNING        SUCCESS       RUNNING
+     4       SUCCESS        SUCCESS       SUCCESS
+</code></pre>
+<p>이 행렬에서 <code>MonitorBattery</code>가 Tick 2에서 SUCCESS로 전이한 반면, <code>NavigateToGoal</code>은 Tick 4까지 RUNNING을 유지하였음을 확인할 수 있다.</p>
+<h2>4. 자식별 Tick 소요 시간 프로파일링</h2>
+<p>Parallel 노드의 각 자식이 <code>tick()</code> 호출에 소요하는 시간을 측정하여, 성능 병목을 식별한다.</p>
+<pre><code class="language-cpp">class ParallelTickProfiler
+{
+public:
+    struct ProfileEntry
+    {
+        std::string child_name;
+        std::chrono::microseconds total_time{0};
+        std::chrono::microseconds max_time{0};
+        std::chrono::microseconds min_time{
+            std::chrono::microseconds::max()};
+        int tick_count = 0;
+    };
+
+    void beginChild(const std::string&amp; name)
+    {
+        current_child_ = name;
+        start_time_ = std::chrono::steady_clock::now();
+    }
+
+    void endChild()
+    {
+        auto elapsed = std::chrono::duration_cast&lt;
+            std::chrono::microseconds&gt;(
+            std::chrono::steady_clock::now() - start_time_);
+
+        auto&amp; entry = profiles_[current_child_];
+        entry.child_name = current_child_;
+        entry.total_time += elapsed;
+        entry.max_time = std::max(entry.max_time, elapsed);
+        entry.min_time = std::min(entry.min_time, elapsed);
+        entry.tick_count++;
+    }
+
+    void printReport() const
+    {
+        std::cout &lt;&lt; std::setw(20) &lt;&lt; "Child"
+                  &lt;&lt; std::setw(12) &lt;&lt; "AvgTime(us)"
+                  &lt;&lt; std::setw(12) &lt;&lt; "MaxTime(us)"
+                  &lt;&lt; std::setw(12) &lt;&lt; "MinTime(us)"
+                  &lt;&lt; std::setw(8) &lt;&lt; "Ticks"
+                  &lt;&lt; std::endl;
+
+        for (const auto&amp; [name, entry] : profiles_)
+        {
+            auto avg = entry.total_time.count() / entry.tick_count;
+            std::cout &lt;&lt; std::setw(20) &lt;&lt; name
+                      &lt;&lt; std::setw(12) &lt;&lt; avg
+                      &lt;&lt; std::setw(12) &lt;&lt; entry.max_time.count()
+                      &lt;&lt; std::setw(12) &lt;&lt; entry.min_time.count()
+                      &lt;&lt; std::setw(8) &lt;&lt; entry.tick_count
+                      &lt;&lt; std::endl;
+        }
+    }
+
+private:
+    std::map&lt;std::string, ProfileEntry&gt; profiles_;
+    std::string current_child_;
+    std::chrono::steady_clock::time_point start_time_;
+};
+</code></pre>
+<p>프로파일링 결과의 예시이다.</p>
+<pre><code>               Child  AvgTime(us)  MaxTime(us)  MinTime(us)   Ticks
+      NavigateToGoal          450         1200           80     100
+      MonitorBattery           12           25            8     100
+       MonitorSafety           15           30           10     100
+</code></pre>
+<p>이 결과에서 <code>NavigateToGoal</code>의 평균 Tick 소요 시간이 450μs로, 다른 자식(12~15μs)에 비해 30배 이상 크다는 것을 확인할 수 있다. 이는 Parallel 노드 전체의 Tick 시간이 <code>NavigateToGoal</code>에 의해 지배됨을 의미한다.</p>
+<h2>5. Chrome Tracing 형식 출력</h2>
+<p>BehaviorTree.CPP의 <code>MinitraceLogger</code>는 Chrome Tracing 형식(<code>chrome://tracing</code>)으로 로그를 출력한다. 이 형식은 Parallel 자식의 시간적 배치를 시각적으로 확인하는 데 유용하다.</p>
+<pre><code class="language-cpp">BT::Tree tree = factory.createTreeFromText(xml_text);
+BT::MinitraceLogger minitrace(tree, "parallel_trace.json");
+
+// 트리 실행
+while (tree.tickOnce() == BT::NodeStatus::RUNNING)
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+</code></pre>
+<p>생성된 <code>parallel_trace.json</code> 파일을 Chrome 브라우저의 <code>chrome://tracing</code>에서 열면, 각 자식 노드의 실행이 타임라인 위에 수평 막대로 표시된다. Parallel 노드의 자식은 동일 Tick 내에서 순차적으로 배치되어, 논리적 동시 실행이 실제로는 순차적 Tick으로 구현됨을 시각적으로 확인할 수 있다.</p>
+<h2>6. 자식 실행 순서의 영향 추적</h2>
+<p>Parallel 노드에서 자식의 Tick 순서는 XML에서의 선언 순서를 따른다. 이 순서가 결과에 영향을 미치는지를 추적하는 것이 중요하다.</p>
+<pre><code class="language-cpp">class ExecutionOrderTracker
+{
+public:
+    void recordExecution(int tick, const std::string&amp; child_name,
+                         BT::NodeStatus result)
+    {
+        order_log_.push_back({tick, child_name, result});
+    }
+
+    // 특정 Tick에서의 실행 순서 출력
+    void printTickOrder(int tick) const
+    {
+        std::cout &lt;&lt; "Tick " &lt;&lt; tick &lt;&lt; " execution order:"
+                  &lt;&lt; std::endl;
+        int seq = 0;
+        for (const auto&amp; entry : order_log_)
+        {
+            if (entry.tick == tick)
+            {
+                std::cout &lt;&lt; "  [" &lt;&lt; seq++ &lt;&lt; "] " 
+                          &lt;&lt; entry.child_name
+                          &lt;&lt; " -&gt; " &lt;&lt; BT::toStr(entry.result)
+                          &lt;&lt; std::endl;
+            }
+        }
+    }
+
+    // 블랙보드 쓰기 충돌 가능성 진단
+    void detectWriteConflicts(
+        const std::map&lt;std::string, std::vector&lt;std::string&gt;&gt;&amp; 
+            write_keys) const
+    {
+        // write_keys: 자식 이름 → 블랙보드에 쓰는 키 목록
+        std::map&lt;std::string, std::vector&lt;std::string&gt;&gt; key_writers;
+        for (const auto&amp; [child, keys] : write_keys)
+        {
+            for (const auto&amp; key : keys)
+                key_writers[key].push_back(child);
+        }
+
+        for (const auto&amp; [key, writers] : key_writers)
+        {
+            if (writers.size() &gt; 1)
+            {
+                std::cerr &lt;&lt; "[WARNING] Blackboard key '" &lt;&lt; key
+                          &lt;&lt; "' written by multiple children: ";
+                for (const auto&amp; w : writers)
+                    std::cerr &lt;&lt; w &lt;&lt; " ";
+                std::cerr &lt;&lt; std::endl;
+            }
+        }
+    }
+
+private:
+    struct Entry
+    {
+        int tick;
+        std::string child_name;
+        BT::NodeStatus result;
+    };
+    std::vector&lt;Entry&gt; order_log_;
+};
+</code></pre>
+<p>블랙보드 쓰기 충돌 진단은 Parallel 자식 간의 데이터 경합 가능성을 사전에 식별하여, 실행 순서에 의존하는 미묘한 결함을 방지한다.</p>
+<h2>7. 실무 적용 절차</h2>
+<p>Parallel 자식 동시 실행 추적을 실무에 적용하는 절차를 정리한다.</p>
+<ol>
+<li>
+<p><strong>추적 로거 연결</strong>: 트리 생성 후 <code>ParallelExecutionTracer</code> 또는 <code>MinitraceLogger</code>를 연결한다.</p>
+</li>
+<li>
+<p><strong>상태 행렬 수집</strong>: 의심되는 Parallel 노드에 대해 <code>ParallelStateMatrix</code>를 구성하여 Tick별 자식 상태를 기록한다.</p>
+</li>
+<li>
+<p><strong>성능 프로파일링</strong>: <code>ParallelTickProfiler</code>로 자식별 Tick 소요 시간을 측정하여 병목을 식별한다.</p>
+</li>
+<li>
+<p><strong>블랙보드 충돌 진단</strong>: <code>ExecutionOrderTracker</code>의 충돌 진단 기능으로 데이터 경합 가능성을 확인한다.</p>
+</li>
+<li>
+<p><strong>시각적 분석</strong>: Chrome Tracing 또는 Groot2를 통해 시각적으로 실행 흐름을 검토한다.</p>
+</li>
+</ol>
+<p>이러한 추적 도구를 개발 및 테스트 단계에서 활용하되, 프로덕션 환경에서는 성능 오버헤드를 고려하여 로깅 수준을 조절하거나 비활성화하여야 한다.</p>
 
             </article>
             <footer>

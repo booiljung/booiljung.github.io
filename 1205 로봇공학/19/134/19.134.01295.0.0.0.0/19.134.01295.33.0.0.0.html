@@ -115,6 +115,132 @@
             </header>
             <article>
                 <h1>1295.33 Parallel 노드의 안전 감시 패턴</h1>
+<h2>1. 안전 감시 패턴의 개요</h2>
+<p>Parallel 노드의 안전 감시 패턴은 로봇이 임무 행동을 수행하는 동안 안전 필수 조건(safety-critical condition)을 지속적으로 점검하여, 안전 위반이 감지되는 즉시 모든 행동을 중단시키는 설계 패턴이다. 이 패턴은 로봇공학에서 가장 중요한 Parallel 노드 활용 사례로, 로봇의 물리적 안전, 인간 작업자의 보호, 장비 손상 방지를 행동 트리 수준에서 체계적으로 보장한다.</p>
+<p>안전 감시 패턴은 행동과 모니터링의 동시 실행 패턴의 특수화된 형태이지만, 안전 필수 시스템(safety-critical system)의 요구 사항에 특화된 설계 원칙과 구현 제약을 수반한다는 점에서 독립적인 패턴으로 취급한다.</p>
+<h2>2. 안전 감시 패턴의 구조적 원칙</h2>
+<h3>2.1 FAILURE_ONE 정책의 필수 적용</h3>
+<p>안전 감시 패턴에서 실패 정책은 반드시 <code>FAILURE_ONE</code>이어야 한다. 이는 단 하나의 안전 조건 위반도 허용하지 않겠다는 설계 의도를 행동 트리 구조 수준에서 명시적으로 표현한 것이다. <code>FAILURE_ALL</code>이나 <code>FAILURE_COUNT(N)</code> 정책을 적용하면, 다수의 안전 조건이 동시에 위반되어야 행동이 중단되므로 안전성이 훼손된다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteMission                    →  주 임무 행동
+├── SafetyMonitor_CollisionRisk       →  충돌 위험 감시
+├── SafetyMonitor_JointLimits         →  관절 한계 감시
+├── SafetyMonitor_Temperature         →  온도 이상 감시
+└── SafetyMonitor_EmergencyStop       →  비상 정지 신호 감시
+</code></pre>
+<h3>2.2 안전 감시 노드와 일반 감시 노드의 구분</h3>
+<p>안전 감시 노드는 일반 모니터링 노드와 다음과 같은 차이를 지닌다.</p>
+<table><thead><tr><th>특성</th><th>안전 감시 노드</th><th>일반 모니터링 노드</th></tr></thead><tbody>
+<tr><td>위반 시 동작</td><td>즉각적 행동 중단 필수</td><td>경고 또는 행동 조정 가능</td></tr>
+<tr><td>임계값 설정 기준</td><td>안전 규격(ISO 10218, ISO/TS 15066 등)</td><td>성능 요구 사항</td></tr>
+<tr><td>실패 시 허용 정책</td><td>FAILURE_ONE만 허용</td><td>FAILURE_COUNT(N) 허용 가능</td></tr>
+<tr><td>Tick 지연 허용도</td><td>극도로 낮음</td><td>상대적으로 높음</td></tr>
+<tr><td>오탐(false positive) 허용도</td><td>허용 (안전 우선)</td><td>최소화 필요</td></tr>
+</tbody></table>
+<p>안전 감시 노드에서는 안전 방향 실패(fail-safe) 원칙에 따라, 센서 데이터가 유효하지 않거나 판정이 불확실한 경우에도 <code>FAILURE</code>를 반환하여 행동을 중단시키는 것이 올바른 설계이다. 이는 미탐(false negative)보다 오탐(false positive)이 안전 관점에서 선호되기 때문이다.</p>
+<h2>3. 안전 감시 범주의 분류</h2>
+<h3>3.1 물리적 충돌 위험 감시</h3>
+<p>로봇과 환경 또는 인간 간의 물리적 충돌 위험을 감시한다.</p>
+<pre><code>SafetyMonitor_CollisionRisk
+├── 입력: LiDAR 점군, 카메라 깊이 영상, 초음파 센서
+├── 판정: 최근접 물체 거리 &lt; 안전 거리
+└── 출력: RUNNING (안전) 또는 FAILURE (위험)
+</code></pre>
+<p>안전 거리는 로봇의 현재 속도 <span class="math math-inline">v</span>와 최대 감속도 <span class="math math-inline">a_{max}</span>에 기반하여 동적으로 산출할 수 있다. 정지 거리 <span class="math math-inline">d_{stop} = \frac{v^2}{2a_{max}}</span>에 안전 마진 <span class="math math-inline">d_{margin}</span>을 합산하여 <span class="math math-inline">d_{safe} = d_{stop} + d_{margin}</span>으로 설정한다.</p>
+<h3>3.2 관절 한계 감시</h3>
+<p>매니퓰레이터의 각 관절이 기계적 한계에 근접하는지를 감시한다.</p>
+<pre><code>SafetyMonitor_JointLimits
+├── 입력: 각 관절의 현재 각도 θ_i
+├── 판정: ∀i, θ_min_i + margin ≤ θ_i ≤ θ_max_i - margin
+└── 출력: RUNNING (범위 내) 또는 FAILURE (한계 근접)
+</code></pre>
+<p>관절 <span class="math math-inline">i</span>의 허용 각도 범위 <span class="math math-inline">[\theta_{min,i}, \theta_{max,i}]</span>에 대해, 안전 마진 <span class="math math-inline">\delta</span>를 적용하여 <span class="math math-inline">[\theta_{min,i} + \delta, \theta_{max,i} - \delta]</span> 범위 내에 있는지를 확인한다. 마진 <span class="math math-inline">\delta</span>는 관절의 각속도와 제어 주기를 고려하여, 한 Tick 동안 관절이 이동할 수 있는 최대 각도보다 크게 설정하여야 한다.</p>
+<h3>3.3 열적 이상 감시</h3>
+<p>모터, 감속기, 전력 변환기 등 주요 부품의 온도가 허용 범위를 초과하는지를 감시한다.</p>
+<pre><code>SafetyMonitor_Temperature
+├── 입력: 각 모터/부품의 온도 센서 값
+├── 판정: ∀k, T_k &lt; T_max_k
+└── 출력: RUNNING (정상) 또는 FAILURE (과열)
+</code></pre>
+<h3>3.4 비상 정지 신호 감시</h3>
+<p>외부 비상 정지 버튼(Emergency Stop, E-Stop) 또는 안전 제어기로부터의 비상 정지 신호를 감시한다.</p>
+<pre><code>SafetyMonitor_EmergencyStop
+├── 입력: E-Stop 상태 토픽
+├── 판정: E-Stop 활성화 여부
+└── 출력: RUNNING (비활성) 또는 FAILURE (활성)
+</code></pre>
+<p>비상 정지 감시는 다른 모든 안전 감시보다 우선하며, E-Stop이 활성화되면 어떤 조건에서든 즉각적으로 모든 행동이 중단되어야 한다.</p>
+<h3>3.5 속도 한계 감시</h3>
+<p>로봇의 이동 속도 또는 관절 각속도가 허용 한계를 초과하는지를 감시한다.</p>
+<pre><code>SafetyMonitor_VelocityLimits
+├── 입력: 현재 선속도, 각속도
+├── 판정: v &lt; v_max and ω &lt; ω_max
+└── 출력: RUNNING (정상) 또는 FAILURE (초과)
+</code></pre>
+<p>협동 로봇에서는 ISO/TS 15066에 따라 인간 근접 영역에서의 최대 허용 속도가 엄격히 제한된다. 속도 감시 노드는 이 규격의 준수를 행동 트리 수준에서 이중으로 보장하는 역할을 한다.</p>
+<h2>4. 안전 감시 패턴의 계층적 적용</h2>
+<h3>4.1 단일 행동 수준 안전 감시</h3>
+<p>특정 행동의 실행 기간에만 적용되는 안전 감시이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── ExecuteGrasp
+└── MonitorGripForce
+</code></pre>
+<h3>4.2 임무 수준 안전 감시</h3>
+<p>전체 임무 실행 기간에 걸쳐 적용되는 안전 감시이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── MissionSequence
+│   └── Sequence
+│       ├── NavigateToTarget
+│       ├── PickObject
+│       └── PlaceObject
+├── SafetyMonitor_CollisionRisk
+├── SafetyMonitor_EmergencyStop
+└── SafetyMonitor_BatteryLevel
+</code></pre>
+<p>이 구조에서 안전 감시 노드는 임무의 각 단계(이동, 파지, 배치)를 포괄하여 전 과정에 걸쳐 안전 조건을 감시한다. 임무 시퀀스의 어느 단계에서든 안전 위반이 감지되면 전체 임무가 즉시 중단된다.</p>
+<h3>4.3 전역 수준 안전 감시</h3>
+<p>행동 트리의 최상위에 배치되어, 어떤 임무가 실행되든 항상 적용되는 안전 감시이다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+├── CurrentMissionTree
+├── GlobalSafety_EmergencyStop
+└── GlobalSafety_SystemHealth
+</code></pre>
+<p>전역 안전 감시는 임무의 종류나 상태와 무관하게 항상 활성 상태를 유지하며, 시스템 전체의 건전성(health)을 보장한다.</p>
+<h2>5. 안전 감시 실패 후 복구 전략</h2>
+<p>안전 위반으로 인해 Parallel 노드가 실패한 후, 상위 행동 트리에서 수행하는 복구 전략은 안전 위반의 심각도(severity)에 따라 차별화되어야 한다.</p>
+<table><thead><tr><th>심각도</th><th>위반 예시</th><th>복구 전략</th></tr></thead><tbody>
+<tr><td>치명적 (Critical)</td><td>E-Stop 활성화, 충돌 감지</td><td>즉시 정지, 수동 해제 대기</td></tr>
+<tr><td>심각 (Severe)</td><td>관절 한계 근접, 과열</td><td>안전 자세로 복귀 후 대기</td></tr>
+<tr><td>경고 (Warning)</td><td>배터리 부족, 통신 품질 저하</td><td>현재 작업 중단 후 귀환</td></tr>
+</tbody></table>
+<pre><code>Fallback
+├── Parallel (success_policy: SUCCESS_ALL, failure_policy: FAILURE_ONE)
+│   ├── ExecuteMission
+│   ├── SafetyMonitor_Critical
+│   └── SafetyMonitor_Warning
+├── RecoverFromSafetyViolation
+│   input: "failure_reason"
+└── EmergencyShutdown
+</code></pre>
+<p><code>RecoverFromSafetyViolation</code> 노드는 블랙보드에 기록된 실패 원인(<code>failure_reason</code>)을 읽어 심각도를 판정하고, 적절한 복구 행동을 실행한다. 복구마저 실패하면 <code>EmergencyShutdown</code>이 실행되어 시스템을 안전하게 종료한다.</p>
+<h2>6. 안전 감시 패턴의 설계 지침</h2>
+<ol>
+<li>
+<p><strong>완전성 원칙</strong>: 식별된 모든 안전 위험 요소에 대해 대응하는 감시 노드가 존재하여야 한다. 위험 분석(hazard analysis) 결과를 기반으로 감시 항목을 체계적으로 도출하라.</p>
+</li>
+<li>
+<p><strong>독립성 원칙</strong>: 각 안전 감시 노드는 다른 감시 노드에 의존하지 않고 독립적으로 판정을 수행하여야 한다. 공유 자원에 대한 의존을 최소화하여 단일 장애 지점(single point of failure)을 제거하라.</p>
+</li>
+<li>
+<p><strong>안전 방향 실패 원칙</strong>: 센서 데이터의 부재, 통신 지연, 판정 불확실성 등 비정상 상황에서는 항상 안전한 방향(행동 중단)으로 판정하라.</p>
+</li>
+<li>
+<p><strong>최소 지연 원칙</strong>: 안전 감시 노드의 Tick 처리 시간을 최소화하라. 복잡한 연산은 별도의 프로세스에서 수행하고, 감시 노드는 결과만 조회하는 구조를 채택하라.</p>
+</li>
+<li>
+<p><strong>감사 추적 원칙</strong>: 안전 감시 노드의 판정 결과, 측정값, 임계값을 매 Tick마다 기록하여 사후 분석(post-mortem analysis)이 가능하도록 하라. 이는 안전 사고 조사 및 규제 준수 증명에 필수적이다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

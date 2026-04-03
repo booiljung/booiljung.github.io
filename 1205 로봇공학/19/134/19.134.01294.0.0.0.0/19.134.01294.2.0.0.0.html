@@ -115,6 +115,94 @@
             </header>
             <article>
                 <h1>1294.2 제어 흐름 노드의 자식 노드 관리 원칙</h1>
+<h2>1. 자식 노드 관리의 개념</h2>
+<p>제어 흐름 노드(control flow node)는 하나 이상의 자식 노드를 소유하고 관리하는 내부 노드이다. 자식 노드 관리란, 자식의 추가·삭제, 순서 유지, Tick 전달, 상태 수집, Halt 전파 등 제어 흐름 노드가 자식 노드에 대해 수행하는 일련의 조작을 의미한다. 이 관리 원칙은 행동 트리의 정확한 동작과 예측 가능한 실행을 보장하는 기반이 된다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 자식 노드의 순서와 불변성</h2>
+<h3>2.1 정적 자식 순서</h3>
+<p>제어 흐름 노드의 자식은 트리 정의 시 결정된 순서(왼쪽에서 오른쪽)를 유지하며, 실행 중에 이 순서가 변경되지 않는다. 이 정적 순서는 트리의 의미론적 동작을 결정하는 핵심 요소이다. Sequence 노드에서 자식의 순서는 작업의 실행 순서를 정의하고, Fallback 노드에서 자식의 순서는 대안의 우선순위를 정의한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Condition ID="CheckBattery"/&gt;    &lt;!-- 첫 번째: 인덱스 0 --&gt;
+    &lt;Action ID="NavigateToGoal"/&gt;     &lt;!-- 두 번째: 인덱스 1 --&gt;
+    &lt;Action ID="PickObject"/&gt;         &lt;!-- 세 번째: 인덱스 2 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>2.2 자식 수의 제약</h3>
+<p>제어 흐름 노드는 최소 1개 이상의 자식을 가져야 하며, 자식 수의 상한은 프레임워크에 의해 제한되지 않는다. 그러나 과도한 자식 수는 Tick 실행 시간의 증가와 트리의 가독성 저하를 유발하므로, 실무적으로는 적절한 수준에서 서브트리로 분리하는 것이 권장된다.</p>
+<h2>3. Tick 전달의 원칙</h2>
+<h3>3.1 선택적 Tick 전달</h3>
+<p>제어 흐름 노드는 자식에게 Tick을 전달할 때, 모든 자식에게 무조건 전달하는 것이 아니라 자신의 의미론에 따라 선택적으로 전달한다. Sequence 노드는 자식이 FAILURE를 반환하면 이후의 자식에게 Tick을 전달하지 않으며, Fallback 노드는 자식이 SUCCESS를 반환하면 이후의 자식에게 Tick을 전달하지 않는다.</p>
+<h3>3.2 순차적 Tick 전달</h3>
+<p>표준 Sequence와 Fallback에서 자식에 대한 Tick 전달은 순차적(sequential)으로 이루어진다. 인덱스 0의 자식이 반환한 후에야 인덱스 1의 자식에게 Tick이 전달된다. 이 순차적 전달은 자식 간의 실행 순서를 보장한다.</p>
+<pre><code>Tick 전달 순서:
+  부모 → 자식[0] → (반환 확인) → 자식[1] → (반환 확인) → ...
+</code></pre>
+<h3>3.3 Tick 전달과 재진입</h3>
+<p>WithMemory 모드에서는 이전 Tick에서 확정된 결과를 가진 자식을 건너뛰고, RUNNING 상태였던 자식부터 Tick을 재전달한다. Reactive 모드에서는 매 Tick마다 첫 번째 자식부터 Tick을 전달한다. 이 재진입 규칙은 제어 흐름 노드의 변형(variant)을 구분하는 핵심 기준이다.</p>
+<h2>4. 자식 상태의 수집과 해석</h2>
+<h3>4.1 상태 수집 규칙</h3>
+<p>제어 흐름 노드는 각 자식의 반환 상태(SUCCESS, FAILURE, RUNNING)를 수집하고, 자신의 의미론적 규칙에 따라 최종 상태를 결정한다.</p>
+<table><thead><tr><th>제어 노드</th><th>SUCCESS 조건</th><th>FAILURE 조건</th><th>RUNNING 조건</th></tr></thead><tbody>
+<tr><td>Sequence</td><td>모든 자식 SUCCESS</td><td>하나라도 FAILURE</td><td>하나가 RUNNING</td></tr>
+<tr><td>Fallback</td><td>하나라도 SUCCESS</td><td>모든 자식 FAILURE</td><td>하나가 RUNNING</td></tr>
+</tbody></table>
+<h3>4.2 조기 종료 원칙</h3>
+<p>제어 흐름 노드는 최종 상태를 결정할 수 있는 시점에서 즉시 반환하고, 나머지 자식의 평가를 생략한다. 이는 프로그래밍 언어의 단축 평가(short-circuit evaluation)와 동일한 원리이다.</p>
+<ul>
+<li>Sequence: FAILURE를 수신하면 즉시 FAILURE 반환</li>
+<li>Fallback: SUCCESS를 수신하면 즉시 SUCCESS 반환</li>
+</ul>
+<h2>5. Halt 전파의 원칙</h2>
+<h3>5.1 하향식 Halt 전파</h3>
+<p>제어 흐름 노드가 Halt를 수신하면, RUNNING 상태인 모든 자식에게 Halt를 전파한다. 이 전파는 재귀적으로 이루어져, 자식이 제어 노드인 경우 그 자식의 자식에게도 Halt가 전달된다.</p>
+<pre><code class="language-cpp">void halt() override {
+    // 모든 RUNNING 자식에게 Halt 전파
+    for (auto&amp; child : children_nodes_) {
+        if (child-&gt;status() == BT::NodeStatus::RUNNING) {
+            haltChild(*child);
+        }
+    }
+    setStatus(BT::NodeStatus::IDLE);
+}
+</code></pre>
+<h3>5.2 조기 종료 시의 Halt</h3>
+<p>제어 흐름 노드가 조기 종료를 결정할 때, 현재 RUNNING 상태인 자식이 있다면 해당 자식에게 Halt를 전달하여 진행 중인 작업을 중단시킨다. 이는 Reactive 모드에서 조건이 변경되어 RUNNING 중인 액션을 중단해야 하는 상황에서 특히 중요하다.</p>
+<h3>5.3 Halt 후 상태 초기화</h3>
+<p>Halt를 수신한 자식 노드는 IDLE 상태로 복귀한다. 이는 다음 Tick에서 해당 자식이 처음부터 다시 실행될 수 있도록 상태를 초기화하는 것이다.</p>
+<h2>6. 자식 노드의 소유권</h2>
+<p>BehaviorTree.CPP v4에서 제어 흐름 노드는 자식 노드에 대한 소유권을 가진다. <code>BT::TreeNode</code>의 포인터가 부모 제어 노드의 내부 컨테이너에 저장되며, 트리의 수명 주기 동안 유지된다. 자식 노드의 추가는 트리 생성 시(팩토리에 의한 트리 구축 과정)에 이루어지며, 실행 중 동적으로 자식을 추가하거나 제거하는 것은 표준 동작이 아니다(Faconti, 2022).</p>
+<pre><code class="language-cpp">class ControlNode : public TreeNode {
+protected:
+    std::vector&lt;TreeNode*&gt; children_nodes_;
+    
+    void addChild(TreeNode* child) {
+        children_nodes_.push_back(child);
+    }
+    
+    size_t childrenCount() const {
+        return children_nodes_.size();
+    }
+    
+    TreeNode* child(size_t index) const {
+        return children_nodes_.at(index);
+    }
+};
+</code></pre>
+<h2>7. 자식 관리의 설계 원칙 요약</h2>
+<table><thead><tr><th>원칙</th><th>설명</th></tr></thead><tbody>
+<tr><td>정적 순서</td><td>자식의 순서는 트리 정의 시 결정되며 불변</td></tr>
+<tr><td>선택적 Tick</td><td>의미론에 따라 필요한 자식에게만 Tick 전달</td></tr>
+<tr><td>순차적 전달</td><td>자식 간 Tick은 왼쪽에서 오른쪽으로 순차 전달</td></tr>
+<tr><td>조기 종료</td><td>결과 확정 시 나머지 자식 생략</td></tr>
+<tr><td>재귀적 Halt</td><td>Halt는 하위 트리 전체에 재귀적으로 전파</td></tr>
+<tr><td>Halt 후 초기화</td><td>Halt된 자식은 IDLE 상태로 복귀</td></tr>
+</tbody></table>
+<p>이러한 원칙들은 모든 제어 흐름 노드(Sequence, Fallback, Parallel 등)에 공통적으로 적용되며, 각 제어 노드의 변형은 이 원칙 위에서 고유한 재진입 규칙과 상태 해석 규칙을 추가로 정의한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

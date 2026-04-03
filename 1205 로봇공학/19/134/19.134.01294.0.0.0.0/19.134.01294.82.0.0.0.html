@@ -115,6 +115,247 @@
             </header>
             <article>
                 <h1>1294.82 Sequence와 Fallback의 BehaviorTree.CPP 구현</h1>
+<h2>1. BehaviorTree.CPP의 제어 노드 클래스 계층</h2>
+<p>BehaviorTree.CPP(v4) 라이브러리에서 Sequence와 Fallback은 <code>ControlNode</code> 기반 클래스를 상속하여 구현된다. 클래스 계층 구조는 다음과 같다(Faconti, 2022):</p>
+<pre><code>TreeNode
+└── ControlNode
+    ├── SequenceNode          (SequenceWithMemory)
+    ├── ReactiveSequence
+    ├── FallbackNode          (FallbackWithMemory)
+    └── ReactiveFallback
+</code></pre>
+<h2>2. ControlNode 기반 클래스</h2>
+<h3>2.1 ControlNode의 핵심 인터페이스</h3>
+<pre><code class="language-cpp">class ControlNode : public TreeNode {
+public:
+    void addChild(TreeNode* child);
+    size_t childrenCount() const;
+    const std::vector&lt;TreeNode*&gt;&amp; children() const;
+
+    void halt() override;
+    void haltChild(size_t index);
+    void haltChildren();
+    void haltChildren(size_t first);
+
+protected:
+    std::vector&lt;TreeNode*&gt; children_nodes_;
+};
+</code></pre>
+<p><code>ControlNode</code>는 자식 노드의 관리와 Halt 처리를 위한 공통 인터페이스를 제공한다. <code>haltChildren(size_t first)</code> 메서드는 지정된 인덱스부터 마지막 자식까지 Halt하는 기능으로, ReactiveSequence와 ReactiveFallback에서 활용된다.</p>
+<h3>2.2 halt() 메서드의 기본 구현</h3>
+<pre><code class="language-cpp">void ControlNode::halt() {
+    haltChildren();
+    setStatus(NodeStatus::IDLE);
+}
+
+void ControlNode::haltChildren() {
+    for (size_t i = 0; i &lt; children_nodes_.size(); i++) {
+        haltChild(i);
+    }
+}
+
+void ControlNode::haltChild(size_t index) {
+    auto child = children_nodes_[index];
+    if (child-&gt;status() == NodeStatus::RUNNING) {
+        child-&gt;halt();
+    }
+    child-&gt;setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<p><code>halt()</code>가 호출되면 모든 자식을 순회하며, RUNNING 상태인 자식에 <code>halt()</code>를 재귀적으로 호출한 후 IDLE로 설정한다.</p>
+<h2>3. SequenceNode의 구현</h2>
+<h3>3.1 SequenceNode의 클래스 정의</h3>
+<p>BehaviorTree.CPP v4에서 <code>SequenceNode</code>는 SequenceWithMemory 동작을 구현한다:</p>
+<pre><code class="language-cpp">class SequenceNode : public ControlNode {
+public:
+    SequenceNode(const std::string&amp; name, const NodeConfig&amp; config);
+
+    NodeStatus tick() override;
+    void halt() override;
+
+private:
+    size_t current_child_idx_;
+    bool all_skipped_ = true;
+};
+</code></pre>
+<h3>3.2 tick() 메서드의 핵심 로직</h3>
+<pre><code class="language-cpp">NodeStatus SequenceNode::tick() {
+    const size_t children_count = children_nodes_.size();
+    
+    if (status() == NodeStatus::IDLE) {
+        all_skipped_ = true;
+    }
+    
+    setStatus(NodeStatus::RUNNING);
+    
+    while (current_child_idx_ &lt; children_count) {
+        TreeNode* current_child = children_nodes_[current_child_idx_];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status) {
+            case NodeStatus::RUNNING:
+                return NodeStatus::RUNNING;
+                
+            case NodeStatus::FAILURE:
+                resetChildren();
+                current_child_idx_ = 0;
+                return NodeStatus::FAILURE;
+                
+            case NodeStatus::SUCCESS:
+                all_skipped_ = false;
+                current_child_idx_++;
+                break;
+                
+            case NodeStatus::SKIPPED:
+                current_child_idx_++;
+                break;
+        }
+    }
+    
+    current_child_idx_ = 0;
+    return all_skipped_ ? NodeStatus::SKIPPED : NodeStatus::SUCCESS;
+}
+</code></pre>
+<p><code>current_child_idx_</code>가 진행 상황을 기억하므로, RUNNING 반환 후 다음 Tick에서 해당 자식부터 재시작한다. FAILURE 시에는 <code>current_child_idx_</code>를 0으로 초기화한다.</p>
+<h2>4. ReactiveSequence의 구현</h2>
+<h3>4.1 tick() 메서드의 핵심 로직</h3>
+<pre><code class="language-cpp">NodeStatus ReactiveSequence::tick() {
+    bool all_skipped = true;
+    setStatus(NodeStatus::RUNNING);
+    
+    for (size_t index = 0; index &lt; childrenCount(); index++) {
+        TreeNode* current_child = children_nodes_[index];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status) {
+            case NodeStatus::RUNNING:
+                for (size_t j = index + 1; j &lt; childrenCount(); j++) {
+                    haltChild(j);
+                }
+                return NodeStatus::RUNNING;
+                
+            case NodeStatus::FAILURE:
+                resetChildren();
+                return NodeStatus::FAILURE;
+                
+            case NodeStatus::SUCCESS:
+                all_skipped = false;
+                break;
+                
+            case NodeStatus::SKIPPED:
+                break;
+        }
+    }
+    
+    resetChildren();
+    return all_skipped ? NodeStatus::SKIPPED : NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>ReactiveSequence는 항상 인덱스 0부터 시작하며, RUNNING을 반환하는 자식 이후의 모든 자식을 Halt한다. 이 구현에서 <code>current_child_idx_</code>를 사용하지 않는다는 점이 SequenceNode와의 핵심적 차이이다.</p>
+<h2>5. FallbackNode의 구현</h2>
+<h3>5.1 FallbackNode의 클래스 정의</h3>
+<pre><code class="language-cpp">class FallbackNode : public ControlNode {
+public:
+    FallbackNode(const std::string&amp; name, const NodeConfig&amp; config);
+
+    NodeStatus tick() override;
+    void halt() override;
+
+private:
+    size_t current_child_idx_;
+    bool all_skipped_ = true;
+};
+</code></pre>
+<h3>5.2 tick() 메서드의 핵심 로직</h3>
+<pre><code class="language-cpp">NodeStatus FallbackNode::tick() {
+    const size_t children_count = children_nodes_.size();
+    
+    if (status() == NodeStatus::IDLE) {
+        all_skipped_ = true;
+    }
+    
+    setStatus(NodeStatus::RUNNING);
+    
+    while (current_child_idx_ &lt; children_count) {
+        TreeNode* current_child = children_nodes_[current_child_idx_];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status) {
+            case NodeStatus::RUNNING:
+                return NodeStatus::RUNNING;
+                
+            case NodeStatus::SUCCESS:
+                resetChildren();
+                current_child_idx_ = 0;
+                return NodeStatus::SUCCESS;
+                
+            case NodeStatus::FAILURE:
+                all_skipped_ = false;
+                current_child_idx_++;
+                break;
+                
+            case NodeStatus::SKIPPED:
+                current_child_idx_++;
+                break;
+        }
+    }
+    
+    current_child_idx_ = 0;
+    return all_skipped_ ? NodeStatus::SKIPPED : NodeStatus::FAILURE;
+}
+</code></pre>
+<p>FallbackNode는 SequenceNode와 대칭적 구조를 가진다. SUCCESS와 FAILURE의 역할이 정확히 교환되어 있다: SUCCESS가 조기 종료를 유발하고, FAILURE가 다음 자식으로의 진행을 유발한다.</p>
+<h2>6. ReactiveFallback의 구현</h2>
+<h3>6.1 tick() 메서드의 핵심 로직</h3>
+<pre><code class="language-cpp">NodeStatus ReactiveFallback::tick() {
+    bool all_skipped = true;
+    setStatus(NodeStatus::RUNNING);
+    
+    for (size_t index = 0; index &lt; childrenCount(); index++) {
+        TreeNode* current_child = children_nodes_[index];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status) {
+            case NodeStatus::RUNNING:
+                for (size_t j = index + 1; j &lt; childrenCount(); j++) {
+                    haltChild(j);
+                }
+                return NodeStatus::RUNNING;
+                
+            case NodeStatus::SUCCESS:
+                resetChildren();
+                return NodeStatus::SUCCESS;
+                
+            case NodeStatus::FAILURE:
+                all_skipped = false;
+                break;
+                
+            case NodeStatus::SKIPPED:
+                break;
+        }
+    }
+    
+    resetChildren();
+    return all_skipped ? NodeStatus::SKIPPED : NodeStatus::FAILURE;
+}
+</code></pre>
+<p>ReactiveFallback은 ReactiveSequence와 대칭적이며, SUCCESS와 FAILURE의 역할만 교환되어 있다.</p>
+<h2>7. 네 가지 구현의 대칭적 관계</h2>
+<table><thead><tr><th>특성</th><th>SequenceNode</th><th>FallbackNode</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>조기 종료 조건</td><td>FAILURE</td><td>SUCCESS</td><td>FAILURE</td><td>SUCCESS</td></tr>
+<tr><td>진행 조건</td><td>SUCCESS</td><td>FAILURE</td><td>SUCCESS</td><td>FAILURE</td></tr>
+<tr><td>메모리 사용</td><td>예 (idx 유지)</td><td>예 (idx 유지)</td><td>아니오</td><td>아니오</td></tr>
+<tr><td>재평가 시작점</td><td>idx부터</td><td>idx부터</td><td>항상 0</td><td>항상 0</td></tr>
+<tr><td>후속 자식 Halt</td><td>불필요</td><td>불필요</td><td>RUNNING 이후 Halt</td><td>RUNNING 이후 Halt</td></tr>
+</tbody></table>
+<h2>8. SKIPPED 상태의 처리</h2>
+<p>BehaviorTree.CPP v4에서 추가된 <code>NodeStatus::SKIPPED</code>는 “이 노드는 실행할 필요가 없다“는 의미이다. SKIPPED는 SUCCESS/FAILURE와 달리 다음 자식으로의 진행을 유발하되, <code>all_skipped_</code> 플래그에는 영향을 주지 않는다. 모든 자식이 SKIPPED를 반환하면 제어 노드 자체도 SKIPPED를 반환한다(Faconti, 2022).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,241 @@
             </header>
             <article>
                 <h1>1294.95 Sequence와 Fallback의 디버깅 기법</h1>
+<h2>1. 행동 트리 디버깅의 특수성</h2>
+<p>행동 트리의 디버깅은 일반적인 순차 프로그램의 디버깅과 본질적으로 다르다. 행동 트리는 매 Tick 주기적으로 실행되며, 제어 노드의 결정은 자식 노드의 반환 상태에 의해 동적으로 결정된다. 따라서 단일 시점의 상태만으로는 문제를 파악하기 어렵고, 시간 축에 걸친 상태 전이의 패턴을 추적해야 한다. Sequence와 Fallback 제어 노드의 디버깅은 자식 실행 순서, 반환 상태의 전파, 메모리 인덱스의 변화, 그리고 Halt 타이밍이라는 네 가지 관점에서 수행된다(Faconti, 2022).</p>
+<h2>2. BehaviorTree.CPP의 내장 디버깅 도구</h2>
+<h3>2.1 로깅 시스템</h3>
+<p>BehaviorTree.CPP v4는 노드의 상태 변화를 자동으로 기록하는 로거(Logger) 시스템을 제공한다.</p>
+<pre><code class="language-cpp">BT::BehaviorTreeFactory factory;
+auto tree = factory.createTreeFromFile("my_tree.xml");
+
+// 콘솔 로거 연결
+BT::StdCoutLogger logger(tree);
+
+// 파일 로거 연결
+BT::FileLogger2 file_logger(tree, "bt_trace.btlog");
+
+// Tick 실행
+tree.tickWhileRunning();
+</code></pre>
+<p><code>StdCoutLogger</code>는 모든 노드의 상태 변화를 표준 출력에 기록한다. 출력 형식은 다음과 같다:</p>
+<pre><code>[Sequence: main_seq] IDLE -&gt; RUNNING
+[Action: Navigate]   IDLE -&gt; RUNNING
+[Action: Navigate]   RUNNING -&gt; SUCCESS
+[Action: Manipulate] IDLE -&gt; RUNNING
+</code></pre>
+<p><code>FileLogger2</code>는 상태 변화를 이진 형식으로 파일에 기록하며, Groot2 시각화 도구에서 재생할 수 있다.</p>
+<h3>2.2 Groot2 실시간 모니터링</h3>
+<pre><code class="language-cpp">// Groot2 실시간 연결을 위한 서버 시작
+BT::Groot2Publisher publisher(tree, 1667);
+
+while (running) {
+    tree.tickOnce();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+</code></pre>
+<p>Groot2는 행동 트리의 실시간 상태를 그래프로 시각화하는 도구이다. 각 노드의 현재 상태가 색상으로 표시되며(SUCCESS: 녹색, FAILURE: 적색, RUNNING: 황색, IDLE: 회색), Sequence와 Fallback의 실행 흐름을 시각적으로 추적할 수 있다.</p>
+<h2>3. 상태 변화 추적 기법</h2>
+<h3>3.1 커스텀 로거 구현</h3>
+<pre><code class="language-cpp">class DebugLogger : public BT::StatusChangeLogger {
+public:
+    DebugLogger(const BT::Tree&amp; tree) : StatusChangeLogger(tree.rootNode()) {}
+    
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev_status,
+                  BT::NodeStatus status) override {
+        auto ms = std::chrono::duration_cast&lt;
+            std::chrono::milliseconds&gt;(timestamp).count();
+        
+        std::cout &lt;&lt; "[" &lt;&lt; ms &lt;&lt; "ms] "
+                  &lt;&lt; node.name() &lt;&lt; " (" &lt;&lt; node.registrationName() &lt;&lt; "): "
+                  &lt;&lt; toStr(prev_status) &lt;&lt; " -&gt; " &lt;&lt; toStr(status)
+                  &lt;&lt; std::endl;
+    }
+    
+    void flush() override {}
+};
+</code></pre>
+<p>커스텀 로거를 통해 특정 노드 유형이나 특정 상태 전이에 대해서만 로그를 출력하도록 필터링할 수 있다.</p>
+<h3>3.2 제어 노드 전용 로거</h3>
+<pre><code class="language-cpp">class ControlNodeLogger : public BT::StatusChangeLogger {
+public:
+    ControlNodeLogger(const BT::Tree&amp; tree)
+        : StatusChangeLogger(tree.rootNode()) {}
+    
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev_status,
+                  BT::NodeStatus status) override {
+        // Sequence와 Fallback만 필터링
+        const auto&amp; reg_name = node.registrationName();
+        if (reg_name == "Sequence" || reg_name == "Fallback" ||
+            reg_name == "ReactiveSequence" || reg_name == "ReactiveFallback") {
+            
+            std::cout &lt;&lt; "[CONTROL] " &lt;&lt; node.name()
+                      &lt;&lt; " (" &lt;&lt; reg_name &lt;&lt; "): "
+                      &lt;&lt; toStr(prev_status) &lt;&lt; " -&gt; " &lt;&lt; toStr(status)
+                      &lt;&lt; std::endl;
+        }
+    }
+    
+    void flush() override {}
+};
+</code></pre>
+<h2>4. Tick 단위 디버깅</h2>
+<h3>4.1 단일 Tick 실행과 상태 검사</h3>
+<pre><code class="language-cpp">// Tick별 실행과 상태 출력
+int tick_count = 0;
+BT::NodeStatus result = BT::NodeStatus::IDLE;
+
+while (result != BT::NodeStatus::SUCCESS &amp;&amp;
+       result != BT::NodeStatus::FAILURE) {
+    tick_count++;
+    result = tree.tickOnce();
+    
+    std::cout &lt;&lt; "=== Tick " &lt;&lt; tick_count
+              &lt;&lt; " === Result: " &lt;&lt; BT::toStr(result) &lt;&lt; std::endl;
+    
+    // 모든 노드의 현재 상태 출력
+    tree.applyVisitor([](const%20BT::TreeNode*%20node) {
+        std::cout &lt;&lt; "  " &lt;&lt; node-&gt;name() &lt;&lt; ": "
+                  &lt;&lt; BT::toStr(node-&gt;status()) &lt;&lt; std::endl;
+    });
+}
+</code></pre>
+<p><code>tree.tickOnce()</code>를 사용하여 한 Tick씩 실행하고, 각 Tick 후 전체 트리의 상태를 검사한다. 이 기법은 Sequence의 메모리 동작이나 ReactiveSequence의 재평가 패턴을 Tick 단위로 추적할 때 유용하다.</p>
+<h3>4.2 조건부 중단점</h3>
+<pre><code class="language-cpp">class BreakpointLogger : public BT::StatusChangeLogger {
+public:
+    using BreakCondition = std::function&lt;bool(
+        const BT::TreeNode&amp;, BT::NodeStatus, BT::NodeStatus)&gt;;
+    
+    void addBreakpoint(const std::string&amp; node_name,
+                       BreakCondition condition) {
+        breakpoints_[node_name] = condition;
+    }
+    
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev,
+                  BT::NodeStatus curr) override {
+        auto it = breakpoints_.find(node.name());
+        if (it != breakpoints_.end() &amp;&amp; it-&gt;second(node, prev, curr)) {
+            std::cout &lt;&lt; "[BREAKPOINT] " &lt;&lt; node.name()
+                      &lt;&lt; ": " &lt;&lt; toStr(prev) &lt;&lt; " -&gt; " &lt;&lt; toStr(curr)
+                      &lt;&lt; std::endl;
+            // 디버그 정보 출력 또는 실행 일시 중지
+        }
+    }
+    
+    void flush() override {}
+
+private:
+    std::map&lt;std::string, BreakCondition&gt; breakpoints_;
+};
+
+// 사용 예: Sequence가 FAILURE로 전이할 때 중단
+logger.addBreakpoint("main_sequence",
+    [](const%20BT::TreeNode&amp;,%20BT::NodeStatus%20prev,%20BT::NodeStatus%20curr) {
+        return prev == BT::NodeStatus::RUNNING &amp;&amp;
+               curr == BT::NodeStatus::FAILURE;
+    });
+</code></pre>
+<h2>5. Sequence 디버깅의 핵심 관점</h2>
+<h3>5.1 FAILURE 원인 추적</h3>
+<p>Sequence가 FAILURE를 반환할 때, 어떤 자식이 FAILURE를 유발했는지 추적하는 것이 디버깅의 출발점이다.</p>
+<pre><code class="language-cpp">class SequenceFailureTracer : public BT::StatusChangeLogger {
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev,
+                  BT::NodeStatus curr) override {
+        if (curr == BT::NodeStatus::FAILURE) {
+            // 부모가 Sequence인지 확인
+            if (auto* parent = node.getParent()) {
+                if (parent-&gt;registrationName() == "Sequence" ||
+                    parent-&gt;registrationName() == "ReactiveSequence") {
+                    std::cout &lt;&lt; "[SEQ FAILURE] "
+                              &lt;&lt; parent-&gt;name() &lt;&lt; " failed due to: "
+                              &lt;&lt; node.name() &lt;&lt; std::endl;
+                }
+            }
+        }
+    }
+};
+</code></pre>
+<h3>5.2 메모리 인덱스 추적</h3>
+<p>SequenceNode의 <code>current_child_idx_</code> 값을 외부에서 직접 접근할 수 없으므로, 자식의 실행 여부를 통해 간접적으로 추적한다.</p>
+<pre><code>Tick 1: action1→S, action2→R        (idx=1 추정)
+Tick 2: action2→R                    (action1 미실행 → idx=1 확인)
+Tick 3: action2→S, action3→R        (idx=2 추정)
+Tick 4: action3→S                    → SUCCESS (idx=0 초기화)
+</code></pre>
+<p>각 Tick에서 어떤 자식이 실행되었는지를 로그로 확인하면 메모리 인덱스의 변화를 추론할 수 있다.</p>
+<h2>6. Fallback 디버깅의 핵심 관점</h2>
+<h3>6.1 전체 FAILURE 원인 분석</h3>
+<p>Fallback이 FAILURE를 반환하면, 모든 대안이 소진되었음을 의미한다. 각 대안의 실패 원인을 순차적으로 분석해야 한다.</p>
+<pre><code>[FALLBACK TRACE] nav_fallback
+  Alternative 1 (NavigateToPose): FAILURE - 경로 계산 실패
+  Alternative 2 (ClearAndRetry):  FAILURE - 재시도 후에도 실패
+  Alternative 3 (SafeStop):       FAILURE - 정지 명령 타임아웃
+  Result: FAILURE (모든 대안 소진)
+</code></pre>
+<h3>6.2 대안 전환 패턴 분석</h3>
+<p>ReactiveFallback에서 대안 간 빈번한 전환이 발생하면, 조건의 불안정성(히스테리시스 부재)을 의심해야 한다.</p>
+<pre><code>Tick 1: alt1→S (1순위)
+Tick 2: alt1→F, alt2→R (2순위로 전환)
+Tick 3: alt1→S, alt2→Halt (1순위 복귀)
+Tick 4: alt1→F, alt2→R (다시 2순위)
+...
+</code></pre>
+<p>이러한 진동 패턴이 로그에서 관찰되면, 조건 노드에 히스테리시스를 적용해야 한다.</p>
+<h2>7. 블랙보드 상태 덤프</h2>
+<h3>7.1 데이터 흐름 검증</h3>
+<pre><code class="language-cpp">// Tick 후 블랙보드 내용 출력
+tree.tickOnce();
+
+auto blackboard = tree.subtrees.front()-&gt;blackboard;
+std::cout &lt;&lt; "=== Blackboard ===" &lt;&lt; std::endl;
+
+// 등록된 모든 엔트리 출력
+for (const auto&amp; entry : blackboard-&gt;getKeys()) {
+    auto value = blackboard-&gt;getAnyLocked(entry);
+    if (value) {
+        std::cout &lt;&lt; "  " &lt;&lt; entry &lt;&lt; " = "
+                  &lt;&lt; value-&gt;get()-&gt;type().name() &lt;&lt; std::endl;
+    }
+}
+</code></pre>
+<p>Sequence 내의 노드 간 데이터 전달이 블랙보드를 통해 이루어지므로, 블랙보드의 상태를 Tick 사이에 검사하여 데이터 흐름의 정확성을 검증할 수 있다.</p>
+<h2>8. 일반적 디버깅 절차</h2>
+<p>Sequence 또는 Fallback 관련 문제를 디버깅할 때 권장되는 절차는 다음과 같다:</p>
+<ol>
+<li>
+<p><strong>증상 파악</strong>: 예상과 다른 최종 반환 상태(예: SUCCESS가 기대되나 FAILURE 반환)를 확인한다.</p>
+</li>
+<li>
+<p><strong>Tick 단위 상태 추적</strong>: 로거를 연결하고 Tick 단위로 실행하여 각 자식의 반환 상태와 실행 순서를 기록한다.</p>
+</li>
+<li>
+<p><strong>제어 흐름 분석</strong>: 기록된 상태 전이로부터 제어 노드의 의사결정 경로를 재구성한다. 예상 경로와 실제 경로를 비교한다.</p>
+</li>
+<li>
+<p><strong>변형 확인</strong>: 사용된 제어 노드의 변형(Memory vs Reactive)이 의도한 것과 일치하는지 확인한다. XML에서 <code>&lt;Sequence&gt;</code>(Memory)와 <code>&lt;ReactiveSequence&gt;</code>(Reactive)의 혼동이 흔한 오류 원인이다.</p>
+</li>
+<li>
+<p><strong>블랙보드 검사</strong>: 노드 간 데이터 전달이 관련된 경우, 블랙보드의 키-값 상태를 검사한다.</p>
+</li>
+<li>
+<p><strong>Halt 타이밍 검증</strong>: 예기치 않은 중단이 발생하는 경우, <code>onHalted()</code> 콜백의 호출 시점과 빈도를 확인한다.</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

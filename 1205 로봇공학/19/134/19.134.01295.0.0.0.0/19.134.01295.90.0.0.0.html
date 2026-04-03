@@ -115,6 +115,146 @@
             </header>
             <article>
                 <h1>1295.90 성능 고려 사항</h1>
+<h2>1. Parallel 및 Reactive 노드의 성능 특성</h2>
+<p>Parallel 노드와 Reactive 노드(ReactiveSequence, ReactiveFallback)는 일반 Sequence/Fallback에 비해 본질적으로 더 많은 연산을 수행한다. 일반 Sequence는 자식을 순차적으로 평가하되 이미 완료된 자식을 건너뛰므로, 매 Tick에서 하나의 RUNNING 자식만 Tick하면 된다. 반면 Parallel 노드는 매 Tick에서 모든 자식을 Tick하고, Reactive 노드는 매 Tick에서 처음부터 재평가를 수행한다. 이러한 구조적 차이가 성능에 미치는 영향을 정량적으로 이해하여야 한다.</p>
+<h2>2. Tick 시간 복잡도 분석</h2>
+<h3>2.1 Parallel 노드의 Tick 시간</h3>
+<p>Parallel 노드의 단일 Tick 소요 시간 <span class="math math-inline">T_{\text{parallel}}</span>은 모든 자식의 Tick 소요 시간의 합이다.</p>
+<p><span class="math math-display">T_{\text{parallel}} = T_{\text{overhead}} + \sum_{i=1}^{N} T_{\text{child}_i}</span></p>
+<p>여기서 <span class="math math-inline">T_{\text{overhead}}</span>는 Parallel 노드 자체의 정책 평가, 상태 관리 등의 오버헤드이고, <span class="math math-inline">T_{\text{child}_i}</span>는 <span class="math math-inline">i</span>번째 자식의 Tick 소요 시간이다. <span class="math math-inline">N</span>은 자식 수이다.</p>
+<p>단일 스레드에서 실행되므로 자식의 Tick은 순차적으로 수행되며, 전체 시간은 개별 자식 시간의 합산이다.</p>
+<h3>Reactive 노드의 Tick 시간</h3>
+<p>ReactiveSequence의 단일 Tick 소요 시간은 재평가되는 자식의 수에 의존한다.</p>
+<p><span class="math math-display">T_{\text{reactive\_seq}} = T_{\text{overhead}} + \sum_{i=1}^{k} T_{\text{child}_i}</span></p>
+<p>여기서 <span class="math math-inline">k</span>는 현재 Tick에서 평가되는 자식의 수이다. 첫 번째 자식이 FAILURE를 반환하면 <span class="math math-inline">k = 1</span>이고, 모든 자식이 SUCCESS이거나 마지막 자식이 RUNNING이면 <span class="math math-inline">k = N</span>이다.</p>
+<h3>2.2 일반 Sequence와의 비교</h3>
+<p>일반 Sequence(메모리 있는 Sequence)의 Tick 시간은 현재 활성 자식의 Tick 시간만을 포함한다.</p>
+<p><span class="math math-display">T_{\text{sequence}} = T_{\text{overhead}} + T_{\text{active\_child}}</span></p>
+<p>따라서 ReactiveSequence는 일반 Sequence에 비해 최대 <span class="math math-inline">N</span>배의 Tick 시간을 소요할 수 있다.</p>
+<table><thead><tr><th>노드 유형</th><th>매 Tick 평가 자식 수</th><th>최악 Tick 시간</th></tr></thead><tbody>
+<tr><td>Sequence</td><td>1 (활성 자식만)</td><td><span class="math math-inline">T_{\text{overhead}} + T_{\text{max\_child}}</span></td></tr>
+<tr><td>ReactiveSequence</td><td>1 ~ N (처음부터 재평가)</td><td><span class="math math-inline">T_{\text{overhead}} + \sum T_{\text{child}_i}</span></td></tr>
+<tr><td>Parallel</td><td>N (모든 자식)</td><td><span class="math math-inline">T_{\text{overhead}} + \sum T_{\text{child}_i}</span></td></tr>
+</tbody></table>
+<h2>Tick 주기와 실시간 제약</h2>
+<p>로봇 시스템에서 행동 트리의 Tick 주기는 제어 루프의 주기와 맞추어야 한다. 일반적인 Tick 주기는 다음과 같다.</p>
+<table><thead><tr><th>응용 분야</th><th>Tick 주기</th><th>Tick 시간 예산</th></tr></thead><tbody>
+<tr><td>산업용 매니퓰레이터</td><td>1~10 ms</td><td>&lt; 1 ms</td></tr>
+<tr><td>이동 로봇 항법</td><td>10~100 ms</td><td>&lt; 10 ms</td></tr>
+<tr><td>드론 비행 제어</td><td>5~20 ms</td><td>&lt; 5 ms</td></tr>
+<tr><td>서비스 로봇</td><td>50~200 ms</td><td>&lt; 50 ms</td></tr>
+</tbody></table>
+<p>Parallel 노드의 Tick 시간이 예산을 초과하면 제어 루프의 주기가 유지되지 않아, 로봇의 반응성이 저하되거나 안전 감시의 지연이 발생한다.</p>
+<h2>성능 병목의 원인</h2>
+<h3>자식 노드의 Tick 비용</h3>
+<p>Parallel 노드의 성능 병목은 대부분 자식 노드의 Tick 비용에 기인한다. 조건 노드가 블랙보드에서 값을 읽는 것은 마이크로초 단위의 비용이지만, 행동 노드가 ROS2 서비스를 호출하거나 센서 데이터를 처리하면 밀리초 단위의 비용이 발생한다.</p>
+<pre><code class="language-cpp">// 경량 조건 노드: ~1 us
+BT::NodeStatus IsLocalized::tick()
+{
+    auto localized = getInput&lt;bool&gt;("is_localized");
+    return localized.value() ? BT::NodeStatus::SUCCESS 
+                              : BT::NodeStatus::FAILURE;
+}
+
+// 중량 행동 노드: ~500 us ~ 수 ms
+BT::NodeStatus ComputePath::tick()
+{
+    // 경로 계획 알고리즘 실행
+    auto path = planner_.computePath(start, goal);
+    setOutput("path", path);
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>블랙보드 접근 비용</h3>
+<p>블랙보드의 <code>getInput()</code>과 <code>setOutput()</code> 호출은 타입 변환과 문자열 검색을 포함하므로, 빈번한 호출은 누적 비용을 발생시킨다. Parallel 노드의 모든 자식이 매 Tick에서 블랙보드에 접근하면, 블랙보드 접근 횟수는 <span class="math math-inline">O(N \cdot P)</span>가 된다. 여기서 <span class="math math-inline">P</span>는 자식당 포트 수이다.</p>
+<h3>Halt 비용</h3>
+<p>Parallel 노드가 정책을 충족하여 <code>haltChildren()</code>을 호출할 때, 모든 자식에 대해 <code>halt()</code>가 순차적으로 호출된다. 자식의 <code>halt()</code> 구현이 ROS2 액션의 취소, 하드웨어 정지 명령 등을 포함하면 Halt 비용이 상당할 수 있다.</p>
+<h2>성능 최적화 전략</h2>
+<h3>조건 노드의 경량화</h3>
+<p>Reactive 노드에서 매 Tick마다 재평가되는 조건 노드는 가능한 한 경량으로 구현하여야 한다. 조건 노드는 블랙보드에서 미리 계산된 값을 읽는 것으로 한정하고, 무거운 연산은 별도의 비동기 프로세스에서 수행하여 블랙보드에 결과를 기록하도록 설계한다.</p>
+<pre><code class="language-cpp">// 권장: 블랙보드 값만 읽는 경량 조건
+BT::NodeStatus IsBatteryLow::tick()
+{
+    double level = getInput&lt;double&gt;("battery_level").value();
+    double threshold = getInput&lt;double&gt;("threshold").value();
+    return (level &lt; threshold) ? BT::NodeStatus::SUCCESS 
+                                : BT::NodeStatus::FAILURE;
+}
+
+// 비권장: 조건 내에서 무거운 연산 수행
+BT::NodeStatus IsPathBlocked::tick()
+{
+    auto costmap = getCostmap();  // 비용 맵 복사: ~100 us
+    auto path = getInput&lt;Path&gt;("path").value();
+    return checkCollision(costmap, path) ? BT::NodeStatus::SUCCESS
+                                          : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>이미 완료된 자식의 재Tick 회피</h3>
+<p>Parallel 노드에서 이미 SUCCESS 또는 FAILURE를 반환한 자식의 재Tick을 회피하면 불필요한 연산을 제거할 수 있다.</p>
+<pre><code class="language-cpp">// 최적화된 Parallel tick
+for (size_t i = 0; i &lt; childrenCount(); i++)
+{
+    auto current_status = children_nodes_[i]-&gt;status();
+    if (current_status == BT::NodeStatus::SUCCESS ||
+        current_status == BT::NodeStatus::FAILURE)
+    {
+        // 이미 완료된 자식은 건너뛰기
+        statuses[i] = current_status;
+        continue;
+    }
+    statuses[i] = children_nodes_[i]-&gt;executeTick();
+}
+</code></pre>
+<p>BehaviorTree.CPP 4.x의 <code>ParallelAll</code> 노드는 이 최적화를 기본으로 적용한다.</p>
+<h3>조기 종료의 활용</h3>
+<p>정책 충족이 불가능한 경우를 조기에 감지하면, 남은 자식의 Tick을 생략할 수 있다. 예를 들어, SUCCESS_ALL 정책에서 하나의 자식이 FAILURE를 반환하면 나머지 자식을 Tick하지 않고 즉시 FAILURE를 반환한다.</p>
+<h3>Tick 주기의 분리</h3>
+<p>모든 자식을 동일한 Tick 주기로 실행할 필요가 없는 경우, 자식별로 다른 Tick 주기를 적용할 수 있다. 안전 감시 조건은 매 Tick마다, 환경 데이터 수집은 10 Tick마다 실행하는 방식이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    for (size_t i = 0; i &lt; childrenCount(); i++)
+    {
+        // 자식별 Tick 주기 적용
+        if (tick_count_ % tick_divisors_[i] != 0)
+        {
+            statuses[i] = children_nodes_[i]-&gt;status();
+            continue;
+        }
+        statuses[i] = children_nodes_[i]-&gt;executeTick();
+    }
+    tick_count_++;
+    // ... 정책 평가
+}
+</code></pre>
+<h2>성능 측정 방법</h2>
+<h3>Tick 시간 측정</h3>
+<pre><code class="language-cpp">auto start = std::chrono::steady_clock::now();
+auto status = tree.tickOnce();
+auto elapsed = std::chrono::duration_cast&lt;
+    std::chrono::microseconds&gt;(
+    std::chrono::steady_clock::now() - start);
+
+tick_times.push_back(elapsed);
+</code></pre>
+<h3>통계 보고</h3>
+<pre><code class="language-cpp">void printTickStatistics(
+    const std::vector&lt;std::chrono::microseconds&gt;&amp; times)
+{
+    auto sum = std::accumulate(times.begin(), times.end(),
+        std::chrono::microseconds{0});
+    auto avg = sum / times.size();
+    auto max_it = std::max_element(times.begin(), times.end());
+    auto min_it = std::min_element(times.begin(), times.end());
+
+    std::cout &lt;&lt; "Tick statistics:" &lt;&lt; std::endl;
+    std::cout &lt;&lt; "  Average: " &lt;&lt; avg.count() &lt;&lt; " us" &lt;&lt; std::endl;
+    std::cout &lt;&lt; "  Max: " &lt;&lt; max_it-&gt;count() &lt;&lt; " us" &lt;&lt; std::endl;
+    std::cout &lt;&lt; "  Min: " &lt;&lt; min_it-&gt;count() &lt;&lt; " us" &lt;&lt; std::endl;
+    std::cout &lt;&lt; "  Count: " &lt;&lt; times.size() &lt;&lt; std::endl;
+}
+</code></pre>
+<p>실시간 시스템에서는 평균값보다 최악값(worst case)이 중요하다. Tick 시간의 최악값이 Tick 주기 예산을 초과하지 않는지를 확인하여야 한다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,202 @@
             </header>
             <article>
                 <h1>1296.18 ThreadedAction 노드의 정의</h1>
+<h2>1. ThreadedAction의 정의</h2>
+<p><code>BT::ThreadedAction</code>은 BehaviorTree.CPP 라이브러리(버전 4.x)에서 제공하는 스레드 기반 액션 노드의 기반 클래스이다. <code>tick()</code> 메서드를 별도의 스레드에서 실행하여, 메서드 내부에서 차단(blocking) 호출이 가능하도록 한다. 트리의 메인 스레드는 <code>tick()</code>이 실행되는 동안 차단되지 않으며, 노드의 상태를 RUNNING으로 유지하면서 다른 노드의 Tick을 계속 처리한다.</p>
+<p><code>ThreadedAction</code>은 BehaviorTree.CPP 3.x의 <code>AsyncActionNode</code>에서 스레드 실행 모델을 계승한 노드 유형이다. 4.x에서 <code>AsyncActionNode</code>가 제거되고 <code>StatefulActionNode</code>가 비동기 행동의 권장 기반 클래스로 도입되었으나, 차단 호출이 불가피한 특수한 경우를 위해 <code>ThreadedAction</code>이 별도로 유지되었다.</p>
+<h2>2. 클래스 인터페이스</h2>
+<pre><code class="language-cpp">class ThreadedAction : public ActionNodeBase
+{
+public:
+    ThreadedAction(const std::string&amp; name,
+                   const NodeConfig&amp; config);
+
+    // 사용자가 구현하여야 하는 순수 가상 메서드
+    // 별도 스레드에서 실행됨
+    virtual NodeStatus tick() = 0;
+
+    // Halt 처리 (오버라이드 가능)
+    virtual void halt() override;
+
+    // 내부: executeTick()에서 스레드 생성 및 관리
+    NodeStatus executeTick() override final;
+
+    // Halt 요청 확인용
+    bool isHaltRequested() const;
+
+private:
+    std::thread thread_;
+    std::atomic&lt;bool&gt; halt_requested_;
+    // 기타 내부 동기화 변수
+};
+</code></pre>
+<p><code>ThreadedAction</code>의 핵심 특성은 다음과 같다.</p>
+<h3>2.1 tick()의 별도 스레드 실행</h3>
+<p><code>tick()</code> 메서드는 <code>executeTick()</code>에 의해 생성된 별도의 스레드에서 실행된다. <code>tick()</code> 내부에서 차단 호출(동기적 서비스 호출, 파일 I/O 대기, <code>sleep</code> 등)이 가능하며, 이 차단이 트리의 메인 스레드에 영향을 미치지 않는다.</p>
+<h3>2.2 RUNNING 상태의 자동 관리</h3>
+<p><code>executeTick()</code>이 처음 호출되면 스레드를 생성하고 즉시 RUNNING을 반환한다. 후속 Tick에서 스레드가 아직 실행 중이면 RUNNING을 계속 반환하고, 스레드가 완료되면 <code>tick()</code>의 반환값(SUCCESS 또는 FAILURE)을 반환한다.</p>
+<h3>2.3 isHaltRequested()를 통한 중단 확인</h3>
+<p><code>tick()</code> 내부에서 <code>isHaltRequested()</code> 메서드를 주기적으로 확인하여, 외부에서 Halt가 요청되었는지 검사한다. Halt가 요청되면 <code>tick()</code>은 실행을 중단하고 가능한 한 빠르게 반환하여야 한다.</p>
+<h2>3. executeTick()의 내부 동작</h2>
+<p><code>ThreadedAction</code>의 <code>executeTick()</code> 메서드의 내부 동작을 상세히 기술한다.</p>
+<pre><code class="language-cpp">NodeStatus ThreadedAction::executeTick()
+{
+    // 사전 조건 검사
+    auto pre_result = checkPreConditions();
+    if (pre_result.has_value())
+        return pre_result.value();
+
+    if (status() == NodeStatus::IDLE)
+    {
+        // 첫 Tick: 스레드 생성
+        setStatus(NodeStatus::RUNNING);
+        halt_requested_ = false;
+
+        thread_ = std::thread([this]()
+        {
+            NodeStatus result = tick();
+            if (!isHaltRequested())
+            {
+                setStatus(result);
+            }
+        });
+
+        return NodeStatus::RUNNING;
+    }
+
+    if (status() == NodeStatus::RUNNING)
+    {
+        // 후속 Tick: 스레드 완료 확인
+        // 스레드가 완료되어 상태가 변경되었는지 확인
+        return status();
+    }
+
+    // SUCCESS 또는 FAILURE
+    return status();
+}
+</code></pre>
+<p>첫 번째 Tick에서 <code>std::thread</code>를 생성하여 <code>tick()</code>을 별도 스레드에서 실행한다. 메인 스레드는 즉시 RUNNING을 반환하므로, 트리의 순회가 차단되지 않는다. 후속 Tick에서는 현재 상태를 반환하며, <code>tick()</code> 스레드가 완료되면 상태가 SUCCESS 또는 FAILURE로 변경된다.</p>
+<h2>4. StatefulActionNode와의 비교</h2>
+<p><code>ThreadedAction</code>과 <code>StatefulActionNode</code>의 근본적 차이를 비교한다.</p>
+<table><thead><tr><th>특성</th><th style="text-align: center">StatefulActionNode</th><th style="text-align: center">ThreadedAction</th></tr></thead><tbody>
+<tr><td>실행 스레드</td><td style="text-align: center">메인 스레드</td><td style="text-align: center">별도 스레드</td></tr>
+<tr><td>차단 호출</td><td style="text-align: center">불가</td><td style="text-align: center">가능</td></tr>
+<tr><td>콜백 구조</td><td style="text-align: center">onStart/onRunning/onHalted</td><td style="text-align: center">tick() 단일</td></tr>
+<tr><td>스레드 안전성</td><td style="text-align: center">고려 불필요</td><td style="text-align: center">필수 고려</td></tr>
+<tr><td>블랙보드 접근</td><td style="text-align: center">안전 (단일 스레드)</td><td style="text-align: center">경합 가능 (동기화 필요)</td></tr>
+<tr><td>Halt 응답성</td><td style="text-align: center">즉시 (onHalted 호출)</td><td style="text-align: center">지연 가능 (스레드 종료 대기)</td></tr>
+<tr><td>디버깅 용이성</td><td style="text-align: center">높음</td><td style="text-align: center">낮음 (멀티스레드 디버깅)</td></tr>
+<tr><td>권장 여부 (4.x)</td><td style="text-align: center">권장</td><td style="text-align: center">제한적 사용</td></tr>
+</tbody></table>
+<p><code>StatefulActionNode</code>는 메인 스레드에서 비차단 콜백을 통해 비동기 실행을 구현하는 반면, <code>ThreadedAction</code>은 별도 스레드에서 차단 호출을 허용하는 선점적(preemptive) 비동기 모델이다.</p>
+<h2>5. ThreadedAction의 적용 범위</h2>
+<p><code>ThreadedAction</code>이 적합한 경우와 부적합한 경우를 정리한다.</p>
+<h3>5.1 적합한 경우</h3>
+<ol>
+<li><strong>레거시 차단 API 래핑</strong>: 비동기 인터페이스를 제공하지 않는 레거시 라이브러리의 차단 API를 래핑하여야 하는 경우</li>
+<li><strong>동기적 파일 I/O</strong>: 대용량 파일의 읽기/쓰기가 필요하며, 비동기 I/O로의 전환이 어려운 경우</li>
+<li><strong>CPU 집약적 연산</strong>: 경로 계획, 이미지 처리 등의 CPU 집약적 연산을 메인 스레드와 분리하여야 하는 경우</li>
+</ol>
+<h3>5.2 부적합한 경우</h3>
+<ol>
+<li><strong>ROS2 액션/서비스 호출</strong>: ROS2는 비동기 API를 제공하므로, <code>StatefulActionNode</code>에서 비차단 폴링으로 구현하는 것이 적절하다.</li>
+<li><strong>간단한 비동기 작업</strong>: 비차단 폴링으로 충분히 구현 가능한 작업에 <code>ThreadedAction</code>을 사용하면 불필요한 스레드 안전성 복잡도가 추가된다.</li>
+<li><strong>빈번한 블랙보드 접근</strong>: <code>tick()</code> 내부에서 블랙보드에 빈번하게 접근하면 메인 스레드와의 경합(contention)이 발생한다.</li>
+</ol>
+<h2>6. 구현 패턴</h2>
+<h3>6.1 레거시 라이브러리 래핑</h3>
+<pre><code class="language-cpp">class LegacyPlannerAction : public BT::ThreadedAction
+{
+public:
+    LegacyPlannerAction(const std::string&amp; name,
+                         const BT::NodeConfig&amp; config,
+                         LegacyPlanner* planner)
+        : ThreadedAction(name, config), planner_(planner) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;Pose&gt;("start"),
+            BT::InputPort&lt;Pose&gt;("goal"),
+            BT::OutputPort&lt;Path&gt;("path")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        Pose start, goal;
+        if (!getInput("start", start) || !getInput("goal", goal))
+            return BT::NodeStatus::FAILURE;
+
+        // 레거시 차단 API 호출 (수 초 소요 가능)
+        Path path = planner_-&gt;computePath(start, goal);
+
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+
+        if (path.empty())
+            return BT::NodeStatus::FAILURE;
+
+        setOutput("path", path);
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    LegacyPlanner* planner_;
+};
+</code></pre>
+<p><code>planner_-&gt;computePath()</code>는 레거시 라이브러리의 차단 호출이다. 이 호출이 완료되면 결과를 확인하고, Halt가 요청되었는지 검사한 후 적절한 상태를 반환한다.</p>
+<h3>6.2 CPU 집약적 연산</h3>
+<pre><code class="language-cpp">class ProcessPointCloudAction : public BT::ThreadedAction
+{
+public:
+    ProcessPointCloudAction(const std::string&amp; name,
+                             const BT::NodeConfig&amp; config)
+        : ThreadedAction(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;PointCloud&gt;("input_cloud"),
+            BT::OutputPort&lt;PointCloud&gt;("filtered_cloud"),
+            BT::OutputPort&lt;int&gt;("num_points")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        PointCloud cloud;
+        if (!getInput("input_cloud", cloud))
+            return BT::NodeStatus::FAILURE;
+
+        // CPU 집약적 연산 (메인 스레드 차단 방지)
+        PointCloud filtered;
+        for (const auto&amp; point : cloud.points)
+        {
+            if (isHaltRequested())
+                return BT::NodeStatus::FAILURE;
+
+            if (passesFilter(point))
+                filtered.points.push_back(point);
+        }
+
+        setOutput("filtered_cloud", filtered);
+        setOutput("num_points", 
+                  static_cast&lt;int&gt;(filtered.points.size()));
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p>장시간 루프 내에서 <code>isHaltRequested()</code>를 주기적으로 확인하여, Halt 요청에 신속히 응답한다.</p>
+<h2>7. 사용 시 주의 사항</h2>
+<h3>7.1 스레드 안전성</h3>
+<p><code>ThreadedAction</code>의 <code>tick()</code>은 별도 스레드에서 실행되므로, 메인 스레드와 공유하는 자원에 대한 동기화가 필수적이다. 블랙보드 접근(<code>getInput()</code>, <code>setOutput()</code>)은 BehaviorTree.CPP 4.x에서 내부적으로 뮤텍스로 보호되나, 사용자가 관리하는 멤버 변수와 외부 자원은 직접 동기화하여야 한다.</p>
+<h3>7.2 Halt 응답 지연</h3>
+<p><code>tick()</code> 내부의 차단 호출은 Halt 요청에 즉시 응답하지 못할 수 있다. 차단 호출이 완료된 후에야 <code>isHaltRequested()</code>를 확인할 수 있으므로, 차단 호출의 지속 시간만큼 Halt 응답이 지연된다.</p>
+<h3>7.3 스레드 생성 비용</h3>
+<p>매 실행마다 새로운 <code>std::thread</code>가 생성된다. 스레드 생성의 오버헤드는 운영 체제에 따라 수십 마이크로초에서 수 밀리초까지 소요될 수 있다. 빈번히 실행되는 경량 작업에는 이 오버헤드가 문제가 될 수 있다.</p>
+<h2>8. 권장 사항</h2>
+<p>BehaviorTree.CPP 4.x에서 <code>ThreadedAction</code>은 제한적 사용이 권장된다(Faconti, 2022). 새로운 구현에서는 가급적 <code>StatefulActionNode</code>를 사용하여 메인 스레드에서의 비차단 콜백 모델로 구현하고, 차단 호출이 불가피한 레거시 코드의 래핑에만 <code>ThreadedAction</code>을 사용하는 것이 바람직하다. 이는 스레드 안전성 문제를 최소화하고, 행동 트리의 실행 모델을 단순하게 유지하기 위한 설계 지침이다.</p>
 
             </article>
             <footer>

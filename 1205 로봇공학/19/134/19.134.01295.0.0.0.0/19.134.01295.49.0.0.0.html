@@ -115,6 +115,155 @@
             </header>
             <article>
                 <h1>1295.49 드론 비상 착륙 우선순위 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>드론 비상 착륙 우선순위 패턴은 무인 항공기(UAV)에서 발생 가능한 다양한 비상 상황에 대해 심각도에 따른 차별화된 착륙 전략을 ReactiveFallback으로 구현하는 설계 패턴이다. 드론은 지상 로봇과 달리 비행 중 즉시 정지할 수 없으며, 안전한 착륙을 위해 착륙 지점 선정, 하강 경로 계획, 착륙 실행의 단계를 거쳐야 한다. 비상 상황의 종류와 심각도에 따라 이 단계의 실행 방식이 달라진다.</p>
+<h2>2. 비상 착륙 유형의 분류</h2>
+<table><thead><tr><th>착륙 유형</th><th>심각도</th><th>조건</th><th>착륙 방식</th></tr></thead><tbody>
+<tr><td>즉시 착륙 (Immediate Landing)</td><td>최고</td><td>모터 장애, 구조적 손상</td><td>현재 위치 수직 하강</td></tr>
+<tr><td>긴급 착륙 (Emergency Landing)</td><td>높음</td><td>배터리 위급, 이중 센서 장애</td><td>최근접 안전 지점 착륙</td></tr>
+<tr><td>예방적 귀환 (Precautionary RTL)</td><td>중간</td><td>배터리 부족, GPS 정확도 저하</td><td>이륙 지점 귀환 착륙</td></tr>
+<tr><td>임무 중단 귀환 (Mission Abort RTL)</td><td>낮음</td><td>풍속 초과, 통신 약화</td><td>이륙 지점 귀환 착륙</td></tr>
+<tr><td>정상 임무 수행</td><td>없음</td><td>모든 조건 정상</td><td>착륙 없음</td></tr>
+</tbody></table>
+<h2>3. 기본 구조</h2>
+<pre><code>ReactiveFallback
+├── Sequence [즉시 착륙]
+│   ├── IsImmediateLandingRequired
+│   └── ExecuteImmediateLanding
+├── Sequence [긴급 착륙]
+│   ├── IsEmergencyLandingRequired
+│   └── ExecuteEmergencyLanding
+├── Sequence [예방적 귀환]
+│   ├── IsPrecautionaryRTLRequired
+│   └── ExecutePrecautionaryRTL
+├── Sequence [임무 중단 귀환]
+│   ├── IsMissionAbortRequired
+│   └── ExecuteMissionAbortRTL
+└── ContinueFlightMission
+</code></pre>
+<p>각 착륙 유형이 심각도 순으로 배치되며, 가장 심각한 상황의 착륙 방식이 최고 우선순위를 가진다.</p>
+<h2>4. 각 착륙 유형의 상세</h2>
+<h3>4.1 즉시 착륙 (Immediate Landing)</h3>
+<p>모터 장애, 프로펠러 손상, 비행 제어기 부분 장애 등 비행 유지가 불가능하거나 극도로 위험한 상황에서의 착륙이다. 착륙 지점을 선정할 여유가 없으므로, 현재 위치에서 가능한 한 안전하게 수직 하강한다.</p>
+<pre><code>function IsImmediateLandingRequired.tick():
+    motor_status ← blackboard.get("motor_health")
+    flight_controller ← blackboard.get("fc_status")
+    structural ← blackboard.get("structural_integrity")
+    
+    if motor_status == CRITICAL_FAILURE 
+       or flight_controller == PARTIAL_FAILURE
+       or structural == COMPROMISED:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<pre><code>function ExecuteImmediateLanding.tick():
+    // 현재 위치에서 최대 안전 하강률로 하강
+    setDescentRate(max_safe_descent_rate)
+    disableHorizontalMovement()
+    
+    if isOnGround():
+        disarmMotors()
+        return SUCCESS
+    return RUNNING
+</code></pre>
+<h3>4.2 긴급 착륙 (Emergency Landing)</h3>
+<p>배터리가 위급 수준에 도달하거나 다수의 센서가 동시에 장애 상태인 경우의 착륙이다. 짧은 시간 내에 착륙하여야 하므로, 현재 위치에서 가장 가까운 사전 등록된 안전 착륙 지점(safe landing zone)으로 이동하여 착륙한다.</p>
+<pre><code>function IsEmergencyLandingRequired.tick():
+    battery ← blackboard.get("battery_level")
+    sensor_failures ← blackboard.get("sensor_failure_count")
+    
+    if battery &lt; CRITICAL_BATTERY_LEVEL or sensor_failures &gt;= 2:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<pre><code>function ExecuteEmergencyLanding.tick():
+    if not landing_site_selected:
+        landing_site ← findNearestSafeLandingZone()
+        blackboard.set("emergency_landing_site", landing_site)
+        landing_site_selected ← true
+    
+    site ← blackboard.get("emergency_landing_site")
+    navigateToAndLand(site)
+    
+    if isOnGround():
+        disarmMotors()
+        return SUCCESS
+    return RUNNING
+</code></pre>
+<h3>4.3 예방적 귀환 (Precautionary RTL)</h3>
+<p>배터리 잔량이 귀환에 필요한 최소량에 근접하거나, GPS 정확도가 저하되는 등 현재는 비행이 가능하지만 상황이 악화될 가능성이 있는 경우의 귀환이다. 이륙 지점(launch site)으로 귀환하여 안전하게 착륙한다.</p>
+<pre><code>function IsPrecautionaryRTLRequired.tick():
+    battery ← blackboard.get("battery_level")
+    energy_to_return ← blackboard.get("estimated_return_energy")
+    safety_margin ← 1.2  // 20% 안전 마진
+    
+    gps_quality ← blackboard.get("gps_hdop")
+    
+    if battery &lt; energy_to_return * safety_margin:
+        return SUCCESS
+    if gps_quality &gt; MAX_ACCEPTABLE_HDOP:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<p>귀환에 필요한 에너지 <span class="math math-inline">E_{return}</span>은 이륙 지점까지의 거리 <span class="math math-inline">d</span>, 예상 비행 속도 <span class="math math-inline">v</span>, 단위 시간당 에너지 소비율 <span class="math math-inline">P</span>에 기반하여 <span class="math math-inline">E_{return} = P \cdot \frac{d}{v}</span>로 추정한다. 안전 마진 계수 <span class="math math-inline">\alpha</span>를 곱하여 <span class="math math-inline">E_{threshold} = \alpha \cdot E_{return}</span>을 임계값으로 설정한다.</p>
+<h3>4.4 임무 중단 귀환 (Mission Abort RTL)</h3>
+<p>풍속 초과, 통신 품질 저하, 날씨 악화 등 임무 수행이 적절하지 않은 환경 조건에서의 귀환이다. 긴급성은 낮으나 임무를 계속 수행하는 것이 부적절한 경우이다.</p>
+<pre><code>function IsMissionAbortRequired.tick():
+    wind_speed ← blackboard.get("wind_speed")
+    comm_quality ← blackboard.get("communication_rssi")
+    
+    if wind_speed &gt; MAX_OPERATIONAL_WIND:
+        return SUCCESS
+    if comm_quality &lt; MIN_OPERATIONAL_RSSI:
+        return SUCCESS
+    return FAILURE
+</code></pre>
+<h2>5. 우선순위 선점 시나리오</h2>
+<p><strong>시나리오</strong>: 임무 수행 중 풍속 초과 → 귀환 중 배터리 위급</p>
+<pre><code>Tick t:   모든 조건 정상 → ContinueFlightMission (임무 수행)
+Tick t+1: IsMissionAbortRequired = SUCCESS → ExecuteMissionAbortRTL (귀환 시작)
+Tick t+2: 귀환 중... → ExecuteMissionAbortRTL (RUNNING)
+Tick t+3: IsEmergencyLandingRequired = SUCCESS
+          → ExecuteMissionAbortRTL.halt() (귀환 중단)
+          → ExecuteEmergencyLanding (긴급 착륙 전환)
+</code></pre>
+<p>귀환 중에 배터리가 위급 수준에 도달하면, 이륙 지점까지의 귀환을 중단하고 최근접 안전 지점으로의 긴급 착륙으로 즉시 전환된다. 이것이 ReactiveFallback의 선점 메커니즘에 의한 동적 착륙 전략 전환이다.</p>
+<h2>6. XML 정의 예시</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsImmediateLandingRequired /&gt;
+        &lt;ImmediateLanding descent_rate="2.0" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsEmergencyLandingRequired battery_critical="5.0" /&gt;
+        &lt;EmergencyLanding landing_zones="{safe_zones}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsPrecautionaryRTLRequired safety_margin="1.2" /&gt;
+        &lt;ReturnToLaunch speed="{rtl_speed}" altitude="{rtl_altitude}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsMissionAbortRequired max_wind="12.0" /&gt;
+        &lt;ReturnToLaunch speed="{cruise_speed}" altitude="{mission_altitude}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;ExecuteFlightMission waypoints="{mission_waypoints}" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<h2>7. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>에너지 예산 관리</strong>: 귀환 및 착륙에 필요한 에너지를 실시간으로 추정하고, 충분한 안전 마진을 확보하라. 풍속, 기온, 페이로드에 따라 에너지 소비율이 변동하므로, 보수적인 추정을 적용하라.</p>
+</li>
+<li>
+<p><strong>안전 착륙 지점 데이터베이스</strong>: 비상 착륙용 안전 지점을 사전에 등록하고, 비행 중 현재 위치로부터의 도달 가능성을 지속적으로 갱신하라.</p>
+</li>
+<li>
+<p><strong>Halt 시 호버링 보장</strong>: 비행 관련 행동에 Halt가 호출되면, 모터 정지가 아닌 호버링으로 전환하여야 한다. 비행 중 모터 정지는 추락을 의미한다.</p>
+</li>
+<li>
+<p><strong>착륙 유형 간 전환 안전성</strong>: 한 착륙 유형에서 더 심각한 착륙 유형으로 전환될 때, 이전 착륙 계획의 상태가 안전하게 정리되어야 한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

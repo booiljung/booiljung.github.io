@@ -115,6 +115,156 @@
             </header>
             <article>
                 <h1>1294.80 Fallback에서의 자식 Halt 처리</h1>
+<h2>1. Fallback에서 Halt가 발생하는 상황</h2>
+<p>Fallback 노드에서 자식의 Halt가 발생하는 상황은 Sequence와 대칭적 구조를 가진다. 주요 상황은 다음과 같다: (1) Fallback 자체가 부모로부터 Halt 요청을 받는 경우, (2) ReactiveFallback에서 앞쪽 자식의 SUCCESS에 의해 뒤쪽 RUNNING 자식이 중단되는 경우이다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 부모로부터의 Halt 전파</h2>
+<h3>2.1 Sequence 부모에 의한 Fallback Halt</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Fallback name="FB"&gt;
+        &lt;Action ID="Alt1"/&gt;        &lt;!-- RUNNING --&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="NextStep"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>Sequence의 부모가 Halt를 호출하면, Sequence는 RUNNING 상태인 Fallback에 Halt를 전파하고, Fallback은 자신의 RUNNING 자식인 Alt1에 Halt를 전파한다.</p>
+<pre><code>부모 → Sequence.halt()
+       → Fallback.halt()
+         → Alt1.halt() (RUNNING → IDLE)
+       → Fallback: IDLE
+     → Sequence: IDLE
+</code></pre>
+<h3>2.2 Halt의 재귀적 전파</h3>
+<pre><code class="language-xml">&lt;Fallback name="Outer"&gt;
+    &lt;Fallback name="Inner"&gt;
+        &lt;Action ID="DeepAction"/&gt;    &lt;!-- RUNNING → Halt --&gt;
+    &lt;/Fallback&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>Halt는 트리 구조를 따라 재귀적으로 전파된다. Outer의 Halt가 Inner로, Inner의 Halt가 DeepAction으로 전달된다.</p>
+<h2>3. ReactiveFallback에서의 Halt</h2>
+<h3>3.1 상위 대안의 SUCCESS에 의한 Halt</h3>
+<p>ReactiveFallback에서는 매 Tick 첫 번째 자식부터 재평가한다. 앞쪽 자식이 SUCCESS를 반환하면, 뒤쪽에 RUNNING 상태인 자식이 Halt된다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPrimaryAvailable"/&gt;
+        &lt;Action ID="PrimaryAction"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="FallbackAction"/&gt;    &lt;!-- RUNNING → Halt --&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<pre><code>Tick 1: IsPrimaryAvailable→F → Sequence: FAILURE
+        FallbackAction→R      → RUNNING (대안 수행 중)
+Tick 2: IsPrimaryAvailable→F → Sequence: FAILURE
+        FallbackAction→R      → RUNNING
+Tick 3: IsPrimaryAvailable→S, PrimaryAction→R → RUNNING
+        FallbackAction→Halt   (RUNNING → IDLE)
+</code></pre>
+<p>Tick 3에서 1순위 대안이 가용해지면, ReactiveFallback은 1순위 대안의 Sequence를 실행하고 FallbackAction을 Halt한다. 이는 “더 우선순위가 높은 대안이 가용해졌으므로, 현재 대안을 중단한다“는 의미이다.</p>
+<h3>3.2 Halt 후 재전환</h3>
+<pre><code>Tick 3: IsPrimaryAvailable→S, PrimaryAction→R  (1순위 실행)
+        FallbackAction→Halt
+Tick 4: IsPrimaryAvailable→F → Sequence: FAILURE  (1순위 다시 불가)
+        FallbackAction→R      (대안 재시작, onStart() 호출)
+</code></pre>
+<p>1순위 대안이 다시 불가해지면 FallbackAction이 재시작된다. Halt된 액션은 IDLE 상태이므로 <code>onStart()</code>부터 새로 시작한다.</p>
+<h2>4. FallbackWithMemory에서의 Halt</h2>
+<h3>4.1 부모 Halt 시 idx 초기화</h3>
+<pre><code class="language-xml">&lt;FallbackWithMemory&gt;
+    &lt;Action ID="Alt1"/&gt;    &lt;!-- 이전 FAILURE, 건너뜀 --&gt;
+    &lt;Action ID="Alt2"/&gt;    &lt;!-- RUNNING (idx=1) --&gt;
+    &lt;Action ID="Alt3"/&gt;
+&lt;/FallbackWithMemory&gt;
+</code></pre>
+<p>FallbackWithMemory가 부모로부터 Halt를 받으면:</p>
+<ol>
+<li>RUNNING 상태인 Alt2에 <code>halt()</code> 호출 (RUNNING → IDLE)</li>
+<li><code>current_child_idx</code>가 0으로 초기화</li>
+<li>다음에 Tick되면 Alt1부터 다시 시작</li>
+</ol>
+<pre><code>부모 Halt → Alt2.halt() (RUNNING → IDLE)
+           → idx = 0 (기억 초기화)
+다음 Tick: Alt1부터 재시작
+</code></pre>
+<h3>4.2 자식 FAILURE 시의 자연스러운 전환</h3>
+<p>FallbackWithMemory에서 현재 자식이 FAILURE를 반환하면, 다음 자식으로 자연스럽게 전환된다. 이 과정에서 Halt는 발생하지 않는다(FAILURE를 반환한 자식은 이미 IDLE 상태로 전이한 것이므로).</p>
+<pre><code>Tick 1: Alt1→R (idx=0)
+Tick 2: Alt1→F, Alt2→R (idx=1, Alt1 자체적으로 IDLE로 전이)
+</code></pre>
+<h2>5. Halt 처리의 구현</h2>
+<h3>5.1 BehaviorTree.CPP에서의 Fallback Halt 구현</h3>
+<pre><code class="language-cpp">void FallbackNode::halt() {
+    // 현재 RUNNING인 자식을 Halt
+    if (current_child_idx_ &lt; children_nodes_.size()) {
+        haltChild(current_child_idx_);
+    }
+    // 인덱스 초기화 (WithMemory 변형)
+    current_child_idx_ = 0;
+    // 자체 상태를 IDLE로 설정
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<h3>5.2 ReactiveFallback에서의 선택적 Halt</h3>
+<pre><code class="language-cpp">// ReactiveFallback의 tick() 내부
+for (size_t i = 0; i &lt; children_count; i++) {
+    NodeStatus status = children_nodes_[i]-&gt;executeTick();
+    if (status == NodeStatus::SUCCESS) {
+        // i 이후의 RUNNING 자식을 Halt
+        haltChildren(i + 1);
+        return NodeStatus::SUCCESS;
+    }
+    // ...
+}
+</code></pre>
+<p>ReactiveFallback은 SUCCESS를 반환한 자식 이후의 모든 RUNNING 자식을 Halt한다(Faconti, 2022).</p>
+<h2>6. Sequence와 Fallback의 Halt 대칭성</h2>
+<table><thead><tr><th>특성</th><th>Sequence의 Halt</th><th>Fallback의 Halt</th></tr></thead><tbody>
+<tr><td>Halt 트리거 (Reactive)</td><td>앞쪽 자식 FAILURE</td><td>앞쪽 자식 SUCCESS</td></tr>
+<tr><td>Halt 대상</td><td>뒤쪽 RUNNING 자식</td><td>뒤쪽 RUNNING 자식</td></tr>
+<tr><td>Halt의 의미</td><td>“조건 위반, 작업 중단”</td><td>“상위 대안 가용, 전환”</td></tr>
+<tr><td>부모 Halt 시</td><td>모든 RUNNING 자식 Halt</td><td>모든 RUNNING 자식 Halt</td></tr>
+</tbody></table>
+<h2>7. 로봇 공학에서의 Fallback Halt 시나리오</h2>
+<h3>7.1 복구 행동 중 정상 복귀</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPathClear"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="RecoveryBehavior"/&gt;    &lt;!-- RUNNING → Halt --&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>복구 행동 수행 중 경로가 다시 깨끗해지면, RecoveryBehavior가 Halt되고 FollowPath로 전환된다. <code>onHalted()</code>에서 복구 행동의 상태를 적절히 정리해야 한다.</p>
+<h3>7.2 비상 대응 중 상황 개선</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsAllNormal"/&gt;
+        &lt;SubTree ID="NormalMission"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="EmergencyResponse"/&gt;   &lt;!-- RUNNING → Halt --&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>비상 대응 중 시스템이 정상으로 복구되면, EmergencyResponse가 Halt되고 정상 임무로 전환된다.</p>
+<h2>8. Halt 처리의 설계 원칙</h2>
+<ol>
+<li>
+<p><strong>안전한 상태 전이</strong>: Halt 시 물리적 시스템을 안전한 상태로 전이시킨다. 특히 ReactiveFallback에서의 빈번한 Halt-재시작 사이클에서도 안전이 보장되어야 한다.</p>
+</li>
+<li>
+<p><strong>상태 정리의 완전성</strong>: Halt된 액션의 내부 상태가 다음 실행에 영향을 주지 않도록 <code>onHalted()</code>에서 완전히 정리한다.</p>
+</li>
+<li>
+<p><strong>Halt 비용의 최소화</strong>: ReactiveFallback에서는 Halt가 빈번하게 발생할 수 있으므로, <code>onHalted()</code>의 실행 비용을 최소화해야 한다.</p>
+</li>
+<li>
+<p><strong>비동기 작업의 취소</strong>: 진행 중인 ROS2 액션 목표, 서비스 호출 등의 비동기 작업은 <code>onHalted()</code>에서 적절히 취소하여 자원 누수를 방지한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

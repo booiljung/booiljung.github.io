@@ -115,6 +115,309 @@
             </header>
             <article>
                 <h1>1294.96 노드 반환 상태 추적을 통한 디버깅</h1>
+<h2>1. 반환 상태 추적의 원리</h2>
+<p>노드 반환 상태 추적은 행동 트리의 각 노드가 매 Tick에서 반환하는 상태(SUCCESS, FAILURE, RUNNING, SKIPPED)를 시간 축에 따라 기록하고 분석하는 디버깅 기법이다. Sequence와 Fallback 제어 노드의 동작은 자식 노드의 반환 상태에 의해 완전히 결정되므로, 반환 상태의 시계열 데이터를 분석하면 제어 흐름의 이상을 진단할 수 있다(Faconti, 2022).</p>
+<h2>2. 상태 추적 로거의 구현</h2>
+<h3>2.1 시계열 기록 로거</h3>
+<pre><code class="language-cpp">struct StatusRecord {
+    int tick_number;
+    std::string node_name;
+    std::string node_type;
+    BT::NodeStatus prev_status;
+    BT::NodeStatus curr_status;
+    std::chrono::steady_clock::time_point timestamp;
+};
+
+class StatusTraceLogger : public BT::StatusChangeLogger {
+public:
+    StatusTraceLogger(const BT::Tree&amp; tree)
+        : StatusChangeLogger(tree.rootNode()), tick_count_(0) {}
+    
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev,
+                  BT::NodeStatus curr) override {
+        records_.push_back({
+            tick_count_,
+            node.name(),
+            node.registrationName(),
+            prev,
+            curr,
+            std::chrono::steady_clock::now()
+        });
+    }
+    
+    void onTickBegin() { tick_count_++; }
+    
+    const std::vector&lt;StatusRecord&gt;&amp; records() const {
+        return records_;
+    }
+    
+    void flush() override {}
+
+private:
+    int tick_count_;
+    std::vector&lt;StatusRecord&gt; records_;
+};
+</code></pre>
+<h3>2.2 Tick 단위 상태 스냅샷</h3>
+<pre><code class="language-cpp">class TickSnapshot {
+public:
+    void capture(const BT::Tree&amp; tree, int tick_number) {
+        std::map&lt;std::string, BT::NodeStatus&gt; snapshot;
+        
+        tree.applyVisitor([&amp;](const%20BT::TreeNode*%20node) {
+            snapshot[node-&gt;name()] = node-&gt;status();
+        });
+        
+        snapshots_[tick_number] = snapshot;
+    }
+    
+    void printDiff(int tick_a, int tick_b) const {
+        const auto&amp; sa = snapshots_.at(tick_a);
+        const auto&amp; sb = snapshots_.at(tick_b);
+        
+        std::cout &lt;&lt; "=== Diff: Tick " &lt;&lt; tick_a
+                  &lt;&lt; " -&gt; Tick " &lt;&lt; tick_b &lt;&lt; " ===" &lt;&lt; std::endl;
+        
+        for (const auto&amp; [name, status_b] : sb) {
+            auto it = sa.find(name);
+            if (it != sa.end() &amp;&amp; it-&gt;second != status_b) {
+                std::cout &lt;&lt; "  " &lt;&lt; name &lt;&lt; ": "
+                          &lt;&lt; BT::toStr(it-&gt;second) &lt;&lt; " -&gt; "
+                          &lt;&lt; BT::toStr(status_b) &lt;&lt; std::endl;
+            }
+        }
+    }
+
+private:
+    std::map&lt;int, std::map&lt;std::string, BT::NodeStatus&gt;&gt; snapshots_;
+};
+</code></pre>
+<p>두 Tick 간의 상태 차이만을 출력하여, 변화가 발생한 노드를 신속히 식별할 수 있다.</p>
+<h2>3. Sequence의 반환 상태 추적 분석</h2>
+<h3>3.1 정상 실행 패턴</h3>
+<pre><code>Tick 1:
+  Sequence:   IDLE → RUNNING
+  action1:    IDLE → RUNNING
+  action1:    RUNNING → SUCCESS
+  action2:    IDLE → RUNNING
+
+Tick 2:
+  action2:    RUNNING → SUCCESS
+  action3:    IDLE → RUNNING
+
+Tick 3:
+  action3:    RUNNING → SUCCESS
+  Sequence:   RUNNING → SUCCESS
+</code></pre>
+<p>정상 패턴에서는 각 자식이 순차적으로 IDLE→RUNNING→SUCCESS를 거치며, 마지막 자식의 SUCCESS와 동시에 Sequence가 SUCCESS로 전이한다.</p>
+<h3>3.2 이상 패턴: 예기치 않은 FAILURE</h3>
+<pre><code>Tick 1:
+  Sequence:   IDLE → RUNNING
+  action1:    IDLE → RUNNING
+  action1:    RUNNING → SUCCESS
+  action2:    IDLE → RUNNING
+
+Tick 2:
+  action2:    RUNNING → FAILURE    ← 문제 지점
+  Sequence:   RUNNING → FAILURE
+</code></pre>
+<p>action2의 RUNNING→FAILURE 전이가 Sequence의 FAILURE를 유발한다. 이 시점에서 action2의 내부 상태와 입력 데이터를 조사해야 한다.</p>
+<h3>3.3 이상 패턴: 무한 RUNNING</h3>
+<pre><code>Tick 1: Sequence→R, action1→S, action2→R
+Tick 2: action2→R                          (SequenceWithMemory)
+Tick 3: action2→R
+Tick 4: action2→R
+...
+</code></pre>
+<p>action2가 RUNNING에서 벗어나지 않는 패턴은 비동기 작업의 완료 조건이 충족되지 않음을 나타낸다. action2의 <code>onRunning()</code> 구현을 조사해야 한다.</p>
+<h2>4. Fallback의 반환 상태 추적 분석</h2>
+<h3>4.1 정상 복구 패턴</h3>
+<pre><code>Tick 1:
+  Fallback:   IDLE → RUNNING
+  action1:    IDLE → RUNNING
+  action1:    RUNNING → FAILURE
+  action2:    IDLE → RUNNING
+
+Tick 2:
+  action2:    RUNNING → SUCCESS
+  Fallback:   RUNNING → SUCCESS
+</code></pre>
+<p>첫 번째 대안이 FAILURE를 반환하고 두 번째 대안이 SUCCESS를 반환하여 Fallback이 복구에 성공하는 정상 패턴이다.</p>
+<h3>4.2 이상 패턴: 전체 대안 소진</h3>
+<pre><code>Tick 1:
+  Fallback:   IDLE → RUNNING
+  action1:    IDLE → FAILURE          ← 대안 1 실패
+  action2:    IDLE → FAILURE          ← 대안 2 실패
+  action3:    IDLE → FAILURE          ← 대안 3 실패
+  Fallback:   RUNNING → FAILURE      ← 전체 실패
+</code></pre>
+<p>모든 대안이 단일 Tick 내에서 즉시 FAILURE를 반환하는 패턴은 복구 전략의 부재를 나타낸다. 각 대안의 실패 원인을 개별적으로 분석해야 한다.</p>
+<h2>5. 상태 전이 테이블 분석</h2>
+<h3>5.1 Tick별 상태 매트릭스</h3>
+<pre><code>         | Tick 1 | Tick 2 | Tick 3 | Tick 4 | Tick 5
+---------|--------|--------|--------|--------|-------
+Sequence | R      | R      | R      | R      | S
+action1  | S      | .      | .      | .      | .
+action2  | R      | R      | S      | .      | .
+action3  | .      | .      | R      | R      | S
+
+R=RUNNING, S=SUCCESS, F=FAILURE, .=IDLE(미실행)
+</code></pre>
+<p>이 매트릭스에서 각 행은 노드의 시간에 따른 상태 변화를, 각 열은 특정 Tick에서의 전체 트리 상태를 나타낸다. 열 방향 분석은 특정 Tick에서의 스냅샷을, 행 방향 분석은 특정 노드의 생애 주기를 보여준다.</p>
+<h3>5.2 SequenceWithMemory의 건너뛰기 확인</h3>
+<pre><code>         | Tick 1 | Tick 2 | Tick 3
+---------|--------|--------|-------
+Sequence | R      | R      | S
+action1  | S      | .      | .       ← Tick 2,3에서 미실행 (Memory)
+action2  | R      | S      | .       ← Tick 1에서 R, Tick 2에서 S
+action3  | .      | R      | S
+</code></pre>
+<p>action1이 Tick 2, 3에서 <code>.</code>(미실행)인 것이 Memory 동작의 증거이다. 만약 여기서 action1이 재실행되면 <code>&lt;ReactiveSequence&gt;</code>를 사용한 것이므로 XML 태그를 확인해야 한다.</p>
+<h3>5.3 ReactiveSequence의 재평가 확인</h3>
+<pre><code>         | Tick 1 | Tick 2 | Tick 3
+---------|--------|--------|-------
+RSeq     | R      | R      | S
+cond1    | S      | S      | S       ← 매 Tick 재평가 (Reactive)
+action1  | R      | R      | S
+</code></pre>
+<p>cond1이 매 Tick S를 반환하는 것이 Reactive 동작의 증거이다.</p>
+<h2>6. 상태 전이 그래프 분석</h2>
+<h3>6.1 노드별 상태 전이 다이어그램</h3>
+<p>각 노드의 상태 전이를 그래프로 표현하면 비정상적 전이를 식별할 수 있다:</p>
+<pre><code>정상 전이:
+IDLE → RUNNING → SUCCESS
+IDLE → RUNNING → FAILURE
+IDLE → SUCCESS (동기 노드)
+IDLE → FAILURE (동기 노드)
+
+비정상 전이 (조사 필요):
+SUCCESS → RUNNING (resetChildren 없이 재실행?)
+FAILURE → RUNNING (이미 완료된 노드 재실행?)
+</code></pre>
+<h3>6.2 제어 노드의 상태 전이와 자식 상태의 상관관계</h3>
+<pre><code>Sequence의 상태 전이 원인:
+  RUNNING → SUCCESS: 마지막 자식이 SUCCESS 반환
+  RUNNING → FAILURE: 임의의 자식이 FAILURE 반환
+
+Fallback의 상태 전이 원인:
+  RUNNING → SUCCESS: 임의의 자식이 SUCCESS 반환
+  RUNNING → FAILURE: 마지막 자식이 FAILURE 반환
+</code></pre>
+<p>제어 노드의 상태 전이가 발생한 Tick에서 어떤 자식의 상태 전이가 원인인지를 역추적한다.</p>
+<h2>7. 필터링 기반 분석</h2>
+<h3>7.1 특정 노드 추적</h3>
+<pre><code class="language-cpp">void printNodeTrace(const std::vector&lt;StatusRecord&gt;&amp; records,
+                    const std::string&amp; node_name) {
+    std::cout &lt;&lt; "=== Trace: " &lt;&lt; node_name &lt;&lt; " ===" &lt;&lt; std::endl;
+    for (const auto&amp; r : records) {
+        if (r.node_name == node_name) {
+            std::cout &lt;&lt; "Tick " &lt;&lt; r.tick_number &lt;&lt; ": "
+                      &lt;&lt; BT::toStr(r.prev_status) &lt;&lt; " -&gt; "
+                      &lt;&lt; BT::toStr(r.curr_status) &lt;&lt; std::endl;
+        }
+    }
+}
+</code></pre>
+<h3>7.2 특정 상태 전이 필터링</h3>
+<pre><code class="language-cpp">void printFailureTransitions(const std::vector&lt;StatusRecord&gt;&amp; records) {
+    std::cout &lt;&lt; "=== FAILURE Transitions ===" &lt;&lt; std::endl;
+    for (const auto&amp; r : records) {
+        if (r.curr_status == BT::NodeStatus::FAILURE) {
+            std::cout &lt;&lt; "Tick " &lt;&lt; r.tick_number &lt;&lt; ": "
+                      &lt;&lt; r.node_name &lt;&lt; " (" &lt;&lt; r.node_type &lt;&lt; "): "
+                      &lt;&lt; BT::toStr(r.prev_status) &lt;&lt; " -&gt; FAILURE"
+                      &lt;&lt; std::endl;
+        }
+    }
+}
+</code></pre>
+<p>FAILURE 전이만 필터링하면, Sequence의 실패 원인이 되는 자식 노드를 신속히 식별할 수 있다.</p>
+<h3>7.3 인과 관계 추적</h3>
+<pre><code class="language-cpp">void printCausalChain(const std::vector&lt;StatusRecord&gt;&amp; records,
+                      int tick_number) {
+    std::cout &lt;&lt; "=== Causal Chain at Tick " &lt;&lt; tick_number
+              &lt;&lt; " ===" &lt;&lt; std::endl;
+    
+    // 해당 Tick의 모든 전이를 시간 순서대로 출력
+    for (const auto&amp; r : records) {
+        if (r.tick_number == tick_number) {
+            std::cout &lt;&lt; "  " &lt;&lt; r.node_name &lt;&lt; ": "
+                      &lt;&lt; BT::toStr(r.prev_status) &lt;&lt; " -&gt; "
+                      &lt;&lt; BT::toStr(r.curr_status) &lt;&lt; std::endl;
+        }
+    }
+}
+</code></pre>
+<p>특정 Tick에서 발생한 모든 상태 전이를 시간 순서대로 출력하면, 인과 관계 체인을 재구성할 수 있다. 예를 들어, “action2 FAILURE → Sequence FAILURE → 상위 Fallback이 다음 대안으로 진행“이라는 인과 체인을 식별할 수 있다.</p>
+<h2>8. 통계 기반 분석</h2>
+<h3>8.1 노드별 상태 반환 빈도</h3>
+<pre><code class="language-cpp">void printStatusStatistics(const std::vector&lt;StatusRecord&gt;&amp; records) {
+    std::map&lt;std::string,
+             std::map&lt;BT::NodeStatus, int&gt;&gt; stats;
+    
+    for (const auto&amp; r : records) {
+        stats[r.node_name][r.curr_status]++;
+    }
+    
+    for (const auto&amp; [name, status_counts] : stats) {
+        std::cout &lt;&lt; name &lt;&lt; ": ";
+        for (const auto&amp; [status, count] : status_counts) {
+            std::cout &lt;&lt; BT::toStr(status) &lt;&lt; "=" &lt;&lt; count &lt;&lt; " ";
+        }
+        std::cout &lt;&lt; std::endl;
+    }
+}
+</code></pre>
+<p>출력 예:</p>
+<pre><code>main_sequence:   RUNNING=15  SUCCESS=3  FAILURE=2
+navigate_action: RUNNING=10  SUCCESS=3  FAILURE=2
+grasp_action:    RUNNING=5   SUCCESS=3  FAILURE=0
+</code></pre>
+<p>FAILURE 빈도가 높은 노드를 우선적으로 조사하고, RUNNING 지속 시간이 비정상적으로 긴 노드의 비동기 완료 조건을 점검한다.</p>
+<h3>8.2 Reactive 노드의 재평가 빈도 분석</h3>
+<pre><code class="language-cpp">void printReactiveReevaluationCount(
+        const std::vector&lt;StatusRecord&gt;&amp; records,
+        const std::string&amp; condition_name) {
+    int total_evaluations = 0;
+    int failure_count = 0;
+    
+    for (const auto&amp; r : records) {
+        if (r.node_name == condition_name) {
+            total_evaluations++;
+            if (r.curr_status == BT::NodeStatus::FAILURE) {
+                failure_count++;
+            }
+        }
+    }
+    
+    std::cout &lt;&lt; condition_name &lt;&lt; ": evaluated "
+              &lt;&lt; total_evaluations &lt;&lt; " times, "
+              &lt;&lt; failure_count &lt;&lt; " failures ("
+              &lt;&lt; (100.0 * failure_count / total_evaluations)
+              &lt;&lt; "%)" &lt;&lt; std::endl;
+}
+</code></pre>
+<p>ReactiveSequence의 조건 노드가 매 Tick 재평가되므로, 그 평가 빈도와 FAILURE 비율을 분석하면 조건의 안정성을 평가할 수 있다.</p>
+<h2>9. 반환 상태 추적의 한계</h2>
+<ol>
+<li>
+<p><strong>내부 상태 불투명성</strong>: 반환 상태 추적만으로는 노드의 내부 로직(예: 블랙보드 값, 센서 데이터)을 직접 관찰할 수 없다. 반환 상태가 예상과 다른 이유를 파악하려면 해당 노드의 내부 상태를 별도로 로깅해야 한다.</p>
+</li>
+<li>
+<p><strong>시간 해상도</strong>: Tick 단위의 추적은 Tick 내부에서의 실행 순서를 보여주지만, 실제 시간(wall-clock time)과의 대응이 필요한 실시간 시스템에서는 타임스탬프 기반 추적이 필요하다.</p>
+</li>
+<li>
+<p><strong>대규모 트리의 로그량</strong>: 노드 수가 많은 트리에서는 로그량이 방대해진다. 필터링과 집계를 통해 관련 정보만 추출하는 분석 도구가 필수적이다(Colledanchise &amp; Ogren, 2018).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

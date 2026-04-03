@@ -115,6 +115,109 @@
             </header>
             <article>
                 <h1>1294.35 Fallback 노드의 Running 반환 조건</h1>
+<h2>1. RUNNING 반환의 정의</h2>
+<p>Fallback 노드가 RUNNING을 반환하는 조건은 “좌→우 순차 평가에서, 이전 자식들이 모두 FAILURE를 반환한 후 현재 평가 중인 자식이 RUNNING을 반환하는 것“이다. RUNNING은 해당 자식의 비동기 작업이 아직 완료되지 않았으므로, 대안 탐색의 최종 결과를 현재 Tick에서 결정할 수 없음을 의미한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 형식적 조건</h2>
+<p>자식 <span class="math math-inline">c_1, c_2, ..., c_N</span>을 가진 Fallback이 RUNNING을 반환하는 필요충분조건은 다음과 같다:</p>
+<p><span class="math math-display">\exists k \in [1, N]: c_k = \text{RUNNING} \land \forall j &lt; k: c_j = \text{FAILURE}</span></p>
+<p>인덱스 <span class="math math-inline">k</span>의 자식이 RUNNING을 반환하고, 그 앞의 모든 자식이 FAILURE를 반환한 경우이다. RUNNING 자식 이후의 자식(<span class="math math-inline">c_{k+1}</span>부터 <span class="math math-inline">c_N</span>)은 평가되지 않는다.</p>
+<h2>RUNNING 반환의 실행 흐름</h2>
+<h3>첫 번째 자식이 RUNNING</h3>
+<pre><code>children: [AsyncActA, ActB, ActC]
+
+tick():
+  AsyncActA.executeTick() → RUNNING
+  → return RUNNING    (ActB, ActC 미평가)
+</code></pre>
+<p>첫 번째 대안의 비동기 작업이 진행 중이므로, 해당 대안의 결과가 나올 때까지 대기한다.</p>
+<h3>중간 자식이 RUNNING</h3>
+<pre><code>children: [ActA, AsyncActB, ActC]
+
+tick():
+  ActA.executeTick() → FAILURE
+  AsyncActB.executeTick() → RUNNING
+  → return RUNNING    (ActC 미평가)
+</code></pre>
+<p>첫 번째 대안이 실패하고, 두 번째 대안의 비동기 작업이 진행 중이다.</p>
+<h3>마지막 자식이 RUNNING</h3>
+<pre><code>children: [ActA, ActB, AsyncActC]
+
+tick():
+  ActA.executeTick() → FAILURE
+  ActB.executeTick() → FAILURE
+  AsyncActC.executeTick() → RUNNING
+  → return RUNNING
+</code></pre>
+<p>모든 선행 대안이 실패하고, 최후 수단의 비동기 작업이 진행 중이다.</p>
+<h2>RUNNING 상태의 지속과 해소</h2>
+<h3>RUNNING에서 SUCCESS로의 전환</h3>
+<pre><code>Tick 1: ActA→F, AsyncActB→R  → RUNNING
+Tick 2: AsyncActB→S          → SUCCESS (대안 B 성공)
+</code></pre>
+<p>RUNNING이었던 자식이 SUCCESS를 반환하면, Fallback도 SUCCESS를 반환한다. 대안 탐색이 성공적으로 완료된 것이다.</p>
+<h3>RUNNING에서 FAILURE로의 전환</h3>
+<pre><code>Tick 1: ActA→F, AsyncActB→R  → RUNNING
+Tick 2: AsyncActB→F, ActC→S  → SUCCESS (대안 C로 이동 후 성공)
+</code></pre>
+<p>또는:</p>
+<pre><code>Tick 1: ActA→F, AsyncActB→R  → RUNNING
+Tick 2: AsyncActB→F, ActC→F  → FAILURE (모든 대안 소진)
+</code></pre>
+<p>RUNNING이었던 자식이 FAILURE를 반환하면, Fallback은 다음 자식의 평가로 진행한다.</p>
+<h2>WithMemory에서의 RUNNING 처리</h2>
+<p>FallbackWithMemory에서 RUNNING 자식의 인덱스는 <code>current_child_idx</code>에 기억된다. 다음 Tick에서는 해당 인덱스부터 재개하여, FAILURE를 반환했던 이전 자식들의 재평가를 건너뛴다.</p>
+<pre><code>Tick 1:
+  ActA.executeTick() → FAILURE
+  AsyncActB.executeTick() → RUNNING
+  current_child_idx ← 1
+  → RUNNING
+
+Tick 2: (인덱스 1부터 재개)
+  AsyncActB.executeTick() → RUNNING    (ActA 건너뜀)
+  → RUNNING
+
+Tick 3: (인덱스 1부터 재개)
+  AsyncActB.executeTick() → FAILURE    (ActA 건너뜀)
+  ActC.executeTick() → SUCCESS
+  current_child_idx ← 0
+  → SUCCESS
+</code></pre>
+<h3>WithMemory의 RUNNING 기억 효과</h3>
+<ul>
+<li><strong>장점</strong>: FAILURE였던 이전 자식의 불필요한 재평가를 방지한다.</li>
+<li><strong>단점</strong>: 이전에 FAILURE였던 자식이 SUCCESS로 변경되더라도 감지하지 못한다.</li>
+</ul>
+<h2>ReactiveFallback에서의 RUNNING 처리</h2>
+<p>ReactiveFallback에서는 RUNNING 자식이 존재하더라도 매 Tick에서 인덱스 0부터 재평가한다. 이전에 FAILURE였던 앞쪽 자식이 SUCCESS로 변하면, RUNNING 자식이 Halt되고 SUCCESS가 반환된다.</p>
+<pre><code>Tick 1: CondA→F, AsyncActB→R           → RUNNING
+Tick 2: CondA→S                         → SUCCESS (AsyncActB Halt)
+</code></pre>
+<p>이 동작은 “더 우선순위가 높은 대안이 가용해지면 현재 진행 중인 대안을 중단하고 즉시 전환“하는 의미론이다.</p>
+<h2>RUNNING과 후속 자식의 미평가</h2>
+<p>Fallback에서 RUNNING이 발생하면, 해당 자식 이후의 모든 자식은 평가되지 않는다. 이는 현재 대안의 결과가 아직 미결정이므로, 더 낮은 우선순위의 대안을 시도하는 것이 시기상조이기 때문이다.</p>
+<pre><code>children: [A, B, C, D, E]
+
+A→FAILURE, B→RUNNING
+→ return RUNNING
+
+평가된 자식: A, B
+미평가 자식: C, D, E
+</code></pre>
+<p>만약 RUNNING 자식 이후의 자식도 평가한다면, 동시에 여러 대안이 병렬 실행되는 결과가 되어 Fallback의 “순차적 대안 탐색” 의미론이 훼손된다.</p>
+<h2>Sequence의 RUNNING과의 비교</h2>
+<table><thead><tr><th>특성</th><th>Sequence의 RUNNING</th><th>Fallback의 RUNNING</th></tr></thead><tbody>
+<tr><td>발생 조건</td><td>이전 자식 모두 SUCCESS 후 현재 RUNNING</td><td>이전 자식 모두 FAILURE 후 현재 RUNNING</td></tr>
+<tr><td>의미</td><td>“순차 작업 진행 중”</td><td>“대안 시도 진행 중”</td></tr>
+<tr><td>후속 자식</td><td>미평가</td><td>미평가</td></tr>
+<tr><td>해소 방향</td><td>SUCCESS→다음 자식, FAILURE→전체 FAILURE</td><td>SUCCESS→전체 SUCCESS, FAILURE→다음 자식</td></tr>
+</tbody></table>
+<p>두 노드 모두 RUNNING에서 후속 자식을 미평가하는 점은 동일하지만, RUNNING 해소 후의 분기 방향이 반대이다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

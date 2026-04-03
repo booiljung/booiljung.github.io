@@ -115,6 +115,110 @@
             </header>
             <article>
                 <h1>1295.52 ReactiveSequence 노드의 심화 분석</h1>
+<h2>1. ReactiveSequence의 본질</h2>
+<p>ReactiveSequence는 행동 트리(Behavior Tree)의 제어 노드 중 하나로, 일반 Sequence 노드에 매 Tick 재평가(re-evaluation) 메커니즘을 추가한 반응형 제어 노드이다. 일반 Sequence가 이전 Tick에서 <code>SUCCESS</code>를 반환한 자식을 건너뛰고 진행 중인 자식부터 Tick을 전파하는 반면, ReactiveSequence는 매 Tick마다 첫 번째 자식부터 순차적으로 재평가한다. 이 재평가 메커니즘은 행동의 실행 도중에도 전제 조건(precondition)의 유효성을 지속적으로 검증하는 구조적 기반을 제공한다.</p>
+<h2>2. 일반 Sequence와의 근본적 차이</h2>
+<p>일반 Sequence 노드는 메모리(memory)를 가진다. 즉, 이전 Tick에서 자식 <span class="math math-inline">C_i</span>가 <code>SUCCESS</code>를 반환하였으면, 다음 Tick에서는 <span class="math math-inline">C_i</span>를 건너뛰고 <span class="math math-inline">C_{i+1}</span>부터 Tick을 전파한다. 이 메모리 메커니즘은 이미 성공한 자식을 반복 실행하지 않음으로써 효율성을 확보한다.</p>
+<p>ReactiveSequence는 이 메모리를 제거한다. 매 Tick에서 항상 첫 번째 자식 <span class="math math-inline">C_1</span>부터 평가를 시작한다. 따라서 이전 Tick에서 <span class="math math-inline">C_1</span>이 <code>SUCCESS</code>를 반환하였더라도, 다음 Tick에서 <span class="math math-inline">C_1</span>이 다시 평가되며 이번에 <code>FAILURE</code>를 반환할 수 있다. 이 경우 <span class="math math-inline">C_1</span> 이후의 모든 자식, 특히 <code>RUNNING</code> 상태였던 행동 노드에 Halt가 전파된다.</p>
+<table><thead><tr><th>특성</th><th>Sequence</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>재평가 시작점</td><td>마지막 <code>RUNNING</code> 자식</td><td>항상 첫 번째 자식</td></tr>
+<tr><td>메모리</td><td>있음</td><td>없음</td></tr>
+<tr><td>조건 재검사</td><td>없음 (통과 후 건너뜀)</td><td>매 Tick 재검사</td></tr>
+<tr><td>Halt 발생 조건</td><td>부모로부터의 Halt</td><td>선행 자식 <code>FAILURE</code> 시 후행 자식 Halt</td></tr>
+</tbody></table>
+<h2>3. ReactiveSequence의 의미론적 해석</h2>
+<p>ReactiveSequence의 자식 배치는 다음의 의미론을 가진다.</p>
+<pre><code>ReactiveSequence
+├── C₁ (전제 조건 1)
+├── C₂ (전제 조건 2)
+├── ...
+├── Cₙ₋₁ (전제 조건 n-1)
+└── Cₙ (주 행동)
+</code></pre>
+<p><span class="math math-inline">C_1</span>부터 <span class="math math-inline">C_{n-1}</span>까지는 주 행동 <span class="math math-inline">C_n</span>의 실행을 위한 전제 조건을 표현한다. ReactiveSequence는 “<span class="math math-inline">C_1</span>이고 <span class="math math-inline">C_2</span>이고 … <span class="math math-inline">C_{n-1}</span>인 동안 <span class="math math-inline">C_n</span>을 수행하라“는 의미를 구조적으로 표현한다. 어느 한 전제 조건이라도 위반되면 주 행동에 즉시 Halt가 전파되어 행동이 중단된다.</p>
+<p>이를 논리적으로 표현하면, ReactiveSequence는 다음의 불변 조건(invariant)을 매 Tick에서 강제한다.</p>
+<p><span class="math math-display">\forall t : C_n(t) = \text{RUNNING} \implies \bigwedge_{i=1}^{n-1} C_i(t) = \text{SUCCESS}</span></p>
+<p>즉, 주 행동이 실행 중(<code>RUNNING</code>)인 모든 시점에서, 모든 전제 조건이 <code>SUCCESS</code>를 반환하여야 한다. 이 불변 조건이 위반되는 순간 주 행동은 Halt된다.</p>
+<h2>자식 노드의 역할 구분</h2>
+<p>ReactiveSequence에서 자식 노드는 그 위치에 따라 역할이 명확히 구분된다.</p>
+<h3>조건 자식 (선행 위치)</h3>
+<p>ReactiveSequence의 앞부분에 배치되는 조건 노드(Condition Node)는 매 Tick에서 재평가된다. 이 조건 노드는 다음의 특성을 충족하여야 한다.</p>
+<ol>
+<li><strong>즉시 완료</strong>: <code>SUCCESS</code> 또는 <code>FAILURE</code>만 반환하고 <code>RUNNING</code>을 반환하지 않아야 한다.</li>
+<li><strong>무부작용(side-effect free)</strong>: 블랙보드나 외부 상태를 변경하지 않아야 한다.</li>
+<li><strong>경량 연산</strong>: 매 Tick에서 반복 평가되므로 연산 비용이 낮아야 한다.</li>
+</ol>
+<p>조건 자식이 <code>RUNNING</code>을 반환하면 ReactiveSequence는 후속 자식을 평가하지 않으므로, 조건 자식에서의 <code>RUNNING</code> 반환은 사실상 행동의 차단을 의미한다.</p>
+<h3>행동 자식 (후행 위치)</h3>
+<p>ReactiveSequence의 마지막에 배치되는 행동 노드(Action Node)는 <code>RUNNING</code>을 반환하며 다수의 Tick에 걸쳐 실행되는 장기 실행 행동(long-running action)이다. 이 행동 노드는 선행 조건이 모두 <code>SUCCESS</code>인 동안에만 실행이 허용되며, 선행 조건 중 하나라도 <code>FAILURE</code>가 되면 Halt를 수신한다.</p>
+<p>행동 자식에게 Halt가 호출되면, 해당 행동은 진행 중인 작업을 안전하게 정리(cleanup)하여야 한다. Halt 처리의 안전성은 ReactiveSequence 패턴의 신뢰성에 직결된다.</p>
+<h2>다중 조건과 다중 행동의 배치</h2>
+<p>ReactiveSequence에 복수의 조건과 복수의 행동을 배치하는 것이 가능하다.</p>
+<h3>다중 조건</h3>
+<pre><code>ReactiveSequence
+├── IsRobotOperational        // 조건 1
+├── IsPathClear               // 조건 2
+├── IsBatteryAboveThreshold   // 조건 3
+└── NavigateToGoal            // 주 행동
+</code></pre>
+<p>조건은 순차적으로 평가되며, 앞선 조건이 <code>FAILURE</code>를 반환하면 이후 조건은 평가되지 않는다(단축 평가, short-circuit evaluation). 따라서 가장 빈번하게 위반되는 조건이나 가장 빠르게 평가되는 조건을 앞에 배치하면 평가 효율이 향상된다.</p>
+<h3>다중 행동의 주의점</h3>
+<pre><code>ReactiveSequence
+├── IsConditionMet            // 조건
+├── Action_A                  // 행동 1
+└── Action_B                  // 행동 2
+</code></pre>
+<p>이 구조에서 <code>Action_A</code>가 <code>RUNNING</code>을 반환하면 <code>Action_B</code>는 Tick을 수신하지 않는다. <code>Action_A</code>가 <code>SUCCESS</code>를 반환하면 <code>Action_B</code>가 Tick을 수신하지만, 다음 Tick에서 <code>Action_A</code>가 다시 평가된다. <code>Action_A</code>가 상태를 가지지 않는(stateless) 행동이면 다시 <code>SUCCESS</code>를 반환하여 <code>Action_B</code>가 계속 실행될 수 있다. 그러나 <code>Action_A</code>가 상태를 가지는(stateful) 행동이면 재평가 시 예기치 않은 동작을 유발할 수 있다. 따라서 ReactiveSequence에서 복수의 <code>RUNNING</code> 가능 행동을 순차 배치하는 것은 일반적으로 권장되지 않는다.</p>
+<h2>Tick 흐름의 상세 추적</h2>
+<p>다음의 ReactiveSequence를 기준으로 Tick 흐름을 추적한다.</p>
+<pre><code>ReactiveSequence
+├── IsSafe          // 조건 노드
+├── HasGoal         // 조건 노드
+└── MoveToGoal      // 행동 노드
+</code></pre>
+<h3>정상 실행 흐름</h3>
+<pre><code>Tick 1: IsSafe → SUCCESS, HasGoal → SUCCESS, MoveToGoal → RUNNING
+        ReactiveSequence → RUNNING
+
+Tick 2: IsSafe → SUCCESS, HasGoal → SUCCESS, MoveToGoal → RUNNING
+        ReactiveSequence → RUNNING
+
+Tick 3: IsSafe → SUCCESS, HasGoal → SUCCESS, MoveToGoal → SUCCESS
+        ReactiveSequence → SUCCESS
+</code></pre>
+<p>매 Tick에서 <code>IsSafe</code>와 <code>HasGoal</code>이 재평가되고, 두 조건이 모두 <code>SUCCESS</code>이므로 <code>MoveToGoal</code>이 계속 Tick을 수신한다.</p>
+<h3>조건 위반 시 흐름</h3>
+<pre><code>Tick 1: IsSafe → SUCCESS, HasGoal → SUCCESS, MoveToGoal → RUNNING
+        ReactiveSequence → RUNNING
+
+Tick 2: IsSafe → FAILURE
+        → MoveToGoal.halt() 호출 (RUNNING 상태였으므로)
+        ReactiveSequence → FAILURE
+</code></pre>
+<p>Tick 2에서 <code>IsSafe</code>가 <code>FAILURE</code>를 반환하면, <code>HasGoal</code>과 <code>MoveToGoal</code>은 평가되지 않는다. 이전 Tick에서 <code>RUNNING</code>이었던 <code>MoveToGoal</code>에 Halt가 전파된다. ReactiveSequence는 <code>FAILURE</code>를 반환한다.</p>
+<h3>조건 복원 시 흐름</h3>
+<pre><code>Tick 3: IsSafe → SUCCESS, HasGoal → SUCCESS, MoveToGoal → RUNNING
+        ReactiveSequence → RUNNING
+</code></pre>
+<p>Tick 3에서 <code>IsSafe</code>가 다시 <code>SUCCESS</code>를 반환하면, <code>MoveToGoal</code>은 새로 시작된다. 이전의 진행 상태는 Halt에 의해 정리되었으므로, <code>MoveToGoal</code>은 처음부터 실행을 재개한다. 이전 진행 상태를 복원하려면, 행동 노드가 블랙보드에 진행 상태를 저장하고 재시작 시 이를 읽어들이는 별도의 메커니즘을 구현하여야 한다.</p>
+<h2>ReactiveFallback과의 구조적 대칭</h2>
+<p>ReactiveSequence와 ReactiveFallback은 구조적으로 대칭적인 관계에 있다.</p>
+<table><thead><tr><th>특성</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>기반 노드</td><td>Sequence</td><td>Fallback</td></tr>
+<tr><td>재평가</td><td>매 Tick 첫 자식부터</td><td>매 Tick 첫 자식부터</td></tr>
+<tr><td>성공 조건</td><td>모든 자식 <code>SUCCESS</code></td><td>하나의 자식 <code>SUCCESS</code></td></tr>
+<tr><td>실패 조건</td><td>하나의 자식 <code>FAILURE</code></td><td>모든 자식 <code>FAILURE</code></td></tr>
+<tr><td>의미론</td><td>“조건이 유지되는 동안 행동”</td><td>“우선순위에 따른 행동 선택”</td></tr>
+<tr><td>Halt 발생</td><td>선행 조건 <code>FAILURE</code> 시</td><td>상위 자식 <code>SUCCESS</code> 시</td></tr>
+</tbody></table>
+<p>ReactiveSequence는 AND 의미론(모든 조건 충족)을, ReactiveFallback은 OR 의미론(하나의 조건 충족)을 표현한다. 두 노드 모두 매 Tick 재평가라는 공통 메커니즘을 통해 환경 변화에 대한 즉각적 반응성을 확보한다.</p>
+<h2>ReactiveSequence의 반응 지연 분석</h2>
+<p>ReactiveSequence의 조건 위반에 대한 반응 지연은 Tick 주기에 의해 결정된다. 조건이 위반되더라도 다음 Tick이 도달하기 전까지는 이를 감지할 수 없으므로, 최대 반응 지연은 하나의 Tick 주기에 해당한다.</p>
+<p><span class="math math-display">\Delta t_{response} \leq T_{tick}</span></p>
+<p>Tick 주기 <span class="math math-inline">T_{tick}</span>이 10ms이면, 조건 위반 후 최대 10ms 이내에 행동이 Halt된다. 안전 요구 사항이 이 지연을 허용하지 않는 경우, Tick 주기를 단축하거나 하드웨어 수준의 안전 메커니즘을 병행하여야 한다.</p>
+<h2>4. 행동 트리 이론에서의 위치</h2>
+<p>ReactiveSequence는 Colledanchise와 Ögren이 제시한 반응형 행동 트리(Reactive Behavior Tree)의 핵심 구성 요소이다. 고전적 행동 트리에서는 Sequence와 Fallback만이 제어 노드로 사용되었으나, 반응형 변형이 도입됨으로써 환경 변화에 대한 즉각적 적응이 가능해졌다. ReactiveSequence는 특히 전제 조건의 지속적 보장(continuous guarantee of preconditions)이라는 개념을 행동 트리에 구조적으로 내재시킨 것으로, 로봇의 안전성과 적응성을 동시에 확보하는 이론적 기반이 된다.</p>
+<p>Michele Colledanchise와 Petter Ögren의 저서 <em>Behavior Trees in Robotics and AI: An Introduction</em>(CRC Press, 2018)에서 ReactiveSequence의 형식적 정의와 특성이 상세히 논의되어 있다.</p>
 
             </article>
             <footer>

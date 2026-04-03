@@ -115,6 +115,45 @@
             </header>
             <article>
                 <h1>1295.24 Parallel 노드에서의 블랙보드 데이터 충돌 문제</h1>
+<h2>1. 블랙보드 공유 자원으로서의 특성</h2>
+<p>행동 트리에서 블랙보드(Blackboard)는 노드 간 데이터 교환을 위한 중앙 집중형 키-값 저장소이다. 모든 노드는 블랙보드의 동일한 엔트리에 대해 읽기 및 쓰기 접근이 가능하며, 이는 노드 간 느슨한 결합(loose coupling)을 통한 데이터 공유를 가능하게 한다. 그러나 Parallel 노드의 실행 모델에서는 다수의 자식 노드가 논리적으로 동시에 실행되므로, 블랙보드라는 공유 자원에 대한 데이터 충돌(data conflict) 문제가 발생할 수 있다.</p>
+<p>Sequence나 Fallback 노드에서는 자식 노드가 엄격히 순차적으로 실행되므로, 한 자식이 블랙보드에 기록한 값을 다음 자식이 읽는 순서가 명확하게 보장된다. 반면 Parallel 노드에서는 모든 자식이 동일한 Tick 주기 내에서 실행되기 때문에, 한 자식이 기록한 값이 다른 자식의 동작에 의도치 않은 영향을 미칠 수 있다.</p>
+<h2>2. 데이터 충돌의 발생 메커니즘</h2>
+<h3>2.1 단일 Tick 내 순차 실행과 충돌의 본질</h3>
+<p>BehaviorTree.CPP와 같은 대부분의 행동 트리 구현체에서 Parallel 노드는 실제 멀티스레드 병렬 실행이 아닌 단일 스레드 내 순차적 Tick 전파 방식으로 동작한다. 즉, 자식 노드 <span class="math math-inline">C_1, C_2, \ldots, C_n</span>에 대해 하나의 Tick 주기 내에서 <span class="math math-inline">C_1 \rightarrow C_2 \rightarrow \cdots \rightarrow C_n</span> 순서로 순차 실행된다. 이 순차 실행 모델에서 데이터 충돌은 다음과 같은 형태로 발현된다.</p>
+<p>자식 <span class="math math-inline">C_i</span>가 블랙보드 키 <span class="math math-inline">k</span>에 값 <span class="math math-inline">v_i</span>를 기록하고, 이후 실행되는 자식 <span class="math math-inline">C_j</span> (<span class="math math-inline">j &gt; i</span>)가 동일한 키 <span class="math math-inline">k</span>를 읽는 경우, <span class="math math-inline">C_j</span>는 <span class="math math-inline">C_i</span>가 방금 기록한 <span class="math math-inline">v_i</span>를 읽게 된다. 그러나 Parallel 노드의 설계 의도는 모든 자식이 동일 시점의 상태를 기반으로 독립적으로 실행되는 것이므로, <span class="math math-inline">C_j</span>가 <span class="math math-inline">C_i</span>의 기록 결과에 영향을 받는 것은 논리적 동시성(logical concurrency)의 의미론에 위배된다.</p>
+<h3>2.2 쓰기-쓰기 충돌 (Write-Write Conflict)</h3>
+<p>쓰기-쓰기 충돌은 Parallel 노드의 둘 이상의 자식이 동일한 블랙보드 키에 값을 기록할 때 발생한다. 예를 들어, 자식 <span class="math math-inline">C_1</span>이 키 <code>target_position</code>에 센서 A로부터 획득한 좌표를 기록하고, 자식 <span class="math math-inline">C_2</span>가 동일한 키에 센서 B로부터 획득한 좌표를 기록하는 경우를 고려하라. 단일 스레드 순차 실행 모델에서는 나중에 실행된 자식의 값이 최종적으로 블랙보드에 남게 되므로, <span class="math math-inline">C_2</span>의 값이 <span class="math math-inline">C_1</span>의 값을 덮어쓰게 된다. 이로 인해 최종 값은 자식의 실행 순서에 종속되며, 이는 비결정적(nondeterministic) 동작처럼 보일 수 있다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL)
+├── UpdatePositionFromSensorA  →  writes "target_position" = (1.0, 2.0)
+└── UpdatePositionFromSensorB  →  writes "target_position" = (3.0, 4.0)
+</code></pre>
+<p>위 구조에서 <code>target_position</code>의 최종 값은 항상 센서 B의 값 <span class="math math-inline">(3.0, 4.0)</span>이 된다. 센서 A의 값은 기록되었으나 즉시 덮어씌워지므로 사실상 유실된다.</p>
+<h3>2.3 읽기-쓰기 충돌 (Read-Write Conflict)</h3>
+<p>읽기-쓰기 충돌은 한 자식이 블랙보드 키를 읽고 다른 자식이 동일한 키에 값을 기록할 때 발생한다. 이 경우 읽기 노드가 기록 노드보다 먼저 실행되면 기록 이전의 값을 읽고, 기록 노드 이후에 실행되면 갱신된 값을 읽게 된다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ALL)
+├── CheckBatteryLevel       →  reads "battery_level"
+├── UpdateBatteryLevel      →  writes "battery_level" = new_value
+└── ExecuteNavigation       →  reads "battery_level"
+</code></pre>
+<p>이 예시에서 <code>CheckBatteryLevel</code>은 이전 Tick에서 기록된 배터리 잔량을 읽는 반면, <code>ExecuteNavigation</code>은 <code>UpdateBatteryLevel</code>이 갱신한 최신 배터리 잔량을 읽게 된다. 동일한 Tick 주기 내에서 두 노드가 서로 다른 <code>battery_level</code> 값에 기반하여 판단을 수행하게 되므로, 전체 시스템의 일관성이 훼손될 수 있다.</p>
+<h2>3. 충돌의 영향과 위험성</h2>
+<h3>3.1 데이터 일관성 위반</h3>
+<p>Parallel 노드의 자식들이 동일한 Tick 내에서 블랙보드의 서로 다른 시점의 데이터를 참조하면, 시스템 전체의 데이터 일관성(data consistency)이 보장되지 않는다. 이는 관계형 데이터베이스 이론에서의 비직렬화 가능(non-serializable) 트랜잭션 스케줄과 유사한 문제이다. 각 자식 노드의 개별적 동작은 올바르더라도, 전체적으로 볼 때 일관되지 않은 상태에 기반한 의사 결정이 이루어질 수 있다.</p>
+<h3>3.2 비결정적 동작</h3>
+<p>블랙보드 데이터 충돌은 시스템의 동작이 자식 노드의 선언 순서에 암묵적으로 의존하게 만든다. 개발자가 Parallel 노드의 자식 순서를 변경하거나, 행동 트리 구현체가 내부적으로 자식 순회 순서를 변경하면, 동일한 입력에 대해 상이한 결과가 발생할 수 있다. 이러한 비결정적 동작은 디버깅을 극도로 어렵게 만든다.</p>
+<h3>3.3 로봇 안전성에 대한 위협</h3>
+<p>로봇공학 응용에서 블랙보드 데이터 충돌은 직접적인 안전 위협으로 이어질 수 있다. 예를 들어, 장애물 감지 노드가 기록한 장애물 위치 정보가 경로 추종 노드에 의해 덮어씌워지면, 충돌 회피 시스템이 올바른 장애물 위치를 인식하지 못하여 물리적 충돌이 발생할 수 있다. 이는 특히 안전 필수 시스템(safety-critical system)에서 심각한 문제이다.</p>
+<h2>4. 충돌 감지의 어려움</h2>
+<p>블랙보드 데이터 충돌은 컴파일 시점에서 감지되지 않으며, 런타임에서도 명시적 오류를 발생시키지 않는다. 블랙보드는 일반적으로 키-값 저장소의 형태로 단순한 읽기/쓰기 인터페이스만을 제공하므로, 동일 Tick 내에서 동일 키에 대한 다중 접근을 자동으로 감지하거나 경고하는 메커니즘이 내장되어 있지 않다.</p>
+<p>BehaviorTree.CPP에서 블랙보드 포트(port) 시스템은 입력 포트(input port)와 출력 포트(output port)를 명시적으로 선언하도록 요구하지만, 이는 단일 노드 수준의 인터페이스 정의에 해당할 뿐 Parallel 노드 내 다수 자식 간의 포트 충돌 여부까지 정적으로 분석하지는 않는다. 따라서 충돌 문제는 주로 설계 단계에서 개발자의 주의 깊은 분석과 규율에 의해 예방해야 한다.</p>
+<h2>5. 형식적 충돌 조건의 정의</h2>
+<p>Parallel 노드 <span class="math math-inline">P</span>의 자식 집합을 <span class="math math-inline">\{C_1, C_2, \ldots, C_n\}</span>이라 하고, 각 자식 <span class="math math-inline">C_i</span>의 블랙보드 읽기 키 집합을 <span class="math math-inline">R_i</span>, 쓰기 키 집합을 <span class="math math-inline">W_i</span>라 하자. 데이터 충돌은 다음 조건 중 하나 이상이 성립할 때 발생한다.</p>
+<ul>
+<li><strong>쓰기-쓰기 충돌</strong>: <span class="math math-inline">\exists\, i \neq j</span> such that <span class="math math-inline">W_i \cap W_j \neq \emptyset</span></li>
+<li><strong>읽기-쓰기 충돌</strong>: <span class="math math-inline">\exists\, i \neq j</span> such that <span class="math math-inline">R_i \cap W_j \neq \emptyset</span></li>
+</ul>
+<p>위 조건은 데이터베이스 동시성 제어 이론에서의 충돌 직렬 가능성(conflict serializability) 판정 조건과 동일한 구조를 지닌다. 충돌이 존재하지 않는 상태, 즉 모든 자식 쌍 <span class="math math-inline">(C_i, C_j)</span>에 대해 <span class="math math-inline">W_i \cap W_j = \emptyset</span>이고 <span class="math math-inline">R_i \cap W_j = \emptyset</span>인 상태를 <strong>충돌 자유(conflict-free)</strong> 조건이라 한다. Parallel 노드의 안전한 설계를 위해서는 이 충돌 자유 조건을 충족하는 것이 권장된다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,298 @@
             </header>
             <article>
                 <h1>1294.93 Reactive 동작 검증 테스트</h1>
+<h2>1. Reactive 동작의 검증 대상</h2>
+<p>ReactiveSequence와 ReactiveFallback의 핵심 특성은 매 Tick마다 첫 번째 자식부터 재평가하는 비상태적 동작이다. 이 동작의 검증은 세 가지 측면에 집중한다. 첫째, 이전에 완료된 자식이 매 Tick 재평가되는지 확인한다. 둘째, 앞쪽 자식의 상태 변화가 뒤쪽 RUNNING 자식의 Halt를 올바르게 유발하는지 확인한다. 셋째, 조건 노드의 동적 변화에 대한 즉각적 반응이 이루어지는지 확인한다(Faconti, 2022).</p>
+<h2>2. ReactiveSequence의 재평가 검증</h2>
+<h3>2.1 매 Tick 재평가 테스트</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequence, ReevaluatesFromFirst) {
+    // condition: 매 Tick 재평가 대상
+    // asyncAction: RUNNING 상태 유지
+    condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(condition-&gt;tickCount(), 1);
+    EXPECT_EQ(asyncAction-&gt;tickCount(), 1);
+    
+    // Tick 2: condition이 다시 평가됨
+    condition-&gt;resetTickCount();
+    asyncAction-&gt;resetTickCount();
+    
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(condition-&gt;tickCount(), 1);  // 재평가됨!
+    EXPECT_EQ(asyncAction-&gt;tickCount(), 1);
+}
+</code></pre>
+<p>Memory 변형(SequenceNode)과 달리, ReactiveSequence는 Tick 2에서도 condition을 재평가한다. <code>condition-&gt;tickCount()</code>가 1인 것이 이를 입증한다.</p>
+<h3>2.2 SequenceNode와의 대비 테스트</h3>
+<pre><code class="language-cpp">// 동일 시나리오에서 SequenceNode의 동작
+TEST(SequenceVsReactive, SequenceSkipsCondition) {
+    condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    seq.executeTick();  // Tick 1: condition S, action R
+    
+    condition-&gt;resetTickCount();
+    seq.executeTick();  // Tick 2
+    
+    EXPECT_EQ(condition-&gt;tickCount(), 0);  // Memory: 건너뜀
+}
+
+// 동일 시나리오에서 ReactiveSequence의 동작
+TEST(SequenceVsReactive, ReactiveReevaluates) {
+    condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    rseq.executeTick();  // Tick 1: condition S, action R
+    
+    condition-&gt;resetTickCount();
+    rseq.executeTick();  // Tick 2
+    
+    EXPECT_EQ(condition-&gt;tickCount(), 1);  // Reactive: 재평가
+}
+</code></pre>
+<p>동일한 시나리오를 SequenceNode와 ReactiveSequence에 적용하여 동작 차이를 명시적으로 검증한다.</p>
+<h2>3. 조건 변화에 의한 중단 검증</h2>
+<h3>3.1 ReactiveSequence: 조건 FAILURE에 의한 행동 Halt</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequence, ConditionFailureHaltsAction) {
+    condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: condition S, action R → RUNNING
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(asyncAction-&gt;haltCount(), 0);
+    
+    // Tick 2: condition F → FAILURE, action Halt
+    condition-&gt;setReturn(BT::NodeStatus::FAILURE);
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::FAILURE);
+    EXPECT_EQ(asyncAction-&gt;haltCount(), 1);  // Halt 호출됨
+}
+</code></pre>
+<p>조건 노드가 SUCCESS에서 FAILURE로 변하면 ReactiveSequence는 즉시 FAILURE를 반환하고, RUNNING이었던 행동 노드를 Halt한다.</p>
+<h3>3.2 다중 조건의 순차적 검증</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequence, MultipleConditions) {
+    // condition1, condition2, asyncAction
+    condition1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    condition2-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: 모든 조건 통과
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    
+    // Tick 2: condition1 F → 즉시 FAILURE
+    condition1-&gt;setReturn(BT::NodeStatus::FAILURE);
+    condition2-&gt;resetTickCount();
+    
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::FAILURE);
+    EXPECT_EQ(condition2-&gt;tickCount(), 0);  // condition2 평가 안 됨
+    EXPECT_EQ(asyncAction-&gt;haltCount(), 1);
+}
+</code></pre>
+<p>첫 번째 조건이 FAILURE를 반환하면 후속 조건과 행동 노드는 평가되지 않는다. 이는 Sequence의 조기 종료 특성에 의한 것이다.</p>
+<h3>3.3 중간 조건의 FAILURE</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequence, MiddleConditionFailure) {
+    condition1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    condition2-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    
+    // 두 번째 조건만 FAILURE로 변경
+    condition2-&gt;setReturn(BT::NodeStatus::FAILURE);
+    
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::FAILURE);
+    EXPECT_EQ(condition1-&gt;tickCount(), 2);  // 재평가됨
+    EXPECT_EQ(asyncAction-&gt;haltCount(), 1);
+}
+</code></pre>
+<h2>4. ReactiveFallback의 우선순위 전환 검증</h2>
+<h3>4.1 하위 대안에서 상위 대안으로의 전환</h3>
+<pre><code class="language-cpp">TEST(ReactiveFallback, HigherPriorityPreemption) {
+    // highPriority: 조건-행동 쌍, lowPriority: 대안 행동
+    highPriorityCondition-&gt;setReturn(BT::NodeStatus::FAILURE);
+    lowPriorityAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: 상위 우선순위 불가, 하위 실행
+    EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::RUNNING);
+    
+    // Tick 2: 상위 우선순위 가용 → 전환
+    highPriorityCondition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    highPriorityAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(lowPriorityAction-&gt;haltCount(), 1);  // 하위 Halt
+}
+</code></pre>
+<p>ReactiveFallback에서 상위 우선순위 대안이 가용해지면, 현재 RUNNING인 하위 대안이 Halt되고 상위 대안으로 전환된다.</p>
+<h3>4.2 상위 대안 SUCCESS에 의한 즉시 종료</h3>
+<pre><code class="language-cpp">TEST(ReactiveFallback, HigherPrioritySuccess) {
+    action1-&gt;setReturn(BT::NodeStatus::FAILURE);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: action1 F, action2 R
+    EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::RUNNING);
+    
+    // Tick 2: action1이 SUCCESS → 즉시 SUCCESS
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    
+    EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 1);  // action2 Halt
+}
+</code></pre>
+<h3>4.3 FallbackNode와의 대비 테스트</h3>
+<pre><code class="language-cpp">// FallbackNode: 이전 실패 자식 건너뜀 (Memory)
+TEST(FallbackVsReactive, FallbackSkipsFailedChild) {
+    action1-&gt;setReturn(BT::NodeStatus::FAILURE);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    fb.executeTick();  // action1 F, action2 R (idx=1)
+    
+    // action1을 SUCCESS로 변경해도 감지 못함
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    action1-&gt;resetTickCount();
+    
+    fb.executeTick();
+    EXPECT_EQ(action1-&gt;tickCount(), 0);  // 건너뜀: 변화 미감지
+}
+
+// ReactiveFallback: 매 Tick 재평가
+TEST(FallbackVsReactive, ReactiveDetectsChange) {
+    action1-&gt;setReturn(BT::NodeStatus::FAILURE);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    rfb.executeTick();
+    
+    // action1을 SUCCESS로 변경 → 감지
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    action1-&gt;resetTickCount();
+    
+    rfb.executeTick();
+    EXPECT_EQ(action1-&gt;tickCount(), 1);  // 재평가: 변화 감지
+}
+</code></pre>
+<h2>5. RUNNING 이후 자식 Halt 검증</h2>
+<h3>5.1 ReactiveSequence의 후속 자식 Halt</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequence, HaltsChildrenAfterRunning) {
+    // 3개 자식: condition, asyncAction1, asyncAction2
+    condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: condition S, action1 R → RUNNING
+    // action2는 실행되지 않음
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(asyncAction2-&gt;tickCount(), 0);
+    
+    // Tick 2: condition S, action1 S, action2 R → RUNNING
+    asyncAction1-&gt;setReturnOnRunning(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    
+    // Tick 3: condition S, action1 R → RUNNING
+    // action1이 다시 RUNNING (재평가로 onStart 호출)
+    // action2가 Halt되어야 함
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 1);  // action2 Halt
+}
+</code></pre>
+<p>ReactiveSequence에서 RUNNING을 반환한 자식 이후의 모든 자식이 Halt되는지 검증한다. 이전 Tick에서 더 뒤쪽 자식이 RUNNING이었을 가능성이 있으므로, 이 Halt 동작은 필수적이다.</p>
+<h3>5.2 ReactiveFallback의 후속 자식 Halt</h3>
+<pre><code class="language-cpp">TEST(ReactiveFallback, HaltsChildrenAfterRunning) {
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: action1 R → RUNNING, action2 미실행
+    EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::RUNNING);
+    
+    // Tick 2: action1 F, action2 R → RUNNING
+    asyncAction1-&gt;setReturnOnRunning(BT::NodeStatus::FAILURE);
+    EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::RUNNING);
+    
+    // Tick 3: action1 R → RUNNING, action2 Halt
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 1);
+}
+</code></pre>
+<h2>6. 빈번한 상태 전환 시나리오</h2>
+<h3>6.1 조건 진동(Oscillation) 테스트</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequence, ConditionOscillation) {
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    asyncAction-&gt;setReturnOnRunning(BT::NodeStatus::RUNNING);
+    
+    for (int i = 0; i &lt; 10; i++) {
+        // 짝수 Tick: 조건 SUCCESS
+        condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+        EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+        
+        // 홀수 Tick: 조건 FAILURE
+        condition-&gt;setReturn(BT::NodeStatus::FAILURE);
+        EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::FAILURE);
+    }
+    
+    // asyncAction이 10회 Halt되었는지 확인
+    EXPECT_EQ(asyncAction-&gt;haltCount(), 10);
+}
+</code></pre>
+<p>조건이 매 Tick 교대로 SUCCESS/FAILURE를 반환하면, 행동 노드가 매번 시작되고 Halt되는 진동 현상이 발생한다. 이 테스트는 이러한 극단적 상황에서도 노드 상태 관리가 일관되게 유지되는지 검증한다.</p>
+<h3>6.2 우선순위 진동 테스트</h3>
+<pre><code class="language-cpp">TEST(ReactiveFallback, PriorityOscillation) {
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    for (int i = 0; i &lt; 5; i++) {
+        // action1 가용 → action1 실행
+        asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+        EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::RUNNING);
+        
+        // action1 불가 → action2로 전환
+        asyncAction1-&gt;setReturnOnRunning(BT::NodeStatus::FAILURE);
+        EXPECT_EQ(rfb.executeTick(), BT::NodeStatus::RUNNING);
+    }
+    
+    // 전환 횟수 검증
+    EXPECT_GE(asyncAction1-&gt;haltCount(), 4);
+    EXPECT_GE(asyncAction2-&gt;haltCount(), 4);
+}
+</code></pre>
+<h2>7. resetChildren()의 효과 검증</h2>
+<h3>7.1 ReactiveSequence의 SUCCESS 시 전체 초기화</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequence, SuccessResetsAll) {
+    condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: RUNNING
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::RUNNING);
+    
+    // Tick 2: action SUCCESS → 전체 SUCCESS
+    asyncAction-&gt;setReturnOnRunning(BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(rseq.executeTick(), BT::NodeStatus::SUCCESS);
+    
+    // 모든 자식이 IDLE로 초기화되었는지 확인
+    EXPECT_EQ(condition-&gt;status(), BT::NodeStatus::IDLE);
+    EXPECT_EQ(asyncAction-&gt;status(), BT::NodeStatus::IDLE);
+}
+</code></pre>
+<h2>8. Reactive 검증 시 주의 사항</h2>
+<ol>
+<li>
+<p><strong>onStart()와 onRunning()의 구분</strong>: Reactive 노드에서 자식이 매 Tick 재평가될 때, 자식의 상태에 따라 <code>onStart()</code>(IDLE에서 진입 시) 또는 <code>onRunning()</code>(RUNNING 유지 시)이 호출된다. 테스트에서 이 두 콜백의 호출 시점을 정확히 추적해야 한다.</p>
+</li>
+<li>
+<p><strong>Halt 후 재시작의 상태 전이</strong>: Reactive 동작에 의해 자식이 Halt되면 IDLE로 전환된다. 다음 Tick에서 다시 실행되면 <code>onStart()</code>가 호출된다. 이전 실행의 중간 상태가 보존되지 않음을 검증해야 한다.</p>
+</li>
+<li>
+<p><strong>Halt 순서의 정확성</strong>: ReactiveSequence에서 RUNNING 자식 이후의 자식을 Halt할 때, Halt가 역순(마지막 자식부터)으로 수행되는지 또는 순서에 관계없이 수행되는지는 구현에 의존한다. 테스트에서 Halt 순서에 의존하는 로직이 있다면 이를 명시적으로 검증해야 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

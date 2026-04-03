@@ -115,6 +115,214 @@
             </header>
             <article>
                 <h1>1296.19 ThreadedAction의 별도 스레드 실행</h1>
+<h2>1. 별도 스레드 실행의 개요</h2>
+<p><code>ThreadedAction</code>의 별도 스레드 실행(separate thread execution)이란, <code>tick()</code> 메서드가 행동 트리의 메인 스레드가 아닌 새로 생성된 별도의 스레드에서 실행되는 것을 의미한다. 이 설계는 <code>tick()</code> 내부의 차단 호출이 트리의 메인 루프를 정지시키지 않도록 하기 위한 것이다.</p>
+<p>메인 스레드는 <code>tick()</code> 스레드를 생성한 후 즉시 RUNNING을 반환하여 트리 순회를 계속하며, <code>tick()</code> 스레드는 독립적으로 행동을 수행한다. 두 스레드는 노드의 상태와 블랙보드를 통해 통신한다.</p>
+<h2>2. 스레드 실행의 시간적 구조</h2>
+<p>별도 스레드 실행의 시간적 구조를 도식화한다.</p>
+<pre><code>메인 스레드:
+─────┬──────────┬──────────┬──────────┬──────────┬────
+Tick1│RUNNING반환│  Tick2   │  Tick3   │  Tick4   │ ...
+     │          │RUNNING반환│RUNNING반환│SUCCESS반환│
+─────┴──────────┴──────────┴──────────┴──────────┴────
+
+tick() 스레드:
+     ┌─────────────────────────────────────┐
+     │ tick() 실행 (차단 호출 포함)         │
+     │ 시작            ...          완료    │
+     └─────────────────────────────────────┘
+</code></pre>
+<p>메인 스레드의 Tick 1에서 <code>tick()</code> 스레드가 생성되고, RUNNING이 즉시 반환된다. Tick 2, 3에서 메인 스레드는 <code>tick()</code> 스레드가 아직 실행 중임을 확인하고 RUNNING을 반환한다. <code>tick()</code> 스레드가 완료되면, Tick 4에서 메인 스레드가 <code>tick()</code>의 반환값(이 경우 SUCCESS)을 감지하여 반환한다.</p>
+<h2>3. 스레드 생성 메커니즘</h2>
+<p><code>ThreadedAction</code>의 <code>executeTick()</code> 메서드 내부에서 스레드가 생성되는 과정을 분석한다.</p>
+<pre><code class="language-cpp">NodeStatus ThreadedAction::executeTick()
+{
+    auto pre_result = checkPreConditions();
+    if (pre_result.has_value())
+        return pre_result.value();
+
+    if (status() == NodeStatus::IDLE)
+    {
+        setStatus(NodeStatus::RUNNING);
+        halt_requested_.store(false);
+
+        // 별도 스레드 생성
+        if (thread_.joinable())
+        {
+            thread_.join();  // 이전 스레드 정리
+        }
+
+        thread_ = std::thread(
+            [this]()
+            {
+                try
+                {
+                    auto result = tick();
+                    if (!halt_requested_.load())
+                    {
+                        setStatus(result);
+                    }
+                }
+                catch (const std::exception&amp; ex)
+                {
+                    setStatus(NodeStatus::FAILURE);
+                }
+            });
+
+        return NodeStatus::RUNNING;
+    }
+
+    return status();
+}
+</code></pre>
+<p>스레드 생성의 핵심 동작은 다음과 같다.</p>
+<ol>
+<li><strong>상태 초기화</strong>: 상태를 RUNNING으로 설정하고, <code>halt_requested_</code> 플래그를 <code>false</code>로 초기화한다.</li>
+<li><strong>이전 스레드 정리</strong>: 이전 실행의 스레드가 아직 합류(join)되지 않은 경우, <code>join()</code>을 호출하여 정리한다.</li>
+<li><strong>새 스레드 생성</strong>: <code>std::thread</code>를 생성하여 람다 함수 내에서 <code>tick()</code>을 호출한다.</li>
+<li><strong>RUNNING 즉시 반환</strong>: 스레드 생성 후 메인 스레드는 RUNNING을 즉시 반환한다.</li>
+</ol>
+<p>스레드 내부의 람다 함수는 <code>tick()</code>의 반환값을 받아 노드의 상태를 설정한다. Halt가 요청된 경우에는 상태를 설정하지 않는다(Halt에 의한 IDLE 전이가 우선).</p>
+<h2>4. 메인 스레드와 tick() 스레드의 관계</h2>
+<p>두 스레드의 관계를 정리한다.</p>
+<pre><code>메인 스레드                        tick() 스레드
+    │                                   │
+    │── executeTick() 호출 ──→          │
+    │                                   │
+    │── std::thread 생성 ──────────→ tick() 시작
+    │                                   │
+    │── RUNNING 반환                    │── 차단 호출 수행
+    │                                   │
+    │── (다른 노드 Tick)                │── (차단 대기 중)
+    │                                   │
+    │── executeTick() 호출              │── (차단 대기 중)
+    │── status() == RUNNING             │
+    │── RUNNING 반환                    │
+    │                                   │
+    │── (다른 노드 Tick)                │── 차단 호출 완료
+    │                                   │── setStatus(SUCCESS)
+    │── executeTick() 호출              │── 스레드 종료
+    │── status() == SUCCESS             │
+    │── SUCCESS 반환                    │
+</code></pre>
+<p>두 스레드는 비동기적으로 실행되며, 노드의 상태(<code>status()</code>)를 통해 간접적으로 통신한다. <code>tick()</code> 스레드가 <code>setStatus()</code>를 호출하면, 메인 스레드의 다음 <code>executeTick()</code>에서 변경된 상태를 감지한다.</p>
+<h2>5. 상태 변경의 원자성</h2>
+<p><code>tick()</code> 스레드와 메인 스레드가 동일한 상태 변수에 접근하므로, 상태 변경의 원자성이 보장되어야 한다. BehaviorTree.CPP는 노드의 상태를 <code>std::atomic&lt;NodeStatus&gt;</code> 또는 뮤텍스로 보호하여 경합 조건(race condition)을 방지한다.</p>
+<pre><code class="language-cpp">// BehaviorTree.CPP 내부 구현 (개념적)
+class TreeNode
+{
+    std::atomic&lt;NodeStatus&gt; status_;
+
+    void setStatus(NodeStatus new_status)
+    {
+        NodeStatus prev = status_.exchange(new_status);
+        // 상태 변경 통지 (로거 등)
+    }
+
+    NodeStatus status() const
+    {
+        return status_.load();
+    }
+};
+</code></pre>
+<p><code>std::atomic</code>을 사용하면 <code>setStatus()</code>와 <code>status()</code> 간의 경합 조건이 원자적 연산에 의해 방지된다. 그러나 상태의 원자성이 보장되더라도, <code>tick()</code> 내부에서 블랙보드에 대한 복합 연산(읽기-수정-쓰기)은 별도의 동기화가 필요할 수 있다.</p>
+<h2>6. 메인 스레드의 비차단 보장</h2>
+<p>별도 스레드 실행의 핵심 이점은 메인 스레드의 비차단(non-blocking) 보장이다.</p>
+<pre><code>메인 스레드 없이 (SyncActionNode에서 차단 호출 시):
+──┬─────────────────────────────────────┬──
+  │ tick() 차단 (3초)                    │  ← 트리 전체 3초 정지
+──┴─────────────────────────────────────┴──
+
+별도 스레드 사용 시 (ThreadedAction):
+메인 ──┬──┬──┬──┬──┬──┬──  ← Tick 주기 유지
+tick() ─┬──────────────┬─   ← 별도 스레드에서 3초 차단
+</code></pre>
+<p>메인 스레드는 <code>tick()</code> 스레드의 실행과 무관하게 Tick 주기를 유지하므로, 트리의 다른 노드(조건 재평가, 다른 액션의 <code>onRunning()</code> 등)가 정상적으로 Tick된다.</p>
+<h2>7. 다수의 ThreadedAction이 동시에 실행되는 경우</h2>
+<p>Parallel 노드의 자식으로 다수의 <code>ThreadedAction</code>이 배치되면, 각각 별도의 스레드에서 동시에 실행된다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;ThreadedTaskA/&gt;  &lt;!-- 스레드 A --&gt;
+    &lt;ThreadedTaskB/&gt;  &lt;!-- 스레드 B --&gt;
+    &lt;ThreadedTaskC/&gt;  &lt;!-- 스레드 C --&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>이 경우 메인 스레드를 포함하여 최대 4개의 스레드가 동시에 활성화된다. 스레드 수의 증가는 다음의 영향을 미친다.</p>
+<ol>
+<li><strong>스레드 생성 비용 누적</strong>: 각 스레드의 생성 비용이 누적된다.</li>
+<li><strong>동시 접근 복잡성 증가</strong>: 블랙보드에 대한 동시 접근이 증가하여 경합 가능성이 높아진다.</li>
+<li><strong>시스템 자원 소비</strong>: CPU 코어 수를 초과하는 스레드 생성은 컨텍스트 스위칭 오버헤드를 유발한다.</li>
+</ol>
+<h2>8. 스레드 생성 비용 분석</h2>
+<p><code>std::thread</code> 생성의 비용은 운영 체제와 하드웨어 환경에 따라 다르나, 일반적으로 다음의 범위에 해당한다.</p>
+<table><thead><tr><th>환경</th><th style="text-align: center">스레드 생성 시간</th></tr></thead><tbody>
+<tr><td>Linux (x86_64)</td><td style="text-align: center">50~200 μs</td></tr>
+<tr><td>Linux (ARM, Raspberry Pi)</td><td style="text-align: center">200~500 μs</td></tr>
+<tr><td>RTOS (임베디드)</td><td style="text-align: center">10~100 μs</td></tr>
+</tbody></table>
+<p>10 ms Tick 주기에서 스레드 생성에 200 μs가 소요되면, Tick 예산의 2%를 스레드 생성 오버헤드에 소비하게 된다. 빈번히 시작과 종료를 반복하는 경량 행동에 <code>ThreadedAction</code>을 사용하면 이 오버헤드가 누적되어 성능에 영향을 미칠 수 있다.</p>
+<p>스레드 풀(thread pool)을 사용하면 스레드 생성 비용을 절감할 수 있으나, BehaviorTree.CPP의 현재 구현(4.x)은 스레드 풀을 내장하지 않으며, 매 실행마다 새로운 <code>std::thread</code>를 생성한다.</p>
+<h2>9. 예외의 스레드 간 전파</h2>
+<p><code>tick()</code> 스레드에서 발생한 예외는 해당 스레드 내부에서 처리되어야 한다. 예외가 <code>tick()</code> 외부로 전파되면 스레드가 비정상적으로 종료(<code>std::terminate</code>)되며, 이는 프로세스 전체의 종료를 유발할 수 있다.</p>
+<pre><code class="language-cpp">// BehaviorTree.CPP 내부: 스레드 래퍼에서의 예외 처리
+thread_ = std::thread([this]()
+{
+    try
+    {
+        auto result = tick();
+        if (!halt_requested_.load())
+        {
+            setStatus(result);
+        }
+    }
+    catch (const std::exception&amp; ex)
+    {
+        // 예외를 FAILURE로 변환
+        setStatus(NodeStatus::FAILURE);
+    }
+    catch (...)
+    {
+        setStatus(NodeStatus::FAILURE);
+    }
+});
+</code></pre>
+<p>BehaviorTree.CPP의 내부 스레드 래퍼는 <code>tick()</code> 내부의 모든 예외를 포착하여 FAILURE 상태로 변환한다. 그러나 사용자의 <code>tick()</code> 구현에서도 예외를 적절히 처리하여 진단 정보를 보존하는 것이 권장된다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    try
+    {
+        // 차단 호출 수행
+        auto result = legacy_api_-&gt;performAction();
+        
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+        
+        return result.success ? BT::NodeStatus::SUCCESS 
+                              : BT::NodeStatus::FAILURE;
+    }
+    catch (const LegacyException&amp; ex)
+    {
+        RCLCPP_ERROR(logger_, "레거시 API 오류: %s", ex.what());
+        return BT::NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<h2>10. 별도 스레드 실행의 제약</h2>
+<p>별도 스레드 실행에는 다음의 제약이 수반된다.</p>
+<ol>
+<li>
+<p><strong>스레드 안전성 책임</strong>: <code>tick()</code> 내부에서 접근하는 모든 공유 자원에 대한 스레드 안전성은 개발자의 책임이다.</p>
+</li>
+<li>
+<p><strong>디버깅 복잡성</strong>: 멀티스레드 환경에서의 디버깅은 단일 스레드 환경보다 복잡하다. 경합 조건, 교착 상태(deadlock), 메모리 가시성(memory visibility) 문제가 발생할 수 있다.</p>
+</li>
+<li>
+<p><strong>Halt 응답 지연</strong>: <code>tick()</code> 내부의 차단 호출이 완료될 때까지 <code>isHaltRequested()</code> 확인이 지연된다.</p>
+</li>
+<li>
+<p><strong>자원 소비</strong>: 스레드 생성과 컨텍스트 스위칭에 의한 오버헤드가 발생한다.</p>
+</li>
+</ol>
+<p>이러한 제약으로 인해 BehaviorTree.CPP 4.x에서는 <code>StatefulActionNode</code>를 비동기 행동의 기본 선택으로 권장하며, <code>ThreadedAction</code>은 차단 API의 래핑이 불가피한 경우에만 사용하도록 안내한다(Faconti, 2022).</p>
 
             </article>
             <footer>

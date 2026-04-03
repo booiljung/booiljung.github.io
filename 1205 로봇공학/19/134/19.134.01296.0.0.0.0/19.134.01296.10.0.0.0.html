@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1296.10 동기 액션 노드의 Running 미반환 원칙</title>
+    <title>BIJUNG:1296.10 동기 액션 노드의 RUNNING 미반환 원칙</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,218 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1296.10 동기 액션 노드의 Running 미반환 원칙</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html">Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)</a> <span class="separator">/</span> <a href="../index.html">Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)</a> <span class="separator">/</span> <a href="index.html">Chapter 1296. 액션 노드 설계와 구현 (Action Node Design and Implementation)</a> <span class="separator">/</span> <span>1296.10 동기 액션 노드의 Running 미반환 원칙</span></nav>
+                    <h1>1296.10 동기 액션 노드의 RUNNING 미반환 원칙</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html">Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)</a> <span class="separator">/</span> <a href="../index.html">Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)</a> <span class="separator">/</span> <a href="index.html">Chapter 1296. 액션 노드 설계와 구현 (Action Node Design and Implementation)</a> <span class="separator">/</span> <span>1296.10 동기 액션 노드의 RUNNING 미반환 원칙</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1296.10 동기 액션 노드의 Running 미반환 원칙</h1>
+                <h1>1296.10 동기 액션 노드의 RUNNING 미반환 원칙</h1>
+<h2>1. RUNNING 미반환 원칙의 정의</h2>
+<p>동기 액션 노드(<code>SyncActionNode</code>)의 RUNNING 미반환 원칙(no-RUNNING-return principle)이란, <code>tick()</code> 메서드가 <code>NodeStatus::RUNNING</code>을 반환하는 것을 설계적으로 금지하고 런타임에서 강제적으로 차단하는 규칙이다. 동기 액션 노드의 <code>tick()</code>은 오직 <code>NodeStatus::SUCCESS</code> 또는 <code>NodeStatus::FAILURE</code>만을 반환할 수 있으며, RUNNING을 반환하면 <code>LogicError</code> 예외가 발생하여 트리의 실행이 중단된다.</p>
+<p>이 원칙은 행동 트리의 실행 모델에서 동기 액션 노드와 비동기 액션 노드를 명확히 구분하는 근본적인 설계 계약(design contract)이다.</p>
+<h2>2. 런타임 강제 메커니즘</h2>
+<p>BehaviorTree.CPP 라이브러리(버전 4.x)는 <code>SyncActionNode::executeTick()</code> 내부에서 <code>tick()</code>의 반환값을 검사하여 RUNNING 미반환 원칙을 런타임에서 강제한다.</p>
+<pre><code class="language-cpp">NodeStatus SyncActionNode::executeTick()
+{
+    auto status = ActionNodeBase::executeTick();
+    if (status == NodeStatus::RUNNING)
+    {
+        throw LogicError(
+            "SyncActionNode::executeTick() must not return RUNNING. "
+            "Did you forget to use StatefulActionNode?");
+    }
+    return status;
+}
+</code></pre>
+<p>이 검사는 컴파일 타임이 아닌 런타임에서 수행된다. C++의 타입 시스템으로는 <code>NodeStatus</code> 열거형의 특정 값을 컴파일 타임에서 제한할 수 없으므로, 런타임 검사와 예외 발생이 유일한 강제 수단이다. 예외 메시지에 <code>StatefulActionNode</code>로의 전환을 안내하는 문구가 포함되어 있어, 개발자가 오류의 원인과 해결 방안을 즉시 파악할 수 있도록 설계되어 있다.</p>
+<h2>3. 원칙의 이론적 근거</h2>
+<h3>3.1 단일 Tick 완료 보장</h3>
+<p>RUNNING 미반환 원칙의 핵심 근거는 단일 Tick 완료(single-tick completion) 보장이다. 동기 액션 노드가 RUNNING을 반환할 수 없으므로, <code>executeTick()</code> 호출 시 행동이 반드시 완료(SUCCESS 또는 FAILURE)된 상태로 반환된다. 이는 부모 제어 노드가 동일 Tick 내에서 즉시 다음 자식으로 진행할 수 있음을 보장한다.</p>
+<pre><code>단일 Tick 내 실행 흐름:
+Sequence → SyncAction_A (SUCCESS) → SyncAction_B (SUCCESS) → AsyncAction (RUNNING)
+                                                                     ↑
+                                          동일 Tick 내에서 여기까지 진행
+</code></pre>
+<p>RUNNING이 허용된다면, Sequence는 SyncAction_A에서 RUNNING을 받고 다음 Tick까지 대기하여야 한다. 이는 경량 작업에 불필요한 Tick 오버헤드를 부과하며, 단일 Tick 내 다수의 경량 작업을 연속 처리하는 동기 액션 노드의 설계 목적에 위배된다.</p>
+<h3>3.2 Halt 불필요성의 보장</h3>
+<p>RUNNING을 반환하지 않으므로, 동기 액션 노드는 Halt될 필요가 없다. Halt는 RUNNING 상태에 있는 노드에 대해 실행 중인 행동을 중단하고 자원을 정리하는 메커니즘이다. 동기 액션 노드는 RUNNING 상태에 진입하지 않으므로, Halt 시 특별한 정리가 필요 없다.</p>
+<pre><code class="language-cpp">class SyncActionNode : public ActionNodeBase
+{
+    // halt()는 final로 선언: 파생 클래스에서 오버라이드 불가
+    virtual void halt() override final
+    {
+        setStatus(NodeStatus::IDLE);
+    }
+};
+</code></pre>
+<p><code>halt()</code> 메서드가 <code>final</code>로 선언된 것은 RUNNING 미반환 원칙의 직접적인 결과이다. RUNNING 상태가 존재하지 않으므로 Halt 정리 로직이 필요 없고, 따라서 파생 클래스에서 <code>halt()</code>를 오버라이드할 이유도 없다.</p>
+<h3>3.3 상태 전이 단순화</h3>
+<p>RUNNING 미반환 원칙은 동기 액션 노드의 상태 전이를 극도로 단순화한다.</p>
+<pre><code>RUNNING 허용 시 (비동기):          RUNNING 미허용 시 (동기):
+IDLE → RUNNING → SUCCESS           IDLE → SUCCESS
+IDLE → RUNNING → FAILURE           IDLE → FAILURE
+IDLE → RUNNING → ... → RUNNING
+</code></pre>
+<p>비동기 액션 노드는 IDLE에서 RUNNING을 거쳐 최종 상태에 도달하며, RUNNING 상태에서 임의의 Tick 수만큼 머무를 수 있다. 반면 동기 액션 노드는 IDLE에서 최종 상태로 직접 전이하므로, 상태 공간이 축소되고 상태 전이의 예측 가능성이 확보된다.</p>
+<h2>4. RUNNING 반환 시도의 일반적 원인</h2>
+<p>개발자가 동기 액션 노드에서 의도치 않게 RUNNING을 반환하는 일반적 원인을 분석한다.</p>
+<h3>4.1 기반 클래스의 잘못된 선택</h3>
+<p>가장 빈번한 원인은 비동기 행동을 <code>SyncActionNode</code>로 구현하는 경우이다.</p>
+<pre><code class="language-cpp">// 잘못된 구현: SyncActionNode에서 RUNNING 반환 시도
+class WaitForDuration : public BT::SyncActionNode
+{
+public:
+    WaitForDuration(const std::string&amp; name,
+                    const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        if (!started_)
+        {
+            start_time_ = std::chrono::steady_clock::now();
+            started_ = true;
+            return BT::NodeStatus::RUNNING;  // LogicError 발생
+        }
+        auto elapsed = std::chrono::steady_clock::now() - start_time_;
+        if (elapsed &lt; std::chrono::seconds(5))
+            return BT::NodeStatus::RUNNING;  // LogicError 발생
+        
+        started_ = false;
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    bool started_ = false;
+    std::chrono::steady_clock::time_point start_time_;
+};
+</code></pre>
+<p>이 구현은 시간 대기 행동을 동기 액션 노드로 구현하려는 시도이다. 시간 대기는 다수의 Tick에 걸쳐 진행되는 비동기 행동이므로, <code>StatefulActionNode</code>로 구현하여야 한다.</p>
+<h3>4.2 올바른 구현으로의 전환</h3>
+<p>위 예시의 올바른 구현은 다음과 같다.</p>
+<pre><code class="language-cpp">// 올바른 구현: StatefulActionNode 사용
+class WaitForDuration : public BT::StatefulActionNode
+{
+public:
+    WaitForDuration(const std::string&amp; name,
+                    const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("duration", 5.0, "대기 시간(초)")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        double duration;
+        getInput("duration", duration);
+        deadline_ = std::chrono::steady_clock::now() 
+                  + std::chrono::duration&lt;double&gt;(duration);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (std::chrono::steady_clock::now() &gt;= deadline_)
+            return BT::NodeStatus::SUCCESS;
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override {}
+
+private:
+    std::chrono::steady_clock::time_point deadline_;
+};
+</code></pre>
+<p><code>StatefulActionNode</code>에서는 <code>onStart()</code>에서 RUNNING을 반환하여 비동기 실행을 시작하고, <code>onRunning()</code>에서 주기적으로 완료 여부를 확인하며, <code>onHalted()</code>에서 중단 시의 정리를 수행한다.</p>
+<h3>4.3 차단 호출의 동기적 래핑</h3>
+<p>동기 액션 노드에서 차단 호출을 수행하고 그 결과를 기다리려는 시도 역시 RUNNING 반환의 원인이 될 수 있다.</p>
+<pre><code class="language-cpp">// 잘못된 패턴: 차단 호출을 위해 RUNNING 반환 시도
+BT::NodeStatus tick() override
+{
+    auto future = service_client_-&gt;async_send_request(request);
+    // future가 완료되지 않으면 RUNNING을 반환하려는 유혹
+    if (future.wait_for(std::chrono::milliseconds(0)) 
+        != std::future_status::ready)
+    {
+        return BT::NodeStatus::RUNNING;  // LogicError 발생
+    }
+    // ...
+}
+</code></pre>
+<p>이 경우의 해결책은 두 가지이다. 첫째, <code>StatefulActionNode</code>로 전환하여 <code>onStart()</code>에서 비동기 요청을 전송하고 <code>onRunning()</code>에서 결과를 폴링한다. 둘째, 짧은 타임아웃 내에 완료가 보장되는 경우에 한하여 동기적으로 대기한다.</p>
+<h2>5. 컴파일 타임 검출의 한계</h2>
+<p>RUNNING 미반환 원칙은 현재 런타임에서만 강제된다. C++의 타입 시스템으로 이를 컴파일 타임에서 검출하기 어려운 이유는 다음과 같다.</p>
+<ol>
+<li>
+<p><strong>열거형 값 제한 불가</strong>: <code>NodeStatus</code>는 <code>SUCCESS</code>, <code>FAILURE</code>, <code>RUNNING</code>, <code>IDLE</code>의 네 가지 값을 가지는 열거형이다. C++에서 함수의 반환값을 열거형의 특정 부분 집합으로 제한하는 메커니즘이 존재하지 않는다.</p>
+</li>
+<li>
+<p><strong>조건부 반환 경로</strong>: <code>tick()</code> 메서드 내부에서 조건문에 의해 RUNNING이 반환되는 경로가 존재할 수 있으며, 이를 정적 분석으로 완전히 검출하기 어렵다.</p>
+</li>
+<li>
+<p><strong>간접 반환</strong>: 다른 함수의 반환값을 그대로 반환하는 경우, 해당 함수가 RUNNING을 반환할 수 있는지 컴파일 타임에서 판단할 수 없다.</p>
+</li>
+</ol>
+<p>이러한 한계로 인해 BehaviorTree.CPP는 런타임 검사와 명확한 예외 메시지를 통한 조기 실패(fail-fast) 전략을 채택하고 있다.</p>
+<h2>6. 정적 분석 도구를 통한 보완</h2>
+<p>런타임 검출의 한계를 보완하기 위해, 정적 분석 도구를 활용하여 RUNNING 반환을 사전에 검출할 수 있다.</p>
+<h3>6.1 Clang-Tidy 커스텀 검사</h3>
+<p>Clang-Tidy의 커스텀 검사(custom check)를 작성하여 <code>SyncActionNode</code> 파생 클래스의 <code>tick()</code> 메서드에서 <code>NodeStatus::RUNNING</code>을 반환하는 코드를 검출할 수 있다. 이는 모든 경로를 완전히 검출하지는 못하나, 명시적인 <code>return NodeStatus::RUNNING</code> 문을 조기에 발견하는 데 유효하다.</p>
+<h3>6.2 코드 리뷰 지침</h3>
+<p>정적 분석의 한계를 인적 검증으로 보완하기 위해, 코드 리뷰 시 다음 항목을 확인한다.</p>
+<ol>
+<li><code>SyncActionNode</code> 파생 클래스의 <code>tick()</code> 메서드에서 <code>RUNNING</code>을 반환하는 경로가 존재하지 않는지 확인한다.</li>
+<li><code>tick()</code> 메서드가 다른 함수의 반환값을 그대로 전달하는 경우, 해당 함수가 RUNNING을 반환할 가능성이 없는지 확인한다.</li>
+<li>행동의 특성상 RUNNING 상태가 필요한 경우, <code>StatefulActionNode</code>로의 전환을 권고한다.</li>
+</ol>
+<h2>7. RUNNING 미반환 원칙이 설계에 미치는 영향</h2>
+<h3>7.1 행동의 경계 결정</h3>
+<p>RUNNING 미반환 원칙은 하나의 동기 액션 노드가 수행하는 행동의 경계를 결정한다. 단일 Tick 내에서 완료될 수 있는 작업만 동기 액션 노드의 범위 내에 있으며, 이 범위를 초과하는 행동은 분할하거나 비동기 액션 노드로 전환하여야 한다.</p>
+<table><thead><tr><th>행동</th><th style="text-align: center">Tick 내 완료 가능</th><th style="text-align: center">적합한 노드 유형</th></tr></thead><tbody>
+<tr><td>블랙보드 값 설정</td><td style="text-align: center">예</td><td style="text-align: center">SyncActionNode</td></tr>
+<tr><td>수학적 계산</td><td style="text-align: center">예</td><td style="text-align: center">SyncActionNode</td></tr>
+<tr><td>ROS2 토픽 단일 발행</td><td style="text-align: center">예</td><td style="text-align: center">SyncActionNode</td></tr>
+<tr><td>로그 메시지 출력</td><td style="text-align: center">예</td><td style="text-align: center">SyncActionNode</td></tr>
+<tr><td>경로 추종</td><td style="text-align: center">아니오</td><td style="text-align: center">StatefulActionNode</td></tr>
+<tr><td>ROS2 액션 서버 호출</td><td style="text-align: center">아니오</td><td style="text-align: center">StatefulActionNode</td></tr>
+<tr><td>타임아웃 대기</td><td style="text-align: center">아니오</td><td style="text-align: center">StatefulActionNode</td></tr>
+<tr><td>센서 데이터 수집 대기</td><td style="text-align: center">아니오</td><td style="text-align: center">StatefulActionNode</td></tr>
+</tbody></table>
+<h3>7.2 트리 구조에 대한 영향</h3>
+<p>RUNNING 미반환 원칙은 행동 트리의 구조에도 영향을 미친다. 다수의 동기 액션 노드가 Sequence의 자식으로 배치되면, 모든 동기 액션이 동일 Tick 내에서 순차적으로 실행된다. 이는 설정-실행 패턴(setup-execute pattern)의 자연스러운 구현을 가능하게 한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 설정 단계: 동기 액션, 동일 Tick 내 실행 --&gt;
+    &lt;SetNavigationMode mode="cautious"/&gt;
+    &lt;UpdateCostmapParams inflation_radius="0.8"/&gt;
+    &lt;LogMessage message="내비게이션 시작"/&gt;
+    
+    &lt;!-- 실행 단계: 비동기 액션, RUNNING 반환 --&gt;
+    &lt;NavigateToGoal goal="{target}"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>세 개의 설정용 동기 액션이 RUNNING을 반환하지 않으므로, 단일 Tick에서 설정이 완료되고 즉시 비동기 내비게이션 행동으로 진행한다. 설정 단계가 별도의 Tick을 소비하지 않는 것은 RUNNING 미반환 원칙의 직접적인 혜택이다.</p>
+<h3>7.3 테스트 용이성</h3>
+<p>RUNNING 미반환 원칙은 동기 액션 노드의 테스트를 단순화한다. 테스트에서 단일 <code>executeTick()</code> 호출의 결과가 즉시 확정되므로, 다중 Tick 시나리오를 고려할 필요가 없다.</p>
+<pre><code class="language-cpp">TEST(SyncActionTest, ReturnsSuccessOnValidInput)
+{
+    BT::NodeConfig config;
+    // 포트 설정 ...
+    
+    MyAction action("test", config);
+    auto status = action.executeTick();
+    
+    // 단일 호출로 결과 확정: SUCCESS 또는 FAILURE
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<p>비동기 액션 노드의 테스트에서는 RUNNING 상태에서의 반복 Tick, Halt 호출, 타임아웃 시나리오 등을 고려하여야 하나, 동기 액션 노드는 이러한 복잡성이 원천적으로 배제된다.</p>
+<h2>8. RUNNING 미반환 원칙의 학술적 배경</h2>
+<p>행동 트리 이론에서 노드의 반환 상태 제약은 Colledanchise와 Ögren(2018)의 연구에서 형식적으로 다루어졌다. 이들은 행동 트리의 각 노드 유형에 대한 반환 상태 계약을 정의하고, 이 계약의 준수가 트리 전체의 정확성(correctness)을 보장하는 데 필수적임을 증명하였다. 동기 액션 노드의 RUNNING 미반환은 이러한 형식적 반환 상태 계약의 실질적 구현에 해당한다.</p>
+<p>BehaviorTree.CPP 라이브러리의 개발자인 Faconti(2022)는 <code>SyncActionNode</code>의 RUNNING 미반환 강제를 라이브러리의 핵심 안전 장치(safety mechanism)로 명시하고, 이를 통해 개발자가 행동의 시간적 특성에 맞는 기반 클래스를 올바르게 선택하도록 유도한다고 기술하였다.</p>
 
             </article>
             <footer>

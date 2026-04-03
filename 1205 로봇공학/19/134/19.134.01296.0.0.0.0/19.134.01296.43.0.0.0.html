@@ -115,6 +115,338 @@
             </header>
             <article>
                 <h1>1296.43 ROS2 액션 결과 처리 액션 노드</h1>
+<h2>1. 결과 처리의 개요</h2>
+<p>ROS2 액션 인터페이스에서 결과(Result)는 액션의 실행이 완료되었을 때 서버가 클라이언트에 반환하는 최종 데이터이다. 결과는 피드백과 달리 액션의 생명주기 중 단 한 번만 발생하며, 액션의 성공 완료(SUCCEEDED), 서버 측 중단(ABORTED), 또는 클라이언트 요청에 의한 취소(CANCELED) 시에 전달된다. 행동 트리 액션 노드에서 결과 처리는 ROS2 액션의 <code>ResultCode</code>를 행동 트리의 <code>NodeStatus</code>로 변환하고, 결과 메시지의 필드를 출력 포트를 통해 블랙보드에 기록하는 과정으로 구성된다(Macenski et al., 2020).</p>
+<h2>2. 결과 콜백의 등록과 수신</h2>
+<p>결과의 수신은 <code>SendGoalOptions</code>의 <code>result_callback</code>에 의해 이루어진다.</p>
+<pre><code class="language-cpp">auto send_goal_options =
+    rclcpp_action::Client&lt;ActionT&gt;::SendGoalOptions();
+
+send_goal_options.result_callback =
+    [this](const%20typename%20GoalHandle::WrappedResult&amp;%20wrapped)
+    {
+        result_ = std::make_shared&lt;Result&gt;(*wrapped.result);
+        result_code_ = wrapped.code;
+        goal_completed_ = true;
+    };
+</code></pre>
+<p><code>WrappedResult</code> 구조체는 다음의 두 요소를 포함한다.</p>
+<table><thead><tr><th>필드</th><th>타입</th><th>의미</th></tr></thead><tbody>
+<tr><td><code>code</code></td><td><code>rclcpp_action::ResultCode</code></td><td>액션 완료 상태 코드</td></tr>
+<tr><td><code>result</code></td><td><code>ActionT::Result::SharedPtr</code></td><td>결과 메시지</td></tr>
+</tbody></table>
+<p><code>result_callback</code>은 ROS2 실행기에 의해 호출되며, 수신된 결과를 멤버 변수에 저장하고 <code>goal_completed_</code> 플래그를 <code>true</code>로 설정한다. 이 플래그는 <code>onRunning()</code>에서 확인되어 결과 처리를 유발한다.</p>
+<h2>3. ResultCode와 NodeStatus의 매핑</h2>
+<p>ROS2 액션의 <code>ResultCode</code>를 행동 트리의 <code>NodeStatus</code>로 변환하는 것이 결과 처리의 핵심이다.</p>
+<h3>3.1 ResultCode 열거형</h3>
+<pre><code class="language-cpp">namespace rclcpp_action
+{
+enum class ResultCode : int8_t
+{
+    UNKNOWN = 0,
+    SUCCEEDED = 1,
+    CANCELED = 2,
+    ABORTED = 3
+};
+}
+</code></pre>
+<h3>3.2 매핑 규칙</h3>
+<table><thead><tr><th>ResultCode</th><th style="text-align: center">NodeStatus</th><th>의미</th><th style="text-align: center">결과 데이터 활용</th></tr></thead><tbody>
+<tr><td><code>SUCCEEDED</code></td><td style="text-align: center"><code>SUCCESS</code></td><td>액션이 성공적으로 완료됨</td><td style="text-align: center">결과 필드 출력</td></tr>
+<tr><td><code>ABORTED</code></td><td style="text-align: center"><code>FAILURE</code></td><td>서버가 액션을 중단함</td><td style="text-align: center">오류 코드 출력</td></tr>
+<tr><td><code>CANCELED</code></td><td style="text-align: center"><code>FAILURE</code></td><td>클라이언트의 취소 요청에 의해 중단됨</td><td style="text-align: center">없음 (또는 부분 결과)</td></tr>
+<tr><td><code>UNKNOWN</code></td><td style="text-align: center"><code>FAILURE</code></td><td>알 수 없는 상태</td><td style="text-align: center">없음</td></tr>
+</tbody></table>
+<h3>3.3 매핑 구현</h3>
+<pre><code class="language-cpp">BT::NodeStatus processResult()
+{
+    using rclcpp_action::ResultCode;
+
+    switch (result_code_)
+    {
+    case ResultCode::SUCCEEDED:
+        return onSuccess(*result_);
+
+    case ResultCode::ABORTED:
+        return onAborted(*result_);
+
+    case ResultCode::CANCELED:
+        return onCanceled();
+
+    default:
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "알 수 없는 ResultCode: %d",
+            static_cast&lt;int&gt;(result_code_));
+        return BT::NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<h2>4. 성공 결과의 처리</h2>
+<p>액션이 <code>SUCCEEDED</code>로 완료된 경우, 결과 메시지의 필드를 출력 포트를 통해 블랙보드에 기록한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onSuccess(const Result&amp; result)
+{
+    // 결과 데이터를 출력 포트에 기록
+    setOutput("error_code", 0);
+
+    // 액션 타입별 결과 처리
+    onResultReceived(result);
+
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>4.1 액션 타입별 성공 결과 처리</h3>
+<h4>4.1.1 내비게이션 결과</h4>
+<pre><code class="language-cpp">// NavigateToPose 결과
+void onResultReceived(
+    const nav2_msgs::action::NavigateToPose::Result&amp; result)
+{
+    setOutput("error_code", result.error_code);
+}
+</code></pre>
+<p>내비게이션 액션의 결과는 오류 코드를 포함하며, <code>SUCCEEDED</code> 시 오류 코드는 0이다.</p>
+<h4>4.1.2 경로 계획 결과</h4>
+<pre><code class="language-cpp">// ComputePathToPose 결과
+void onResultReceived(
+    const nav2_msgs::action::ComputePathToPose::Result&amp; result)
+{
+    setOutput("path", result.path);
+    setOutput("planning_time",
+        result.planning_time.sec
+        + result.planning_time.nanosec * 1e-9);
+    setOutput("error_code", result.error_code);
+}
+</code></pre>
+<p>경로 계획 액션의 결과는 계산된 경로와 계획 소요 시간을 포함한다. 이 결과는 후속 경로 추종 노드의 입력으로 사용된다.</p>
+<h4>4.1.3 물체 검출 결과</h4>
+<pre><code class="language-cpp">// 물체 검출 액션 결과
+void onResultReceived(const DetectObject::Result&amp; result)
+{
+    setOutput("object_pose", result.object_pose);
+    setOutput("confidence", result.confidence);
+    setOutput("object_id", result.object_id);
+}
+</code></pre>
+<h2>5. 실패 결과의 처리</h2>
+<h3>5.1 ABORTED 처리</h3>
+<p>서버가 액션을 중단한 경우, 결과 메시지에 포함된 오류 정보를 출력 포트에 기록한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onAborted(const Result&amp; result)
+{
+    RCLCPP_WARN(node_-&gt;get_logger(),
+        "액션이 서버에 의해 중단됨");
+
+    // 오류 코드 출력
+    setOutput("error_code", getErrorCode(result));
+
+    // 오류 메시지 출력 (가용한 경우)
+    if (!getErrorMessage(result).empty())
+    {
+        setOutput("error_message", getErrorMessage(result));
+    }
+
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.2 CANCELED 처리</h3>
+<p>취소는 클라이언트의 명시적 요청에 의해 발생하므로, 결과 데이터는 부분적이거나 유효하지 않을 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onCanceled()
+{
+    RCLCPP_INFO(node_-&gt;get_logger(),
+        "액션이 취소됨");
+
+    // 취소 시 결과 데이터는 기록하지 않거나
+    // 취소 상태를 나타내는 코드만 기록
+    setOutput("error_code", -1);
+
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.3 오류 코드 체계</h3>
+<p>Nav2 프레임워크에서는 표준화된 오류 코드 체계를 사용한다.</p>
+<table><thead><tr><th style="text-align: center">오류 코드</th><th>의미</th><th>원인</th></tr></thead><tbody>
+<tr><td style="text-align: center">0</td><td>없음 (성공)</td><td>정상 완료</td></tr>
+<tr><td style="text-align: center">100번대</td><td>서버 오류</td><td>서버 내부 오류</td></tr>
+<tr><td style="text-align: center">200번대</td><td>계획 실패</td><td>경로 계획 불가</td></tr>
+<tr><td style="text-align: center">300번대</td><td>제어 실패</td><td>경로 추종 실패</td></tr>
+<tr><td style="text-align: center">400번대</td><td>목표 무효</td><td>목표 위치 접근 불가</td></tr>
+</tbody></table>
+<p>오류 코드를 출력 포트에 기록함으로써, 상위 트리에서 Fallback 노드를 통한 오류 유형별 복구 처리가 가능해진다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;NavigateToPose goal="{target}" error_code="{nav_error}" /&gt;
+    &lt;Sequence&gt;
+        &lt;IsErrorCode code="{nav_error}" expected="201" /&gt;
+        &lt;ClearCostmap /&gt;
+        &lt;NavigateToPose goal="{target}" error_code="{nav_error}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsErrorCode code="{nav_error}" expected="301" /&gt;
+        &lt;Spin angle="1.57" /&gt;
+        &lt;NavigateToPose goal="{target}" error_code="{nav_error}" /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>6. 결과 출력 포트의 설계</h2>
+<h3>6.1 포트 선언 패턴</h3>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // 입력 포트 (골 파라미터)
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+            "goal", "목표 위치"),
+
+        // 공통 결과 출력 포트
+        BT::OutputPort&lt;int&gt;(
+            "error_code", "오류 코드 (0: 성공)"),
+        BT::OutputPort&lt;std::string&gt;(
+            "error_message", "오류 메시지"),
+
+        // 액션 특화 결과 출력 포트
+        BT::OutputPort&lt;nav_msgs::msg::Path&gt;(
+            "path", "계산된 경로"),
+        BT::OutputPort&lt;double&gt;(
+            "planning_time", "경로 계획 소요 시간 (초)")
+    };
+}
+</code></pre>
+<h3>6.2 공통 출력 포트와 특화 출력 포트의 분리</h3>
+<table><thead><tr><th>포트 범주</th><th>예시</th><th style="text-align: center">기록 조건</th></tr></thead><tbody>
+<tr><td>공통 결과</td><td><code>error_code</code>, <code>error_message</code></td><td style="text-align: center">SUCCESS/FAILURE 모두</td></tr>
+<tr><td>성공 시 결과</td><td><code>path</code>, <code>object_pose</code></td><td style="text-align: center">SUCCESS 시</td></tr>
+<tr><td>실패 시 결과</td><td>오류 상세 정보</td><td style="text-align: center">FAILURE 시</td></tr>
+</tbody></table>
+<p>공통 결과 포트인 <code>error_code</code>는 SUCCESS 시 0을, FAILURE 시 구체적 오류 코드를 기록하여, 상위 트리에서 통일된 방식으로 결과를 참조할 수 있게 한다.</p>
+<h2>7. 가상 함수를 통한 결과 처리의 확장</h2>
+<pre><code class="language-cpp">template &lt;typename ActionT&gt;
+class RosActionNode : public BT::StatefulActionNode
+{
+protected:
+    // 파생 클래스에서 재정의 가능한 결과 처리 함수
+    virtual BT::NodeStatus onSuccess(
+        const typename ActionT::Result&amp; result)
+    {
+        // 기본 구현: SUCCESS 반환
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    virtual BT::NodeStatus onAborted(
+        const typename ActionT::Result&amp; result)
+    {
+        // 기본 구현: FAILURE 반환
+        return BT::NodeStatus::FAILURE;
+    }
+
+    virtual BT::NodeStatus onCanceled()
+    {
+        // 기본 구현: FAILURE 반환
+        return BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<p>파생 클래스는 액션 타입에 특화된 결과 처리를 구현한다.</p>
+<pre><code class="language-cpp">class ComputePathAction
+    : public RosActionNode&lt;
+          nav2_msgs::action::ComputePathToPose&gt;
+{
+protected:
+    BT::NodeStatus onSuccess(
+        const nav2_msgs::action::ComputePathToPose::Result&amp;
+            result) override
+    {
+        setOutput("path", result.path);
+        setOutput("planning_time",
+            result.planning_time.sec
+            + result.planning_time.nanosec * 1e-9);
+        setOutput("error_code", result.error_code);
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    BT::NodeStatus onAborted(
+        const nav2_msgs::action::ComputePathToPose::Result&amp;
+            result) override
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+            "경로 계획 실패: 오류 코드 %d",
+            result.error_code);
+        setOutput("error_code", result.error_code);
+        return BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<h2>8. onRunning()에서의 결과 확인 흐름</h2>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    // ROS2 콜백 처리
+    rclcpp::spin_some(node_);
+
+    // 결과 도착 확인
+    if (!goal_completed_)
+    {
+        // 피드백 처리 (선택적)
+        if (latest_feedback_)
+            onFeedbackReceived(*latest_feedback_);
+
+        return BT::NodeStatus::RUNNING;
+    }
+
+    // 결과 처리
+    using rclcpp_action::ResultCode;
+
+    switch (result_code_)
+    {
+    case ResultCode::SUCCEEDED:
+        return onSuccess(*result_);
+
+    case ResultCode::ABORTED:
+        return onAborted(*result_);
+
+    case ResultCode::CANCELED:
+        return onCanceled();
+
+    default:
+        return BT::NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<p><code>goal_completed_</code> 플래그가 <code>true</code>가 되면, <code>onRunning()</code>은 더 이상 RUNNING을 반환하지 않고, <code>ResultCode</code>에 따른 최종 <code>NodeStatus</code>를 반환한다. 이 반환에 의해 행동 트리는 이 노드의 실행을 완료로 간주하고 다음 노드로 진행한다.</p>
+<h2>9. 결과 데이터의 블랙보드 흐름</h2>
+<p>결과 데이터가 블랙보드를 통해 후속 노드에 전달되는 흐름을 기술한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 경로 계획: 결과를 블랙보드에 기록 --&gt;
+    &lt;ComputePathToPose goal="{target}"
+                        path="{computed_path}"
+                        error_code="{plan_error}" /&gt;
+
+    &lt;!-- 경로 추종: 계획된 경로를 입력으로 사용 --&gt;
+    &lt;FollowPath path="{computed_path}"
+                 error_code="{follow_error}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이 패턴에서 <code>ComputePathToPose</code>의 결과 출력 <code>path</code>가 블랙보드 키 <code>computed_path</code>에 기록되고, <code>FollowPath</code>가 이 키를 입력으로 읽는다. Sequence 제어 노드에 의해 <code>ComputePathToPose</code>가 SUCCESS를 반환한 후에만 <code>FollowPath</code>가 실행되므로, 결과 데이터의 유효성이 보장된다.</p>
+<h2>10. 결과 처리의 타이밍</h2>
+<table><thead><tr><th>시점</th><th>이벤트</th><th style="text-align: center">행동 트리 상태</th></tr></thead><tbody>
+<tr><td>T₁</td><td>골 전송 (onStart)</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td>T₂–Tₙ</td><td>피드백 수신 (onRunning)</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td>Tₙ₊₁</td><td>결과 콜백 수신</td><td style="text-align: center">goal_completed_ = true</td></tr>
+<tr><td>Tₙ₊₂</td><td>onRunning()에서 결과 확인</td><td style="text-align: center">SUCCESS 또는 FAILURE</td></tr>
+</tbody></table>
+<p>결과 콜백의 수신(Tₙ₊₁)과 <code>onRunning()</code>에서의 결과 확인(Tₙ₊₂) 사이에는 최대 한 Tick 주기의 지연이 존재한다. 이 지연은 행동 트리의 Tick 기반 실행 모델에 의한 불가피한 특성이다.</p>
+<h2>11. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>ResultCode별 분기의 명시적 구현</strong>: 모든 <code>ResultCode</code> 값에 대한 처리를 명시적으로 구현하여, 예기치 않은 상태에 의한 미정의 동작을 방지한다.</p>
+</li>
+<li>
+<p><strong>성공과 실패의 출력 포트 구분</strong>: SUCCESS 시에는 결과 데이터와 성공 코드를, FAILURE 시에는 오류 코드와 오류 메시지를 출력 포트에 기록하여, 상위 트리에서 결과 유형에 따른 분기 처리를 지원한다.</p>
+</li>
+<li>
+<p><strong>공통 오류 코드 포트의 제공</strong>: 모든 액션 노드에 <code>error_code</code> 출력 포트를 제공하여, 통일된 오류 처리 인터페이스를 확립한다.</p>
+</li>
+<li>
+<p><strong>가상 함수를 통한 확장</strong>: 결과 처리 로직을 가상 함수로 분리하여, 기반 클래스의 공통 로직을 재사용하면서 액션 타입별 특화 처리를 파생 클래스에서 구현한다.</p>
+</li>
+<li>
+<p><strong>결과 데이터의 유효성 전제</strong>: SUCCESS 반환 전에 모든 결과 출력 포트에 유효한 값을 기록하여, 후속 노드가 블랙보드에서 유효한 데이터를 읽을 수 있도록 보장한다(Macenski et al., 2020; Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

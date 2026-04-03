@@ -115,6 +115,230 @@
             </header>
             <article>
                 <h1>1296.25 CoroActionNode의 협력적 다중 작업</h1>
+<h2>1. 협력적 다중 작업의 개념</h2>
+<p>협력적 다중 작업(cooperative multitasking)은 각 작업이 자발적으로 실행 제어를 양보(yield)함으로써 다수의 작업이 단일 스레드에서 교대로 실행되는 동시성(concurrency) 모델이다. 이는 선점적 다중 작업(preemptive multitasking)과 대비되는 개념으로, 선점적 모델에서는 운영 체제의 스케줄러가 외부에서 실행 중인 작업을 강제로 중단시키는 반면, 협력적 모델에서는 각 작업이 명시적으로 제어를 반환하는 시점을 결정한다.</p>
+<p><code>CoroActionNode</code>는 코루틴의 중단(suspend)과 재개(resume) 메커니즘을 통해 협력적 다중 작업을 구현한다. <code>setStatusRunningAndYield()</code> 호출이 곧 제어의 자발적 양보에 해당하며, 이 시점에서 트리의 다른 노드에 실행 기회가 부여된다.</p>
+<h2>2. CoroActionNode의 협력적 실행 모델</h2>
+<p>행동 트리의 Tick 메커니즘은 본질적으로 협력적 다중 작업의 프레임워크이다. 각 Tick에서 트리의 루트로부터 순회가 시작되고, 각 노드는 Tick당 한 번의 실행 기회를 부여받는다. <code>CoroActionNode</code>는 이 프레임워크 내에서 코루틴을 통해 다중 Tick에 걸친 행동을 순차적 코드로 표현하면서도, 매 Tick마다 제어를 트리에 반환하는 협력적 실행을 가능하게 한다.</p>
+<pre><code>Tick N:
+  루트 → Sequence → CoroAction_A (재개 → 작업 수행 → yield) → CoroAction_B (재개 → 작업 수행 → yield)
+                     ↑ 제어 양보                                  ↑ 제어 양보
+
+Tick N+1:
+  루트 → Sequence → CoroAction_A (재개 → 작업 수행 → yield) → CoroAction_B (재개 → 완료 → SUCCESS)
+                     ↑ 제어 양보                                  ↑ 최종 반환
+</code></pre>
+<p>각 <code>CoroActionNode</code>는 <code>setStatusRunningAndYield()</code>를 호출하여 RUNNING을 반환하고 제어를 양보한다. 트리의 순회가 계속되어 다음 노드가 실행 기회를 얻으며, 다음 Tick에서 이전에 양보한 지점부터 실행이 재개된다.</p>
+<h2>3. 단일 스레드 협력적 동시성</h2>
+<p><code>CoroActionNode</code>의 핵심적 특성은 모든 실행이 메인 스레드에서 이루어진다는 것이다. 다수의 <code>CoroActionNode</code>가 Parallel 노드의 자식으로 배치되어 동시에 RUNNING 상태에 있더라도, 각 코루틴은 메인 스레드에서 순차적으로 재개된다.</p>
+<pre><code>Parallel 노드 아래의 CoroActionNode 실행:
+
+메인 스레드 시간축:
+─┬─ Tick ──────────────────────────────────────────────┬─ Tick ─→
+ │                                                      │
+ │  CoroAction_A 재개 → 작업 → yield                    │  CoroAction_A 재개 → ...
+ │                    CoroAction_B 재개 → 작업 → yield   │
+ │                                   CoroAction_C 재개 → 작업 → yield
+ │                                                      │
+</code></pre>
+<p>이 모델에서는 동일한 Tick 내에서도 코루틴이 순차적으로 실행되므로, 두 코루틴이 동시에 공유 자원에 접근하는 것이 구조적으로 불가능하다. 이는 <code>ThreadedAction</code>에서 다수의 스레드가 실제로 병렬 실행되어 경합 조건(race condition)이 발생하는 것과 근본적으로 다르다.</p>
+<h3>3.1 ThreadedAction과의 동시성 모델 비교</h3>
+<table><thead><tr><th>비교 항목</th><th style="text-align: center">CoroActionNode</th><th style="text-align: center">ThreadedAction</th></tr></thead><tbody>
+<tr><td>동시성 유형</td><td style="text-align: center">협력적 (cooperative)</td><td style="text-align: center">선점적 (preemptive)</td></tr>
+<tr><td>실행 스레드</td><td style="text-align: center">메인 스레드 단일</td><td style="text-align: center">노드별 별도 스레드</td></tr>
+<tr><td>실제 병렬 실행</td><td style="text-align: center">불가</td><td style="text-align: center">가능</td></tr>
+<tr><td>경합 조건 발생</td><td style="text-align: center">불가</td><td style="text-align: center">가능</td></tr>
+<tr><td>뮤텍스 필요성</td><td style="text-align: center">없음</td><td style="text-align: center">있음</td></tr>
+<tr><td>차단 호출 허용</td><td style="text-align: center">불가</td><td style="text-align: center">가능</td></tr>
+<tr><td>제어 양보</td><td style="text-align: center">명시적 (yield)</td><td style="text-align: center">암묵적 (스케줄러)</td></tr>
+</tbody></table>
+<h2>4. Parallel 노드에서의 협력적 다중 작업</h2>
+<p>Parallel 노드는 다수의 자식을 동일 Tick에서 순회하므로, <code>CoroActionNode</code>의 협력적 다중 작업이 가장 잘 드러나는 구조이다.</p>
+<pre><code class="language-cpp">// 트리 구조 (XML)
+// &lt;Parallel success_count="2" failure_count="1"&gt;
+//     &lt;MoveArm /&gt;        &lt;!-- CoroActionNode --&gt;
+//     &lt;MonitorSensor /&gt;  &lt;!-- CoroActionNode --&gt;
+//     &lt;UpdateDisplay /&gt;  &lt;!-- CoroActionNode --&gt;
+// &lt;/Parallel&gt;
+</code></pre>
+<p>각 <code>CoroActionNode</code>의 구현을 예시한다.</p>
+<pre><code class="language-cpp">class MoveArm : public BT::CoroActionNode
+{
+public:
+    MoveArm(const std::string&amp; name,
+            const BT::NodeConfig&amp; config)
+        : CoroActionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        Pose target;
+        if (!getInput("target_pose", target))
+            return BT::NodeStatus::FAILURE;
+
+        sendArmCommand(target);
+        setStatusRunningAndYield();
+
+        while (!isArmMotionComplete())
+        {
+            updateArmFeedback();
+            setStatusRunningAndYield();
+        }
+
+        return getArmResult() ? BT::NodeStatus::SUCCESS
+                              : BT::NodeStatus::FAILURE;
+    }
+};
+
+class MonitorSensor : public BT::CoroActionNode
+{
+public:
+    MonitorSensor(const std::string&amp; name,
+                   const BT::NodeConfig&amp; config)
+        : CoroActionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        int stable_count = 0;
+        const int required = 5;
+
+        while (stable_count &lt; required)
+        {
+            double value = readSensor();
+            if (isWithinRange(value))
+                ++stable_count;
+            else
+                stable_count = 0;
+
+            setStatusRunningAndYield();
+        }
+
+        setOutput("sensor_stable", true);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<p>Parallel 노드의 각 Tick에서 세 개의 <code>CoroActionNode</code>가 순차적으로 재개되어 각자의 작업을 수행하고, <code>setStatusRunningAndYield()</code>를 통해 제어를 양보한다. 이 과정에서 지역 변수(<code>stable_count</code> 등)는 코루틴 프레임에 보존되며, 개발자가 상태를 수동으로 관리할 필요가 없다.</p>
+<h2>5. 협력적 다중 작업에서의 Tick 시간 예산</h2>
+<p>협력적 다중 작업에서 각 코루틴이 <code>setStatusRunningAndYield()</code> 호출 사이에 수행하는 작업량은 Tick의 총 실행 시간에 직접적으로 영향을 미친다. 모든 코루틴이 메인 스레드에서 순차적으로 실행되므로, 단일 Tick의 소요 시간은 해당 Tick에서 재개되는 모든 코루틴의 실행 시간의 합이다.</p>
+<p><span class="math math-display">T_{\text{tick}} = \sum_{i=1}^{n} T_{\text{coro}_i}</span></p>
+<p>여기서 <span class="math math-inline">T_{\text{coro}_i}</span>는 <span class="math math-inline">i</span>번째 코루틴이 재개 시점부터 다음 yield 또는 반환까지 실행하는 시간이며, <span class="math math-inline">n</span>은 해당 Tick에서 재개되는 코루틴의 수이다.</p>
+<p>행동 트리의 Tick 주기가 <span class="math math-inline">T_{\text{period}}</span>로 설정된 경우, 다음의 조건이 충족되어야 한다.</p>
+<p><span class="math math-display">T_{\text{tick}} &lt; T_{\text{period}}</span></p>
+<p>이 조건이 위반되면 Tick이 지연되어 트리의 반응성이 저하된다. 따라서 각 코루틴은 yield 사이에 수행하는 작업을 비차단적이고 경량적으로 유지하여야 한다. 차단 호출이나 장시간의 계산을 yield 사이에 배치하면, 해당 코루틴이 메인 스레드를 독점하여 다른 코루틴의 실행이 지연된다.</p>
+<h3>5.1 시간 예산 위반의 예</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 위반: yield 사이에 장시간 차단 호출
+    auto result = performHeavyComputation();  // 500ms 소요
+    setStatusRunningAndYield();
+
+    // 이 기간 동안 다른 코루틴은 실행되지 못함
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>5.2 시간 예산 준수의 예</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    initializeComputation();
+    setStatusRunningAndYield();
+
+    while (!isComputationComplete())
+    {
+        // 비차단적 진행 확인만 수행
+        checkProgress();
+        setStatusRunningAndYield();
+    }
+
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h2>6. 협력적 다중 작업과 StatefulActionNode의 비교</h2>
+<p><code>StatefulActionNode</code> 역시 메인 스레드에서 실행되며 다중 Tick에 걸쳐 작업을 수행하므로, 본질적으로 협력적 다중 작업을 수행한다. 그러나 두 접근법은 작업 간 상태 관리와 코드 구조에서 차이를 보인다.</p>
+<h3>6.1 StatefulActionNode의 협력적 다중 작업</h3>
+<pre><code class="language-cpp">// 각 콜백이 독립적으로 실행되며 상태를 멤버 변수로 전달
+class TaskA : public BT::StatefulActionNode
+{
+    int phase_ = 0;
+    int counter_ = 0;
+
+    BT::NodeStatus onStart() override
+    {
+        phase_ = 0;
+        counter_ = 0;
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        switch (phase_)
+        {
+        case 0:
+            if (initStep()) { phase_ = 1; }
+            return BT::NodeStatus::RUNNING;
+        case 1:
+            if (++counter_ &gt;= 10) { return BT::NodeStatus::SUCCESS; }
+            return BT::NodeStatus::RUNNING;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+    void onHalted() override { /* 정리 */ }
+};
+</code></pre>
+<h3>6.2 CoroActionNode의 협력적 다중 작업</h3>
+<pre><code class="language-cpp">// 순차적 코드로 동일한 로직을 표현
+class TaskA : public BT::CoroActionNode
+{
+public:
+    TaskA(const std::string&amp; name,
+          const BT::NodeConfig&amp; config)
+        : CoroActionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        while (!initStep())
+        {
+            setStatusRunningAndYield();
+        }
+
+        for (int counter = 0; counter &lt; 10; ++counter)
+        {
+            setStatusRunningAndYield();
+        }
+
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<table><thead><tr><th>비교 항목</th><th style="text-align: center">CoroActionNode</th><th style="text-align: center">StatefulActionNode</th></tr></thead><tbody>
+<tr><td>상태 전달</td><td style="text-align: center">코루틴 프레임 (자동)</td><td style="text-align: center">멤버 변수 (수동)</td></tr>
+<tr><td>코드 구조</td><td style="text-align: center">순차적 흐름</td><td style="text-align: center">상태 기계</td></tr>
+<tr><td>제어 흐름 표현</td><td style="text-align: center">while, for 등 자연적</td><td style="text-align: center">switch/case 또는 분기</td></tr>
+<tr><td>다중 작업 단위</td><td style="text-align: center">yield 호출 간 구간</td><td style="text-align: center">onRunning() 호출 1회</td></tr>
+<tr><td>Halt 시 정리</td><td style="text-align: center">코루틴 파괴 (RAII)</td><td style="text-align: center">onHalted() 명시적 구현</td></tr>
+</tbody></table>
+<h2>7. 협력적 다중 작업의 제약 조건</h2>
+<p><code>CoroActionNode</code>의 협력적 다중 작업 모델은 다음의 제약 조건을 수반한다.</p>
+<h3>7.1 차단 호출의 금지</h3>
+<p>코루틴이 메인 스레드에서 실행되므로, 차단 호출(blocking call)은 트리 전체의 실행을 중단시킨다. 네트워크 I/O, 디스크 I/O, 장시간의 CPU 연산 등 차단적 작업은 <code>CoroActionNode</code> 내부에서 수행하여서는 안 된다. 차단 호출이 불가피한 경우에는 <code>ThreadedAction</code>을 사용하여야 한다.</p>
+<h3>7.2 양보 빈도의 적절성</h3>
+<p>코루틴이 yield 없이 장시간 실행되면, 다른 코루틴과 트리의 반응성이 저하된다. <code>setStatusRunningAndYield()</code> 호출의 빈도는 트리의 Tick 주기와 코루틴의 작업량을 고려하여 적절히 설정하여야 한다.</p>
+<h3>7.3 실제 병렬성의 부재</h3>
+<p>협력적 다중 작업은 동시성(concurrency)을 제공하나 병렬성(parallelism)은 제공하지 않는다. 다수의 코루틴이 동시에 RUNNING 상태에 있더라도, 실제로는 순차적으로 교대 실행된다. CPU 집약적 작업을 다수의 <code>CoroActionNode</code>에 분산하더라도 총 실행 시간은 단축되지 않는다.</p>
+<h2>8. 적용 지침</h2>
+<p><code>CoroActionNode</code>의 협력적 다중 작업이 적합한 경우를 정리한다.</p>
+<ol>
+<li><strong>비차단적 다단계 행동</strong>: ROS2 액션 클라이언트의 비동기 호출 결과를 폴링하는 등, 각 단계가 비차단적인 다단계 행동</li>
+<li><strong>조건부 대기</strong>: 블랙보드 값이나 외부 상태의 변경을 주기적으로 확인하는 대기 행동</li>
+<li><strong>순차적 흐름이 중요한 경우</strong>: 상태 기계로 표현하면 복잡도가 과도하게 증가하는 다단계 제어 흐름</li>
+</ol>
+<p>부적합한 경우는 다음과 같다.</p>
+<ol>
+<li><strong>차단 호출 포함</strong>: 네트워크 I/O, 동기 서비스 호출 등 차단적 작업이 포함된 경우</li>
+<li><strong>CPU 집약적 계산</strong>: 실제 병렬 실행이 필요한 연산 집약적 작업</li>
+<li><strong>세밀한 Halt 제어 필요</strong>: 코루틴 파괴 이외의 명시적 정리 로직이 필요한 경우</li>
+</ol>
+<p>협력적 다중 작업의 핵심은 각 코루틴이 “좋은 시민(good citizen)“으로서 적절한 시점에 제어를 양보하는 것이다. 이 원칙의 준수 여부가 행동 트리 전체의 반응성과 실시간성을 결정한다(Faconti, 2022).</p>
 
             </article>
             <footer>

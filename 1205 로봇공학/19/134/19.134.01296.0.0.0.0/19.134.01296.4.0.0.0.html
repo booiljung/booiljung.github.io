@@ -115,6 +115,108 @@
             </header>
             <article>
                 <h1>1296.4 액션 노드의 반환 상태 규칙</h1>
+<h2>1. 세 가지 반환 상태</h2>
+<p>행동 트리의 모든 노드는 Tick을 받으면 세 가지 상태 중 하나를 반환한다. 이 상태는 <code>BT::NodeStatus</code> 열거형으로 정의된다.</p>
+<pre><code class="language-cpp">enum class NodeStatus
+{
+    IDLE,       // 초기 상태 (Tick 전)
+    RUNNING,    // 실행 진행 중
+    SUCCESS,    // 실행 성공 완료
+    FAILURE,    // 실행 실패 완료
+    SKIPPED     // 실행 건너뜀 (4.x)
+};
+</code></pre>
+<p>액션 노드가 <code>tick()</code> 또는 <code>onStart()</code>/<code>onRunning()</code>에서 반환할 수 있는 상태는 SUCCESS, FAILURE, RUNNING의 세 가지이다. IDLE은 Tick 이전의 초기 상태이며 노드가 직접 반환하지 않는다.</p>
+<h2>2. 각 반환 상태의 의미</h2>
+<h3>2.1 SUCCESS</h3>
+<p>행동이 의도한 대로 성공적으로 완료되었음을 나타낸다. 부모 제어 노드는 SUCCESS를 받으면 자신의 정책에 따라 다음 행동을 결정한다.</p>
+<ul>
+<li>Sequence의 자식이 SUCCESS → 다음 자식으로 진행</li>
+<li>Fallback의 자식이 SUCCESS → Fallback이 SUCCESS 반환</li>
+<li>Parallel의 자식이 SUCCESS → 성공 카운트 증가</li>
+</ul>
+<pre><code class="language-cpp">BT::NodeStatus NavigateToGoal::onRunning()
+{
+    if (hasReachedGoal())
+        return BT::NodeStatus::SUCCESS;  // 목표 도달
+    // ...
+}
+</code></pre>
+<h3>2.2 FAILURE</h3>
+<p>행동이 실패하였거나, 의도한 목적을 달성하지 못하였음을 나타낸다. FAILURE는 오류(error)와 다르다. 오류는 예외적 상황이지만, FAILURE는 행동의 정상적인 결과 중 하나이다. 예를 들어, “장애물을 감지하지 못함“은 장애물이 없는 환경에서 정상적인 FAILURE이다.</p>
+<ul>
+<li>Sequence의 자식이 FAILURE → Sequence가 FAILURE 반환</li>
+<li>Fallback의 자식이 FAILURE → 다음 자식으로 진행</li>
+<li>Parallel의 자식이 FAILURE → 실패 카운트 증가</li>
+</ul>
+<pre><code class="language-cpp">BT::NodeStatus GraspObject::onRunning()
+{
+    if (graspFailed())
+        return BT::NodeStatus::FAILURE;  // 파지 실패
+    // ...
+}
+</code></pre>
+<h3>2.3 RUNNING</h3>
+<p>행동이 아직 진행 중이며, 후속 Tick에서 다시 확인하여야 함을 나타낸다. RUNNING은 비동기 액션 노드(<code>StatefulActionNode</code>)에서만 반환된다. 동기 액션 노드(<code>SyncActionNode</code>)는 RUNNING을 반환할 수 없다.</p>
+<pre><code class="language-cpp">BT::NodeStatus NavigateToGoal::onRunning()
+{
+    if (hasReachedGoal())
+        return BT::NodeStatus::SUCCESS;
+    if (navigationFailed())
+        return BT::NodeStatus::FAILURE;
+    return BT::NodeStatus::RUNNING;  // 아직 이동 중
+}
+</code></pre>
+<h2>3. 반환 상태 규칙</h2>
+<h3>3.1 규칙 1: SyncActionNode는 RUNNING을 반환하지 않는다</h3>
+<p><code>SyncActionNode</code>의 <code>tick()</code> 메서드는 SUCCESS 또는 FAILURE만 반환하여야 한다. RUNNING을 반환하면 BehaviorTree.CPP 라이브러리가 예외를 발생시킨다.</p>
+<pre><code class="language-cpp">// SyncActionNode의 내부 구현
+NodeStatus SyncActionNode::executeTick()
+{
+    auto status = tick();
+    if (status == NodeStatus::RUNNING)
+    {
+        throw LogicError("SyncActionNode MUST NOT return RUNNING");
+    }
+    return status;
+}
+</code></pre>
+<p>이 규칙은 동기 액션의 의미론을 강제한다. 단일 Tick 내에서 완료되지 않는 행동은 <code>StatefulActionNode</code>로 구현하여야 한다.</p>
+<h3>3.2 규칙 2: StatefulActionNode의 onStart()는 RUNNING을 반환할 수 있다</h3>
+<p><code>onStart()</code>는 행동의 시작 시점에서 호출되며, 행동이 즉시 완료되면 SUCCESS/FAILURE를, 비동기 진행이 필요하면 RUNNING을 반환한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    if (canCompleteImmediately())
+        return BT::NodeStatus::SUCCESS;
+    
+    startAsyncOperation();
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>3.3 규칙 3: 상태 전이의 합법성</h3>
+<p>액션 노드의 상태 전이는 다음의 규칙을 따른다.</p>
+<table><thead><tr><th>현재 상태</th><th>허용되는 반환 상태</th><th>조건</th></tr></thead><tbody>
+<tr><td>IDLE</td><td>SUCCESS, FAILURE, RUNNING</td><td>최초 Tick</td></tr>
+<tr><td>RUNNING</td><td>SUCCESS, FAILURE, RUNNING</td><td>후속 Tick</td></tr>
+<tr><td>SUCCESS</td><td>(부모에 의해 IDLE로 초기화)</td><td>-</td></tr>
+<tr><td>FAILURE</td><td>(부모에 의해 IDLE로 초기화)</td><td>-</td></tr>
+</tbody></table>
+<p>SUCCESS 또는 FAILURE 상태의 노드는 부모 제어 노드에 의해 IDLE로 초기화된 후 다시 Tick될 수 있다.</p>
+<h3>3.4 규칙 4: RUNNING 상태의 지속성</h3>
+<p>RUNNING을 반환한 액션 노드는 후속 Tick에서 <code>onRunning()</code>이 호출된다. 노드가 RUNNING 상태를 유지하는 한, 부모 제어 노드는 해당 노드를 활성 자식으로 간주하고 매 Tick에서 Tick을 전파한다.</p>
+<h3>3.5 규칙 5: FAILURE는 정상적인 결과이다</h3>
+<p>FAILURE는 예외적 오류가 아닌, 행동의 정상적인 결과 중 하나이다. 행동 트리의 제어 흐름(Fallback에 의한 대안 실행 등)은 FAILURE를 기반으로 동작하므로, FAILURE를 반환하는 것을 두려워하지 않아야 한다. 예외(exception)는 반환 상태가 아닌 별도의 오류 처리 메커니즘으로 다루어야 한다.</p>
+<h2>4. 반환 상태의 결정 기준</h2>
+<p>액션 노드의 반환 상태를 결정하는 기준을 정리한다.</p>
+<table><thead><tr><th>상황</th><th>반환 상태</th><th>예시</th></tr></thead><tbody>
+<tr><td>행동이 의도대로 완료</td><td>SUCCESS</td><td>목표 위치 도달, 물체 파지 성공</td></tr>
+<tr><td>행동이 의도대로 완료되지 않음</td><td>FAILURE</td><td>경로 계획 실패, 파지 실패</td></tr>
+<tr><td>행동이 아직 진행 중</td><td>RUNNING</td><td>이동 중, 대기 중</td></tr>
+<tr><td>입력 데이터가 유효하지 않음</td><td>FAILURE</td><td>포트 값 누락, 잘못된 좌표</td></tr>
+<tr><td>외부 시스템이 응답하지 않음</td><td>FAILURE 또는 RUNNING</td><td>타임아웃 정책에 따라 결정</td></tr>
+<tr><td>내부 예외 발생</td><td>FAILURE</td><td>예외를 catch하여 FAILURE 반환</td></tr>
+</tbody></table>
+<p>ROS2 액션 서버의 목표 거부(goal rejected)는 FAILURE로, 목표 진행 중(executing)은 RUNNING으로, 목표 완료(succeeded)는 SUCCESS로 매핑하는 것이 전형적 패턴이다.</p>
 
             </article>
             <footer>

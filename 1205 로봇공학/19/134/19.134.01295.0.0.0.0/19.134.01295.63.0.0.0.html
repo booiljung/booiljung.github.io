@@ -115,6 +115,116 @@
             </header>
             <article>
                 <h1>1295.63 Parallel과 ReactiveSequence의 동작 차이</h1>
+<h2>1. 핵심 차이 요약</h2>
+<p>Parallel 노드와 ReactiveSequence는 “감시하면서 행동을 수행“하는 유사한 패턴을 구현할 수 있으나, Tick 전파 방식, 자식 간 관계, Halt 트리거 메커니즘이 근본적으로 다르다. Parallel은 모든 자식에게 동시에 Tick을 전파하는 반면, ReactiveSequence는 선행 자식의 결과에 따라 후행 자식에 대한 Tick 전파 여부를 결정한다.</p>
+<h2>2. Tick 전파의 동작 차이</h2>
+<p>동일한 시나리오를 두 노드로 구현하여 Tick 전파의 차이를 추적한다.</p>
+<h3>2.1 Parallel (FAILURE_ONE 정책)</h3>
+<pre><code>Parallel (failure_policy: FAILURE_ONE)
+├── MonitorSafety    (감시 노드: RUNNING 유지, 위반 시 FAILURE)
+└── MoveToGoal       (행동 노드)
+</code></pre>
+<pre><code>Tick 1: MonitorSafety.tick() → RUNNING, MoveToGoal.tick() → RUNNING
+        → Parallel → RUNNING
+
+Tick 2: MonitorSafety.tick() → RUNNING, MoveToGoal.tick() → RUNNING
+        → Parallel → RUNNING
+
+Tick 3: MonitorSafety.tick() → FAILURE
+        → MoveToGoal.halt() (FAILURE_ONE 정책 충족)
+        → Parallel → FAILURE
+</code></pre>
+<p>Tick 3에서 <code>MonitorSafety</code>가 <code>FAILURE</code>를 반환한다. FAILURE_ONE 정책에 의해 하나의 자식이 실패하면 Parallel이 실패하므로, <code>MoveToGoal</code>에 Halt가 전파된다. 주의할 점은, Tick 3에서 <code>MonitorSafety</code>가 먼저 Tick을 수신하고 <code>FAILURE</code>를 반환하더라도, Parallel의 구현에 따라서는 <code>MoveToGoal</code>도 Tick을 수신한 후에 정책이 평가될 수 있다는 것이다. 이 경우 <code>MoveToGoal</code>은 위반된 안전 조건 하에서 한 번 더 실행된다.</p>
+<h3>2.2 ReactiveSequence</h3>
+<pre><code>ReactiveSequence
+├── IsSafe           (조건 노드: SUCCESS 또는 FAILURE)
+└── MoveToGoal       (행동 노드)
+</code></pre>
+<pre><code>Tick 1: IsSafe.tick() → SUCCESS, MoveToGoal.tick() → RUNNING
+        → ReactiveSequence → RUNNING
+
+Tick 2: IsSafe.tick() → SUCCESS, MoveToGoal.tick() → RUNNING
+        → ReactiveSequence → RUNNING
+
+Tick 3: IsSafe.tick() → FAILURE
+        → MoveToGoal는 Tick을 수신하지 않음
+        → MoveToGoal.halt()
+        → ReactiveSequence → FAILURE
+</code></pre>
+<p>Tick 3에서 <code>IsSafe</code>가 <code>FAILURE</code>를 반환하면, <code>MoveToGoal</code>은 Tick을 수신하지 않는다. ReactiveSequence의 순차 평가에 의해, 선행 자식이 <code>FAILURE</code>이면 후행 자식의 평가가 즉시 중단되기 때문이다. 이는 Parallel과의 핵심적 차이이다.</p>
+<h2>3. 안전 위반 시 행동 실행 횟수</h2>
+<table><thead><tr><th>Tick</th><th>Parallel (FAILURE_ONE)</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>위반 Tick에서 행동 Tick 수신</td><td>구현 의존 (수신 가능)</td><td>수신하지 않음</td></tr>
+<tr><td>위반과 Halt 사이 행동 실행</td><td>0~1회</td><td>0회</td></tr>
+</tbody></table>
+<p>ReactiveSequence에서는 조건이 <code>FAILURE</code>를 반환하면 행동이 해당 Tick에서 전혀 실행되지 않는 것이 보장된다. Parallel에서는 자식의 Tick 순서에 따라 행동이 한 번 더 실행될 수 있다.</p>
+<h2>4. 자식 노드의 상태 관리 차이</h2>
+<h3>4.1 Parallel에서의 감시 노드</h3>
+<p>Parallel 내의 감시 노드는 <code>RUNNING</code>을 반환하면서 지속적으로 상태를 감시한다. 감시 노드는 장기 실행 노드(long-running node)로, 내부 상태를 유지하며 매 Tick에서 안전 조건을 검사한다.</p>
+<pre><code>function MonitorSafety.tick():
+    // 내부 상태 유지
+    if not initialized:
+        initializeSafetyMonitor()
+        initialized ← true
+    
+    // 안전 조건 검사
+    if isSafetyViolated():
+        return FAILURE
+    
+    return RUNNING  // 계속 감시
+</code></pre>
+<p>Halt가 호출되면 감시 노드도 초기화되므로, 다음 실행 시 <code>initializeSafetyMonitor()</code>가 다시 호출된다.</p>
+<h3>4.2 ReactiveSequence에서의 조건 노드</h3>
+<p>ReactiveSequence 내의 조건 노드는 상태를 유지하지 않는 무상태(stateless) 노드이다. 매 Tick에서 독립적으로 조건을 판정하고 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 즉시 반환한다.</p>
+<pre><code>function IsSafe.tick():
+    // 매 Tick 독립적 판정
+    if isSafetyViolated():
+        return FAILURE
+    return SUCCESS
+</code></pre>
+<p>상태 관리가 필요 없으므로 구현이 단순하고, Halt에 의한 상태 정리도 필요 없다.</p>
+<h2>5. 복수 행동의 동시 수행</h2>
+<p>Parallel과 ReactiveSequence의 또 다른 핵심 차이는 복수의 <code>RUNNING</code> 행동을 동시에 수행할 수 있는가이다.</p>
+<h3>5.1 Parallel: 복수 행동 동시 수행 가능</h3>
+<pre><code>Parallel (success_policy: SUCCESS_ALL)
+├── MoveBase        → RUNNING
+├── MoveArm         → RUNNING
+└── RecordSensorData → RUNNING
+</code></pre>
+<p>세 행동이 모두 매 Tick에서 Tick을 수신하며, 논리적으로 동시에 진행된다.</p>
+<h3>5.2 ReactiveSequence: 동시 수행 불가</h3>
+<pre><code>ReactiveSequence
+├── MoveBase        → RUNNING (여기서 멈춤)
+├── MoveArm         (Tick 미수신)
+└── RecordSensorData (Tick 미수신)
+</code></pre>
+<p><code>MoveBase</code>가 <code>RUNNING</code>을 반환하면 <code>MoveArm</code>과 <code>RecordSensorData</code>는 Tick을 수신하지 않는다. ReactiveSequence는 복수 행동의 동시 수행을 지원하지 않는다.</p>
+<h2>6. 조건 복원 시 동작 차이</h2>
+<p>안전 조건이 위반되었다가 복원되는 경우의 동작 차이를 비교한다.</p>
+<h3>6.1 Parallel</h3>
+<pre><code>Tick t:   MonitorSafety → FAILURE → Parallel → FAILURE
+          MoveToGoal.halt()
+Tick t+1: (Parallel이 FAILURE를 반환했으므로 부모가 다음 동작 결정)
+</code></pre>
+<p>Parallel이 <code>FAILURE</code>를 반환하면, Parallel 자체가 종료된다. 조건 복원에 의한 자동 재시작은 Parallel 자체의 메커니즘으로는 제공되지 않으며, 부모 노드에 의해 Parallel이 다시 Tick을 수신하여야 한다.</p>
+<h3>6.2 ReactiveSequence</h3>
+<pre><code>Tick t:   IsSafe → FAILURE → ReactiveSequence → FAILURE
+          MoveToGoal.halt()
+Tick t+1: (ReactiveSequence가 FAILURE를 반환했으므로 부모가 다음 동작 결정)
+</code></pre>
+<p>ReactiveSequence도 <code>FAILURE</code>를 반환하면 종료된다. 조건 복원에 의한 자동 재시작은 부모 노드에 의존한다.</p>
+<p>두 노드 모두 조건 복원 시 자동 재시작을 위해서는 부모 노드(예: ReactiveFallback)가 매 Tick에서 이 노드를 재평가하는 구조가 필요하다.</p>
+<h2>7. 선택 기준</h2>
+<table><thead><tr><th>요구 사항</th><th>권장 노드</th></tr></thead><tbody>
+<tr><td>감시 + 단일 행동</td><td>ReactiveSequence (더 단순)</td></tr>
+<tr><td>감시 + 복수 동시 행동</td><td>Parallel</td></tr>
+<tr><td>조건이 경량(무상태)</td><td>ReactiveSequence</td></tr>
+<tr><td>감시 노드가 내부 상태 필요</td><td>Parallel</td></tr>
+<tr><td>위반 Tick에서 행동 미실행 보장</td><td>ReactiveSequence</td></tr>
+<tr><td>감시와 행동이 동등한 관계</td><td>Parallel</td></tr>
+<tr><td>조건과 행동이 전제-결과 관계</td><td>ReactiveSequence</td></tr>
+</tbody></table>
+<p>일반적으로, 단일 행동에 대한 단순 조건 감시에는 ReactiveSequence가, 복수 행동의 동시 수행이나 복잡한 감시 로직이 필요한 경우에는 Parallel이 적합하다.</p>
 
             </article>
             <footer>

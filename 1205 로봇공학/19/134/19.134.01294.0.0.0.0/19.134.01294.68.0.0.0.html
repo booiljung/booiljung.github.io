@@ -115,6 +115,175 @@
             </header>
             <article>
                 <h1>1294.68 이동 로봇의 순차 임무 수행 Sequence</h1>
+<h2>1. 이동 로봇 임무의 순차적 특성</h2>
+<p>이동 로봇(mobile robot)의 임무는 본질적으로 순차적 구조를 가진다. 목표 지점까지의 이동, 환경 인식, 작업 수행, 귀환 등의 단계가 명확한 선후 관계를 형성하며, 이전 단계가 완료되어야 다음 단계를 시작할 수 있다. Sequence 노드는 이러한 순차적 의존 관계를 행동 트리 수준에서 자연스럽게 표현한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 기본 네비게이션 시퀀스</h2>
+<h3>2.1 단일 목표 지점 네비게이션</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="ComputePathToPose" goal="{target_pose}"/&gt;
+    &lt;Action ID="FollowPath"/&gt;
+    &lt;Action ID="AdjustFinalPose"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<pre><code>Tick 1: ComputePathToPose→R (경로 계산 중)
+Tick 2: ComputePathToPose→S, FollowPath→R (경로 추종 시작)
+Tick 3: FollowPath→R (이동 중)
+...
+Tick N: FollowPath→S, AdjustFinalPose→R (최종 자세 조정)
+Tick N+1: AdjustFinalPose→S → SUCCESS (도착 완료)
+</code></pre>
+<p>SequenceWithMemory를 사용하므로, FollowPath가 RUNNING인 동안 ComputePathToPose를 반복 실행하지 않는다. 이미 성공한 경로 계산 단계를 건너뛰고, 경로 추종 단계부터 재진입한다.</p>
+<h3>2.2 다중 경유지 네비게이션</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="NavigateToPose" goal="{waypoint_1}"/&gt;
+    &lt;Action ID="NavigateToPose" goal="{waypoint_2}"/&gt;
+    &lt;Action ID="NavigateToPose" goal="{waypoint_3}"/&gt;
+    &lt;Action ID="NavigateToPose" goal="{final_destination}"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>경유지를 순차적으로 방문하며, 각 경유지 도달은 비동기 액션으로 여러 Tick에 걸쳐 수행된다. SequenceWithMemory의 기억 기능에 의해, 이미 도달한 경유지로의 네비게이션은 재실행되지 않는다.</p>
+<h2>3. ROS2 Nav2 기반 네비게이션 시퀀스</h2>
+<h3>3.1 Nav2의 기본 네비게이션 시퀀스 구조</h3>
+<p>ROS2 Nav2(Navigation2) 프레임워크는 행동 트리 기반의 네비게이션 시스템으로, 핵심 네비게이션 로직이 Sequence 노드로 구성되어 있다(Macenski et al., 2020).</p>
+<pre><code class="language-xml">&lt;SequenceWithMemory name="NavigateWithReplanning"&gt;
+    &lt;RateController hz="1.0"&gt;
+        &lt;Action ID="ComputePathToPose"
+                goal="{goal}" path="{path}"
+                planner_id="GridBased"/&gt;
+    &lt;/RateController&gt;
+    &lt;Action ID="FollowPath"
+            path="{path}"
+            controller_id="FollowPath"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>이 구조에서 RateController 데코레이터는 경로 재계산 빈도를 제한하며, 블랙보드의 <code>{path}</code> 포트를 통해 ComputePathToPose의 출력이 FollowPath의 입력으로 전달된다.</p>
+<h3>3.2 안전 감시를 포함한 Nav2 네비게이션</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Condition ID="IsLocalizationValid"/&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;Action ID="ComputePathToPose" goal="{goal}" path="{path}"/&gt;
+        &lt;Action ID="FollowPath" path="{path}"/&gt;
+    &lt;/SequenceWithMemory&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>외부 ReactiveSequence가 매 Tick마다 배터리와 위치 추정 상태를 검사하고, 내부 SequenceWithMemory가 실제 네비게이션 단계를 순차적으로 수행한다. 배터리 부족이나 위치 추정 실패 시 네비게이션이 즉시 중단된다.</p>
+<h2>4. 순찰 임무 시퀀스</h2>
+<h3>4.1 기본 순찰 시퀀스</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="NavigateToPose" goal="{patrol_point_A}"/&gt;
+    &lt;Action ID="PerformSurveillance" duration="30"/&gt;
+    &lt;Action ID="NavigateToPose" goal="{patrol_point_B}"/&gt;
+    &lt;Action ID="PerformSurveillance" duration="30"/&gt;
+    &lt;Action ID="NavigateToPose" goal="{patrol_point_C}"/&gt;
+    &lt;Action ID="PerformSurveillance" duration="30"/&gt;
+    &lt;Action ID="NavigateToPose" goal="{base_station}"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>각 순찰 지점으로 이동한 후 일정 시간 감시를 수행하고, 모든 순찰 지점을 방문한 후 기지로 복귀한다.</p>
+<h3>4.2 조건부 순찰 시퀀스</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;Action ID="NavigateToPose" goal="{patrol_point_A}"/&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsAnomalyDetected"/&gt;
+            &lt;Action ID="DetailedInspection"/&gt;
+            &lt;Action ID="ReportAnomaly"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="LogNormalStatus"/&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="NavigateToPose" goal="{patrol_point_B}"/&gt;
+    &lt;!-- 이하 동일 패턴 반복 --&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>각 순찰 지점에서 이상이 감지되면 정밀 조사 후 보고하고, 이상이 없으면 정상 상태를 기록한다. Sequence 내부에 Fallback을 중첩하여 조건부 행동을 구현하였다.</p>
+<h2>5. 탐사 임무 시퀀스</h2>
+<h3>5.1 미지 환경 탐사 시퀀스</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;!-- 1단계: 탐사 준비 --&gt;
+    &lt;Action ID="InitializeSLAM"/&gt;
+    &lt;Action ID="PerformSelfCheck"/&gt;
+    &lt;!-- 2단계: 탐사 수행 --&gt;
+    &lt;Action ID="ExploreFrontier"/&gt;
+    &lt;!-- 3단계: 탐사 완료 처리 --&gt;
+    &lt;Action ID="SaveMap" filename="{map_file}"/&gt;
+    &lt;Action ID="NavigateToPose" goal="{start_position}"/&gt;
+    &lt;Action ID="ReportExplorationComplete"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>SLAM 초기화 → 자가 진단 → 프론티어 기반 탐사 → 지도 저장 → 출발 지점 복귀 → 완료 보고의 순서로 탐사 임무를 수행한다.</p>
+<h3>5.2 다중 구역 탐사 시퀀스</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;SubTree ID="ExploreZoneA"/&gt;
+    &lt;SubTree ID="ExploreZoneB"/&gt;
+    &lt;SubTree ID="ExploreZoneC"/&gt;
+    &lt;Action ID="MergeMaps"/&gt;
+    &lt;Action ID="ReturnToBase"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>각 구역의 탐사를 서브트리로 모듈화하고, 모든 구역 탐사 완료 후 지도를 병합한다.</p>
+<h2>6. 배송 임무 시퀀스</h2>
+<h3>6.1 단일 배송 임무</h3>
+<pre><code class="language-xml">&lt;SequenceWithMemory&gt;
+    &lt;!-- 1단계: 적재 --&gt;
+    &lt;Action ID="NavigateToPose" goal="{pickup_station}"/&gt;
+    &lt;Action ID="DockToStation"/&gt;
+    &lt;Action ID="WaitForLoading" timeout="60000"/&gt;
+    &lt;Action ID="ConfirmLoadComplete"/&gt;
+    &lt;Action ID="UndockFromStation"/&gt;
+    &lt;!-- 2단계: 배송 --&gt;
+    &lt;Action ID="NavigateToPose" goal="{delivery_station}"/&gt;
+    &lt;Action ID="DockToStation"/&gt;
+    &lt;Action ID="WaitForUnloading" timeout="60000"/&gt;
+    &lt;Action ID="ConfirmUnloadComplete"/&gt;
+    &lt;Action ID="UndockFromStation"/&gt;
+    &lt;!-- 3단계: 복귀 --&gt;
+    &lt;Action ID="NavigateToPose" goal="{home_station}"/&gt;
+&lt;/SequenceWithMemory&gt;
+</code></pre>
+<p>적재 스테이션에서의 도킹, 적재 대기, 적재 확인, 언도킹, 배송 지점으로의 이동, 하역, 복귀까지의 전체 배송 과정이 하나의 Sequence로 구성된다.</p>
+<h2>7. 실행 흐름의 Tick별 분석</h2>
+<h3>7.1 네비게이션 시퀀스의 Tick 흐름</h3>
+<pre><code>[SequenceWithMemory: NavigateTo(A) → Inspect(A) → NavigateTo(B)]
+
+Tick 1:  NavigateTo(A)→R                              (idx=0, 이동 중)
+Tick 2:  NavigateTo(A)→R                              (idx=0, 이동 중)
+Tick 3:  NavigateTo(A)→S, Inspect(A)→R                (idx=1, 점검 중)
+Tick 4:  Inspect(A)→R                                 (idx=1, 점검 중)
+Tick 5:  Inspect(A)→S, NavigateTo(B)→R                (idx=2, 이동 중)
+Tick 6:  NavigateTo(B)→R                              (idx=2, 이동 중)
+Tick 7:  NavigateTo(B)→S                              → SUCCESS
+</code></pre>
+<p>SequenceWithMemory의 <code>current_child_idx</code>가 진행 상황을 기억하므로, 각 Tick에서 현재 활성 단계만 실행된다.</p>
+<h3>7.2 실패 시의 Tick 흐름</h3>
+<pre><code>Tick 1:  NavigateTo(A)→R                              (이동 중)
+Tick 2:  NavigateTo(A)→R                              (이동 중)
+Tick 3:  NavigateTo(A)→F                              (경로 차단됨)
+         → FAILURE                                     (시퀀스 전체 실패)
+</code></pre>
+<p>네비게이션이 실패하면 Sequence 전체가 FAILURE를 반환한다. 이를 Fallback으로 감싸서 복구 행동을 연결하는 것이 일반적인 패턴이다.</p>
+<h2>8. 설계 시 고려 사항</h2>
+<ol>
+<li>
+<p><strong>Sequence 변형 선택</strong>: 이동 로봇의 네비게이션은 비동기 액션이므로, SequenceWithMemory를 사용하여 완료된 단계를 반복하지 않도록 한다. ReactiveSequence는 안전 조건의 지속적 감시가 필요한 경우에만 외부 래퍼로 사용한다.</p>
+</li>
+<li>
+<p><strong>블랙보드를 통한 데이터 전달</strong>: 경로 계획 결과, 현재 위치, 목표 지점 등의 데이터는 블랙보드 포트를 통해 시퀀스 내의 노드 간에 전달한다.</p>
+</li>
+<li>
+<p><strong>타임아웃 관리</strong>: 네비게이션이나 도킹 등 비동기 액션에는 Timeout 데코레이터를 적용하여 무한 대기를 방지해야 한다.</p>
+</li>
+<li>
+<p><strong>서브트리 분해</strong>: 임무가 복잡한 경우, 논리적 단위별로 서브트리를 구성하여 최상위 Sequence의 가독성을 유지한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). The Marathon 2: A Navigation System. <em>2020 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>, 2718–2725.</li>
+</ul>
 
             </article>
             <footer>

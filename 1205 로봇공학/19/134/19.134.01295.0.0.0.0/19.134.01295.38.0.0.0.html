@@ -115,6 +115,105 @@
             </header>
             <article>
                 <h1>1295.38 ReactiveFallback의 실행 알고리즘</h1>
+<h2>1. 알고리즘 개요</h2>
+<p>ReactiveFallback의 실행 알고리즘은 매 Tick마다 첫 번째 자식부터 순차적으로 Tick을 전파하되, 비실패(non-failure) 결과를 반환하는 첫 번째 자식을 만나면 즉시 Tick 전파를 중단하고, 해당 자식 이후에 <code>RUNNING</code> 상태였던 자식에 Halt를 전파하는 구조이다.</p>
+<h2>2. 알고리즘의 단계별 상세</h2>
+<h3>2.1 단계 1: 순차적 Tick 전파</h3>
+<p>매 Tick이 시작되면, 자식 리스트의 인덱스 <span class="math math-inline">i = 0</span>부터 시작하여 순차적으로 각 자식 <span class="math math-inline">C_i</span>에 Tick을 전파한다. 이전 Tick의 결과와 무관하게 항상 <span class="math math-inline">i = 0</span>에서 시작한다.</p>
+<h3>2.2 단계 2: 자식 반환값에 따른 분기</h3>
+<p>자식 <span class="math math-inline">C_i</span>의 Tick 결과에 따라 다음과 같이 분기한다.</p>
+<ul>
+<li><strong><span class="math math-inline">C_i</span> → <code>SUCCESS</code></strong>: Tick 전파를 즉시 중단한다. 단계 3으로 이동한다.</li>
+<li><strong><span class="math math-inline">C_i</span> → <code>RUNNING</code></strong>: Tick 전파를 즉시 중단한다. 단계 3으로 이동한다.</li>
+<li><strong><span class="math math-inline">C_i</span> → <code>FAILURE</code></strong>: 다음 자식 <span class="math math-inline">C_{i+1}</span>로 진행한다. <span class="math math-inline">i</span>를 1 증가시키고 단계 2를 반복한다.</li>
+</ul>
+<h3>2.3 단계 3: 후속 RUNNING 자식에 대한 Halt 전파</h3>
+<p>단계 2에서 Tick 전파가 중단된 인덱스를 <span class="math math-inline">i</span>라 하자. 인덱스 <span class="math math-inline">j &gt; i</span>인 모든 자식 <span class="math math-inline">C_j</span> 중, 이전 Tick에서 <code>RUNNING</code> 상태였던 자식에 대해 Halt를 호출한다. 이 단계는 상위 우선순위 자식이 비실패 상태가 된 경우, 이전에 실행 중이던 하위 우선순위 자식을 정리하기 위해 필수적이다.</p>
+<h3>2.4 단계 4: 반환값 결정</h3>
+<ul>
+<li>단계 2에서 <code>SUCCESS</code>로 중단된 경우: ReactiveFallback은 <code>SUCCESS</code>를 반환한다.</li>
+<li>단계 2에서 <code>RUNNING</code>으로 중단된 경우: ReactiveFallback은 <code>RUNNING</code>을 반환한다.</li>
+<li>모든 자식이 <code>FAILURE</code>를 반환한 경우: ReactiveFallback은 <code>FAILURE</code>를 반환한다.</li>
+</ul>
+<h2>3. 의사 코드</h2>
+<pre><code>function ReactiveFallback.tick():
+    halt_index ← -1
+    result ← FAILURE
+    
+    for i ← 0 to N-1:
+        child_status ← children[i].tick()
+        
+        if child_status == SUCCESS:
+            halt_index ← i
+            result ← SUCCESS
+            break
+        
+        if child_status == RUNNING:
+            halt_index ← i
+            result ← RUNNING
+            break
+        
+        // child_status == FAILURE → 다음 자식으로 계속
+    
+    // halt_index 이후의 RUNNING 상태 자식에 Halt 전파
+    for j ← halt_index + 1 to N-1:
+        if children[j].status() == RUNNING:
+            children[j].halt()
+    
+    return result
+</code></pre>
+<h2>4. 알고리즘의 실행 추적 예시</h2>
+<p>다음과 같은 ReactiveFallback 구조를 고려하라.</p>
+<pre><code>ReactiveFallback
+├── C_0: CheckEmergency
+├── C_1: CheckObstacle  
+├── C_2: Sequence
+│       ├── CheckBattery
+│       └── ReturnToBase
+└── C_3: NavigateToGoal
+</code></pre>
+<h3>4.1 시나리오: 정상 주행 → 장애물 감지 → 장애물 해소</h3>
+<p><strong>Tick 1 (정상 상태)</strong>:</p>
+<pre><code>C_0.tick() → FAILURE   (비상 상황 없음)
+C_1.tick() → FAILURE   (장애물 없음)
+C_2.tick() → FAILURE   (배터리 충분)
+C_3.tick() → RUNNING   (목표 지점으로 주행 중)
+
+halt_index = 3, 후속 RUNNING 자식 없음
+ReactiveFallback → RUNNING
+</code></pre>
+<p><strong>Tick 2 (장애물 감지)</strong>:</p>
+<pre><code>C_0.tick() → FAILURE   (비상 상황 없음)
+C_1.tick() → SUCCESS   (장애물 감지됨!)
+
+halt_index = 1
+후속 RUNNING 자식 확인: C_3가 RUNNING 상태
+C_3.halt()              (주행 즉시 중단)
+
+ReactiveFallback → SUCCESS
+</code></pre>
+<p><strong>Tick 3 (장애물 해소)</strong>:</p>
+<pre><code>C_0.tick() → FAILURE   (비상 상황 없음)
+C_1.tick() → FAILURE   (장애물 해소됨)
+C_2.tick() → FAILURE   (배터리 충분)
+C_3.tick() → RUNNING   (주행 재개)
+
+halt_index = 3, 후속 RUNNING 자식 없음
+ReactiveFallback → RUNNING
+</code></pre>
+<p>이 예시에서 Tick 2에서 장애물이 감지되자 즉시 <span class="math math-inline">C_1</span>이 <code>SUCCESS</code>를 반환하고, <code>RUNNING</code> 상태였던 <span class="math math-inline">C_3</span>(주행 행동)에 Halt가 전파되어 주행이 중단되었다. Tick 3에서 장애물이 해소되자 <span class="math math-inline">C_1</span>이 다시 <code>FAILURE</code>를 반환하고, <span class="math math-inline">C_3</span>가 새로 Tick되어 주행이 재개되었다.</p>
+<h2>5. RUNNING 자식의 전환 시 Halt 전파</h2>
+<p>매 Tick 재평가에 의해 <code>RUNNING</code> 상태의 자식이 변경되는 경우, 이전의 <code>RUNNING</code> 자식에 반드시 Halt가 전파되어야 한다. 이 과정을 누락하면 이전 행동의 자원(ROS2 액션 클라이언트, 타이머 등)이 정리되지 않는 자원 누수(resource leak)가 발생한다.</p>
+<p><strong>Tick 1</strong>: <span class="math math-inline">C_3</span>가 <code>RUNNING</code> (주행 중)<br />
+<strong>Tick 2</strong>: <span class="math math-inline">C_1</span>이 <code>SUCCESS</code>로 전환 → <span class="math math-inline">C_3</span>에 Halt 전파<br />
+<strong>Tick 3</strong>: <span class="math math-inline">C_1</span>이 <code>FAILURE</code>, <span class="math math-inline">C_2</span>가 <code>RUNNING</code>으로 전환 (귀환 시작)<br />
+<strong>Tick 4</strong>: <span class="math math-inline">C_1</span>이 <code>SUCCESS</code>로 재전환 → <span class="math math-inline">C_2</span>에 Halt 전파</p>
+<p>매 전환 시점에서 이전 <code>RUNNING</code> 자식에 대한 Halt 전파가 정확히 수행됨을 확인할 수 있다.</p>
+<h2>6. 알고리즘의 시간 복잡도</h2>
+<p>ReactiveFallback의 단일 Tick에 대한 시간 복잡도는 <span class="math math-inline">O(N)</span>이다. 여기서 <span class="math math-inline">N</span>은 자식 노드의 수이다. 최악의 경우 모든 자식이 <code>FAILURE</code>를 반환하여 모든 자식에 Tick이 전파되므로 <span class="math math-inline">N</span>번의 Tick 호출이 발생한다.</p>
+<p>그러나 실제 운용에서는 상위 자식이 <code>SUCCESS</code> 또는 <code>RUNNING</code>을 반환하면 Tick 전파가 조기에 중단되므로, 평균적인 Tick 전파 횟수는 <span class="math math-inline">N</span>보다 적다. 특히 정상 운용 상태에서 가장 하위의 기본 행동이 실행되는 경우에만 모든 상위 조건이 평가되며, 비상 조건이나 장애물 회피 조건이 성립하면 소수의 상위 자식만 Tick되어 빠르게 반환된다.</p>
+<h2>7. BehaviorTree.CPP에서의 구현 참고</h2>
+<p>BehaviorTree.CPP에서 ReactiveFallback의 구현은 위 알고리즘을 그대로 따른다. 핵심 구현 사항은 자식의 이전 상태를 추적하여 Halt 전파 대상을 정확히 판별하는 것이다. BehaviorTree.CPP의 <code>ControlNode</code> 기반 클래스는 각 자식의 상태를 내부적으로 관리하며, <code>haltChild()</code> 메서드를 통해 개별 자식에 대한 Halt 전파를 수행한다.</p>
 
             </article>
             <footer>

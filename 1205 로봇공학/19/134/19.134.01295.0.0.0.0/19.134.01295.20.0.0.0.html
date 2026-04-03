@@ -115,6 +115,71 @@
             </header>
             <article>
                 <h1>1295.20 Parallel 노드의 동시성과 실제 스레드의 관계</h1>
+<h2>1. 용어의 혼동 가능성</h2>
+<p>Parallel 노드의 명칭에 포함된 “병렬(parallel)“이라는 용어는 운영체제 및 컴퓨터 공학에서 사용하는 “병렬 처리(parallel processing)” 또는 “멀티스레드 병렬 실행“과 혼동될 수 있다. 이 혼동을 해소하기 위해 행동 트리에서의 동시성과 운영체제 수준의 스레드 기반 병렬성의 관계를 명확히 구분할 필요가 있다(Colledanchise &amp; Ögren, 2018).</p>
+<h2>2. 행동 트리의 실행 모델</h2>
+<p>행동 트리는 기본적으로 단일 스레드(single-threaded) 실행 모델을 따른다. 행동 트리 엔진은 주기적인 틱(tick)을 생성하고, 각 틱에서 트리의 루트 노드부터 하향으로 틱을 전파한다. 이 전파는 단일 스레드에서 동기적(synchronous)으로 수행되며, 한 시점에 하나의 노드만이 실행된다.</p>
+<p><span class="math math-display">
+\text{Thread}_{\text{main}}: \quad \text{root.tick}() \rightarrow \text{child}_1.\text{tick}() \rightarrow \text{child}_2.\text{tick}() \rightarrow \cdots
+</span></p>
+<p>Parallel 노드의 자식들도 이 단일 스레드 내에서 순차적으로 틱을 수신한다. <span class="math math-inline">C_1</span>의 <code>tick()</code>이 완전히 반환된 후에야 <span class="math math-inline">C_2</span>의 <code>tick()</code>이 호출된다.</p>
+<h2>3. 논리적 동시성 vs 물리적 병렬성</h2>
+<table><thead><tr><th>특성</th><th>논리적 동시성 (Parallel 노드)</th><th>물리적 병렬성 (멀티스레드)</th></tr></thead><tbody>
+<tr><td>실행 단위</td><td>틱 내 순차 실행</td><td>다수 스레드 동시 실행</td></tr>
+<tr><td>실행 순서</td><td>결정론적 (정의 순서)</td><td>비결정론적 (스케줄러 의존)</td></tr>
+<tr><td>공유 상태 접근</td><td>안전 (단일 스레드)</td><td>경합 조건 가능 (동기화 필요)</td></tr>
+<tr><td>결정론성</td><td>보장됨</td><td>보장되지 않음</td></tr>
+<tr><td>성능 활용</td><td>단일 코어</td><td>다중 코어</td></tr>
+<tr><td>교착 상태 가능성</td><td>없음</td><td>있음</td></tr>
+<tr><td>디버깅 용이성</td><td>높음</td><td>낮음</td></tr>
+</tbody></table>
+<p>Parallel 노드의 “병렬“은 <strong>논리적 동시성</strong>을 의미한다. 매 틱마다 모든 자식이 진행 기회를 가지므로, 외부에서 관찰하면 여러 행동이 동시에 진행되는 것처럼 보인다. 그러나 내부적으로는 단일 스레드에서 순차적으로 실행되므로, 멀티코어 CPU의 성능을 활용하는 물리적 병렬성과는 근본적으로 다르다.</p>
+<h2>4. 비동기 액션 노드와 스레드</h2>
+<p>BehaviorTree.CPP에서는 <code>StatefulActionNode</code>와 같은 비동기 액션 노드를 통해, 행동 트리의 단일 스레드 모델과 외부 비동기 시스템(ROS2 액션 서버 등)을 연결한다. 이 경우의 스레드 관계는 다음과 같다.</p>
+<pre><code>[행동 트리 스레드]          [ROS2 실행기 스레드]
+      │                          │
+  tick(C_i) ──(목표 전송)────→ 액션 서버 실행
+      │                          │
+  return RUNNING              (비동기 진행)
+      │                          │
+  tick(C_j) ──→               (비동기 진행)
+      │                          │
+  tick(C_i) ──(결과 확인)────→ 완료 확인
+      │                          │
+  return SUCCESS                 │
+</code></pre>
+<p>행동 트리 스레드는 비동기 액션 노드의 <code>tick()</code>에서 목표 전송 후 즉시 RUNNING을 반환하고 다음 자식으로 진행한다. 실제 행동의 수행은 ROS2 실행기(executor)의 별도 스레드에서 이루어진다. 이 구조에서 행동 트리 자체는 단일 스레드를 유지하면서도, 외부 시스템과의 연동을 통해 실질적인 병렬 실행 효과를 달성한다.</p>
+<h2>5. 단일 스레드 실행의 장점</h2>
+<h3>5.1 경합 조건의 원천적 배제</h3>
+<p>멀티스레드 환경에서의 가장 큰 문제인 경합 조건(race condition)이 원천적으로 배제된다. 블랙보드에 대한 읽기·쓰기가 단일 스레드에서 순차적으로 이루어지므로, 뮤텍스(mutex)나 세마포어(semaphore) 등의 동기화 기법이 불필요하다.</p>
+<h3>5.2 교착 상태의 원천적 배제</h3>
+<p>다수의 리소스를 점유하는 상호 대기에 의한 교착 상태(deadlock)가 발생할 수 없다.</p>
+<h3>5.3 디버깅과 테스트의 용이성</h3>
+<p>단일 스레드에서의 결정론적 실행 순서는 버그의 재현과 추적을 용이하게 한다. 멀티스레드 프로그램에서 흔한 간헐적(intermittent) 버그가 발생하지 않는다.</p>
+<h2>6. 단일 스레드 실행의 한계</h2>
+<h3>6.1 장시간 차단 문제</h3>
+<p>자식 노드의 <code>tick()</code> 내부에서 차단(blocking) 연산이 발생하면, 전체 행동 트리의 틱 주기가 지연된다. Parallel 노드에서는 하나의 자식이 <code>tick()</code>에서 오래 머물면 나머지 자식의 틱 수신이 지연되어 전체 반응성이 저하된다.</p>
+<p><span class="math math-display">
+T_{\text{tick}} = \sum_{i=1}^{N} t_i \implies t_i \uparrow \Rightarrow T_{\text{tick}} \uparrow
+</span></p>
+<p>이 문제를 방지하기 위해, 각 자식 노드의 <code>tick()</code>은 비차단(non-blocking)적이어야 하며, 장시간 실행이 필요한 경우 RUNNING을 반환하고 즉시 제어권을 양도해야 한다.</p>
+<h3>6.2 다중 코어 미활용</h3>
+<p>행동 트리의 논리적 동시성은 단일 코어에서 실행되므로, 현대 멀티코어 프로세서의 계산 능력을 완전히 활용하지 못한다. 계산 집약적 작업(경로 계획, 포인트 클라우드 처리 등)은 행동 트리 외부의 별도 스레드에서 비동기적으로 수행하고, 행동 트리에서는 결과만 확인하는 패턴이 권장된다.</p>
+<h2>7. 실무적 권장 사항</h2>
+<ol>
+<li><strong>tick() 비차단 원칙</strong>: Parallel 노드의 모든 자식 노드는 <code>tick()</code> 내에서 차단 연산을 수행하지 않아야 한다.</li>
+<li><strong>비동기 패턴 활용</strong>: 장시간 실행되는 작업은 ROS2 액션 서버 등의 비동기 메커니즘을 활용하여 별도 스레드에서 수행한다.</li>
+<li><strong>블랙보드 스레드 안전성</strong>: 비동기 콜백에서 블랙보드에 접근하는 경우, 행동 트리 스레드와의 동기화가 필요하다.</li>
+</ol>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

@@ -115,6 +115,239 @@
             </header>
             <article>
                 <h1>1294.98 Sequence와 Fallback의 성능 고려 사항</h1>
+<h2>1. 행동 트리 제어 노드의 성능 특성</h2>
+<p>행동 트리는 주기적 Tick에 의해 구동되는 실시간 시스템에서 사용되므로, 각 Tick의 실행 시간이 Tick 주기 내에 완료되어야 한다. 제어 노드 자체의 연산 비용은 미미하지만, 제어 노드가 결정하는 자식 실행 패턴이 전체 Tick 실행 시간에 결정적 영향을 미친다. Sequence와 Fallback의 네 가지 변형은 서로 다른 자식 평가 패턴을 가지며, 이에 따른 성능 특성을 이해하고 적절히 선택해야 한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 제어 노드의 시간 복잡도</h2>
+<h3>2.1 단일 Tick의 자식 평가 횟수</h3>
+<table><thead><tr><th>제어 노드 변형</th><th>최선</th><th>최악</th><th>평균</th></tr></thead><tbody>
+<tr><td>SequenceNode</td><td>1 (첫 자식 F 또는 R)</td><td>N (모든 자식 S)</td><td>N/2</td></tr>
+<tr><td>ReactiveSequence</td><td>1 (첫 자식 F)</td><td>N (모든 자식 S)</td><td>N/2</td></tr>
+<tr><td>FallbackNode</td><td>1 (첫 자식 S 또는 R)</td><td>N (모든 자식 F)</td><td>N/2</td></tr>
+<tr><td>ReactiveFallback</td><td>1 (첫 자식 S)</td><td>N (모든 자식 F)</td><td>N/2</td></tr>
+</tbody></table>
+<p>N은 자식 노드의 수이다. 단일 Tick 기준으로 네 변형 모두 O(N)의 시간 복잡도를 가진다.</p>
+<h3>2.2 다중 Tick에 걸친 누적 평가 횟수</h3>
+<pre><code>[SequenceNode - WithMemory]
+Tick 1: child[0] S, child[1] R       → 2회 평가
+Tick 2: child[1] R                    → 1회 평가 (건너뜀)
+Tick 3: child[1] S, child[2] R       → 2회 평가
+Tick 4: child[2] S                    → 1회 평가
+총: 6회 (N + 비동기 대기 Tick)
+
+[ReactiveSequence]
+Tick 1: child[0] S, child[1] R       → 2회 평가
+Tick 2: child[0] S, child[1] R       → 2회 평가 (재평가)
+Tick 3: child[0] S, child[1] S, child[2] R → 3회 평가
+Tick 4: child[0] S, child[1] S, child[2] S → 3회 평가
+총: 10회
+</code></pre>
+<p>ReactiveSequence는 매 Tick 첫 번째 자식부터 재평가하므로, 동일 시나리오에서 SequenceNode보다 더 많은 자식 평가를 수행한다. 자식 수와 RUNNING 지속 시간이 증가할수록 이 차이가 확대된다.</p>
+<h2>3. Reactive 변형의 성능 비용</h2>
+<h3>3.1 조건 노드의 재평가 비용</h3>
+<p>ReactiveSequence와 ReactiveFallback에서 앞쪽 조건 노드가 매 Tick 재평가되므로, 조건 노드의 단일 평가 비용이 전체 성능에 직접적 영향을 미친다.</p>
+<pre><code>Tick 주기: 100ms
+조건 노드 평가 시간: t_cond
+행동 노드 실행 시간: t_action
+조건 노드 수: k
+
+ReactiveSequence의 Tick당 최소 비용:
+  C_tick = k × t_cond + t_action
+
+조건 평가 시간 증가에 따른 영향:
+  t_cond = 1ms  → C_tick = k×1 + t_action
+  t_cond = 10ms → C_tick = k×10 + t_action (k=5이면 50ms)
+</code></pre>
+<p>조건 노드의 평가 시간이 10ms이고 조건이 5개라면, 조건 평가만으로 50ms를 소비하여 100ms Tick 주기의 절반을 차지한다.</p>
+<h3>3.2 경량 조건 노드의 설계 원칙</h3>
+<pre><code class="language-cpp">// 비효율: 매 Tick 센서 데이터 직접 조회
+class HeavyCondition : public BT::ConditionNode {
+    BT::NodeStatus tick() override {
+        // 센서 통신 10ms
+        auto data = sensor.readSync();
+        return data.value &gt; threshold ?
+            BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+    }
+};
+
+// 효율: 캐시된 데이터 참조
+class LightCondition : public BT::ConditionNode {
+    BT::NodeStatus tick() override {
+        // 블랙보드에서 캐시 값 읽기 &lt;0.01ms
+        double value;
+        getInput("sensor_value", value);
+        return value &gt; threshold ?
+            BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<p>Reactive 변형에서 사용되는 조건 노드는 센서 통신이나 복잡한 계산을 직접 수행하지 않고, 블랙보드에 캐시된 데이터를 참조해야 한다. 센서 데이터의 갱신은 행동 트리 외부의 별도 스레드에서 수행하고, 블랙보드에 비동기적으로 기록한다.</p>
+<h2>4. Memory 변형의 성능 이점</h2>
+<h3>4.1 건너뛰기에 의한 평가 절감</h3>
+<p>SequenceNode와 FallbackNode는 이전에 완료된 자식을 건너뛰므로, 다중 Tick 시나리오에서 총 평가 횟수가 Reactive 변형보다 적다.</p>
+<pre><code>자식 N개, 각 자식이 평균 T_avg Tick 동안 RUNNING:
+
+SequenceNode 총 평가 횟수:
+  ≈ N + N × (T_avg - 1)    (각 자식의 첫 Tick + RUNNING 유지)
+  = N × T_avg
+
+ReactiveSequence 총 평가 횟수:
+  ≈ Σ(i=1 to N) [i × T_avg(i)]  (i번째 자식 실행 시 앞쪽 i개 재평가)
+  ≈ N² × T_avg / 2               (평균)
+</code></pre>
+<p>N이 크고 <code>T_avg</code>가 길수록 ReactiveSequence의 비용이 이차적으로 증가하는 반면, SequenceNode는 선형적으로 증가한다.</p>
+<h2>5. 트리 깊이와 성능</h2>
+<h3>5.1 중첩 제어 노드의 성능 영향</h3>
+<pre><code class="language-xml">&lt;!-- 깊은 중첩 --&gt;
+&lt;Sequence&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Fallback&gt;
+                &lt;Action ID="DeepAction"/&gt;
+            &lt;/Fallback&gt;
+        &lt;/Sequence&gt;
+    &lt;/Fallback&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>트리 깊이가 D인 경우, 최하위 액션 노드에 도달하기까지 D개의 제어 노드를 순회해야 한다. 각 제어 노드의 <code>tick()</code> 호출에는 상태 확인, 자식 순회, 반환 상태 처리가 포함되므로, 깊이에 비례하는 오버헤드가 발생한다. 그러나 제어 노드 자체의 비용은 자식 노드(센서 조회, 경로 계산 등)의 비용에 비해 무시할 수 있는 수준이다.</p>
+<h3>5.2 넓은 트리 vs 깊은 트리</h3>
+<pre><code>넓은 트리 (깊이 2, 너비 N):
+  Sequence의 자식 N개 → 최악 N회 평가
+
+깊은 트리 (깊이 D, 너비 2):
+  중첩 Sequence D단계 → 최악 D회 순회
+</code></pre>
+<p>동일한 노드 수에서 넓은 트리는 단일 제어 노드의 자식 수가 많아 최악의 경우 평가 횟수가 증가하고, 깊은 트리는 호출 스택의 깊이가 증가한다. 일반적으로 넓은 트리보다 적절히 분해된 서브트리 구조가 성능과 유지보수성 모두에서 유리하다.</p>
+<h2>6. Halt 비용</h2>
+<h3>6.1 Halt 전파의 성능 영향</h3>
+<pre><code>Halt 비용 = Σ(RUNNING 자식의 onHalted() 비용)
+</code></pre>
+<p>ReactiveSequence에서 조건 변화에 의해 RUNNING 자식이 Halt될 때, <code>onHalted()</code> 콜백의 실행 비용이 Tick 시간에 추가된다. <code>onHalted()</code>에서 하드웨어 정지 명령, 네트워크 통신, 리소스 해제 등의 비용이 크면 Tick 주기를 초과할 수 있다.</p>
+<pre><code class="language-cpp">// 비효율: Halt에서 동기적 하드웨어 정지
+void onHalted() override {
+    robot.stopSync();        // 50ms 소요
+    robot.releaseGripper();  // 30ms 소요
+}
+
+// 효율: Halt에서 비동기 정지 요청
+void onHalted() override {
+    robot.requestStopAsync();  // 즉시 반환
+    // 실제 정지는 백그라운드에서 수행
+}
+</code></pre>
+<h3>6.2 빈번한 Halt의 누적 비용</h3>
+<p>ReactiveSequence와 ReactiveFallback에서 조건이 불안정하면 매 Tick Halt-재시작이 반복될 수 있다. N Tick 동안의 Halt 비용은 다음과 같다:</p>
+<pre><code>안정적 조건: Halt 0회 → 추가 비용 0
+불안정 조건 (매 Tick 전환): Halt N회 → N × C_halt
+</code></pre>
+<h2>7. 자식 수의 최적화</h2>
+<h3>7.1 Sequence/Fallback의 적정 자식 수</h3>
+<p>자식 수가 지나치게 많으면 다음과 같은 성능 문제가 발생한다:</p>
+<ol>
+<li>
+<p><strong>최악 실행 시간 증가</strong>: 모든 자식을 순회해야 하는 경우의 실행 시간이 자식 수에 비례하여 증가한다.</p>
+</li>
+<li>
+<p><strong>ReactiveSequence의 이차 비용</strong>: 자식 수 N에 대해 재평가 비용이 O(N²)로 증가한다.</p>
+</li>
+<li>
+<p><strong>메모리 사용</strong>: 자식 포인터 배열과 관련 상태 변수의 메모리 사용이 증가한다.</p>
+</li>
+</ol>
+<pre><code>권장 자식 수:
+  Sequence: 3-7개 (서브트리로 분해하여 조절)
+  Fallback: 2-5개 (대안 수 제한)
+  ReactiveSequence: 조건 2-3개 + 행동 1-2개
+  ReactiveFallback: 대안 2-4개
+</code></pre>
+<h3>7.2 서브트리 분해에 의한 최적화</h3>
+<pre><code class="language-xml">&lt;!-- 비효율: 10개 자식의 Sequence --&gt;
+&lt;Sequence&gt;
+    &lt;Action ID="Step1"/&gt;
+    &lt;Action ID="Step2"/&gt;
+    ...
+    &lt;Action ID="Step10"/&gt;
+&lt;/Sequence&gt;
+
+&lt;!-- 효율: 서브트리로 분해 --&gt;
+&lt;Sequence&gt;
+    &lt;SubTree ID="Phase1"/&gt;  &lt;!-- Step1-3 --&gt;
+    &lt;SubTree ID="Phase2"/&gt;  &lt;!-- Step4-6 --&gt;
+    &lt;SubTree ID="Phase3"/&gt;  &lt;!-- Step7-10 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>서브트리 분해는 실행 시간에 영향을 미치지 않지만, 가독성과 재사용성을 향상시키고 디버깅 시 문제 범위를 좁히는 데 기여한다.</p>
+<h2>8. Tick 주기와 제어 노드 선택</h2>
+<h3>8.1 Tick 주기별 권장 변형</h3>
+<table><thead><tr><th>Tick 주기</th><th>권장 변형</th><th>근거</th></tr></thead><tbody>
+<tr><td>&lt; 10ms</td><td>SequenceNode/FallbackNode</td><td>Reactive 재평가 비용 최소화</td></tr>
+<tr><td>10-100ms</td><td>상황에 따라 선택</td><td>조건 평가 비용에 따라 결정</td></tr>
+<tr><td>&gt; 100ms</td><td>ReactiveSequence/ReactiveFallback 가능</td><td>충분한 시간 여유</td></tr>
+</tbody></table>
+<p>Tick 주기가 짧을수록 Reactive 변형의 재평가 비용이 상대적으로 커지므로, Memory 변형의 사용을 우선 고려한다. 다만 안전 조건의 실시간 감시가 필요한 경우에는 Tick 주기와 무관하게 Reactive 변형을 사용해야 한다.</p>
+<h2>9. 성능 측정 기법</h2>
+<h3>9.1 Tick 실행 시간 프로파일링</h3>
+<pre><code class="language-cpp">auto start = std::chrono::high_resolution_clock::now();
+tree.tickOnce();
+auto end = std::chrono::high_resolution_clock::now();
+
+auto duration = std::chrono::duration_cast&lt;
+    std::chrono::microseconds&gt;(end - start).count();
+
+std::cout &lt;&lt; "Tick duration: " &lt;&lt; duration &lt;&lt; " us" &lt;&lt; std::endl;
+</code></pre>
+<h3>9.2 노드별 실행 시간 측정</h3>
+<pre><code class="language-cpp">class ProfilingLogger : public BT::StatusChangeLogger {
+    void callback(BT::Duration timestamp,
+                  const BT::TreeNode&amp; node,
+                  BT::NodeStatus prev,
+                  BT::NodeStatus curr) override {
+        if (prev == BT::NodeStatus::IDLE &amp;&amp;
+            curr != BT::NodeStatus::IDLE) {
+            start_times_[node.name()] =
+                std::chrono::high_resolution_clock::now();
+        }
+        else if (curr == BT::NodeStatus::SUCCESS ||
+                 curr == BT::NodeStatus::FAILURE) {
+            auto it = start_times_.find(node.name());
+            if (it != start_times_.end()) {
+                auto elapsed = std::chrono::high_resolution_clock::now()
+                             - it-&gt;second;
+                auto us = std::chrono::duration_cast&lt;
+                    std::chrono::microseconds&gt;(elapsed).count();
+                durations_[node.name()].push_back(us);
+            }
+        }
+    }
+    
+    void flush() override {}
+
+private:
+    std::map&lt;std::string,
+        std::chrono::high_resolution_clock::time_point&gt; start_times_;
+    std::map&lt;std::string, std::vector&lt;long long&gt;&gt; durations_;
+};
+</code></pre>
+<h2>10. 성능 최적화 지침</h2>
+<ol>
+<li>
+<p><strong>Reactive 변형의 조건 경량화</strong>: ReactiveSequence/ReactiveFallback에서 매 Tick 재평가되는 조건 노드는 블랙보드 조회 수준의 경량 연산만 수행해야 한다. 센서 통신이나 복잡한 계산은 별도 스레드에서 비동기적으로 수행한다.</p>
+</li>
+<li>
+<p><strong>Memory 변형의 우선 사용</strong>: 안전 조건의 실시간 감시가 불필요한 순차 작업에는 SequenceNode/FallbackNode를 사용하여 불필요한 재평가를 방지한다.</p>
+</li>
+<li>
+<p><strong>onHalted()의 경량 구현</strong>: 모든 액션 노드의 <code>onHalted()</code> 콜백은 즉시 반환해야 한다. 자원 해제가 필요하면 비동기적으로 수행한다.</p>
+</li>
+<li>
+<p><strong>적정 자식 수 유지</strong>: 단일 제어 노드의 자식 수를 7개 이하로 유지하고, 필요시 서브트리로 분해한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,165 @@
             </header>
             <article>
                 <h1>1295.95 Parallel과 Reactive 노드의 안티패턴</h1>
+<h2>1. Parallel 노드의 안티패턴</h2>
+<h3>1.1 안티패턴 1: 순서 의존적 자식 배치</h3>
+<p>Parallel 노드의 자식 간에 데이터 의존성이 존재하여, 자식의 실행 순서에 따라 결과가 달라지는 구성이다.</p>
+<pre><code class="language-xml">&lt;!-- 안티패턴: 자식 간 순서 의존 --&gt;
+&lt;ParallelAll max_failures="0"&gt;
+    &lt;ComputeObstacleMap output="{obstacle_map}"/&gt;
+    &lt;PlanPath input="{obstacle_map}" output="{path}"/&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<p><code>PlanPath</code>는 <code>ComputeObstacleMap</code>이 블랙보드에 기록한 <code>obstacle_map</code>에 의존한다. Parallel에서 두 자식은 동일 Tick에 순차적으로 Tick되므로, <code>ComputeObstacleMap</code>이 먼저 Tick되면 현재 Tick의 맵을 사용하지만, <code>PlanPath</code>가 먼저 Tick되면 이전 Tick의 맵을 사용하게 된다.</p>
+<p><strong>교정</strong>: 데이터 의존이 있는 노드는 Sequence로 구성한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;ComputeObstacleMap output="{obstacle_map}"/&gt;
+    &lt;PlanPath input="{obstacle_map}" output="{path}"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>1.2 안티패턴 2: 블랙보드 쓰기 충돌</h3>
+<p>다수의 자식이 동일한 블랙보드 키에 쓰기를 수행하는 구성이다.</p>
+<pre><code class="language-xml">&lt;!-- 안티패턴: 동일 키에 다중 쓰기 --&gt;
+&lt;ParallelAll max_failures="1"&gt;
+    &lt;LidarDetection output="{obstacle_distance}"/&gt;
+    &lt;CameraDetection output="{obstacle_distance}"/&gt;
+    &lt;UltrasonicDetection output="{obstacle_distance}"/&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<p>세 자식이 모두 <code>obstacle_distance</code>에 쓰기를 수행하므로, 최종 값은 마지막으로 Tick된 자식의 결과이다. 이는 Tick 순서에 의존하는 비결정론적 동작을 유발한다.</p>
+<p><strong>교정</strong>: 자식별로 고유한 출력 키를 사용하고, 별도의 융합 노드에서 결과를 통합한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;ParallelAll max_failures="1"&gt;
+        &lt;LidarDetection output="{lidar_distance}"/&gt;
+        &lt;CameraDetection output="{camera_distance}"/&gt;
+        &lt;UltrasonicDetection output="{ultrasonic_distance}"/&gt;
+    &lt;/ParallelAll&gt;
+    &lt;FuseDistances lidar="{lidar_distance}" 
+                   camera="{camera_distance}"
+                   ultrasonic="{ultrasonic_distance}"
+                   output="{obstacle_distance}"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>1.3 안티패턴 3: 과도한 자식 수</h3>
+<p>하나의 Parallel 노드에 10개 이상의 자식을 배치하는 구성이다. 상태 조합이 <span class="math math-inline">3^{10} = 59049</span>개에 달하여 테스트와 디버깅이 사실상 불가능해진다.</p>
+<p><strong>교정</strong>: 관련 자식을 서브트리로 그룹화하여 계층적 구조를 구성한다.</p>
+<h3>1.4 안티패턴 4: Halt 미구현</h3>
+<p>Parallel의 자식으로 사용되는 커스텀 행동 노드에서 <code>onHalted()</code> 메서드를 구현하지 않는 경우이다. Parallel이 정책을 충족하면 <code>haltChildren()</code>을 호출하는데, <code>onHalted()</code>가 미구현이면 자원 해제가 수행되지 않는다.</p>
+<pre><code class="language-cpp">// 안티패턴: onHalted() 미구현
+class MyAction : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        ros_action_client_-&gt;sendGoal(goal_);
+        return BT::NodeStatus::RUNNING;
+    }
+    BT::NodeStatus onRunning() override { /* ... */ }
+    // onHalted()가 없음 → ROS 액션이 취소되지 않음
+};
+</code></pre>
+<p><strong>교정</strong>: <code>onHalted()</code>에서 진행 중인 모든 외부 요청을 취소하고 자원을 해제한다.</p>
+<h3>1.5 안티패턴 5: 정책의 암묵적 사용</h3>
+<p><code>max_failures</code>의 의미를 문서화하지 않고 사용하여, 코드 리뷰나 유지보수 시 정책의 의도를 파악하기 어렵게 만드는 경우이다.</p>
+<pre><code class="language-xml">&lt;!-- 안티패턴: 의도 불명확 --&gt;
+&lt;ParallelAll max_failures="2"&gt;
+    &lt;A/&gt; &lt;B/&gt; &lt;C/&gt; &lt;D/&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<p><strong>교정</strong>: XML 주석으로 정책의 의도를 명시한다.</p>
+<pre><code class="language-xml">&lt;!-- 4개 센서 중 최소 2개 성공 필요 (2개까지 실패 허용) --&gt;
+&lt;ParallelAll max_failures="2"&gt;
+    &lt;SensorA/&gt; &lt;SensorB/&gt; &lt;SensorC/&gt; &lt;SensorD/&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<h2>2. ReactiveSequence의 안티패턴</h2>
+<h3>2.1 안티패턴 6: 중량 조건 노드</h3>
+<p>ReactiveSequence의 조건 노드에서 무거운 연산(경로 계획, 이미지 처리, 서비스 호출 등)을 직접 수행하는 경우이다. 조건은 매 Tick마다 재평가되므로, 중량 연산이 매 Tick에서 반복되어 심각한 성능 저하를 유발한다.</p>
+<pre><code class="language-cpp">// 안티패턴: 조건 내 중량 연산
+BT::NodeStatus IsPathClear::tick()
+{
+    auto costmap = costmap_subscriber_-&gt;getData();  // 데이터 복사
+    auto path = getInput&lt;Path&gt;("path").value();
+    return checkCollisionFull(costmap, path)         // 무거운 연산
+        ? BT::NodeStatus::SUCCESS 
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p><strong>교정</strong>: 중량 연산은 별도의 비동기 프로세스에서 수행하고, 조건 노드는 블랙보드에서 결과만 읽는다.</p>
+<h3>2.2 안티패턴 7: ReactiveSequence와 Sequence의 혼동</h3>
+<p>전제 조건의 지속적 검사가 불필요한 곳에 ReactiveSequence를 사용하는 경우이다. 일회성 초기화 작업에 ReactiveSequence를 사용하면, 이미 완료된 초기화를 매 Tick마다 재실행하게 된다.</p>
+<pre><code class="language-xml">&lt;!-- 안티패턴: 일회성 작업에 ReactiveSequence 사용 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;InitializeSensors/&gt;   &lt;!-- 매 Tick마다 재초기화됨 --&gt;
+    &lt;CalibrateIMU/&gt;        &lt;!-- 매 Tick마다 재보정됨 --&gt;
+    &lt;StartNavigation/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><strong>교정</strong>: 일회성 작업에는 일반 Sequence를, 지속적 전제 조건 검사에는 ReactiveSequence를 사용한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;InitializeSensors/&gt;
+    &lt;CalibrateIMU/&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;IsLocalized/&gt;
+        &lt;StartNavigation/&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>2.3 안티패턴 8: 히스테리시스 없는 조건</h3>
+<p>센서 잡음에 의해 조건이 SUCCESS와 FAILURE 사이를 빠르게 진동하는 경우이다. 이로 인해 행동의 반복적 시작과 Halt가 발생하여 로봇의 동작이 불안정해진다.</p>
+<p><strong>교정</strong>: 조건 노드에 히스테리시스(진입 임계값과 복귀 임계값의 차이)를 적용한다.</p>
+<h2>3. ReactiveFallback의 안티패턴</h2>
+<h3>3.1 안티패턴 9: 기본 행동 누락</h3>
+<p>ReactiveFallback의 마지막 자식이 조건부 분기로 구성되어, 모든 조건이 비활성일 때 ReactiveFallback이 FAILURE를 반환하는 경우이다.</p>
+<pre><code class="language-xml">&lt;!-- 안티패턴: 기본 행동 없음 --&gt;
+&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsEmergency/&gt; &lt;EmergencyStop/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryLow/&gt; &lt;ReturnToBase/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 모든 조건 FAILURE → ReactiveFallback FAILURE → 무동작 --&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p><strong>교정</strong>: 마지막 자식에 무조건 실행되는 기본 행동을 배치한다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsEmergency/&gt; &lt;EmergencyStop/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryLow/&gt; &lt;ReturnToBase/&gt;
+    &lt;/Sequence&gt;
+    &lt;ExecuteMission/&gt;  &lt;!-- 기본 행동 --&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<h3>3.2 안티패턴 10: 우선순위 역전</h3>
+<p>낮은 우선순위의 조건이 높은 우선순위보다 앞에 배치되는 경우이다. ReactiveFallback은 자식의 나열 순서가 우선순위를 결정하므로, 배치 오류는 비상 대응 지연으로 직결된다.</p>
+<pre><code class="language-xml">&lt;!-- 안티패턴: 우선순위 역전 --&gt;
+&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryLow/&gt; &lt;ReturnToBase/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;IsEmergency/&gt; &lt;EmergencyStop/&gt;  &lt;!-- 비상이 더 낮은 우선순위 --&gt;
+    &lt;/Sequence&gt;
+    &lt;ExecuteMission/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p><strong>교정</strong>: 비상 대응을 최상위에 배치한다.</p>
+<h2>4. 안티패턴 식별 점검표</h2>
+<table><thead><tr><th>점검 항목</th><th>안티패턴</th><th style="text-align: center">위험도</th></tr></thead><tbody>
+<tr><td>Parallel 자식 간 블랙보드 의존</td><td>순서 의존적 자식</td><td style="text-align: center">높음</td></tr>
+<tr><td>동일 블랙보드 키에 다중 쓰기</td><td>쓰기 충돌</td><td style="text-align: center">높음</td></tr>
+<tr><td>onHalted() 미구현</td><td>Halt 미처리</td><td style="text-align: center">높음</td></tr>
+<tr><td>조건 내 중량 연산</td><td>중량 조건</td><td style="text-align: center">중간</td></tr>
+<tr><td>일회성 작업에 ReactiveSequence</td><td>노드 혼동</td><td style="text-align: center">중간</td></tr>
+<tr><td>기본 행동 누락</td><td>무동작 상태</td><td style="text-align: center">높음</td></tr>
+<tr><td>우선순위 역전</td><td>비상 지연</td><td style="text-align: center">최고</td></tr>
+<tr><td>히스테리시스 없는 조건</td><td>조건 진동</td><td style="text-align: center">중간</td></tr>
+<tr><td>과도한 자식 수</td><td>복잡도 폭발</td><td style="text-align: center">중간</td></tr>
+<tr><td>정책 의도 미문서화</td><td>가독성 저하</td><td style="text-align: center">낮음</td></tr>
+</tbody></table>
+<p>코드 리뷰 시 이 점검표를 활용하여 안티패턴을 체계적으로 식별하고 교정한다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,66 @@
             </header>
             <article>
                 <h1>1294.13 SequenceWithMemory (StatefulSequence)의 개념</h1>
+<h2>1. SequenceWithMemory의 정의</h2>
+<p>SequenceWithMemory(또는 StatefulSequence)는 Sequence 노드의 변형으로, 이전 Tick에서 마지막으로 RUNNING을 반환한 자식의 인덱스를 기억(memory)하고, 다음 Tick에서 해당 자식부터 실행을 재개하는 제어 흐름 노드이다. 이전에 SUCCESS를 반환한 자식은 건너뛰어 재평가하지 않는다(Colledanchise &amp; Ogren, 2018).</p>
+<p>BehaviorTree.CPP v4에서 <code>&lt;Sequence&gt;</code> 태그는 기본적으로 WithMemory 동작을 수행한다. 즉, 별도의 명시 없이 <code>&lt;Sequence&gt;</code>로 정의한 노드는 SequenceWithMemory로 동작한다(Faconti, 2022).</p>
+<h2>2. “Memory“의 의미</h2>
+<p>“Memory“라는 명칭은 노드가 이전 Tick의 실행 상태를 기억한다는 것에서 유래한다. 구체적으로, 다음 두 가지 정보를 기억한다.</p>
+<ol>
+<li><strong>현재 자식 인덱스</strong>: 마지막으로 RUNNING을 반환한 자식의 인덱스를 저장한다.</li>
+<li><strong>이전 자식의 결과</strong>: 해당 인덱스보다 앞의 자식들이 SUCCESS를 반환했다는 사실을 암묵적으로 기억한다.</li>
+</ol>
+<p>이 기억에 의해, 다음 Tick에서 이미 SUCCESS를 반환한 자식을 다시 평가하지 않고 건너뛴다.</p>
+<pre><code>Memory의 동작:
+  Tick 1: [SUCCESS] [SUCCESS] [RUNNING] → current_index = 2
+  Tick 2:  (건너뜀)  (건너뜀)  [RUNNING] → current_index = 2
+  Tick 3:  (건너뜀)  (건너뜀)  [SUCCESS] → Sequence SUCCESS
+</code></pre>
+<h2>3. SequenceWithMemory와 기본 Sequence의 관계</h2>
+<p>학술 문헌에서의 표준 Sequence 정의는 매 Tick마다 첫 번째 자식부터 평가하는 방식(즉, ReactiveSequence에 해당)이다. SequenceWithMemory는 이 표준 정의의 변형으로, 실무적 효율성과 비동기 작업 지원을 위해 도입되었다. 그러나 BehaviorTree.CPP v4에서는 <code>&lt;Sequence&gt;</code>가 기본적으로 WithMemory로 동작하므로, 실무에서는 WithMemory가 사실상의 기본 Sequence이다.</p>
+<h2>4. SequenceWithMemory의 동작 예시</h2>
+<h3>4.1 비동기 순차 임무</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="MoveToPickupZone"/&gt;    &lt;!-- 자식 0 --&gt;
+    &lt;Action ID="PickObject"/&gt;          &lt;!-- 자식 1 --&gt;
+    &lt;Action ID="MoveToDropZone"/&gt;      &lt;!-- 자식 2 --&gt;
+    &lt;Action ID="PlaceObject"/&gt;         &lt;!-- 자식 3 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>실행 흐름:</p>
+<pre><code>Tick 1: MoveToPickupZone → RUNNING (current_index = 0)
+Tick 2: MoveToPickupZone → RUNNING
+Tick 3: MoveToPickupZone → SUCCESS → PickObject → RUNNING (current_index = 1)
+Tick 4: PickObject → RUNNING
+Tick 5: PickObject → SUCCESS → MoveToDropZone → RUNNING (current_index = 2)
+...
+Tick N: PlaceObject → SUCCESS → Sequence SUCCESS
+</code></pre>
+<p>각 Tick에서 이미 완료된 이전 작업은 재실행되지 않는다. <code>MoveToPickupZone</code>이 SUCCESS를 반환한 이후, 로봇이 다시 픽업 존으로 이동하는 일은 발생하지 않는다.</p>
+<h2>5. WithMemory의 설계 동기</h2>
+<h3>5.1 비동기 작업의 효율적 처리</h3>
+<p>비동기 액션이 여러 Tick에 걸쳐 RUNNING을 반환하는 동안, 이미 완료된 이전 작업을 매 Tick마다 재평가하는 것은 불필요한 연산이다. WithMemory는 이 중복을 제거한다.</p>
+<h3>5.2 부수 효과의 방지</h3>
+<p>이전에 SUCCESS를 반환한 액션 노드를 다시 실행하면 의도하지 않은 부수 효과가 발생할 수 있다. 예를 들어, “물체를 집는” 액션이 재실행되면 이미 집고 있는 물체를 다시 집으려는 시도가 발생한다. WithMemory는 이러한 재실행을 방지한다.</p>
+<h3>5.3 Tick 시간의 절감</h3>
+<p>SUCCESS를 반환한 자식을 건너뛰므로, Tick당 방문하는 노드 수가 감소하여 Tick 실행 시간이 단축된다.</p>
+<h2>6. WithMemory의 한계</h2>
+<h3>6.1 조건 변화의 미감지</h3>
+<p>이전에 SUCCESS를 반환한 조건 노드가 이후에 FALSE로 변하더라도, WithMemory 모드에서는 해당 조건을 재평가하지 않으므로 변화를 감지하지 못한다.</p>
+<pre><code>위험한 시나리오:
+  Tick 1: IsBatteryAbove20 → SUCCESS, NavigateToGoal → RUNNING
+  Tick 2: (IsBatteryAbove20 건너뜀), NavigateToGoal → RUNNING
+          ← 이 시점에서 배터리가 15%로 하락했지만 감지 못함
+</code></pre>
+<p>이러한 한계 때문에 안전 관련 조건의 지속적 재검사가 필요한 경우에는 ReactiveSequence를 사용해야 한다.</p>
+<h3>6.2 Memory의 초기화 시점</h3>
+<p>WithMemory의 기억은 Sequence가 SUCCESS 또는 FAILURE를 반환할 때 초기화된다. 외부에서 Halt가 호출된 경우에도 초기화된다. 다시 Tick이 시작되면 첫 번째 자식부터 실행한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

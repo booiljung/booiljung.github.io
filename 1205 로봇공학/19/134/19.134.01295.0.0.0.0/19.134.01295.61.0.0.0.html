@@ -115,6 +115,134 @@
             </header>
             <article>
                 <h1>1295.61 안전 조건 지속 감시 패턴</h1>
+<h2>1. 패턴의 정의</h2>
+<p>안전 조건 지속 감시 패턴(Continuous Safety Condition Monitoring Pattern)은 ReactiveSequence를 활용하여, 로봇의 동작이 안전 관련 조건을 지속적으로 충족하는지를 매 Tick에서 감시하고, 안전 조건 위반 시 즉시 행동을 중단하는 설계 패턴이다. 이 패턴은 로봇 안전 아키텍처에서 소프트웨어 수준의 안전 감시층(safety monitoring layer)을 구현한다.</p>
+<h2>2. 안전 조건의 범주</h2>
+<p>로봇 시스템에서 지속적으로 감시하여야 하는 안전 조건은 다음의 범주로 분류된다.</p>
+<table><thead><tr><th>범주</th><th>예시</th><th>관련 표준</th></tr></thead><tbody>
+<tr><td>인간 안전</td><td>인간과의 안전 거리, 접촉 힘 제한</td><td>ISO 10218, ISO/TS 15066</td></tr>
+<tr><td>로봇 자체 안전</td><td>관절 한계, 온도 한계, 과전류</td><td>IEC 60204-1</td></tr>
+<tr><td>환경 안전</td><td>충돌 회피, 낙하 방지, 침수 방지</td><td>운용 규정</td></tr>
+<tr><td>시스템 안전</td><td>센서 정상, 제어기 정상, 통신 정상</td><td>IEC 61508</td></tr>
+</tbody></table>
+<h2>3. 기본 구조</h2>
+<pre><code>ReactiveSequence
+├── SafetyCondition₁
+├── SafetyCondition₂
+├── ...
+├── SafetyConditionₙ
+└── RobotAction
+</code></pre>
+<p>모든 안전 조건이 <code>SUCCESS</code>를 반환하는 동안에만 행동이 수행된다. 어떤 안전 조건이라도 <code>FAILURE</code>를 반환하면, 행동에 즉시 Halt가 전파된다.</p>
+<h2>4. 협동 로봇의 안전 감시</h2>
+<p>인간과 같은 작업 공간에서 동작하는 협동 로봇(collaborative robot)의 안전 감시 패턴이다.</p>
+<pre><code>ReactiveSequence
+├── IsHumanSafetyDistanceMet     // 인간 안전 거리 확보
+├── IsContactForceWithinLimits   // 접촉 힘 한계 이내
+├── IsSpeedWithinSafetyLimits    // 속도 안전 한계 이내
+└── ExecuteCollaborativeTask     // 협업 작업 수행
+</code></pre>
+<pre><code>function IsHumanSafetyDistanceMet.tick():
+    human_positions ← blackboard.get("detected_humans")
+    robot_links ← blackboard.get("robot_link_positions")
+    
+    for human in human_positions:
+        for link in robot_links:
+            distance ← computeDistance(human, link)
+            if distance &lt; safety_distance(link.speed):
+                return FAILURE
+    
+    return SUCCESS
+</code></pre>
+<p>ISO/TS 15066에 따르면, 협동 로봇의 안전 거리는 로봇의 속도에 의존한다. 속도가 높을수록 안전 거리가 증가한다. 안전 거리 함수 <span class="math math-inline">d_{safe}(v)</span>는 다음과 같이 정의된다.</p>
+<p><span class="math math-display">d_{safe}(v) = v \cdot T_{reaction} + d_{min}</span></p>
+<p>여기서 <span class="math math-inline">v</span>는 로봇 링크의 속도, <span class="math math-inline">T_{reaction}</span>은 시스템의 반응 시간, <span class="math math-inline">d_{min}</span>은 최소 안전 거리이다.</p>
+<pre><code>function IsContactForceWithinLimits.tick():
+    external_force ← blackboard.get("external_force_estimate")
+    external_torque ← blackboard.get("external_torque_estimate")
+    
+    // ISO/TS 15066 정적 접촉 힘 한계
+    if magnitude(external_force) &gt; max_static_contact_force:
+        return FAILURE
+    
+    // 신체 부위별 차별화된 한계 (선택적)
+    contact_region ← estimateContactRegion(external_force)
+    if magnitude(external_force) &gt; bodyRegionForceLimit(contact_region):
+        return FAILURE
+    
+    return SUCCESS
+</code></pre>
+<h2>이동 로봇의 안전 감시</h2>
+<p>이동 로봇의 충돌 방지, 낙하 방지, 과속 방지를 위한 안전 감시 패턴이다.</p>
+<pre><code>ReactiveSequence
+├── IsCollisionRiskLow           // 충돌 위험 낮음
+├── IsCliffNotDetected           // 절벽/낙하 위험 없음
+├── IsSpeedWithinOperationalLimits // 속도 운용 한계 이내
+└── NavigateToGoal               // 목표 지점 이동
+</code></pre>
+<pre><code>function IsCliffNotDetected.tick():
+    cliff_sensors ← blackboard.get("cliff_sensor_readings")
+    
+    for sensor in cliff_sensors:
+        if sensor.distance &gt; cliff_threshold:
+            // 바닥까지의 거리가 임계값 초과 → 절벽 감지
+            return FAILURE
+    
+    return SUCCESS
+</code></pre>
+<p>절벽 감지 센서(하향 적외선 또는 초음파 센서)가 바닥면의 부재를 감지하면, 이동을 즉시 중단하여 낙하를 방지한다. 계단 가장자리, 적재 도크 가장자리 등에서의 로봇 추락을 방지하는 데 적용된다.</p>
+<h2>산업용 매니퓰레이터의 안전 감시</h2>
+<p>산업용 매니퓰레이터의 관절 한계, 특이점(singularity) 접근, 과부하를 감시하는 패턴이다.</p>
+<pre><code>ReactiveSequence
+├── IsJointWithinSoftLimits      // 관절 소프트웨어 한계 이내
+├── IsSingularityDistanceSafe    // 특이점으로부터 안전 거리
+├── IsPayloadWithinRating        // 적재 하중 정격 이내
+├── IsMotorTemperatureNormal     // 모터 온도 정상
+└── ExecuteManipulationTask      // 매니퓰레이션 작업
+</code></pre>
+<pre><code>function IsSingularityDistanceSafe.tick():
+    jacobian ← blackboard.get("jacobian_matrix")
+    manipulability ← sqrt(det(jacobian * jacobian_transpose))
+    
+    if manipulability &lt; min_manipulability:
+        return FAILURE
+    return SUCCESS
+</code></pre>
+<p>매니퓰레이터의 가조작도(manipulability)가 임계값 이하로 떨어지면 특이점에 근접한 것이므로, 매니퓰레이션 동작을 중단한다. 특이점 부근에서는 미소한 작업 공간 이동에 대해 관절 속도가 급격히 증가하여 제어 불안정이 발생할 수 있기 때문이다.</p>
+<h2>안전 조건 위반 후 복구</h2>
+<p>안전 조건이 위반되어 행동이 Halt된 후, 조건이 복원되면 ReactiveSequence에 의해 행동이 자동으로 재시작된다. 그러나 안전 조건 위반 후에는 단순 재시작이 아닌 안전 점검이 필요한 경우가 있다. 이 경우 ReactiveSequence를 상위 구조에 내장하여 처리한다.</p>
+<pre><code>ReactiveFallback
+├── Sequence [안전 위반 후 점검]
+│   ├── WasSafetyViolationRecent
+│   └── PerformSafetyCheck
+└── ReactiveSequence [정상 감시 하 동작]
+    ├── AllSafetyConditionsMet
+    └── NormalOperation
+</code></pre>
+<p>안전 위반이 최근에 발생하였고 아직 점검이 완료되지 않았으면, <code>WasSafetyViolationRecent</code>이 <code>SUCCESS</code>를 반환하여 안전 점검이 우선 수행된다. 점검이 완료되면 조건이 해소되어 정상 감시 하 동작으로 복귀한다.</p>
+<h2>안전 조건의 중복 감시</h2>
+<p>안전에 직결되는 조건은 단일 센서나 단일 알고리즘에 의존하지 않고, 복수의 독립적인 감시 경로를 통해 중복 감시(redundant monitoring)하여야 한다.</p>
+<pre><code>ReactiveSequence
+├── IsSafe_Primary     // 1차 안전 감시 (LiDAR 기반)
+├── IsSafe_Secondary   // 2차 안전 감시 (초음파 기반)
+└── RobotAction
+</code></pre>
+<p>1차 안전 감시와 2차 안전 감시가 독립적인 센서에 기반하므로, 한 센서가 장애 상태이더라도 다른 센서에 의해 안전이 보장된다. 이는 IEC 61508에서 요구하는 안전 무결성 수준(Safety Integrity Level, SIL)의 달성에 기여한다.</p>
+<h2>설계 지침</h2>
+<ol>
+<li>
+<p><strong>안전 조건은 최전방에 배치하라</strong>: ReactiveSequence에서 안전 조건을 가장 앞에 배치하여, 안전 위반 시 다른 조건의 평가를 거치지 않고 즉시 행동을 중단하라.</p>
+</li>
+<li>
+<p><strong>안전 조건은 독립적으로 구현하라</strong>: 안전 조건 노드는 다른 노드나 외부 서비스에 의존하지 않아야 한다. 블랙보드에서 센서 데이터를 직접 읽고 판정하는 자기 완결적(self-contained) 구현이어야 한다.</p>
+</li>
+<li>
+<p><strong>안전 조건에 히스테리시스를 적용하라</strong>: 안전 조건에 히스테리시스를 적용하되, 안전 방향(행동 중단 방향)의 전환에는 히스테리시스를 적용하지 마라. 즉, 안전 위반의 감지는 즉각적으로 하되, 안전 복원의 확인은 보수적으로 수행하라.</p>
+</li>
+<li>
+<p><strong>소프트웨어 감시는 하드웨어 안전 장치를 대체하지 않는다</strong>: ReactiveSequence에 의한 안전 감시는 소프트웨어 수준의 안전층이다. 하드웨어 수준의 비상 정지 회로, 기계적 리미트 스위치 등의 안전 장치와 중첩하여 적용하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

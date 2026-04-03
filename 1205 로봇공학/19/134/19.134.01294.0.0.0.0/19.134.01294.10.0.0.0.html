@@ -115,6 +115,80 @@
             </header>
             <article>
                 <h1>1294.10 Sequence 노드의 Running 반환 조건</h1>
+<h2>1. Running 반환의 정의</h2>
+<p>Sequence 노드가 RUNNING을 반환하는 조건은 자식 노드 중 하나가 RUNNING을 반환하고, 그 이전의 모든 자식이 SUCCESS를 반환한 경우이다. RUNNING은 “아직 결과가 확정되지 않았으며, 비동기 작업이 진행 중“임을 나타낸다(Colledanchise &amp; Ogren, 2018).</p>
+<p><span class="math math-display">\text{Sequence} = \text{RUNNING} \iff \exists\, i \in \{1, \ldots, N\},\ C_i = \text{RUNNING} \wedge \forall\, j &lt; i,\ C_j = \text{SUCCESS}</span></p>
+<h2>RUNNING 상태의 발생 원인</h2>
+<p>RUNNING 상태는 비동기 액션 노드(StatefulActionNode)가 외부 작업의 완료를 기다리는 동안 반환한다. 조건 노드는 즉시 SUCCESS 또는 FAILURE를 반환하므로 RUNNING을 반환하지 않는다.</p>
+<pre><code>Tick:
+  children[0]: IsBatteryAbove20 → SUCCESS      (즉시 반환)
+  children[1]: IsPathClear      → SUCCESS      (즉시 반환)
+  children[2]: NavigateToGoal   → RUNNING      (비동기 작업 진행 중)
+  Sequence → RUNNING
+</code></pre>
+<h2>RUNNING 반환 후의 동작</h2>
+<h3>WithMemory 모드에서의 재진입</h3>
+<p>Sequence가 RUNNING을 반환한 후 다음 Tick에서는, WithMemory 모드에서 RUNNING을 반환한 자식부터 재개한다. 이전에 SUCCESS를 반환한 자식들은 건너뛴다.</p>
+<pre><code>Tick 1:
+  children[0]: CondA → SUCCESS
+  children[1]: ActB  → RUNNING  ← current_index = 1
+  Sequence → RUNNING
+
+Tick 2 (WithMemory):
+  children[0]: (건너뜀, 이전 SUCCESS)
+  children[1]: ActB  → RUNNING  ← 여전히 진행 중
+  Sequence → RUNNING
+
+Tick 3 (WithMemory):
+  children[0]: (건너뜀)
+  children[1]: ActB  → SUCCESS  ← 작업 완료
+  children[2]: ActC  → RUNNING  ← 다음 작업 시작
+  Sequence → RUNNING
+</code></pre>
+<h3>ReactiveSequence 모드에서의 재진입</h3>
+<p>ReactiveSequence에서는 매 Tick마다 첫 번째 자식부터 재평가한다. RUNNING을 반환한 자식보다 앞의 조건 노드가 매 Tick 재평가되므로, 조건 변화를 감지할 수 있다.</p>
+<pre><code>Tick 1:
+  children[0]: CondA → SUCCESS
+  children[1]: ActB  → RUNNING
+  ReactiveSequence → RUNNING
+
+Tick 2 (Reactive):
+  children[0]: CondA → SUCCESS  ← 재평가
+  children[1]: ActB  → RUNNING
+  ReactiveSequence → RUNNING
+
+Tick 3 (Reactive):
+  children[0]: CondA → FAILURE  ← 조건 변화 감지
+  children[1]: ActB  → Halt 호출
+  ReactiveSequence → FAILURE
+</code></pre>
+<h2>RUNNING 상태의 전파</h2>
+<p>Sequence의 RUNNING은 부모 노드에 전달되어, 부모도 RUNNING을 반환할 수 있다. 이 전파는 루트 노드까지 이어져, 트리 전체가 RUNNING 상태가 된다.</p>
+<pre><code>Root
+ └─ Fallback → RUNNING
+      ├─ Sequence → RUNNING
+      │    ├─ CondA → SUCCESS
+      │    └─ ActB  → RUNNING  ← 원천
+      └─ ActC → (평가되지 않음)
+</code></pre>
+<p>RUNNING 상태는 “트리가 아직 최종 결과를 산출하지 못했으며, 다음 Tick에서 계속 평가되어야 함“을 의미한다.</p>
+<h2>동시에 하나의 RUNNING 자식만 존재</h2>
+<p>Sequence의 순차 실행 특성에 의해, 단일 Tick에서 Sequence 내부에는 최대 하나의 자식만 RUNNING 상태가 될 수 있다. 자식이 RUNNING을 반환하면 Sequence도 즉시 RUNNING을 반환하고, 이후의 자식에게 Tick을 전달하지 않기 때문이다.</p>
+<p>이는 Parallel 노드와의 중요한 차이점이다. Parallel 노드는 다수의 자식이 동시에 RUNNING 상태일 수 있다.</p>
+<h2>RUNNING에서 다른 상태로의 전이</h2>
+<p>RUNNING 상태의 자식은 이후 Tick에서 세 가지 상태 중 하나를 반환한다.</p>
+<table><thead><tr><th>자식의 다음 반환</th><th>Sequence의 동작</th></tr></thead><tbody>
+<tr><td>SUCCESS</td><td>다음 자식으로 진행, 또는 모든 자식 완료 시 SUCCESS</td></tr>
+<tr><td>FAILURE</td><td>Sequence가 FAILURE 반환</td></tr>
+<tr><td>RUNNING</td><td>Sequence가 RUNNING 유지</td></tr>
+</tbody></table>
+<p>RUNNING에서 SUCCESS로 전이하면 Sequence는 다음 자식으로 진행한다. RUNNING에서 FAILURE로 전이하면 Sequence가 FAILURE를 반환하고 종료한다. RUNNING이 지속되면 Sequence도 RUNNING을 계속 반환한다(Faconti, 2022).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

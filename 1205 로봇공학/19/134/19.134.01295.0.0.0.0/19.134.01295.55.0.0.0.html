@@ -115,6 +115,149 @@
             </header>
             <article>
                 <h1>1295.55 ReactiveSequence의 의사 코드</h1>
+<h2>1. 핵심 의사 코드</h2>
+<p>ReactiveSequence의 <code>tick()</code> 메서드와 <code>halt()</code> 메서드를 의사 코드로 제시한다.</p>
+<pre><code>class ReactiveSequence extends ControlNode:
+    
+    function tick():
+        for i ← 0 to childrenCount() - 1:
+            child_status ← children[i].tick()
+            
+            switch child_status:
+                case RUNNING:
+                    haltChildren(i + 1)
+                    return RUNNING
+                
+                case FAILURE:
+                    haltChildren(i + 1)
+                    return FAILURE
+                
+                case SUCCESS:
+                    continue  // 다음 자식으로 진행
+        
+        // 모든 자식이 SUCCESS를 반환한 경우
+        return SUCCESS
+    
+    
+    function halt():
+        haltChildren(0)
+        setStatus(IDLE)
+    
+    
+    function haltChildren(start_index):
+        for j ← start_index to childrenCount() - 1:
+            if children[j].status() == RUNNING:
+                children[j].halt()
+                children[j].setStatus(IDLE)
+</code></pre>
+<h2>2. 의사 코드의 상세 해설</h2>
+<h3>2.1 tick() 메서드</h3>
+<p><code>tick()</code> 메서드는 매 호출 시 인덱스 0에서 시작하여 자식을 순차적으로 Tick한다. 이것이 ReactiveSequence의 핵심이다. 일반 Sequence는 이전에 기억한 인덱스에서 시작하지만, ReactiveSequence는 기억 없이 항상 처음부터 시작한다.</p>
+<p>각 자식의 반환값에 따른 처리는 다음과 같다.</p>
+<ul>
+<li><strong><code>SUCCESS</code></strong>: 현재 자식의 전제 조건이 충족되었으므로, 다음 자식의 평가로 진행한다.</li>
+<li><strong><code>RUNNING</code></strong>: 현재 자식이 진행 중이므로, 이후 자식 중 <code>RUNNING</code> 상태인 것들에 Halt를 전파하고 <code>RUNNING</code>을 반환한다.</li>
+<li><strong><code>FAILURE</code></strong>: 전제 조건이 위반되었으므로, 이후 자식 중 <code>RUNNING</code> 상태인 것들에 Halt를 전파하고 <code>FAILURE</code>를 반환한다.</li>
+</ul>
+<p>모든 자식이 <code>SUCCESS</code>를 반환하면 ReactiveSequence도 <code>SUCCESS</code>를 반환한다.</p>
+<h3>2.2 haltChildren() 메서드</h3>
+<p><code>haltChildren(start_index)</code>는 <code>start_index</code>부터 마지막 자식까지 순회하면서, <code>RUNNING</code> 상태인 자식에만 Halt를 호출한다. 이미 <code>SUCCESS</code>나 <code>FAILURE</code>를 반환하여 종료된 자식에는 Halt를 호출하지 않는다.</p>
+<p>Halt 호출 후 해당 자식의 상태를 <code>IDLE</code>로 재설정한다. 이는 다음 Tick에서 해당 자식이 새로운 상태에서 시작하도록 보장한다.</p>
+<h3>2.3 halt() 메서드</h3>
+<p>ReactiveSequence 자체에 Halt가 호출되면(부모 노드로부터의 Halt 전파), 모든 자식에 대해 <code>haltChildren(0)</code>을 호출하여 실행 중인 모든 자식을 정지시킨다. 이후 자신의 상태를 <code>IDLE</code>로 설정한다.</p>
+<h2>3. 실행 추적 예시</h2>
+<p>다음의 트리를 기준으로 의사 코드의 실행을 추적한다.</p>
+<pre><code>ReactiveSequence
+├── children[0]: IsSafe       (조건 노드)
+├── children[1]: HasEnergy    (조건 노드)
+└── children[2]: Navigate     (행동 노드)
+</code></pre>
+<h3>3.1 Tick 1: 정상 실행 시작</h3>
+<pre><code>tick() 호출:
+  i=0: children[0].tick() → IsSafe returns SUCCESS
+       → continue
+  i=1: children[1].tick() → HasEnergy returns SUCCESS
+       → continue
+  i=2: children[2].tick() → Navigate returns RUNNING
+       → haltChildren(3): 인덱스 3 이상 없음, Halt 대상 없음
+       → return RUNNING
+</code></pre>
+<h3>3.2 Tick 2: 정상 실행 계속</h3>
+<pre><code>tick() 호출:
+  i=0: children[0].tick() → IsSafe returns SUCCESS
+       → continue
+  i=1: children[1].tick() → HasEnergy returns SUCCESS
+       → continue
+  i=2: children[2].tick() → Navigate returns RUNNING
+       → haltChildren(3): Halt 대상 없음
+       → return RUNNING
+</code></pre>
+<h3>3.3 Tick 3: 조건 위반 발생</h3>
+<pre><code>tick() 호출:
+  i=0: children[0].tick() → IsSafe returns FAILURE
+       → haltChildren(1):
+           j=1: children[1].status() == SUCCESS → Halt 불필요
+           j=2: children[2].status() == RUNNING → children[2].halt() 호출
+                Navigate의 halt() 실행 → 내부 상태 정리
+                children[2].setStatus(IDLE)
+       → return FAILURE
+</code></pre>
+<p><code>IsSafe</code>가 <code>FAILURE</code>를 반환하면, <code>HasEnergy</code>와 <code>Navigate</code>는 현재 Tick에서 Tick을 수신하지 않는다. <code>Navigate</code>는 이전 Tick에서 <code>RUNNING</code>이었으므로 Halt를 수신한다. <code>HasEnergy</code>는 이전 Tick에서 <code>SUCCESS</code>였으므로 Halt 대상이 아니다.</p>
+<h3>3.4 Tick 4: 조건 복원</h3>
+<pre><code>tick() 호출:
+  i=0: children[0].tick() → IsSafe returns SUCCESS
+       → continue
+  i=1: children[1].tick() → HasEnergy returns SUCCESS
+       → continue
+  i=2: children[2].tick() → Navigate returns RUNNING (새로 시작)
+       → haltChildren(3): Halt 대상 없음
+       → return RUNNING
+</code></pre>
+<p>조건이 복원되면 <code>Navigate</code>는 <code>IDLE</code> 상태에서 새로 시작된다. Tick 3에서 Halt에 의해 상태가 <code>IDLE</code>로 초기화되었으므로, <code>Navigate</code>는 처음부터 실행을 재개한다.</p>
+<h2>4. 중간 자식 RUNNING의 경우</h2>
+<p>조건 노드가 아닌 중간 위치의 행동 노드가 <code>RUNNING</code>을 반환하는 경우를 추적한다.</p>
+<pre><code>ReactiveSequence
+├── children[0]: IsSafe        (조건)
+├── children[1]: PrepareArm    (행동 - RUNNING 가능)
+└── children[2]: GraspObject   (행동)
+</code></pre>
+<h3>4.1 Tick 1</h3>
+<pre><code>tick() 호출:
+  i=0: IsSafe → SUCCESS → continue
+  i=1: PrepareArm → RUNNING
+       → haltChildren(2):
+           j=2: children[2].status() == IDLE → Halt 불필요
+       → return RUNNING
+</code></pre>
+<p><code>PrepareArm</code>이 <code>RUNNING</code>이므로 <code>GraspObject</code>는 Tick을 수신하지 않는다.</p>
+<h3>4.2 Tick 2</h3>
+<pre><code>tick() 호출:
+  i=0: IsSafe → SUCCESS → continue
+  i=1: PrepareArm → SUCCESS → continue
+  i=2: GraspObject → RUNNING
+       → haltChildren(3): 대상 없음
+       → return RUNNING
+</code></pre>
+<h3>4.3 Tick 3</h3>
+<pre><code>tick() 호출:
+  i=0: IsSafe → SUCCESS → continue
+  i=1: PrepareArm → SUCCESS (재평가 — 상태 없는 행동이면 즉시 SUCCESS)
+       → continue
+  i=2: GraspObject → RUNNING
+       → return RUNNING
+</code></pre>
+<p>Tick 3에서 <code>PrepareArm</code>이 다시 평가된다. <code>PrepareArm</code>이 상태를 가지지 않는 행동이라면 <code>SUCCESS</code>를 반환하여 문제가 없다. 그러나 상태를 가지는 행동이라면, 재평가 시 <code>RUNNING</code>을 반환할 수 있고 이 경우 <code>GraspObject</code>에 Halt가 전파된다.</p>
+<pre><code>tick() 호출 (PrepareArm이 상태를 가지는 경우):
+  i=0: IsSafe → SUCCESS → continue
+  i=1: PrepareArm → RUNNING (재초기화되어 다시 RUNNING)
+       → haltChildren(2):
+           j=2: children[2].status() == RUNNING → children[2].halt()
+       → return RUNNING
+</code></pre>
+<p>이 상황은 <code>GraspObject</code>의 진행이 무한히 반복 중단되는 문제를 야기한다. 따라서 ReactiveSequence의 중간 위치에 상태를 가지는 장기 실행 행동을 배치하는 것은 설계 오류이다.</p>
+<h2>5. BehaviorTree.CPP 구현과의 대응</h2>
+<p>본 의사 코드는 BehaviorTree.CPP 라이브러리(버전 4.x)의 <code>ReactiveSequence</code> 클래스 구현과 동일한 의미론을 따른다. BehaviorTree.CPP에서는 <code>haltChildren()</code> 대신 <code>haltChild()</code> 메서드를 개별 자식에 대해 호출하는 방식으로 구현되어 있으나, 동작의 결과는 동일하다.</p>
+<p>Colledanchise와 Ögren의 <em>Behavior Trees in Robotics and AI: An Introduction</em>(CRC Press, 2018)에서 제시된 ReactiveSequence(해당 저서에서는 Sequence* 또는 Sequence with memory=false로 표기)의 형식적 정의와 본 의사 코드는 동치이다.</p>
 
             </article>
             <footer>

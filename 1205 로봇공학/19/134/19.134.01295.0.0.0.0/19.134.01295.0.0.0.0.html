@@ -115,6 +115,201 @@
             </header>
             <article>
                 <h1>Chapter 1295. 제어 노드: Parallel과 ReactiveFallback (Control Nodes: Parallel and ReactiveFallback)</h1>
+<p>행동 트리(Behavior Tree)의 제어 노드(Control Node) 중 Sequence와 Fallback이 순차적 실행 흐름을 관장한다면, Parallel 노드와 ReactiveFallback 노드는 동시성(concurrency)과 반응성(reactivity)이라는 상이한 차원의 제어 흐름을 제공한다. Parallel 노드는 다수의 자식 노드를 논리적으로 병렬 실행하여 복합적 행동의 동시 수행을 가능하게 하며, ReactiveFallback 노드는 조건 변화에 즉각 반응하는 폴백 메커니즘을 구현한다. 본 장에서는 이 두 제어 노드의 정의, 동작 원리, 성공·실패 정책, 그리고 로봇 행동 제어에서의 활용 양상을 학술적으로 고찰한다.</p>
+<h2>1.  Parallel 노드의 정의와 개념</h2>
+<p>Parallel 노드는 행동 트리의 제어 노드 유형 중 하나로, 복수의 자식 노드에 동일한 틱(tick)에서 실행 기회를 부여하는 노드이다. 여기서 “병렬(parallel)“이라는 용어는 운영체제 수준의 멀티스레드 병렬 실행을 의미하는 것이 아니라, 단일 틱 주기 내에서 모든 자식 노드가 순서대로 틱을 수신하되 각각이 독립적으로 상태를 반환하는 논리적 동시성(logical concurrency)을 지칭한다(Colledanchise &amp; Ögren, 2018).</p>
+<p>행동 트리의 표준 형식론에서 Parallel 노드는 <span class="math math-inline">\parallel</span> 기호로 표기하며, <span class="math math-inline">N</span>개의 자식 노드 <span class="math math-inline">C_1, C_2, \ldots, C_N</span>을 갖는다. 매 틱마다 Parallel 노드는 <span class="math math-inline">C_1</span>부터 <span class="math math-inline">C_N</span>까지 순차적으로 틱을 전달하고, 각 자식의 반환 상태를 수집한 뒤, 미리 정의된 성공 정책(success policy)과 실패 정책(failure policy)에 따라 자신의 최종 상태를 결정한다.</p>
+<p>이러한 논리적 병렬성은 로봇이 복합적 행동을 동시에 수행해야 하는 상황에서 핵심적 역할을 한다. 예를 들어, 이동 로봇이 목표 지점을 향해 주행하면서 동시에 장애물 감지를 수행하는 경우, 두 행동을 Parallel 노드의 자식으로 배치함으로써 매 틱마다 양쪽 행동 모두를 갱신할 수 있다.</p>
+<h2>2.  Parallel 노드의 성공·실패 임계값 정책</h2>
+<p>Parallel 노드의 핵심 매개변수는 성공 임계값(success threshold) <span class="math math-inline">M</span>이다. 이 값은 Parallel 노드가 SUCCESS를 반환하기 위해 필요한 자식 노드의 최소 성공 개수를 지정한다. BehaviorTree.CPP 라이브러리에서는 이를 <code>success_count</code> 또는 <code>success_threshold</code> 매개변수로 설정한다.</p>
+<h3>2.1  성공 조건</h3>
+<p><span class="math math-inline">N</span>개의 자식 노드 중 <span class="math math-inline">M</span>개 이상이 SUCCESS를 반환하면 Parallel 노드 자체가 SUCCESS를 반환한다. 수식으로 표현하면 다음과 같다.</p>
+<p><span class="math math-display">
+\text{ParallelStatus} = 
+\begin{cases}
+\text{SUCCESS} &amp; \text{if } \sum_{i=1}^{N} \mathbb{1}[\text{status}(C_i) = \text{SUCCESS}] \geq M \\
+\text{FAILURE} &amp; \text{if } \sum_{i=1}^{N} \mathbb{1}[\text{status}(C_i) = \text{FAILURE}] &gt; N - M \\
+\text{RUNNING} &amp; \text{otherwise}
+\end{cases}
+</span></p>
+<p>여기서 <span class="math math-inline">\mathbb{1}[\cdot]</span>은 지시 함수(indicator function)이다. 실패 조건은 성공 임계값에 도달하는 것이 구조적으로 불가능해지는 시점, 즉 실패한 자식의 수가 <span class="math math-inline">N - M</span>을 초과하는 순간에 판정된다.</p>
+<h3>2.2  임계값 설정의 의미</h3>
+<table><thead><tr><th>임계값 설정</th><th>의미</th><th>동작 특성</th></tr></thead><tbody>
+<tr><td><span class="math math-inline">M = N</span></td><td>모든 자식이 성공해야 함</td><td>AND 의미론</td></tr>
+<tr><td><span class="math math-inline">M = 1</span></td><td>하나의 자식만 성공하면 됨</td><td>OR 의미론</td></tr>
+<tr><td><span class="math math-inline">1 &lt; M &lt; N</span></td><td>부분적 성공 허용</td><td>다수결(majority) 의미론</td></tr>
+</tbody></table>
+<p><span class="math math-inline">M = N</span>으로 설정하면 Parallel 노드는 논리적 AND 연산처럼 동작하여 모든 자식이 성공해야 전체가 성공한다. 반대로 <span class="math math-inline">M = 1</span>이면 논리적 OR 연산과 유사하게 하나의 자식만 성공하더라도 전체가 성공으로 판정된다. 중간값을 설정하면 쿼럼(quorum) 기반의 의사결정 구조를 구현할 수 있다.</p>
+<h2>3.  Parallel 노드의 틱 전파와 실행 흐름</h2>
+<p>Parallel 노드가 틱을 수신하면 다음의 절차를 따른다.</p>
+<ol>
+<li>자식 노드 <span class="math math-inline">C_1, C_2, \ldots, C_N</span>에 순서대로 틱을 전달한다.</li>
+<li>각 자식 노드가 SUCCESS, FAILURE, 또는 RUNNING 상태를 반환한다.</li>
+<li>성공 개수와 실패 개수를 집계한다.</li>
+<li>성공 개수가 <span class="math math-inline">M</span> 이상이면 SUCCESS를 반환한다.</li>
+<li>실패 개수가 <span class="math math-inline">N - M</span>을 초과하면 FAILURE를 반환한다.</li>
+<li>그 외의 경우 RUNNING을 반환한다.</li>
+</ol>
+<p>중요한 설계 결정 사항은 Parallel 노드가 SUCCESS 또는 FAILURE로 종료될 때 아직 RUNNING 상태인 자식 노드에 대한 처리 방식이다. BehaviorTree.CPP에서는 Parallel 노드가 종료될 때 RUNNING 상태의 자식 노드에 <code>halt()</code> 메서드를 호출하여 강제 중단(halting)을 수행한다. 이는 불필요한 리소스 점유를 방지하고 행동 트리의 상태 일관성을 보장하기 위한 조치이다.</p>
+<pre><code class="language-cpp">// BehaviorTree.CPP에서 Parallel 노드의 개념적 동작
+NodeStatus ParallelNode::tick()
+{
+    int success_count = 0;
+    int failure_count = 0;
+
+    for (auto&amp; child : children_)
+    {
+        NodeStatus status = child-&gt;executeTick();
+        if (status == NodeStatus::SUCCESS)
+            success_count++;
+        else if (status == NodeStatus::FAILURE)
+            failure_count++;
+    }
+
+    if (success_count &gt;= success_threshold_)
+    {
+        haltRunningChildren();
+        return NodeStatus::SUCCESS;
+    }
+    if (failure_count &gt; children_.size() - success_threshold_)
+    {
+        haltRunningChildren();
+        return NodeStatus::FAILURE;
+    }
+    return NodeStatus::RUNNING;
+}
+</code></pre>
+<p>위 의사 코드는 Parallel 노드의 핵심 로직을 간략화하여 보여준다. 실제 BehaviorTree.CPP 구현에서는 이미 완료된 자식 노드의 재틱 방지, 스킵 정책 등 추가적 처리가 포함된다.</p>
+<h2>4.  Parallel 노드의 활용 사례</h2>
+<h3>4.1  이동과 감시의 동시 수행</h3>
+<p>모바일 로봇이 목표 지점까지 자율 주행하면서 동시에 주변 환경을 감시(surveillance)해야 하는 경우, 다음과 같은 구조를 적용할 수 있다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="1"&gt;
+    &lt;NavigateToGoal goal="{target_pose}"/&gt;
+    &lt;MonitorSurroundings/&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>이 구조에서 <code>success_count="1"</code>로 설정하면, 내비게이션이 목표에 도달하여 SUCCESS를 반환하는 즉시 Parallel 노드가 성공으로 판정되고, 감시 행동은 중단된다.</p>
+<h3>4.2  다중 센서 데이터 동시 수집</h3>
+<p>여러 센서에서 동시에 데이터를 수집하고, 모든 센서가 정상적으로 데이터를 반환해야 다음 단계로 진행하는 경우에는 <span class="math math-inline">M = N</span>을 적용한다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="3"&gt;
+    &lt;AcquireLidarData/&gt;
+    &lt;AcquireCameraData/&gt;
+    &lt;AcquireIMUData/&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p>이 구성에서 세 개의 센서 데이터 수집 노드 모두가 성공해야 Parallel 노드가 SUCCESS를 반환하므로, 센서 데이터의 완전성이 보장된다.</p>
+<h2>5.  ReactiveFallback 노드의 정의와 개념</h2>
+<p>ReactiveFallback 노드는 표준 Fallback(Selector) 노드의 반응형(reactive) 변형이다. 표준 Fallback 노드는 자식 노드가 RUNNING을 반환하면 다음 틱에서 해당 자식부터 틱을 재개하는 반면, ReactiveFallback 노드는 매 틱마다 항상 첫 번째 자식부터 다시 틱을 전파한다(Colledanchise &amp; Ögren, 2018). 이러한 특성으로 인해 우선순위가 높은 조건의 변화에 즉각적으로 반응할 수 있다.</p>
+<p>ReactiveFallback의 동작 규칙은 다음과 같다.</p>
+<ol>
+<li>매 틱마다 첫 번째 자식 <span class="math math-inline">C_1</span>부터 틱을 전달한다.</li>
+<li><span class="math math-inline">C_i</span>가 SUCCESS 또는 RUNNING을 반환하면, <span class="math math-inline">C_{i+1}, \ldots, C_N</span> 중 RUNNING 상태인 자식을 모두 중단하고, <span class="math math-inline">C_i</span>의 상태를 자신의 상태로 반환한다.</li>
+<li><span class="math math-inline">C_i</span>가 FAILURE를 반환하면, 다음 자식 <span class="math math-inline">C_{i+1}</span>로 틱을 전달한다.</li>
+<li>모든 자식이 FAILURE를 반환하면, ReactiveFallback 노드 자체가 FAILURE를 반환한다.</li>
+</ol>
+<h2>6.  ReactiveFallback과 표준 Fallback의 차이</h2>
+<p>표준 Fallback 노드와 ReactiveFallback 노드의 핵심적 차이는 RUNNING 상태에서의 틱 재개 위치에 있다.</p>
+<table><thead><tr><th>특성</th><th>표준 Fallback</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>틱 시작 위치</td><td>RUNNING 상태의 자식부터 재개</td><td>항상 첫 번째 자식부터 시작</td></tr>
+<tr><td>조건 재평가</td><td>RUNNING 중 이전 조건 미재평가</td><td>매 틱마다 모든 선행 조건 재평가</td></tr>
+<tr><td>반응성</td><td>낮음</td><td>높음</td></tr>
+<tr><td>선점(preemption)</td><td>불가</td><td>가능</td></tr>
+<tr><td>적용 상황</td><td>정적 우선순위 폴백</td><td>동적 조건 기반 폴백</td></tr>
+</tbody></table>
+<p>표준 Fallback에서는 세 번째 자식이 RUNNING을 반환한 경우, 다음 틱에서 세 번째 자식부터 틱이 재개되므로 첫 번째와 두 번째 자식의 조건 변화를 감지하지 못한다. ReactiveFallback에서는 매 틱마다 첫 번째 자식부터 재평가하므로, 더 높은 우선순위의 조건이 성립하면 현재 실행 중인 하위 행동을 선점(preempt)하고 즉시 전환할 수 있다.</p>
+<h2>7.  ReactiveFallback의 실행 흐름 상세</h2>
+<p>ReactiveFallback 노드의 실행 흐름을 의사 코드로 표현하면 다음과 같다.</p>
+<pre><code class="language-cpp">NodeStatus ReactiveFallback::tick()
+{
+    for (size_t i = 0; i &lt; children_.size(); i++)
+    {
+        NodeStatus status = children_[i]-&gt;executeTick();
+
+        if (status == NodeStatus::SUCCESS)
+        {
+            haltChildren(i + 1);  // 이후 자식 중단
+            return NodeStatus::SUCCESS;
+        }
+        else if (status == NodeStatus::RUNNING)
+        {
+            haltChildren(i + 1);  // 이후 자식 중단
+            return NodeStatus::RUNNING;
+        }
+        // FAILURE이면 다음 자식으로 계속 진행
+    }
+    return NodeStatus::FAILURE;
+}
+</code></pre>
+<p>이 로직에서 <code>haltChildren(i + 1)</code> 호출은 현재 선택된 자식 이후의 모든 자식 노드를 중단시킨다. 이는 이전 틱에서 하위 자식이 RUNNING 상태에 있었더라도, 상위 우선순위 자식이 SUCCESS 또는 RUNNING을 반환하면 해당 하위 자식의 실행이 선점되는 것을 의미한다.</p>
+<h2>8.  ReactiveFallback의 활용 사례</h2>
+<h3>8.1  조건 기반 행동 전환</h3>
+<p>ReactiveFallback의 가장 대표적인 활용 패턴은 조건 노드와 행동 노드를 조합한 조건 기반 행동 전환이다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;IsEmergencyDetected/&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;IsObstacleNearby/&gt;
+        &lt;AvoidObstacle/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;NavigateToGoal goal="{target_pose}"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>이 트리에서 매 틱마다 다음의 평가가 이루어진다.</p>
+<ol>
+<li><code>IsEmergencyDetected</code> 조건을 먼저 확인한다. 비상 상황이 감지되면(SUCCESS 반환) 즉시 ReactiveFallback이 SUCCESS를 반환하고, 하위 행동이 모두 중단된다.</li>
+<li>비상 상황이 아니면(FAILURE) 다음으로 <code>IsObstacleNearby</code> 조건을 확인한다. 장애물이 근접하면 <code>AvoidObstacle</code> 행동을 실행한다.</li>
+<li>장애물이 없으면 <code>NavigateToGoal</code>을 실행하여 목표로 이동한다.</li>
+</ol>
+<p>이 구조의 핵심은 <code>NavigateToGoal</code>이 RUNNING 상태에서 장기 실행 중이더라도, 매 틱마다 비상 조건과 장애물 조건이 재평가된다는 점이다. 조건 변화가 감지되면 내비게이션 행동은 즉시 중단되고 적절한 대응 행동으로 전환된다.</p>
+<h3>8.2  우선순위 기반 행동 선택</h3>
+<p>복수의 행동 대안이 존재하고 우선순위에 따라 동적으로 선택해야 하는 경우에도 ReactiveFallback이 적합하다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;IsBatteryLow/&gt;
+        &lt;ReturnToChargingStation/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;HasNewTask/&gt;
+        &lt;ExecuteTask/&gt;
+    &lt;/Sequence&gt;
+    &lt;Patrol/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>배터리 잔량이 낮아지면 현재 수행 중인 작업이나 순찰(patrol)을 중단하고 충전소로 복귀하는 행동이 즉시 선점된다. 이는 ReactiveFallback의 매 틱 재평가 특성에 의해 보장된다.</p>
+<h2>9.  ReactiveSequence 노드와의 관계</h2>
+<p>ReactiveFallback과 대칭적으로 ReactiveSequence 노드가 존재한다. ReactiveSequence는 표준 Sequence 노드의 반응형 변형으로, 매 틱마다 첫 번째 자식부터 틱을 재전파한다. 두 노드의 관계를 정리하면 다음과 같다.</p>
+<table><thead><tr><th>노드</th><th>기반 노드</th><th>성공 조건</th><th>실패 조건</th><th>반응성</th></tr></thead><tbody>
+<tr><td>ReactiveSequence</td><td>Sequence</td><td>모든 자식 SUCCESS</td><td>하나의 자식 FAILURE</td><td>매 틱 재평가</td></tr>
+<tr><td>ReactiveFallback</td><td>Fallback</td><td>하나의 자식 SUCCESS</td><td>모든 자식 FAILURE</td><td>매 틱 재평가</td></tr>
+</tbody></table>
+<p>ReactiveSequence는 조건이 유지되는 동안에만 행동을 계속 실행해야 하는 패턴에서 주로 사용된다. 예를 들어, <code>&lt;ReactiveSequence&gt;&lt;IsSafe/&gt;&lt;Navigate/&gt;&lt;/ReactiveSequence&gt;</code> 구조에서 <code>IsSafe</code> 조건이 매 틱마다 재평가되므로, 안전 조건이 위반되는 즉시 <code>Navigate</code> 행동이 중단된다.</p>
+<h2>10.  Parallel 노드와 ReactiveFallback 노드의 비교</h2>
+<p>두 노드 모두 복합적 행동 관리를 위한 제어 구조이지만, 설계 의도와 적용 영역이 상이하다.</p>
+<table><thead><tr><th>비교 항목</th><th>Parallel</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>설계 의도</td><td>동시적 행동 수행</td><td>우선순위 기반 반응적 전환</td></tr>
+<tr><td>자식 틱 범위</td><td>모든 자식에 틱 전달</td><td>성공 또는 RUNNING 자식까지만 전달</td></tr>
+<tr><td>종료 조건</td><td>임계값 기반(성공/실패 개수)</td><td>첫 번째 SUCCESS 또는 RUNNING</td></tr>
+<tr><td>전형적 자식 구성</td><td>독립적 행동 노드 다수</td><td>조건 노드 + 행동 노드 조합</td></tr>
+<tr><td>주요 용도</td><td>병렬 작업 수행</td><td>조건 감시 및 행동 선점</td></tr>
+</tbody></table>
+<p>Parallel 노드는 “여러 행동을 동시에 수행하라“는 의미론을 구현하고, ReactiveFallback 노드는 “조건 변화에 즉시 반응하여 최적의 행동을 선택하라“는 의미론을 구현한다.</p>
+<h2>11.  설계 시 고려 사항</h2>
+<h3>11.1  Parallel 노드의 부작용 관리</h3>
+<p>Parallel 노드의 자식 노드들이 동일한 리소스(예: 동일 액추에이터, 공유 변수)에 접근하는 경우, 논리적 병렬 실행으로 인해 상태 충돌이 발생할 수 있다. 자식 노드 간 리소스 독립성을 보장하거나, 블랙보드(Blackboard)를 통한 명시적 데이터 공유 메커니즘을 설계해야 한다.</p>
+<h3>11.2  ReactiveFallback의 조건 노드 순수성</h3>
+<p>ReactiveFallback에서 조건 노드는 매 틱마다 반복 호출되므로, 부작용(side effect)이 없는 순수 함수(pure function)로 구현해야 한다. 조건 노드가 상태를 변경하거나 외부 시스템에 영향을 미치는 경우, 매 틱 재평가로 인해 예측 불가능한 동작이 초래될 수 있다.</p>
+<h3>11.3  중단 처리의 정확성</h3>
+<p>두 노드 모두 특정 조건에서 RUNNING 상태의 자식 노드를 중단하는 메커니즘을 포함한다. <code>halt()</code> 메서드의 구현이 리소스 해제, 상태 초기화 등을 올바르게 수행하지 않으면, 후속 실행에서 비정상적 동작이 발생할 수 있다. 특히 ROS2 액션 서버와 연동된 행동 노드의 경우, <code>halt()</code> 시점에서 목표 취소(goal cancellation) 요청이 정확하게 전달되어야 한다.</p>
+<h2>12. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Colledanchise, M., &amp; Ögren, P. (2017). “How Behavior Trees Modularize Hybrid Control Systems and Generalize Sequential Behavior Compositions, the Subsumption Architecture, and Decision Trees.” <em>IEEE Transactions on Robotics</em>, 33(2), 372–389.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+<li>Macenski, S., Martin, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

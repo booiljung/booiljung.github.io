@@ -115,6 +115,113 @@
             </header>
             <article>
                 <h1>1294.84 BehaviorTree.CPP의 ReactiveSequence 클래스</h1>
+<h2>1. ReactiveSequence 클래스의 개요</h2>
+<p>BehaviorTree.CPP v4에서 <code>ReactiveSequence</code> 클래스는 매 Tick마다 첫 번째 자식부터 재평가하는 비상태적(stateless) Sequence를 구현한다. <code>SequenceNode</code>와 달리 <code>current_child_idx_</code>를 사용하지 않으며, 항상 인덱스 0부터 순회를 시작한다. 이 클래스는 주로 안전 조건의 지속적 감시 패턴에서 사용된다(Faconti, 2022).</p>
+<h2>2. 클래스 선언</h2>
+<pre><code class="language-cpp">namespace BT {
+
+class ReactiveSequence : public ControlNode {
+public:
+    ReactiveSequence(const std::string&amp; name,
+                     const NodeConfig&amp; config);
+    
+    virtual ~ReactiveSequence() override = default;
+    
+    static PortsList providedPorts() { return {}; }
+
+private:
+    virtual BT::NodeStatus tick() override;
+};
+
+}  // namespace BT
+</code></pre>
+<p><code>SequenceNode</code>와 비교하여, <code>current_child_idx_</code> 멤버 변수가 없고, <code>halt()</code> 메서드를 별도로 오버라이드하지 않는다는 점이 주요 차이이다. 부모 클래스 <code>ControlNode</code>의 <code>halt()</code>를 그대로 사용한다.</p>
+<h2>3. tick() 메서드의 상세 분석</h2>
+<h3>3.1 전체 구현</h3>
+<pre><code class="language-cpp">NodeStatus ReactiveSequence::tick() {
+    bool all_skipped = true;
+    setStatus(NodeStatus::RUNNING);
+    
+    for (size_t index = 0; index &lt; childrenCount(); index++) {
+        TreeNode* current_child = children_nodes_[index];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status) {
+            case NodeStatus::RUNNING: {
+                // RUNNING 자식 이후의 모든 자식을 Halt
+                for (size_t j = index + 1; j &lt; childrenCount(); j++) {
+                    haltChild(j);
+                }
+                return NodeStatus::RUNNING;
+            }
+            case NodeStatus::FAILURE: {
+                // 모든 자식 초기화 후 FAILURE 반환
+                resetChildren();
+                return NodeStatus::FAILURE;
+            }
+            case NodeStatus::SUCCESS: {
+                all_skipped = false;
+            } break;
+            
+            case NodeStatus::SKIPPED: {
+                // SKIPPED는 다음 자식으로 진행
+            } break;
+        }
+    }
+    
+    resetChildren();
+    return all_skipped ? NodeStatus::SKIPPED : NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>3.2 동작 분석</h3>
+<ol>
+<li>
+<p><strong>항상 인덱스 0부터 시작</strong>: for 루프가 항상 <code>index = 0</code>에서 시작하므로, 매 Tick마다 모든 자식이 순서대로 재평가된다.</p>
+</li>
+<li>
+<p><strong>RUNNING 자식 이후의 Halt</strong>: 자식이 RUNNING을 반환하면, 해당 인덱스 이후의 모든 자식을 Halt한다. 이는 이전 Tick에서 더 뒤쪽 자식이 RUNNING이었을 가능성을 처리한다.</p>
+</li>
+<li>
+<p><strong>FAILURE의 즉시 전파</strong>: 어떤 자식이든 FAILURE를 반환하면, <code>resetChildren()</code>으로 모든 자식을 초기화하고 FAILURE를 반환한다.</p>
+</li>
+<li>
+<p><strong>전체 SUCCESS</strong>: 모든 자식이 SUCCESS를 반환하면, 모든 자식을 초기화하고 SUCCESS를 반환한다.</p>
+</li>
+</ol>
+<h2>4. SequenceNode와의 핵심 차이점</h2>
+<h3>4.1 구현 수준의 차이</h3>
+<table><thead><tr><th>특성</th><th>SequenceNode</th><th>ReactiveSequence</th></tr></thead><tbody>
+<tr><td>current_child_idx_</td><td>있음 (메모리)</td><td>없음</td></tr>
+<tr><td>순회 시작점</td><td>current_child_idx_</td><td>항상 0</td></tr>
+<tr><td>이전 SUCCESS 자식</td><td>건너뜀</td><td>매 Tick 재평가</td></tr>
+<tr><td>RUNNING 이후 자식</td><td>Halt 불필요</td><td>명시적 Halt</td></tr>
+<tr><td>halt() 오버라이드</td><td>예 (idx 초기화)</td><td>아니오 (기본 사용)</td></tr>
+</tbody></table>
+<h3>4.2 RUNNING 이후 자식 Halt의 필요성</h3>
+<p>ReactiveSequence에서 RUNNING 자식 이후의 Halt가 필요한 이유는 다음 시나리오에서 발생한다:</p>
+<pre><code>Tick 1: Cond→S, Action1→S, Action2→R     (Action2가 RUNNING)
+Tick 2: Cond→S, Action1→R                 (Action1이 RUNNING으로 변경)
+        Action2→Halt                       (더 이상 활성이 아닌 Action2 정리)
+</code></pre>
+<p>Tick 2에서 Action1이 RUNNING을 반환하면, 이전 Tick에서 RUNNING이었던 Action2를 Halt해야 한다. 이 Halt가 없으면 Action2가 정리되지 않은 상태로 남는다.</p>
+<h2>5. XML에서의 사용</h2>
+<pre><code class="language-xml">&lt;BehaviorTree ID="SafetyMonitoredMission"&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsBatteryOK"/&gt;
+        &lt;Condition ID="IsCommsActive"/&gt;
+        &lt;SubTree ID="Mission"/&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>&lt;ReactiveSequence&gt;</code> 태그는 BehaviorTree.CPP에 기본 등록되어 있으며, 별도의 등록 없이 XML에서 사용할 수 있다.</p>
+<h2>6. 성능 고려 사항</h2>
+<p>ReactiveSequence는 매 Tick마다 모든 앞쪽 자식을 재평가하므로, 자식 수가 많을수록 Tick당 계산 비용이 증가한다. 앞쪽에 배치되는 조건 노드는 경량으로 구현하여 재평가 비용을 최소화해야 한다. 특히 센서 읽기, 네트워크 통신 등 비용이 높은 연산을 조건 노드 내부에서 직접 수행하는 것은 피해야 하며, 블랙보드를 통해 비동기적으로 갱신된 값을 읽는 방식이 권장된다(Faconti, 2022).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,285 @@
             </header>
             <article>
                 <h1>1295.80 커스텀 성공/실패 정책의 정의</h1>
+<h2>1. 커스텀 정책의 필요성</h2>
+<p>BehaviorTree.CPP의 내장 Parallel 노드(<code>ParallelAll</code>)는 SUCCESS_ALL 성공 정책과 <code>max_failures</code> 기반 실패 정책을 제공한다. 그러나 로봇공학의 실제 적용에서는 이 두 정책만으로 충분하지 않은 경우가 발생한다. 자식 노드의 종류, 중요도, 실행 맥락에 따라 차별화된 정책이 필요하며, 이를 위해 커스텀 정책을 정의하고 구현하는 방법이 요구된다.</p>
+<h2>2. 정책의 형식적 정의</h2>
+<p>Parallel 노드의 정책은 자식 노드들의 상태 집합을 입력으로 받아, Parallel 노드의 반환 상태를 결정하는 함수로 형식적으로 정의할 수 있다.</p>
+<p><span class="math math-display">\text{Policy}: \{S_1, S_2, \ldots, S_N\} \rightarrow \{\text{SUCCESS}, \text{FAILURE}, \text{RUNNING}\}</span></p>
+<p>여기서 <span class="math math-inline">S_i \in \{\text{SUCCESS}, \text{FAILURE}, \text{RUNNING}\}</span>은 자식 <span class="math math-inline">C_i</span>의 현재 상태이다.</p>
+<h3>표준 정책의 형식적 표현</h3>
+<p>표준 정책을 이 형식으로 표현하면 다음과 같다.</p>
+<p><strong>SUCCESS_ALL</strong>:</p>
+<p><span class="math math-display">\text{result} = \begin{cases} \text{SUCCESS} &amp; \text{if } \forall i : S_i = \text{SUCCESS} \\ \text{FAILURE} &amp; \text{if policy condition met} \\ \text{RUNNING} &amp; \text{otherwise} \end{cases}</span></p>
+<p><strong>SUCCESS_ONE</strong>:</p>
+<p><span class="math math-display">\text{result} = \begin{cases} \text{SUCCESS} &amp; \text{if } \exists i : S_i = \text{SUCCESS} \\ \text{FAILURE} &amp; \text{if } \forall i : S_i = \text{FAILURE} \\ \text{RUNNING} &amp; \text{otherwise} \end{cases}</span></p>
+<p><strong>SUCCESS_COUNT(N)</strong>:</p>
+<p><span class="math math-display">\text{result} = \begin{cases} \text{SUCCESS} &amp; \text{if } \sum_{i} [S_i = \text{SUCCESS}] \geq N \\ \text{FAILURE} &amp; \text{if policy condition met} \\ \text{RUNNING} &amp; \text{otherwise} \end{cases}</span></p>
+<h2>3. 커스텀 정책의 설계 방법</h2>
+<h3>3.1 정책 인터페이스 정의</h3>
+<p>커스텀 정책을 체계적으로 정의하기 위해, 정책 판정 로직을 별도의 인터페이스로 분리한다.</p>
+<pre><code class="language-cpp">// 정책 판정 결과
+enum class PolicyResult
+{
+    SUCCESS,    // 성공 정책 충족
+    FAILURE,    // 실패 정책 충족
+    CONTINUE    // 정책 미충족, 계속 실행
+};
+
+// 정책 인터페이스
+class ParallelPolicy
+{
+public:
+    virtual ~ParallelPolicy() = default;
+    
+    // 자식 상태 집합을 받아 정책 결과를 반환
+    virtual PolicyResult evaluate(
+        const std::vector&lt;BT::NodeStatus&gt;&amp; child_statuses,
+        size_t total_children) const = 0;
+    
+    // 정책의 이름 (디버깅용)
+    virtual std::string name() const = 0;
+};
+</code></pre>
+<h3>3.2 표준 정책의 구현</h3>
+<pre><code class="language-cpp">class SuccessAllPolicy : public ParallelPolicy
+{
+public:
+    PolicyResult evaluate(
+        const std::vector&lt;BT::NodeStatus&gt;&amp; statuses,
+        size_t total) const override
+    {
+        int success_count = 0;
+        for (auto s : statuses)
+        {
+            if (s == BT::NodeStatus::SUCCESS)
+                success_count++;
+        }
+        
+        if (success_count == static_cast&lt;int&gt;(total))
+            return PolicyResult::SUCCESS;
+        
+        return PolicyResult::CONTINUE;
+    }
+    
+    std::string name() const override { return "SUCCESS_ALL"; }
+};
+
+class FailureOnePolicy : public ParallelPolicy
+{
+public:
+    PolicyResult evaluate(
+        const std::vector&lt;BT::NodeStatus&gt;&amp; statuses,
+        size_t total) const override
+    {
+        for (auto s : statuses)
+        {
+            if (s == BT::NodeStatus::FAILURE)
+                return PolicyResult::FAILURE;
+        }
+        return PolicyResult::CONTINUE;
+    }
+    
+    std::string name() const override { return "FAILURE_ONE"; }
+};
+</code></pre>
+<h2>4. 커스텀 정책의 예시</h2>
+<h3>4.1 과반수 성공 정책 (Majority Success)</h3>
+<p>자식의 과반수가 <code>SUCCESS</code>를 반환하면 전체가 <code>SUCCESS</code>를 반환하는 정책이다.</p>
+<pre><code class="language-cpp">class MajoritySuccessPolicy : public ParallelPolicy
+{
+public:
+    PolicyResult evaluate(
+        const std::vector&lt;BT::NodeStatus&gt;&amp; statuses,
+        size_t total) const override
+    {
+        int success_count = 0;
+        int failure_count = 0;
+        
+        for (auto s : statuses)
+        {
+            if (s == BT::NodeStatus::SUCCESS) success_count++;
+            if (s == BT::NodeStatus::FAILURE) failure_count++;
+        }
+        
+        int majority = static_cast&lt;int&gt;(total) / 2 + 1;
+        
+        if (success_count &gt;= majority)
+            return PolicyResult::SUCCESS;
+        if (failure_count &gt;= majority)
+            return PolicyResult::FAILURE;
+        
+        return PolicyResult::CONTINUE;
+    }
+    
+    std::string name() const override { return "MAJORITY_SUCCESS"; }
+};
+</code></pre>
+<p>이 정책은 다중 센서 융합에서 활용된다. 세 개의 센서 중 두 개 이상이 장애물 부재를 확인하면 안전하다고 판정하는 다수결 투표(majority voting) 방식에 해당한다.</p>
+<h3>4.2 필수/선택 구분 정책 (Required/Optional)</h3>
+<p>자식 노드를 필수(required)와 선택(optional)으로 구분하여, 필수 자식의 성공은 반드시 요구하되 선택 자식의 실패는 허용하는 정책이다.</p>
+<pre><code class="language-cpp">class RequiredOptionalPolicy : public ParallelPolicy
+{
+    std::set&lt;size_t&gt; required_indices_;
+    
+public:
+    RequiredOptionalPolicy(std::set&lt;size_t&gt; required)
+        : required_indices_(std::move(required)) {}
+    
+    PolicyResult evaluate(
+        const std::vector&lt;BT::NodeStatus&gt;&amp; statuses,
+        size_t total) const override
+    {
+        bool all_required_success = true;
+        bool any_required_failure = false;
+        int completed = 0;
+        
+        for (size_t i = 0; i &lt; statuses.size(); i++)
+        {
+            bool is_required = required_indices_.count(i) &gt; 0;
+            
+            if (is_required)
+            {
+                if (statuses[i] == BT::NodeStatus::FAILURE)
+                    any_required_failure = true;
+                if (statuses[i] != BT::NodeStatus::SUCCESS)
+                    all_required_success = false;
+            }
+            
+            if (statuses[i] != BT::NodeStatus::RUNNING)
+                completed++;
+        }
+        
+        if (any_required_failure)
+            return PolicyResult::FAILURE;
+        if (all_required_success &amp;&amp; completed == static_cast&lt;int&gt;(total))
+            return PolicyResult::SUCCESS;
+        
+        return PolicyResult::CONTINUE;
+    }
+    
+    std::string name() const override { return "REQUIRED_OPTIONAL"; }
+};
+</code></pre>
+<p>이 정책은 이동 로봇에서 이동(필수)과 환경 데이터 기록(선택)을 동시에 수행하는 경우에 적용된다. 이동이 실패하면 전체가 실패하지만, 데이터 기록이 실패하더라도 이동은 계속된다.</p>
+<h3>4.3 시간 제한 정책 (Time-Bounded)</h3>
+<p>모든 자식이 일정 시간 내에 완료되지 않으면 실패로 처리하는 정책이다.</p>
+<pre><code class="language-cpp">class TimeBoundedPolicy : public ParallelPolicy
+{
+    std::chrono::milliseconds timeout_;
+    mutable std::chrono::steady_clock::time_point start_time_;
+    mutable bool started_ = false;
+    
+public:
+    TimeBoundedPolicy(std::chrono::milliseconds timeout)
+        : timeout_(timeout) {}
+    
+    PolicyResult evaluate(
+        const std::vector&lt;BT::NodeStatus&gt;&amp; statuses,
+        size_t total) const override
+    {
+        if (!started_)
+        {
+            start_time_ = std::chrono::steady_clock::now();
+            started_ = true;
+        }
+        
+        // 타임아웃 검사
+        auto elapsed = std::chrono::steady_clock::now() - start_time_;
+        if (elapsed &gt; timeout_)
+            return PolicyResult::FAILURE;
+        
+        // 표준 SUCCESS_ALL 검사
+        int success_count = 0;
+        for (auto s : statuses)
+        {
+            if (s == BT::NodeStatus::SUCCESS)
+                success_count++;
+            if (s == BT::NodeStatus::FAILURE)
+                return PolicyResult::FAILURE;
+        }
+        
+        if (success_count == static_cast&lt;int&gt;(total))
+            return PolicyResult::SUCCESS;
+        
+        return PolicyResult::CONTINUE;
+    }
+    
+    std::string name() const override { return "TIME_BOUNDED"; }
+};
+</code></pre>
+<h2>5. 정책 기반 Parallel 노드의 구현</h2>
+<p>정의된 커스텀 정책을 사용하는 Parallel 노드를 구현한다.</p>
+<pre><code class="language-cpp">class PolicyBasedParallel : public BT::ControlNode
+{
+    std::shared_ptr&lt;ParallelPolicy&gt; success_policy_;
+    std::shared_ptr&lt;ParallelPolicy&gt; failure_policy_;
+    
+public:
+    PolicyBasedParallel(const std::string&amp; name,
+                        const BT::NodeConfig&amp; config,
+                        std::shared_ptr&lt;ParallelPolicy&gt; success_policy,
+                        std::shared_ptr&lt;ParallelPolicy&gt; failure_policy)
+        : ControlNode(name, config),
+          success_policy_(std::move(success_policy)),
+          failure_policy_(std::move(failure_policy)) {}
+    
+    BT::NodeStatus tick() override
+    {
+        std::vector&lt;BT::NodeStatus&gt; statuses(childrenCount());
+        
+        for (size_t i = 0; i &lt; childrenCount(); i++)
+        {
+            if (children_nodes_[i]-&gt;status() == BT::NodeStatus::SUCCESS ||
+                children_nodes_[i]-&gt;status() == BT::NodeStatus::FAILURE)
+            {
+                statuses[i] = children_nodes_[i]-&gt;status();
+                continue;
+            }
+            statuses[i] = children_nodes_[i]-&gt;executeTick();
+        }
+        
+        // 실패 정책 우선 검사
+        auto fail_result = failure_policy_-&gt;evaluate(statuses, childrenCount());
+        if (fail_result == PolicyResult::FAILURE)
+        {
+            haltChildren();
+            return BT::NodeStatus::FAILURE;
+        }
+        
+        // 성공 정책 검사
+        auto success_result = success_policy_-&gt;evaluate(statuses, childrenCount());
+        if (success_result == PolicyResult::SUCCESS)
+        {
+            haltChildren();
+            return BT::NodeStatus::SUCCESS;
+        }
+        
+        return BT::NodeStatus::RUNNING;
+    }
+    
+    void halt() override
+    {
+        haltChildren();
+        ControlNode::halt();
+    }
+};
+</code></pre>
+<h2>6. 설계 시 유의 사항</h2>
+<ol>
+<li>
+<p><strong>정책의 결정론성</strong>: 커스텀 정책은 동일한 자식 상태 집합에 대해 항상 동일한 결과를 반환하여야 한다. 비결정론적 정책은 행동 트리의 예측 가능성을 저해한다.</p>
+</li>
+<li>
+<p><strong>정책의 단조성</strong>: 가능한 한 정책은 단조적이어야 한다. 즉, 성공 자식 수가 증가하면 <code>SUCCESS</code> 반환 가능성이 증가하고, 실패 자식 수가 증가하면 <code>FAILURE</code> 반환 가능성이 증가하여야 한다.</p>
+</li>
+<li>
+<p><strong>조기 종료 조건의 명확화</strong>: 커스텀 정책에서 조기 종료(나머지 자식을 Halt하고 즉시 결과를 반환)가 발생하는 조건을 명확히 정의하라. 불필요한 자식 실행을 방지하여 효율성을 확보한다.</p>
+</li>
+<li>
+<p><strong>정책의 테스트 가능성</strong>: 정책을 독립적인 인터페이스로 분리하면, Parallel 노드와 분리하여 정책 로직만을 단위 테스트할 수 있다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

@@ -115,6 +115,315 @@
             </header>
             <article>
                 <h1>1294.90 Sequence와 Fallback의 단위 테스트 전략</h1>
+<h2>1. 행동 트리 제어 노드 테스트의 목적</h2>
+<p>Sequence와 Fallback 제어 노드의 단위 테스트는 각 노드가 자식의 반환 상태에 따라 올바른 제어 흐름을 생성하는지 검증하는 데 목적이 있다. 제어 노드의 동작은 자식 반환 상태의 조합, 메모리 동작의 정확성, Halt 전파의 완전성이라는 세 가지 차원에서 검증되어야 한다. BehaviorTree.CPP는 테스트를 위한 모의(Mock) 노드 프레임워크를 제공하여, 자식 노드의 반환 상태를 프로그래밍 방식으로 제어할 수 있다(Faconti, 2022).</p>
+<h2>2. 테스트 환경 구성</h2>
+<h3>2.1 모의 액션 노드의 구현</h3>
+<pre><code class="language-cpp">class MockAction : public BT::SyncActionNode {
+public:
+    MockAction(const std::string&amp; name,
+               const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+    
+    static BT::PortsList providedPorts() { return {}; }
+    
+    BT::NodeStatus tick() override {
+        tick_count_++;
+        return status_to_return_;
+    }
+    
+    void setReturnStatus(BT::NodeStatus status) {
+        status_to_return_ = status;
+    }
+    
+    int tickCount() const { return tick_count_; }
+    void resetTickCount() { tick_count_ = 0; }
+
+private:
+    BT::NodeStatus status_to_return_ = BT::NodeStatus::SUCCESS;
+    int tick_count_ = 0;
+};
+</code></pre>
+<p><code>MockAction</code>은 미리 설정된 상태를 반환하며, <code>tick()</code> 호출 횟수를 기록한다. 이를 통해 제어 노드가 자식을 올바른 횟수만큼 실행했는지 검증할 수 있다.</p>
+<h3>2.2 비동기 모의 노드</h3>
+<pre><code class="language-cpp">class MockAsyncAction : public BT::StatefulActionNode {
+public:
+    MockAsyncAction(const std::string&amp; name,
+                    const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+    
+    static BT::PortsList providedPorts() { return {}; }
+    
+    BT::NodeStatus onStart() override {
+        tick_count_++;
+        return return_on_start_;
+    }
+    
+    BT::NodeStatus onRunning() override {
+        tick_count_++;
+        return return_on_running_;
+    }
+    
+    void onHalted() override {
+        halt_count_++;
+    }
+    
+    void setReturnOnStart(BT::NodeStatus s) { return_on_start_ = s; }
+    void setReturnOnRunning(BT::NodeStatus s) { return_on_running_ = s; }
+    int tickCount() const { return tick_count_; }
+    int haltCount() const { return halt_count_; }
+
+private:
+    BT::NodeStatus return_on_start_ = BT::NodeStatus::RUNNING;
+    BT::NodeStatus return_on_running_ = BT::NodeStatus::RUNNING;
+    int tick_count_ = 0;
+    int halt_count_ = 0;
+};
+</code></pre>
+<p>비동기 모의 노드는 <code>onStart()</code>와 <code>onRunning()</code>에서 서로 다른 상태를 반환하도록 설정할 수 있으며, <code>onHalted()</code> 호출 여부를 추적한다. 메모리 동작과 Halt 전파의 검증에 필수적이다.</p>
+<h3>2.3 테스트 트리 구축</h3>
+<pre><code class="language-cpp">BT::BehaviorTreeFactory factory;
+factory.registerNodeType&lt;MockAction&gt;("MockAction");
+factory.registerNodeType&lt;MockAsyncAction&gt;("MockAsyncAction");
+
+// XML 기반 트리 구축
+std::string xml = R"(
+&lt;root BTCPP_format="4"&gt;
+    &lt;BehaviorTree ID="TestTree"&gt;
+        &lt;Sequence&gt;
+            &lt;MockAction name="action1"/&gt;
+            &lt;MockAction name="action2"/&gt;
+            &lt;MockAction name="action3"/&gt;
+        &lt;/Sequence&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+)";
+
+auto tree = factory.createTreeFromText(xml);
+</code></pre>
+<p>XML 기반 트리 구축은 실제 사용 환경과 동일한 방식으로 테스트를 수행할 수 있게 한다. 대안적으로 프로그래밍 방식으로 트리를 직접 구성할 수도 있다.</p>
+<h2>3. Sequence 노드의 테스트 전략</h2>
+<h3>3.1 기본 동작 테스트</h3>
+<pre><code class="language-cpp">// 테스트 1: 모든 자식 SUCCESS → Sequence SUCCESS
+TEST(SequenceTest, AllChildrenSuccess) {
+    // 3개 자식 모두 SUCCESS로 설정
+    action1-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    action2-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    action3-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    
+    auto result = tree.tickWhileRunning();
+    
+    EXPECT_EQ(result, BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(action1-&gt;tickCount(), 1);
+    EXPECT_EQ(action2-&gt;tickCount(), 1);
+    EXPECT_EQ(action3-&gt;tickCount(), 1);
+}
+
+// 테스트 2: 중간 자식 FAILURE → Sequence FAILURE
+TEST(SequenceTest, MiddleChildFailure) {
+    action1-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    action2-&gt;setReturnStatus(BT::NodeStatus::FAILURE);
+    action3-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    
+    auto result = tree.tickWhileRunning();
+    
+    EXPECT_EQ(result, BT::NodeStatus::FAILURE);
+    EXPECT_EQ(action1-&gt;tickCount(), 1);
+    EXPECT_EQ(action2-&gt;tickCount(), 1);
+    EXPECT_EQ(action3-&gt;tickCount(), 0);  // 실행되지 않음
+}
+</code></pre>
+<h3>3.2 실행 순서 검증</h3>
+<pre><code class="language-cpp">// 테스트 3: 자식 실행 순서의 정확성
+TEST(SequenceTest, ExecutionOrder) {
+    std::vector&lt;std::string&gt; execution_order;
+    
+    action1-&gt;setCallback([&amp;]() { execution_order.push_back("A1"); });
+    action2-&gt;setCallback([&amp;]() { execution_order.push_back("A2"); });
+    action3-&gt;setCallback([&amp;]() { execution_order.push_back("A3"); });
+    
+    tree.tickWhileRunning();
+    
+    ASSERT_EQ(execution_order.size(), 3);
+    EXPECT_EQ(execution_order[0], "A1");
+    EXPECT_EQ(execution_order[1], "A2");
+    EXPECT_EQ(execution_order[2], "A3");
+}
+</code></pre>
+<p>자식 노드의 실행 순서가 XML에서 정의된 순서(좌→우, 상→하)와 일치하는지 검증한다.</p>
+<h3>3.3 경계 조건 테스트</h3>
+<pre><code class="language-cpp">// 테스트 4: 첫 번째 자식 즉시 FAILURE
+TEST(SequenceTest, FirstChildFailure) {
+    action1-&gt;setReturnStatus(BT::NodeStatus::FAILURE);
+    
+    auto result = tree.tickWhileRunning();
+    
+    EXPECT_EQ(result, BT::NodeStatus::FAILURE);
+    EXPECT_EQ(action2-&gt;tickCount(), 0);
+    EXPECT_EQ(action3-&gt;tickCount(), 0);
+}
+
+// 테스트 5: 마지막 자식만 FAILURE
+TEST(SequenceTest, LastChildFailure) {
+    action1-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    action2-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    action3-&gt;setReturnStatus(BT::NodeStatus::FAILURE);
+    
+    auto result = tree.tickWhileRunning();
+    
+    EXPECT_EQ(result, BT::NodeStatus::FAILURE);
+    EXPECT_EQ(action1-&gt;tickCount(), 1);
+    EXPECT_EQ(action2-&gt;tickCount(), 1);
+    EXPECT_EQ(action3-&gt;tickCount(), 1);
+}
+
+// 테스트 6: 단일 자식 Sequence
+TEST(SequenceTest, SingleChild) {
+    // 자식 1개인 Sequence 구성
+    action1-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    auto result = single_child_tree.tickWhileRunning();
+    EXPECT_EQ(result, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h2>4. Fallback 노드의 테스트 전략</h2>
+<h3>4.1 기본 동작 테스트</h3>
+<pre><code class="language-cpp">// 테스트 1: 첫 번째 자식 SUCCESS → Fallback SUCCESS
+TEST(FallbackTest, FirstChildSuccess) {
+    action1-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    
+    auto result = tree.tickWhileRunning();
+    
+    EXPECT_EQ(result, BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(action1-&gt;tickCount(), 1);
+    EXPECT_EQ(action2-&gt;tickCount(), 0);  // 실행되지 않음
+}
+
+// 테스트 2: 모든 자식 FAILURE → Fallback FAILURE
+TEST(FallbackTest, AllChildrenFailure) {
+    action1-&gt;setReturnStatus(BT::NodeStatus::FAILURE);
+    action2-&gt;setReturnStatus(BT::NodeStatus::FAILURE);
+    action3-&gt;setReturnStatus(BT::NodeStatus::FAILURE);
+    
+    auto result = tree.tickWhileRunning();
+    
+    EXPECT_EQ(result, BT::NodeStatus::FAILURE);
+    EXPECT_EQ(action1-&gt;tickCount(), 1);
+    EXPECT_EQ(action2-&gt;tickCount(), 1);
+    EXPECT_EQ(action3-&gt;tickCount(), 1);
+}
+
+// 테스트 3: 중간 자식 SUCCESS → 조기 종료
+TEST(FallbackTest, MiddleChildSuccess) {
+    action1-&gt;setReturnStatus(BT::NodeStatus::FAILURE);
+    action2-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    
+    auto result = tree.tickWhileRunning();
+    
+    EXPECT_EQ(result, BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(action3-&gt;tickCount(), 0);  // 실행되지 않음
+}
+</code></pre>
+<h3>4.2 Sequence와의 대칭성 검증</h3>
+<p>Sequence와 Fallback의 대칭적 관계를 활용하면 테스트 케이스를 체계적으로 도출할 수 있다.</p>
+<table><thead><tr><th>테스트 시나리오</th><th>Sequence 기대 결과</th><th>Fallback 기대 결과</th></tr></thead><tbody>
+<tr><td>모든 자식 SUCCESS</td><td>SUCCESS</td><td>SUCCESS (첫 번째에서 종료)</td></tr>
+<tr><td>모든 자식 FAILURE</td><td>FAILURE (첫 번째에서 종료)</td><td>FAILURE</td></tr>
+<tr><td>첫 FAILURE 후 SUCCESS</td><td>FAILURE</td><td>SUCCESS (두 번째에서 종료)</td></tr>
+<tr><td>첫 SUCCESS 후 FAILURE</td><td>두 번째에서 FAILURE</td><td>SUCCESS (첫 번째에서 종료)</td></tr>
+</tbody></table>
+<h2>5. 테스트 매트릭스의 구성</h2>
+<h3>5.1 변형별 테스트 차원</h3>
+<p>제어 노드의 네 가지 변형에 대해 다음과 같은 테스트 차원을 구성한다:</p>
+<table><thead><tr><th>테스트 차원</th><th>SequenceNode</th><th>ReactiveSequence</th><th>FallbackNode</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>기본 반환 상태</td><td>O</td><td>O</td><td>O</td><td>O</td></tr>
+<tr><td>메모리 동작</td><td>O</td><td>-</td><td>O</td><td>-</td></tr>
+<tr><td>Reactive 재평가</td><td>-</td><td>O</td><td>-</td><td>O</td></tr>
+<tr><td>Halt 전파</td><td>O</td><td>O</td><td>O</td><td>O</td></tr>
+<tr><td>다중 Tick 시나리오</td><td>O</td><td>O</td><td>O</td><td>O</td></tr>
+<tr><td>SKIPPED 상태 처리</td><td>O</td><td>O</td><td>O</td><td>O</td></tr>
+</tbody></table>
+<p><code>O</code>는 해당 테스트가 필요함을, <code>-</code>는 해당 변형에 적용되지 않음을 나타낸다.</p>
+<h3>5.2 자식 수에 따른 테스트</h3>
+<pre><code>자식 0개: 오류 또는 빈 결과 처리 검증
+자식 1개: 경계 조건, 제어 로직의 최소 동작
+자식 2개: 최소 분기 커버리지
+자식 3개: 표준 테스트 (시작-중간-끝 위치별 검증)
+자식 N개: 대규모 트리의 성능 및 정확성
+</code></pre>
+<h2>6. 테스트 격리와 상태 초기화</h2>
+<h3>6.1 테스트 간 독립성 보장</h3>
+<pre><code class="language-cpp">class SequenceTestFixture : public ::testing::Test {
+protected:
+    void SetUp() override {
+        factory_.registerNodeType&lt;MockAction&gt;("MockAction");
+        factory_.registerNodeType&lt;MockAsyncAction&gt;("MockAsyncAction");
+        
+        tree_ = factory_.createTreeFromText(xml_text_);
+        
+        // 모의 노드 참조 획득
+        action1_ = getNodeByName&lt;MockAction&gt;(tree_, "action1");
+        action2_ = getNodeByName&lt;MockAction&gt;(tree_, "action2");
+        action3_ = getNodeByName&lt;MockAction&gt;(tree_, "action3");
+    }
+    
+    void TearDown() override {
+        tree_.haltTree();
+    }
+    
+    BT::BehaviorTreeFactory factory_;
+    BT::Tree tree_;
+    MockAction* action1_;
+    MockAction* action2_;
+    MockAction* action3_;
+};
+</code></pre>
+<p>각 테스트 케이스에서 새로운 트리를 생성하거나, <code>TearDown()</code>에서 <code>haltTree()</code>를 호출하여 모든 노드의 상태를 초기화한다. 이전 테스트의 잔여 상태가 후속 테스트에 영향을 미치는 것을 방지한다.</p>
+<h3>6.2 다중 Tick 테스트의 상태 추적</h3>
+<pre><code class="language-cpp">TEST_F(SequenceTestFixture, MultiTickStateTracking) {
+    // Tick 1: action2가 RUNNING
+    action1_-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    action2_-&gt;setReturnStatus(BT::NodeStatus::RUNNING);
+    
+    auto result1 = tree_.tickOnce();
+    EXPECT_EQ(result1, BT::NodeStatus::RUNNING);
+    
+    // Tick 2: action2가 SUCCESS, action3가 RUNNING
+    action2_-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    action3_-&gt;setReturnStatus(BT::NodeStatus::RUNNING);
+    
+    auto result2 = tree_.tickOnce();
+    EXPECT_EQ(result2, BT::NodeStatus::RUNNING);
+    
+    // Tick 3: action3가 SUCCESS
+    action3_-&gt;setReturnStatus(BT::NodeStatus::SUCCESS);
+    
+    auto result3 = tree_.tickOnce();
+    EXPECT_EQ(result3, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<p>다중 Tick 테스트에서는 각 Tick 사이에 모의 노드의 반환 상태를 변경하여, 제어 노드가 상태 전이에 올바르게 반응하는지 검증한다.</p>
+<h2>7. 테스트 커버리지 기준</h2>
+<h3>7.1 최소 커버리지 요구 사항</h3>
+<ol>
+<li>
+<p><strong>문장 커버리지(Statement Coverage)</strong>: <code>tick()</code> 메서드의 모든 코드 경로가 최소 1회 이상 실행되어야 한다.</p>
+</li>
+<li>
+<p><strong>분기 커버리지(Branch Coverage)</strong>: <code>switch</code> 문의 모든 <code>case</code>와 조건문의 모든 분기가 최소 1회 이상 실행되어야 한다.</p>
+</li>
+<li>
+<p><strong>경계 값 테스트</strong>: 자식 인덱스의 경계(첫 번째, 마지막), 자식 수의 경계(0, 1, N), 상태 전이의 경계(IDLE→RUNNING, RUNNING→SUCCESS/FAILURE) 각각을 검증해야 한다.</p>
+</li>
+<li>
+<p><strong>상태 전이 커버리지</strong>: 노드의 가능한 모든 상태 전이(IDLE→RUNNING→SUCCESS, IDLE→RUNNING→FAILURE, RUNNING에서의 Halt 등)가 테스트되어야 한다.</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

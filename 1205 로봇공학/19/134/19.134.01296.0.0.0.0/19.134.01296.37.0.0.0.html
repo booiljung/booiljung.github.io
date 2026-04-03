@@ -115,6 +115,291 @@
             </header>
             <article>
                 <h1>1296.37 포트의 필수/선택 설정</h1>
+<h2>1. 필수 포트와 선택 포트의 구분</h2>
+<p>BehaviorTree.CPP 라이브러리에서 입력 포트의 필수/선택 구분은 기본값의 유무에 의해 결정된다. 기본값이 없는 입력 포트는 필수 포트(mandatory port)로서 XML 트리 정의에서 반드시 값이 지정되어야 하며, 기본값이 있는 입력 포트는 선택 포트(optional port)로서 XML에서의 지정을 생략할 수 있다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // 필수 포트: 기본값 없음
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+            "goal_pose",
+            "내비게이션 목표 위치"),
+
+        // 선택 포트: 기본값 있음
+        BT::InputPort&lt;double&gt;(
+            "timeout_sec",
+            "30.0",
+            "타임아웃 (초)")
+    };
+}
+</code></pre>
+<p>출력 포트(<code>OutputPort</code>)는 항상 선택적이다. XML에서 출력 포트의 블랙보드 키 매핑을 생략하면, 해당 출력은 블랙보드에 기록되지 않으며 <code>setOutput()</code> 호출이 무시된다(Faconti, 2022).</p>
+<h2>2. 필수 포트의 정의와 동작</h2>
+<h3>2.1 정의</h3>
+<p>필수 포트는 기본값 없이 선언된 입력 포트이다.</p>
+<pre><code class="language-cpp">BT::InputPort&lt;T&gt;(포트명, 설명)
+</code></pre>
+<h3>2.2 getInput() 실패 동작</h3>
+<p>필수 포트가 XML에서 지정되지 않은 경우, <code>getInput()</code> 호출이 실패한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    geometry_msgs::msg::PoseStamped goal;
+    if (!getInput("goal_pose", goal))
+    {
+        // 필수 포트 미지정 → 실패
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "'goal_pose' 입력이 제공되지 않음");
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+</code></pre>
+<h3>2.3 XML 검증</h3>
+<p>BehaviorTree.CPP는 트리의 XML 파싱 단계에서 필수 포트의 지정 여부를 검증할 수 있다. 필수 포트가 미지정된 경우 트리 생성 시 경고 또는 오류가 발생한다.</p>
+<pre><code class="language-xml">&lt;!-- 오류: 필수 포트 goal_pose 미지정 --&gt;
+&lt;NavigateToPose timeout_sec="60.0" /&gt;
+
+&lt;!-- 정상: 필수 포트 지정됨 --&gt;
+&lt;NavigateToPose goal_pose="{target}" timeout_sec="60.0" /&gt;
+</code></pre>
+<h2>3. 선택 포트의 정의와 동작</h2>
+<h3>3.1 정의</h3>
+<p>선택 포트는 기본값과 함께 선언된 입력 포트이다.</p>
+<pre><code class="language-cpp">BT::InputPort&lt;T&gt;(포트명, 기본값_문자열, 설명)
+</code></pre>
+<h3>3.2 기본값 적용 동작</h3>
+<p>선택 포트가 XML에서 지정되지 않은 경우, <code>getInput()</code> 호출 시 기본값이 사용된다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    double timeout;
+    getInput("timeout_sec", timeout);
+    // XML에서 미지정 → timeout = 30.0 (기본값)
+
+    std::string server;
+    getInput("server_name", server);
+    // XML에서 미지정 → server = "navigate_to_pose" (기본값)
+    // ...
+}
+</code></pre>
+<h3>3.3 XML에서의 생략</h3>
+<pre><code class="language-xml">&lt;!-- 선택 포트 생략: 기본값 사용 --&gt;
+&lt;NavigateToPose goal_pose="{target}" /&gt;
+
+&lt;!-- 선택 포트 명시: 지정 값 사용 --&gt;
+&lt;NavigateToPose goal_pose="{target}"
+                 timeout_sec="60.0"
+                 server_name="custom_server" /&gt;
+</code></pre>
+<h2>4. 필수/선택 구분의 설계 기준</h2>
+<p>포트를 필수로 할 것인지 선택으로 할 것인지는 다음의 기준에 의해 판단한다.</p>
+<h3>4.1 필수 포트로 설계하여야 하는 경우</h3>
+<ol>
+<li><strong>범용적 기본값이 존재하지 않는 경우</strong>: 목표 위치, 대상 객체, 경로 데이터 등 임무마다 달라지는 데이터</li>
+<li><strong>기본값 사용이 위험한 경우</strong>: 잘못된 값에 의해 안전 문제가 발생할 수 있는 데이터</li>
+<li><strong>노드의 주된 행동을 정의하는 경우</strong>: 행동의 핵심 파라미터</li>
+</ol>
+<pre><code class="language-cpp">// 필수: 내비게이션 목표 (임무마다 다름)
+BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+    "goal_pose", "내비게이션 목표 위치")
+
+// 필수: 집어올릴 객체 (임무마다 다름)
+BT::InputPort&lt;std::string&gt;(
+    "object_id", "집어올릴 객체 식별자")
+
+// 필수: 추종할 경로 (동적으로 생성됨)
+BT::InputPort&lt;nav_msgs::msg::Path&gt;(
+    "path", "추종할 경로")
+</code></pre>
+<h3>4.2 선택 포트로 설계하여야 하는 경우</h3>
+<ol>
+<li><strong>합리적 기본값이 존재하는 경우</strong>: 타임아웃, 허용 오차, 인터페이스 이름 등</li>
+<li><strong>대부분의 사용 사례에서 동일한 값이 사용되는 경우</strong>: 좌표계 프레임, 서비스 품질 설정 등</li>
+<li><strong>세부 구성(fine-tuning) 파라미터인 경우</strong>: 플러그인 이름, 재시도 횟수 등</li>
+</ol>
+<pre><code class="language-cpp">// 선택: 타임아웃 (합리적 기본값 존재)
+BT::InputPort&lt;double&gt;(
+    "timeout_sec", "30.0", "타임아웃 (초)")
+
+// 선택: 액션 서버 이름 (관례적 기본값 존재)
+BT::InputPort&lt;std::string&gt;(
+    "server_name", "navigate_to_pose", "액션 서버 이름")
+
+// 선택: 좌표계 프레임 (관례적 기본값 존재)
+BT::InputPort&lt;std::string&gt;(
+    "frame_id", "map", "좌표계 프레임")
+
+// 선택: 플러그인 이름 (빈 문자열 = 서버 기본값)
+BT::InputPort&lt;std::string&gt;(
+    "planner_id", "", "경로 계획기 플러그인 이름")
+</code></pre>
+<h2>5. 포트 유형별 필수/선택 특성 요약</h2>
+<table><thead><tr><th>포트 유형</th><th style="text-align: center">기본값 설정</th><th style="text-align: center">필수/선택</th><th style="text-align: center">XML 생략 시 동작</th></tr></thead><tbody>
+<tr><td>InputPort (기본값 없음)</td><td style="text-align: center">불가</td><td style="text-align: center">필수</td><td style="text-align: center">getInput() 실패</td></tr>
+<tr><td>InputPort (기본값 있음)</td><td style="text-align: center">가능</td><td style="text-align: center">선택</td><td style="text-align: center">기본값 사용</td></tr>
+<tr><td>BidirectionalPort (기본값 없음)</td><td style="text-align: center">불가</td><td style="text-align: center">필수</td><td style="text-align: center">getInput() 실패</td></tr>
+<tr><td>BidirectionalPort (기본값 있음)</td><td style="text-align: center">가능</td><td style="text-align: center">선택</td><td style="text-align: center">기본값 사용</td></tr>
+<tr><td>OutputPort</td><td style="text-align: center">해당 없음</td><td style="text-align: center">항상 선택</td><td style="text-align: center">setOutput() 무시</td></tr>
+</tbody></table>
+<h2>6. 코드 내 필수 포트 처리 패턴</h2>
+<h3>6.1 조기 반환 패턴</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    // 필수 입력 검증
+    geometry_msgs::msg::PoseStamped goal;
+    if (!getInput("goal_pose", goal))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "필수 입력 'goal_pose' 누락");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 선택 입력 (기본값 사용)
+    double timeout;
+    getInput("timeout_sec", timeout);  // 기본값 30.0
+
+    // 행동 시작
+    sendGoal(goal, timeout);
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>6.2 Expected 기반 검증 패턴</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    auto goal_result = getInput&lt;
+        geometry_msgs::msg::PoseStamped&gt;("goal_pose");
+
+    if (!goal_result)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "goal_pose: %s", goal_result.error().c_str());
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto goal = goal_result.value();
+    // ...
+}
+</code></pre>
+<h3>6.3 다중 필수 포트 검증 패턴</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    geometry_msgs::msg::PoseStamped start, goal;
+    bool inputs_valid = true;
+
+    if (!getInput("start_pose", start))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "필수 입력 'start_pose' 누락");
+        inputs_valid = false;
+    }
+
+    if (!getInput("goal_pose", goal))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "필수 입력 'goal_pose' 누락");
+        inputs_valid = false;
+    }
+
+    if (!inputs_valid)
+        return BT::NodeStatus::FAILURE;
+
+    // 모든 필수 입력이 유효한 경우
+    computePath(start, goal);
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>7. 실용적 포트 설계 사례</h2>
+<h3>7.1 내비게이션 노드</h3>
+<pre><code class="language-cpp">class NavigateToPose : public BT::StatefulActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            // 필수 입력
+            BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+                "goal",
+                "목표 위치와 자세 (필수)"),
+
+            // 선택 입력
+            BT::InputPort&lt;std::string&gt;(
+                "server_name",
+                "navigate_to_pose",
+                "액션 서버 이름"),
+            BT::InputPort&lt;std::string&gt;(
+                "behavior_tree",
+                "",
+                "사용할 행동 트리 파일"),
+
+            // 선택 출력
+            BT::OutputPort&lt;int&gt;(
+                "error_code",
+                "내비게이션 오류 코드")
+        };
+    }
+    // ...
+};
+</code></pre>
+<pre><code class="language-xml">&lt;!-- 최소 사용: 필수 포트만 지정 --&gt;
+&lt;NavigateToPose goal="{target}" /&gt;
+
+&lt;!-- 완전 사용: 모든 포트 지정 --&gt;
+&lt;NavigateToPose goal="{target}"
+                 server_name="nav2_navigate_to_pose"
+                 behavior_tree="custom_bt.xml"
+                 error_code="{nav_error}" /&gt;
+</code></pre>
+<h3>7.2 센서 처리 노드</h3>
+<pre><code class="language-cpp">class DetectObject : public BT::StatefulActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            // 필수 입력
+            BT::InputPort&lt;std::string&gt;(
+                "object_class",
+                "검출 대상 객체 클래스 (필수)"),
+
+            // 선택 입력
+            BT::InputPort&lt;double&gt;(
+                "confidence_threshold",
+                "0.8",
+                "검출 신뢰도 임계값"),
+            BT::InputPort&lt;std::string&gt;(
+                "camera_topic",
+                "/camera/image_raw",
+                "카메라 토픽 이름"),
+
+            // 선택 출력
+            BT::OutputPort&lt;geometry_msgs::msg::Pose&gt;(
+                "object_pose",
+                "검출된 객체 위치"),
+            BT::OutputPort&lt;double&gt;(
+                "confidence",
+                "검출 신뢰도")
+        };
+    }
+    // ...
+};
+</code></pre>
+<h2>8. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>행동 파라미터는 필수, 구성 파라미터는 선택</strong>: 행동의 목표와 대상을 결정하는 핵심 파라미터는 필수로, 세부 구성을 제어하는 파라미터는 기본값과 함께 선택으로 설계한다.</p>
+</li>
+<li>
+<p><strong>필수 포트의 수 최소화</strong>: 필수 포트가 많으면 XML 정의가 복잡해진다. 합리적 기본값이 가능한 파라미터는 선택으로 전환한다.</p>
+</li>
+<li>
+<p><strong>필수 포트 실패의 명시적 처리</strong>: 코드 내에서 모든 필수 포트의 <code>getInput()</code> 반환값을 검사하고, 실패 시 구체적 오류 메시지와 함께 FAILURE를 반환한다.</p>
+</li>
+<li>
+<p><strong>출력 포트는 항상 선택적</strong>: 출력 포트의 XML 매핑이 생략될 수 있음을 전제하고, <code>setOutput()</code> 호출이 매핑 여부에 무관하게 안전하게 동작하도록 한다.</p>
+</li>
+<li>
+<p><strong>필수/선택의 문서화</strong>: 포트의 설명에 필수 여부를 명시하여, XML 작성자가 어떤 포트를 반드시 지정하여야 하는지 쉽게 파악할 수 있게 한다(Faconti, 2022).</p>
+</li>
+</ol>
 
             </article>
             <footer>

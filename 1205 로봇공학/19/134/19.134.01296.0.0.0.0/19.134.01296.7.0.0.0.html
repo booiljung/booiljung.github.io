@@ -115,6 +115,83 @@
             </header>
             <article>
                 <h1>1296.7 동기 액션 노드의 즉시 반환 특성</h1>
+<h2>1. 즉시 반환의 정의</h2>
+<p>동기 액션 노드(<code>SyncActionNode</code>)의 “즉시 반환(immediate return)” 특성이란, <code>tick()</code> 메서드가 호출되면 행동을 완료하고 SUCCESS 또는 FAILURE를 반환한 후 제어를 즉시 부모 노드에 반환하는 것을 의미한다. 중간에 RUNNING 상태로 실행을 유보하지 않으며, <code>tick()</code> 호출과 반환 사이에 다른 노드가 Tick될 기회가 없다.</p>
+<h2>2. 즉시 반환의 동작 모델</h2>
+<p>동기 액션 노드의 실행 흐름을 시간 축에서 도식화하면 다음과 같다.</p>
+<pre><code>시간 →
+─────────────────────────────────────────
+  부모 Tick   │  SyncAction tick()  │  부모에 결과 반환
+              │←  실행 시간 (~μs)  →│
+─────────────────────────────────────────
+</code></pre>
+<p>비동기 액션 노드와 비교하면 차이가 명확하다.</p>
+<pre><code>시간 →
+─────────────────────────────────────────────────────────
+Tick 1:  부모 Tick  │ StatefulAction onStart() │ RUNNING 반환
+Tick 2:  부모 Tick  │ StatefulAction onRunning()│ RUNNING 반환
+Tick 3:  부모 Tick  │ StatefulAction onRunning()│ SUCCESS 반환
+─────────────────────────────────────────────────────────
+</code></pre>
+<p>동기 액션은 단일 Tick에서 시작과 완료가 동시에 이루어지며, 비동기 액션은 다수의 Tick에 걸쳐 진행된다.</p>
+<h2>3. 즉시 반환이 트리 실행에 미치는 영향</h2>
+<h3>3.1 Sequence에서의 즉시 진행</h3>
+<p>Sequence의 자식으로 SyncActionNode가 배치되면, 해당 자식이 SUCCESS를 반환하는 즉시 다음 자식으로 진행한다. 이는 동일 Tick 내에서 다수의 SyncActionNode가 순차적으로 실행될 수 있음을 의미한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;SetSpeed value="0.5"/&gt;         &lt;!-- SyncAction: 즉시 SUCCESS --&gt;
+    &lt;SetNavigationMode mode="fast"/&gt;&lt;!-- SyncAction: 즉시 SUCCESS --&gt;
+    &lt;NavigateToGoal goal="{target}"/&gt;&lt;!-- StatefulAction: RUNNING --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이 Sequence에서 첫 번째 Tick 시 <code>SetSpeed</code>와 <code>SetNavigationMode</code>가 동일 Tick 내에서 순차적으로 실행되고, <code>NavigateToGoal</code>이 RUNNING을 반환하면 Sequence도 RUNNING을 반환한다. 두 SyncActionNode는 각각 별도의 Tick을 소비하지 않는다.</p>
+<h3>3.2 Fallback에서의 즉시 진행</h3>
+<p>Fallback에서 SyncActionNode가 FAILURE를 반환하면 동일 Tick 내에서 다음 자식으로 진행한다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;TryPlanA/&gt;  &lt;!-- SyncAction: FAILURE → 즉시 다음으로 --&gt;
+    &lt;TryPlanB/&gt;  &lt;!-- SyncAction: SUCCESS → Fallback SUCCESS --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h3>3.3 Parallel에서의 동작</h3>
+<p>Parallel 노드에서 SyncActionNode는 매 Tick에서 재실행된다. 이미 SUCCESS를 반환한 경우라도, Parallel의 구현에 따라 다시 Tick될 수 있다.</p>
+<h2>4. 즉시 반환의 성능적 함의</h2>
+<h3>4.1 단일 Tick 내 다중 실행</h3>
+<p>SyncActionNode의 즉시 반환 특성은 단일 Tick 내에서 다수의 경량 작업을 연속으로 수행할 수 있음을 의미한다. 이는 초기화, 설정, 전처리 등의 작업을 별도의 Tick 오버헤드 없이 수행할 수 있는 장점을 제공한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 이하 3개의 SyncAction이 동일 Tick에서 실행 --&gt;
+    &lt;ClearCostmap service="global_costmap/clear"/&gt;
+    &lt;UpdateGoal goal="{new_goal}"/&gt;
+    &lt;LogMessage message="Starting navigation"/&gt;
+    &lt;!-- 이 행동부터 별도 Tick --&gt;
+    &lt;NavigateToGoal goal="{new_goal}"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>4.2 Tick 시간에 대한 누적 영향</h3>
+<p>다수의 SyncActionNode가 동일 Tick에서 실행되면, 각 노드의 실행 시간이 누적되어 전체 Tick 시간에 영향을 미친다. 개별 SyncActionNode의 실행 시간이 수 마이크로초이면 수십 개가 누적되어도 문제가 되지 않으나, 개별 실행 시간이 수백 마이크로초 이상이면 누적 영향을 고려하여야 한다.</p>
+<p><span class="math math-display">T_{\text{tick}} \geq \sum_{i=1}^{k} T_{\text{sync}_i} + T_{\text{async}}</span></p>
+<p>여기서 <span class="math math-inline">k</span>는 동일 Tick에서 실행되는 SyncActionNode의 수이다.</p>
+<h2>즉시 반환과 부작용</h2>
+<p>SyncActionNode의 즉시 반환은 부작용(side effect)이 즉시 발생함을 의미한다. 예를 들어, 토픽 발행 SyncActionNode가 SUCCESS를 반환하면 해당 메시지가 이미 발행된 상태이다. 이는 Sequence의 후속 자식이 실패하여 전체 Sequence가 FAILURE를 반환하더라도, 이미 발행된 메시지를 취소할 수 없다는 것을 의미한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;PublishStartSignal/&gt;  &lt;!-- 즉시 발행: 취소 불가 --&gt;
+    &lt;NavigateToGoal/&gt;      &lt;!-- 실패 시: 시작 신호는 이미 발행됨 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이러한 비가역적 부작용을 가진 SyncActionNode는 Sequence에서의 배치 위치를 신중히 결정하여야 한다. 가능하면 부작용이 큰 작업을 후반에 배치하거나, 실패 시 보상(compensation) 행동을 Fallback으로 구성한다.</p>
+<h2>RUNNING 반환 금지의 강제</h2>
+<p>BehaviorTree.CPP는 SyncActionNode가 RUNNING을 반환하는 것을 컴파일 타임이 아닌 런타임에서 검출한다. <code>executeTick()</code> 내부에서 반환값을 검사하고, RUNNING이면 <code>LogicError</code> 예외를 발생시킨다.</p>
+<pre><code class="language-cpp">NodeStatus SyncActionNode::executeTick()
+{
+    auto status = ActionNodeBase::executeTick();
+    if (status == NodeStatus::RUNNING)
+    {
+        throw LogicError(
+            "SyncActionNode::executeTick() must not return RUNNING. "
+            "Did you forget to use StatefulActionNode?");
+    }
+    return status;
+}
+</code></pre>
+<p>이 예외 메시지는 개발자에게 <code>StatefulActionNode</code>로의 전환을 안내한다. SyncActionNode에서 비동기 작업이 필요한 경우 <code>StatefulActionNode</code>를 선택하여야 한다.</p>
 
             </article>
             <footer>

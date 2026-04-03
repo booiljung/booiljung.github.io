@@ -115,6 +115,158 @@
             </header>
             <article>
                 <h1>1294.18 SequenceWithMemory의 의사 코드</h1>
+<h2>1. 표준 의사 코드</h2>
+<p>SequenceWithMemory의 동작을 형식적으로 기술하는 의사 코드를 제시한다. 이 의사 코드는 BehaviorTree.CPP v4의 <code>SequenceNode</code> 구현에 대응하며, <code>current_index</code> 상태 변수에 의한 재진입 메커니즘을 명확히 표현한다(Colledanchise &amp; Ogren, 2018).</p>
+<pre><code>Algorithm SequenceWithMemory
+
+State Variables:
+    current_index : integer ← 0     // 다음 Tick에서 시작할 자식 인덱스
+    children[0..N-1] : TreeNode[]    // 자식 노드 배열
+
+function tick() → NodeStatus:
+    i ← current_index
+    
+    while i &lt; N do
+        child_status ← children[i].executeTick()
+        
+        switch child_status:
+            case SUCCESS:
+                i ← i + 1                   // 다음 자식으로 진행
+                
+            case RUNNING:
+                current_index ← i           // 현재 인덱스 기억
+                return RUNNING
+                
+            case FAILURE:
+                resetAllChildren()           // 모든 자식을 IDLE로
+                current_index ← 0           // 인덱스 초기화
+                return FAILURE
+    end while
+    
+    // 모든 자식이 SUCCESS를 반환함
+    resetAllChildren()
+    current_index ← 0
+    return SUCCESS
+
+function halt():
+    current_index ← 0
+    haltAllRunningChildren()
+    setStatus(IDLE)
+</code></pre>
+<h2>2. C++ 구현에 대응하는 의사 코드</h2>
+<p>BehaviorTree.CPP v4의 실제 구현을 반영한 보다 상세한 의사 코드이다. SKIPPED 상태와 초기 진입 시의 처리를 포함한다(Faconti, 2022).</p>
+<pre><code>Algorithm SequenceWithMemory_v4
+
+State Variables:
+    current_index : integer ← 0
+    skipped_count : integer ← 0
+    children[0..N-1] : TreeNode[]
+
+function tick() → NodeStatus:
+    // 최초 진입 시 초기화
+    if status() = IDLE then
+        current_index ← 0
+        skipped_count ← 0
+    end if
+    
+    setStatus(RUNNING)
+    
+    while current_index &lt; N do
+        child_status ← children[current_index].executeTick()
+        
+        switch child_status:
+            case SUCCESS:
+                current_index ← current_index + 1
+                
+            case RUNNING:
+                return RUNNING
+                
+            case FAILURE:
+                resetAllChildren()
+                current_index ← 0
+                return FAILURE
+                
+            case SKIPPED:
+                skipped_count ← skipped_count + 1
+                current_index ← current_index + 1
+                
+            case IDLE:
+                throw LogicError("Child returned IDLE")
+    end while
+    
+    // 모든 자식 처리 완료
+    if skipped_count = N then
+        resetAllChildren()
+        current_index ← 0
+        return SKIPPED
+    end if
+    
+    resetAllChildren()
+    current_index ← 0
+    return SUCCESS
+</code></pre>
+<h2>3. 보조 함수의 정의</h2>
+<pre><code>function resetAllChildren():
+    for i ← 0 to N-1 do
+        if children[i].status() ≠ IDLE then
+            children[i].halt()
+        end if
+    end for
+
+function haltAllRunningChildren():
+    for i ← 0 to N-1 do
+        if children[i].status() = RUNNING then
+            children[i].halt()
+        end if
+    end for
+</code></pre>
+<h2>4. 의사 코드의 실행 추적</h2>
+<h3>4.1 정상 완료 시나리오</h3>
+<pre><code>초기 상태: current_index = 0, children = [CondA, ActB, ActC]
+
+Tick 1:
+  i=0: CondA.tick() → SUCCESS, current_index=1
+  i=1: ActB.tick() → RUNNING
+  return RUNNING  (current_index = 1)
+
+Tick 2:
+  i=1: ActB.tick() → SUCCESS, current_index=2
+  i=2: ActC.tick() → RUNNING
+  return RUNNING  (current_index = 2)
+
+Tick 3:
+  i=2: ActC.tick() → SUCCESS, current_index=3
+  루프 종료 → resetAllChildren(), current_index=0
+  return SUCCESS
+</code></pre>
+<h3>4.2 FAILURE 시나리오</h3>
+<pre><code>초기 상태: current_index = 0
+
+Tick 1:
+  i=0: CondA.tick() → SUCCESS, current_index=1
+  i=1: ActB.tick() → RUNNING
+  return RUNNING  (current_index = 1)
+
+Tick 2:
+  i=1: ActB.tick() → FAILURE
+  resetAllChildren(), current_index=0
+  return FAILURE
+</code></pre>
+<h2>5. 의사 코드와 실제 구현의 관계</h2>
+<table><thead><tr><th>의사 코드 요소</th><th>BehaviorTree.CPP v4 대응</th></tr></thead><tbody>
+<tr><td><code>current_index</code></td><td><code>current_child_idx_</code> 멤버 변수</td></tr>
+<tr><td><code>children[i].executeTick()</code></td><td><code>children_nodes_[i]-&gt;executeTick()</code></td></tr>
+<tr><td><code>resetAllChildren()</code></td><td><code>resetChildren()</code> 메서드</td></tr>
+<tr><td><code>setStatus(RUNNING)</code></td><td><code>setStatus(NodeStatus::RUNNING)</code></td></tr>
+<tr><td><code>SKIPPED</code> 처리</td><td>v4에서 추가된 상태, 조건부 실행 지원</td></tr>
+</tbody></table>
+<p>의사 코드는 알고리즘의 논리적 구조를 명확히 전달하는 것을 목적으로 하며, 실제 구현에서의 메모리 관리, 예외 처리, 스레드 안전성 등의 세부 사항은 생략되어 있다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

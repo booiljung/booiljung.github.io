@@ -115,6 +115,156 @@
             </header>
             <article>
                 <h1>1294.52 세 가지 Fallback 변형의 동작 차이 사례</h1>
+<h2>1. 사례의 목적</h2>
+<p>동일한 행동 트리 구조에 대해 FallbackWithMemory와 ReactiveFallback이 각각 어떻게 다른 동작을 생성하는지를 구체적 시나리오를 통해 비교한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 사례 1: 우선 대안 가용성 변화 감지</h2>
+<h3>2.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Fallback변형&gt;
+    &lt;Condition ID="IsPrimaryPathClear"/&gt;
+    &lt;Action ID="UseDetourPath"/&gt;
+&lt;/Fallback변형&gt;
+</code></pre>
+<h3>2.2 환경 변화 시나리오</h3>
+<p>Tick 1에서 주 경로가 막혀 있고, Tick 3에서 주 경로가 정리된다. UseDetourPath는 5 Tick이 소요되는 비동기 액션이다.</p>
+<h3>2.3 FallbackWithMemory의 동작</h3>
+<pre><code>Tick 1: IsPrimaryPathClear→F, UseDetourPath→R (idx=1)
+Tick 2: UseDetourPath→R                       (주 경로 확인 안 함)
+Tick 3: UseDetourPath→R                       (주 경로 정리됐지만 미감지)
+Tick 4: UseDetourPath→R                       (불필요한 우회 계속)
+Tick 5: UseDetourPath→S                       (우회 완료)
+        → SUCCESS
+</code></pre>
+<p>로봇은 주 경로가 Tick 3에서 정리되었음에도 불구하고 Tick 5까지 우회 경로를 계속 사용한다.</p>
+<h3>2.4 ReactiveFallback의 동작</h3>
+<pre><code>Tick 1: IsPrimaryPathClear→F, UseDetourPath→R
+Tick 2: IsPrimaryPathClear→F, UseDetourPath→R
+Tick 3: IsPrimaryPathClear→S                  (주 경로 정리 즉시 감지)
+        UseDetourPath→Halt                    (우회 즉시 중단)
+        → SUCCESS
+</code></pre>
+<p>주 경로가 정리되는 즉시 우회가 중단되어, 불필요한 이동이 방지된다.</p>
+<h2>3. 사례 2: 목표 달성 상태의 외부 변화 감지</h2>
+<h3>3.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Fallback변형&gt;
+    &lt;Condition ID="IsObjectGrasped"/&gt;
+    &lt;Action ID="GraspObject"/&gt;
+&lt;/Fallback변형&gt;
+</code></pre>
+<h3>3.2 환경 시나리오</h3>
+<p>로봇이 물체를 파지하려는 동안(Tick 3), 다른 로봇이 해당 물체를 이미 파지하여 목표 상태가 외부적으로 충족된다.</p>
+<h3>3.3 FallbackWithMemory의 동작</h3>
+<pre><code>Tick 1: IsObjectGrasped→F, GraspObject→R (idx=1)
+Tick 2: GraspObject→R                    (상태 확인 안 함)
+Tick 3: GraspObject→R                    (외부 변화 미감지, 파지 계속 시도)
+Tick 4: GraspObject→F                    (이미 다른 로봇이 가져감)
+        → FAILURE
+</code></pre>
+<p>물체가 이미 다른 로봇에 의해 파지되었음에도 파지 시도를 계속하다가 최종 실패한다.</p>
+<h3>3.4 ReactiveFallback의 동작</h3>
+<pre><code>Tick 1: IsObjectGrasped→F, GraspObject→R
+Tick 2: IsObjectGrasped→F, GraspObject→R
+Tick 3: IsObjectGrasped→S                (외부 변화 즉시 감지)
+        GraspObject→Halt                 (파지 시도 중단)
+        → SUCCESS
+</code></pre>
+<p>물체가 이미 파지된 상태임을 즉시 감지하여 불필요한 파지 시도를 중단한다.</p>
+<h2>4. 사례 3: 부수 효과가 있는 대안의 재시도</h2>
+<h3>4.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Fallback변형&gt;
+    &lt;Action ID="SendAlertAndTryPrimary"/&gt;
+    &lt;Action ID="UseBackup"/&gt;
+&lt;/Fallback변형&gt;
+</code></pre>
+<h3>4.2 환경 시나리오</h3>
+<p>SendAlertAndTryPrimary는 동기 액션으로 FAILURE를 반환하며, 서버에 경고 알림을 전송하는 부수 효과를 가진다. UseBackup은 3 Tick이 소요되는 비동기 액션이다.</p>
+<h3>4.3 FallbackWithMemory의 동작</h3>
+<pre><code>Tick 1: SendAlertAndTryPrimary→F (알림 1회 전송), UseBackup→R (idx=1)
+Tick 2: UseBackup→R              (SendAlert 건너뜀)
+Tick 3: UseBackup→S              (완료)
+        → SUCCESS
+
+결과: 알림 1회 전송 (의도된 동작)
+</code></pre>
+<h3>4.4 ReactiveFallback의 동작</h3>
+<pre><code>Tick 1: SendAlertAndTryPrimary→F (알림 전송), UseBackup→R
+Tick 2: SendAlertAndTryPrimary→F (알림 재전송!), UseBackup→R
+Tick 3: SendAlertAndTryPrimary→F (알림 재전송!), UseBackup→S
+        → SUCCESS
+
+결과: 알림 3회 전송 (의도하지 않은 부수 효과)
+</code></pre>
+<p>ReactiveFallback에서 부수 효과가 있는 액션을 앞쪽에 배치하면, 매 Tick마다 부수 효과가 반복 발생한다.</p>
+<h2>5. 사례 4: 다중 대안의 순차 이동</h2>
+<h3>5.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Fallback변형&gt;
+    &lt;Action ID="AsyncMethodA"/&gt;
+    &lt;Action ID="AsyncMethodB"/&gt;
+    &lt;Action ID="SyncMethodC"/&gt;
+&lt;/Fallback변형&gt;
+</code></pre>
+<h3>5.2 환경 시나리오</h3>
+<p>AsyncMethodA는 2 Tick 후 FAILURE, AsyncMethodB는 3 Tick 후 SUCCESS를 반환한다.</p>
+<h3>5.3 FallbackWithMemory의 동작</h3>
+<pre><code>Tick 1: AsyncMethodA→R (idx=0)
+Tick 2: AsyncMethodA→F, AsyncMethodB→R (idx=1)
+Tick 3: AsyncMethodB→R                 (AsyncMethodA 건너뜀)
+Tick 4: AsyncMethodB→S
+        → SUCCESS
+
+총 Tick: 4, 총 노드 방문: 1+2+1+1 = 5
+</code></pre>
+<h3>5.4 ReactiveFallback의 동작</h3>
+<pre><code>Tick 1: AsyncMethodA→R
+Tick 2: AsyncMethodA→F, AsyncMethodB→R
+Tick 3: AsyncMethodA→R (재시작!), haltChild(AsyncMethodB)
+        → RUNNING (AsyncMethodA가 다시 RUNNING)
+Tick 4: AsyncMethodA→F, AsyncMethodB→R (AsyncMethodB도 재시작!)
+...
+</code></pre>
+<p>ReactiveFallback에서 앞쪽에 비동기 액션을 배치하면, 해당 액션이 매 Tick 재실행되어 뒤쪽 대안의 진행이 방해받을 수 있다. 이 사례는 ReactiveFallback에서 앞쪽에 액션 노드를 배치하는 것이 위험한 이유를 보여준다.</p>
+<h2>6. 사례 5: Halt 후 재시작</h2>
+<h3>6.1 트리 구조</h3>
+<pre><code class="language-xml">&lt;Fallback변형&gt;
+    &lt;Condition ID="IsServiceOnline"/&gt;
+    &lt;Action ID="UseOfflineMode"/&gt;
+&lt;/Fallback변형&gt;
+</code></pre>
+<h3>6.2 환경 시나리오</h3>
+<p>Tick 3에서 서비스가 복구되고(SUCCESS), Tick 5에서 다시 중단된다(FAILURE).</p>
+<h3>6.3 FallbackWithMemory의 동작</h3>
+<pre><code>Tick 1: IsServiceOnline→F, UseOfflineMode→R (idx=1)
+Tick 2: UseOfflineMode→R                    (서비스 상태 확인 안 함)
+Tick 3: UseOfflineMode→R                    (서비스 복구 미감지)
+Tick 4: UseOfflineMode→R
+Tick 5: UseOfflineMode→S
+        → SUCCESS
+</code></pre>
+<h3>6.4 ReactiveFallback의 동작</h3>
+<pre><code>Tick 1: IsServiceOnline→F, UseOfflineMode→R
+Tick 2: IsServiceOnline→F, UseOfflineMode→R
+Tick 3: IsServiceOnline→S                   (서비스 복구 감지)
+        UseOfflineMode→Halt                 (오프라인 모드 중단)
+        → SUCCESS
+Tick 4: (상위 노드가 다시 Tick 전달 시)
+        IsServiceOnline→S
+        → SUCCESS
+Tick 5: IsServiceOnline→F, UseOfflineMode→R (서비스 재중단 → 오프라인 재시작)
+</code></pre>
+<p>ReactiveFallback에서는 서비스 상태 변화에 즉각적으로 반응한다.</p>
+<h2>7. 동작 차이 요약</h2>
+<table><thead><tr><th>사례</th><th>FallbackWithMemory</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>우선 대안 가용성 변화</td><td>미감지 (비효율)</td><td>즉시 감지 (효율적)</td></tr>
+<tr><td>외부 목표 달성</td><td>미감지 (불필요한 작업)</td><td>즉시 감지 (즉시 중단)</td></tr>
+<tr><td>부수 효과 액션</td><td>1회 실행 (안전)</td><td>매 Tick 재실행 (위험)</td></tr>
+<tr><td>비동기 액션 순차 이동</td><td>안정적 진행</td><td>앞쪽 재시작 위험</td></tr>
+<tr><td>Halt 후 재시작</td><td>해당 없음</td><td>자연스러운 전환</td></tr>
+</tbody></table>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

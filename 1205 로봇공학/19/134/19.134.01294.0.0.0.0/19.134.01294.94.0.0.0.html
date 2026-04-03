@@ -115,6 +115,306 @@
             </header>
             <article>
                 <h1>1294.94 Halt 동작 검증 테스트</h1>
+<h2>1. Halt 검증의 범위</h2>
+<p>Halt 동작 검증 테스트는 제어 노드가 정지될 때 발생하는 일련의 상태 전이와 자원 해제를 검증한다. 검증 대상은 다음과 같다: 부모로부터의 Halt 전파가 RUNNING 자식에게 정확히 도달하는지, Halt 이후 제어 노드의 내부 상태가 올바르게 초기화되는지, 자식 노드의 <code>onHalted()</code> 콜백이 적시에 호출되는지, 그리고 Halt 이후 재실행 시 깨끗한 상태에서 시작하는지이다(Faconti, 2022).</p>
+<h2>2. 기본 Halt 전파 검증</h2>
+<h3>2.1 SequenceNode의 Halt 전파</h3>
+<pre><code class="language-cpp">TEST(SequenceHalt, PropagatesHaltToRunningChild) {
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // action2가 RUNNING 상태
+    EXPECT_EQ(seq.executeTick(), BT::NodeStatus::RUNNING);
+    EXPECT_EQ(asyncAction2-&gt;status(), BT::NodeStatus::RUNNING);
+    
+    // Sequence에 Halt 호출
+    seq.halt();
+    
+    // 검증: asyncAction2의 onHalted() 호출
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 1);
+    // 검증: 모든 노드가 IDLE로 전환
+    EXPECT_EQ(seq.status(), BT::NodeStatus::IDLE);
+    EXPECT_EQ(action1-&gt;status(), BT::NodeStatus::IDLE);
+    EXPECT_EQ(asyncAction2-&gt;status(), BT::NodeStatus::IDLE);
+}
+</code></pre>
+<h3>2.2 FallbackNode의 Halt 전파</h3>
+<pre><code class="language-cpp">TEST(FallbackHalt, PropagatesHaltToRunningChild) {
+    action1-&gt;setReturn(BT::NodeStatus::FAILURE);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    EXPECT_EQ(fb.executeTick(), BT::NodeStatus::RUNNING);
+    
+    fb.halt();
+    
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 1);
+    EXPECT_EQ(fb.status(), BT::NodeStatus::IDLE);
+    EXPECT_EQ(asyncAction2-&gt;status(), BT::NodeStatus::IDLE);
+}
+</code></pre>
+<h3>2.3 비 RUNNING 자식에 대한 Halt 미전파</h3>
+<pre><code class="language-cpp">TEST(SequenceHalt, DoesNotHaltIdleChildren) {
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    seq.executeTick();  // action1: IDLE(완료), action2: RUNNING, action3: IDLE(미실행)
+    
+    seq.halt();
+    
+    // action3는 IDLE 상태이므로 halt가 호출되지 않음
+    EXPECT_EQ(asyncAction3-&gt;haltCount(), 0);
+    // action1도 이미 완료되어 IDLE이므로 halt 불필요
+}
+</code></pre>
+<p><code>ControlNode::halt()</code>는 RUNNING 상태인 자식에 대해서만 Halt를 호출한다. IDLE 상태인 자식에 대해서는 Halt를 호출하지 않는다.</p>
+<h2>3. 인덱스 초기화 검증</h2>
+<h3>3.1 SequenceNode의 current_child_idx_ 초기화</h3>
+<pre><code class="language-cpp">TEST(SequenceHalt, ResetsChildIndex) {
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: idx=1 (action2에서 RUNNING)
+    seq.executeTick();
+    
+    // Halt: idx가 0으로 초기화
+    seq.halt();
+    
+    // 재실행: action1부터 시작해야 함
+    action1-&gt;resetTickCount();
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::SUCCESS);
+    action3-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    
+    seq.executeTick();
+    EXPECT_EQ(action1-&gt;tickCount(), 1);  // action1 재실행 확인
+}
+</code></pre>
+<h3>3.2 FallbackNode의 current_child_idx_ 초기화</h3>
+<pre><code class="language-cpp">TEST(FallbackHalt, ResetsChildIndex) {
+    action1-&gt;setReturn(BT::NodeStatus::FAILURE);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    fb.executeTick();  // idx=1
+    fb.halt();         // idx=0
+    
+    action1-&gt;resetTickCount();
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    
+    fb.executeTick();
+    EXPECT_EQ(action1-&gt;tickCount(), 1);  // action1부터 재시작
+}
+</code></pre>
+<h2>4. ReactiveSequence의 Halt 검증</h2>
+<h3>4.1 조건 FAILURE에 의한 자동 Halt</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequenceHalt, ConditionFailureTriggerHalt) {
+    condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: condition S, action R → RUNNING
+    rseq.executeTick();
+    EXPECT_EQ(asyncAction-&gt;haltCount(), 0);
+    
+    // Tick 2: condition F → FAILURE (action 자동 Halt)
+    condition-&gt;setReturn(BT::NodeStatus::FAILURE);
+    rseq.executeTick();
+    
+    // resetChildren()에 의해 action Halt
+    EXPECT_EQ(asyncAction-&gt;haltCount(), 1);
+}
+</code></pre>
+<p>ReactiveSequence에서 앞쪽 조건이 FAILURE를 반환하면, <code>resetChildren()</code>에 의해 RUNNING이었던 뒤쪽 행동 노드가 Halt된다.</p>
+<h3>4.2 RUNNING 자식 이후 자식의 선택적 Halt</h3>
+<pre><code class="language-cpp">TEST(ReactiveSequenceHalt, HaltsOnlyAfterRunning) {
+    condition-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: condition S, action1 S, action2 R → RUNNING
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::SUCCESS);
+    rseq.executeTick();
+    
+    // Tick 2: condition S, action1 R → RUNNING
+    // action2는 haltChild()에 의해 Halt
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    rseq.executeTick();
+    
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 1);  // action2 Halt
+}
+</code></pre>
+<p>ReactiveSequence의 <code>tick()</code> 구현에서 RUNNING을 반환한 자식 이후의 모든 자식에 대해 <code>haltChild()</code>가 호출된다.</p>
+<h2>5. ReactiveFallback의 Halt 검증</h2>
+<h3>5.1 상위 대안 SUCCESS에 의한 Halt</h3>
+<pre><code class="language-cpp">TEST(ReactiveFallbackHalt, SuccessTriggerHalt) {
+    action1-&gt;setReturn(BT::NodeStatus::FAILURE);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: action1 F, action2 R → RUNNING
+    rfb.executeTick();
+    
+    // Tick 2: action1 S → SUCCESS (action2 Halt)
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    rfb.executeTick();
+    
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 1);
+}
+</code></pre>
+<h3>5.2 상위 RUNNING에 의한 하위 Halt</h3>
+<pre><code class="language-cpp">TEST(ReactiveFallbackHalt, RunningTriggerHaltOfLater) {
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::FAILURE);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // Tick 1: action1 F, action2 R → RUNNING
+    rfb.executeTick();
+    
+    // Tick 2: action1 R → RUNNING (action2 Halt)
+    asyncAction1-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    rfb.executeTick();
+    
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 1);
+}
+</code></pre>
+<p>ReactiveFallback에서 상위 대안이 RUNNING을 반환하면, 하위 RUNNING 대안이 <code>haltChild()</code>에 의해 정지된다.</p>
+<h2>6. 중첩 트리에서의 Halt 전파 검증</h2>
+<h3>6.1 Sequence 내 Fallback의 Halt 전파</h3>
+<pre><code class="language-cpp">TEST(NestedHalt, SequenceHaltPropagatesThrough Fallback) {
+    // Sequence → Fallback → asyncAction
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    fallbackAction1-&gt;setReturn(BT::NodeStatus::FAILURE);
+    asyncFallbackAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // asyncFallbackAction2가 RUNNING
+    seq.executeTick();
+    EXPECT_EQ(seq.status(), BT::NodeStatus::RUNNING);
+    
+    // Sequence Halt → Fallback Halt → asyncFallbackAction2 Halt
+    seq.halt();
+    
+    EXPECT_EQ(asyncFallbackAction2-&gt;haltCount(), 1);
+    EXPECT_EQ(asyncFallbackAction2-&gt;status(), BT::NodeStatus::IDLE);
+}
+</code></pre>
+<h3>6.2 다단계 중첩의 Halt 전파</h3>
+<pre><code class="language-cpp">TEST(NestedHalt, DeepNestingHaltPropagation) {
+    // outerSeq → innerFb → innerSeq → asyncAction
+    // asyncAction이 RUNNING 상태에서 outerSeq Halt
+    
+    outerSeq.executeTick();
+    EXPECT_EQ(asyncAction-&gt;status(), BT::NodeStatus::RUNNING);
+    
+    outerSeq.halt();
+    
+    // 3단계를 거쳐 asyncAction까지 Halt 전파
+    EXPECT_EQ(asyncAction-&gt;haltCount(), 1);
+    EXPECT_EQ(innerSeq.status(), BT::NodeStatus::IDLE);
+    EXPECT_EQ(innerFb.status(), BT::NodeStatus::IDLE);
+    EXPECT_EQ(outerSeq.status(), BT::NodeStatus::IDLE);
+}
+</code></pre>
+<p>Halt 전파는 트리의 깊이에 관계없이 RUNNING 상태인 모든 노드에 도달해야 한다.</p>
+<h2>7. Halt 후 재실행 검증</h2>
+<h3>7.1 깨끗한 상태에서의 재시작</h3>
+<pre><code class="language-cpp">TEST(HaltAndRestart, CleanRestart) {
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    
+    // 첫 번째 실행 사이클
+    seq.executeTick();
+    seq.halt();
+    
+    // 모든 상태 초기화 확인
+    EXPECT_EQ(seq.status(), BT::NodeStatus::IDLE);
+    
+    // 두 번째 실행 사이클: 처음부터 시작
+    action1-&gt;resetTickCount();
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::SUCCESS);
+    action3-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    
+    auto result = seq.executeTick();
+    EXPECT_EQ(result, BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(action1-&gt;tickCount(), 1);  // action1 재실행
+}
+</code></pre>
+<h3>7.2 반복 Halt-재실행 안정성</h3>
+<pre><code class="language-cpp">TEST(HaltAndRestart, RepeatedHaltRestart) {
+    for (int cycle = 0; cycle &lt; 10; cycle++) {
+        action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+        asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+        
+        EXPECT_EQ(seq.executeTick(), BT::NodeStatus::RUNNING);
+        
+        seq.halt();
+        EXPECT_EQ(seq.status(), BT::NodeStatus::IDLE);
+    }
+    
+    // 10회 반복 후에도 정상 동작
+    EXPECT_EQ(asyncAction2-&gt;haltCount(), 10);
+    
+    // 최종 정상 실행
+    action1-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    asyncAction2-&gt;setReturnOnStart(BT::NodeStatus::SUCCESS);
+    action3-&gt;setReturn(BT::NodeStatus::SUCCESS);
+    
+    EXPECT_EQ(seq.executeTick(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<p>반복적인 Halt-재실행 사이클 이후에도 내부 상태 누적이나 리소스 누수 없이 정상 동작하는지 검증한다.</p>
+<h2>8. onHalted() 콜백의 검증</h2>
+<h3>8.1 콜백 호출 타이밍</h3>
+<pre><code class="language-cpp">TEST(OnHaltedCallback, CalledBeforeStatusChange) {
+    BT::NodeStatus status_during_halt = BT::NodeStatus::IDLE;
+    
+    asyncAction-&gt;setOnHaltedCallback([&amp;]() {
+        status_during_halt = asyncAction-&gt;status();
+    });
+    
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    seq.executeTick();
+    
+    seq.halt();
+    
+    // onHalted()가 호출될 때 노드는 아직 RUNNING 상태
+    EXPECT_EQ(status_during_halt, BT::NodeStatus::RUNNING);
+    // halt 완료 후 IDLE로 전환
+    EXPECT_EQ(asyncAction-&gt;status(), BT::NodeStatus::IDLE);
+}
+</code></pre>
+<h3>8.2 리소스 해제 검증</h3>
+<pre><code class="language-cpp">TEST(OnHaltedCallback, ResourceCleanup) {
+    bool resource_released = false;
+    
+    asyncAction-&gt;setOnHaltedCallback([&amp;]() {
+        resource_released = true;
+    });
+    
+    asyncAction-&gt;setReturnOnStart(BT::NodeStatus::RUNNING);
+    seq.executeTick();
+    
+    EXPECT_FALSE(resource_released);
+    
+    seq.halt();
+    
+    EXPECT_TRUE(resource_released);
+}
+</code></pre>
+<h2>9. Halt 검증 시 주의 사항</h2>
+<ol>
+<li>
+<p><strong>이중 Halt 방지</strong>: IDLE 상태인 노드에 <code>halt()</code>를 호출해도 오류가 발생하지 않아야 한다. <code>ControlNode::halt()</code>는 RUNNING 자식에 대해서만 Halt를 전파하므로, IDLE 상태에서의 Halt 호출은 무해해야 한다.</p>
+</li>
+<li>
+<p><strong>Halt 순서 의존성</strong>: 다수의 RUNNING 자식이 있는 경우, Halt가 호출되는 순서가 중요할 수 있다. <code>ControlNode::halt()</code>는 <code>children_nodes_</code> 벡터를 순회하므로 인덱스 순서대로 Halt가 호출된다.</p>
+</li>
+<li>
+<p><strong>비동기 정지의 동기성</strong>: <code>onHalted()</code> 콜백은 동기적으로 호출되어야 하며, 콜백 내에서의 비동기 작업은 완료될 때까지 차단해야 한다. 그렇지 않으면 Halt 이후에도 자원이 사용 중인 상태가 될 수 있다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

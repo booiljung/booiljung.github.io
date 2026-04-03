@@ -115,6 +115,225 @@
             </header>
             <article>
                 <h1>1294.72 이동 로봇의 장애물 회피 Fallback</h1>
+<h2>1. 장애물 회피의 다중 전략적 특성</h2>
+<p>이동 로봇의 장애물 회피는 단일 전략으로 모든 상황을 처리할 수 없는 복합적 문제이다. 장애물의 유형(정적/동적), 크기, 형상, 위치에 따라 적합한 회피 전략이 달라지며, 하나의 전략이 실패하면 다른 전략을 시도해야 한다. Fallback 노드의 OR 의미론은 “하나라도 성공하면 충분한” 다중 장애물 회피 전략을 자연스럽게 표현한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 기본 장애물 회피 Fallback 구조</h2>
+<h3>2.1 경로 재계획 기반 회피</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 1순위: 경로가 유효하면 그대로 진행 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPathClear"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2순위: 장애물이 있으면 경로 재계획 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="ReplanPath"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 3순위: 재계획 실패 시 정지 --&gt;
+    &lt;Action ID="StopAndWait"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>경로가 깨끗하면 기존 경로를 따르고, 장애물이 발견되면 경로를 재계획하며, 재계획도 실패하면 정지하여 대기한다.</p>
+<h2>3. ROS2 Nav2의 장애물 회피 Fallback</h2>
+<h3>3.1 Nav2의 복구 행동 구조</h3>
+<p>ROS2 Nav2 프레임워크는 네비게이션 실패 시 다단계 복구 행동을 Fallback으로 구성한다(Macenski et al., 2020).</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 기본 네비게이션 시도 --&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;Action ID="ComputePathToPose" goal="{goal}" path="{path}"/&gt;
+        &lt;Action ID="FollowPath" path="{path}"/&gt;
+    &lt;/SequenceWithMemory&gt;
+    &lt;!-- 복구 행동 체인 --&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;Action ID="ClearEntireCostmap" service="global_costmap/clear"/&gt;
+        &lt;Action ID="ClearEntireCostmap" service="local_costmap/clear"/&gt;
+        &lt;Action ID="ComputePathToPose" goal="{goal}" path="{path}"/&gt;
+        &lt;Action ID="FollowPath" path="{path}"/&gt;
+    &lt;/SequenceWithMemory&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;Action ID="Spin" spin_dist="1.57"/&gt;
+        &lt;Action ID="ComputePathToPose" goal="{goal}" path="{path}"/&gt;
+        &lt;Action ID="FollowPath" path="{path}"/&gt;
+    &lt;/SequenceWithMemory&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;Action ID="Wait" wait_duration="5"/&gt;
+        &lt;Action ID="ComputePathToPose" goal="{goal}" path="{path}"/&gt;
+        &lt;Action ID="FollowPath" path="{path}"/&gt;
+    &lt;/SequenceWithMemory&gt;
+    &lt;SequenceWithMemory&gt;
+        &lt;Action ID="BackUp" backup_dist="0.3" backup_speed="0.05"/&gt;
+        &lt;Action ID="ComputePathToPose" goal="{goal}" path="{path}"/&gt;
+        &lt;Action ID="FollowPath" path="{path}"/&gt;
+    &lt;/SequenceWithMemory&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조의 복구 전략은 다음과 같은 순서로 진행된다:</p>
+<ol>
+<li><strong>코스트맵 정리</strong>: 글로벌 및 로컬 코스트맵을 초기화하여 축적된 장애물 정보를 제거한 후 재시도한다. 센서 잡음에 의한 허위 장애물이 원인인 경우 이 단계에서 해결된다.</li>
+<li><strong>제자리 회전</strong>: 1.57라디안(약 90도) 회전하여 센서의 관측 범위를 변경한 후 재시도한다. 센서 사각지대에 의한 불완전한 환경 인식이 원인인 경우 효과적이다.</li>
+<li><strong>대기</strong>: 5초간 대기한 후 재시도한다. 동적 장애물(보행자 등)이 자연스럽게 이동하여 경로가 해소될 수 있다.</li>
+<li><strong>후진</strong>: 0.3미터 후진한 후 재시도한다. 좁은 공간에 갇힌 경우 빠져나올 수 있다.</li>
+</ol>
+<h3>3.2 Tick별 실행 흐름 분석</h3>
+<pre><code>Tick 1:  ComputePathToPose→S, FollowPath→R (정상 네비게이션)
+Tick 2:  FollowPath→R                      (이동 중)
+Tick 3:  FollowPath→F                      (장애물 감지, 경로 추종 실패)
+         → 1순위 Sequence FAILURE
+         ClearCostmap(global)→R             (코스트맵 정리 시작)
+Tick 4:  ClearCostmap(global)→S, ClearCostmap(local)→S,
+         ComputePathToPose→S, FollowPath→R  (재계획 후 재시도)
+Tick 5:  FollowPath→R                      (새 경로 추종 중)
+Tick 6:  FollowPath→S                      → SUCCESS (장애물 회피 성공)
+</code></pre>
+<p>코스트맵 정리 후 재시도가 성공하면, 이후의 복구 전략(회전, 대기, 후진)은 시도되지 않는다.</p>
+<h2>4. 동적 장애물 회피 Fallback</h2>
+<h3>4.1 ReactiveFallback을 이용한 동적 장애물 대응</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;!-- 1순위: 경로가 깨끗하면 진행 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPathClear"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2순위: 장애물 감지 시 우회 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsDetourPossible"/&gt;
+        &lt;Action ID="FollowDetourPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 3순위: 우회 불가 시 대기 --&gt;
+    &lt;Action ID="StopAndWait"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>ReactiveFallback을 사용하면, 우회 경로를 추종하는 중에도 매 Tick 원래 경로가 깨끗해졌는지 재확인한다. 동적 장애물이 이동하여 원래 경로가 해소되면, 우회를 중단하고 원래 경로로 즉시 복귀한다.</p>
+<pre><code>Tick 1: IsPathClear→S, FollowPath→R         (정상 경로 추종)
+Tick 2: IsPathClear→F, IsDetourPossible→S,
+        FollowDetourPath→R                    (장애물 감지, 우회 시작)
+Tick 3: IsPathClear→F, IsDetourPossible→S,
+        FollowDetourPath→R                    (우회 진행 중)
+Tick 4: IsPathClear→S, FollowPath→R          (원래 경로 복귀)
+        FollowDetourPath→Halt                 (우회 중단)
+</code></pre>
+<h2>5. 다중 센서 기반 장애물 회피</h2>
+<h3>5.1 센서 우선순위에 따른 회피 전략</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 라이다 기반 회피 (정밀) --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsLidarOperational"/&gt;
+        &lt;Action ID="LidarBasedAvoidance"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 카메라 기반 회피 (중간) --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsCameraOperational"/&gt;
+        &lt;Action ID="VisionBasedAvoidance"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 초음파 기반 회피 (기본) --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsUltrasonicOperational"/&gt;
+        &lt;Action ID="UltrasonicBasedAvoidance"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 모든 센서 불가 시 정지 --&gt;
+    &lt;Action ID="EmergencyStop"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>라이다가 정상이면 가장 정밀한 라이다 기반 회피를 수행하고, 라이다 고장 시 카메라 기반으로, 카메라도 불가하면 초음파 기반으로 점진적으로 퇴화 운영한다.</p>
+<h2>6. 장애물 유형별 회피 전략</h2>
+<h3>6.1 정적 장애물과 동적 장애물의 분류 대응</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 경로 우 장애물 없음 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPathClear"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 동적 장애물: 대기 후 재시도 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsDynamicObstacle"/&gt;
+        &lt;Fallback&gt;
+            &lt;Sequence&gt;
+                &lt;Action ID="Wait" duration="3000"/&gt;
+                &lt;Condition ID="IsPathClear"/&gt;
+                &lt;Action ID="FollowPath"/&gt;
+            &lt;/Sequence&gt;
+            &lt;Action ID="ReplanAroundDynamic"/&gt;
+        &lt;/Fallback&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 정적 장애물: 경로 재계획 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsStaticObstacle"/&gt;
+        &lt;Action ID="ReplanAroundStatic"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 분류 불가: 안전 정지 --&gt;
+    &lt;Action ID="SafeStop"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>동적 장애물의 경우 잠시 대기하면 장애물이 이동할 수 있으므로 먼저 대기를 시도하고, 대기 후에도 해소되지 않으면 우회 경로를 계획한다. 정적 장애물의 경우 대기가 무의미하므로 즉시 경로를 재계획한다.</p>
+<h2>7. 좁은 공간에서의 장애물 회피</h2>
+<h3>7.1 협소 통로 통과 Fallback</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 1순위: 정상 폭 통과 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPassageWideEnough"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 2순위: 속도 감소 후 통과 --&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsPassageNarrowButPassable"/&gt;
+        &lt;Sequence&gt;
+            &lt;Action ID="ReduceSpeed"/&gt;
+            &lt;Action ID="FollowPathCarefully"/&gt;
+            &lt;Action ID="RestoreSpeed"/&gt;
+        &lt;/Sequence&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 3순위: 대안 경로 탐색 --&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="FindAlternativeRoute"/&gt;
+        &lt;Action ID="FollowAlternativeRoute"/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- 4순위: 통과 불가 보고 --&gt;
+    &lt;Action ID="ReportPassageBlocked"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>8. 네비게이션 시퀀스 내 장애물 회피 통합</h2>
+<h3>8.1 전체 네비게이션 트리에서의 위치</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;!-- 안전 조건 감시 --&gt;
+    &lt;Condition ID="IsBatteryOK"/&gt;
+    &lt;Condition ID="IsLocalizationValid"/&gt;
+    &lt;!-- 네비게이션 (장애물 회피 포함) --&gt;
+    &lt;Fallback&gt;
+        &lt;SequenceWithMemory&gt;
+            &lt;Action ID="ComputePathToPose" goal="{goal}" path="{path}"/&gt;
+            &lt;Action ID="FollowPath" path="{path}"/&gt;
+        &lt;/SequenceWithMemory&gt;
+        &lt;SubTree ID="ObstacleRecoveryBehaviors"/&gt;
+    &lt;/Fallback&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>외부 ReactiveSequence가 안전 조건을 지속 감시하고, 내부 Fallback이 네비게이션 실패 시 장애물 복구 행동을 시도한다. 안전 조건과 장애물 회피가 계층적으로 분리되어 있다.</p>
+<h2>9. 설계 시 고려 사항</h2>
+<ol>
+<li>
+<p><strong>복구 전략의 순서</strong>: 비용이 낮고 빠른 전략(코스트맵 정리)을 앞에, 비용이 높고 느린 전략(후진, 대기)을 뒤에 배치한다.</p>
+</li>
+<li>
+<p><strong>동적 장애물 대응</strong>: 동적 장애물의 경우 ReactiveFallback을 사용하여, 장애물이 이동하면 즉시 원래 전략으로 복귀할 수 있도록 한다.</p>
+</li>
+<li>
+<p><strong>타임아웃 적용</strong>: 각 복구 전략에 타임아웃을 적용하여 단일 전략에서의 무한 대기를 방지한다. 특히 대기(Wait) 전략의 최대 대기 시간을 명시적으로 제한해야 한다.</p>
+</li>
+<li>
+<p><strong>최후 수단의 안전성</strong>: Fallback 체인의 마지막 전략은 반드시 안전한 행동(정지, 도움 요청 등)이어야 하며, 로봇이 장애물과 충돌하는 상황을 방지해야 한다.</p>
+</li>
+<li>
+<p><strong>코스트맵과의 연동</strong>: 장애물 회피 전략은 글로벌 및 로컬 코스트맵의 상태와 밀접하게 연관되므로, 코스트맵 정리 및 업데이트를 복구 전략에 포함해야 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). The Marathon 2: A Navigation System. <em>2020 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>, 2718–2725.</li>
+</ul>
 
             </article>
             <footer>

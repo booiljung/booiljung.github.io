@@ -115,6 +115,78 @@
             </header>
             <article>
                 <h1>1295.22 단일 스레드 내 순차적 Tick과 논리적 동시성</h1>
+<h2>1. 순차적 Tick의 실행 구조</h2>
+<p>Parallel 노드가 자식에 틱을 전파하는 과정은 단일 스레드 내에서 엄격한 순차적(sequential) 실행으로 이루어진다. <span class="math math-inline">N</span>개의 자식 <span class="math math-inline">C_1, C_2, \ldots, C_N</span>에 대해, 하나의 틱 주기 <span class="math math-inline">t_k</span>에서의 실행 타임라인은 다음과 같이 직선적으로 전개된다(Colledanchise &amp; Ögren, 2018).</p>
+<p><span class="math math-display">
+t_k: \quad [\text{tick}(C_1)] \rightarrow [\text{tick}(C_2)] \rightarrow \cdots \rightarrow [\text{tick}(C_N)] \rightarrow [\text{정책 평가}]
+</span></p>
+<p>각 대괄호는 해당 단계가 완전히 완료된 후 다음 단계로 진행됨을 나타낸다. <span class="math math-inline">C_1</span>의 <code>tick()</code>이 상태를 반환하고 제어권을 Parallel 노드에 양도한 후에야 <span class="math math-inline">C_2</span>의 <code>tick()</code>이 호출된다.</p>
+<h2>2. 순차적 Tick에서 논리적 동시성이 성립하는 원리</h2>
+<p>단일 틱 내에서 자식들이 순차적으로 실행되면서도 논리적 동시성이 성립하는 원리는 다음과 같다.</p>
+<h3>2.1 매 틱 전원 참여</h3>
+<p>Sequence나 Fallback 노드와 달리, Parallel 노드는 모든 자식에 매 틱마다 틱을 전달한다. 어떤 자식도 틱 수신에서 배제되지 않으므로, 모든 자식이 동등한 진행 기회를 갖는다.</p>
+<h3>2.2 RUNNING 상태의 지속</h3>
+<p>자식 노드가 RUNNING을 반환하면, 해당 자식은 내부 상태를 유지한 채 다음 틱을 기다린다. 다음 틱에서 틱을 수신하면 이전 상태로부터 실행을 재개한다. 이는 코루틴의 <code>yield</code>와 <code>resume</code> 패턴과 동일하다.</p>
+<h3>2.3 틱 단위의 진행</h3>
+<p>각 자식은 매 틱마다 한 단위(one step)의 작업을 수행하고 RUNNING을 반환한다. 다수의 틱에 걸쳐 모든 자식이 한 단위씩 진행하면, 외부에서 관찰하면 여러 행동이 동시에 진행되는 것으로 보인다.</p>
+<h2>3. 실행 타임라인 시각화</h2>
+<p>3개의 자식 <span class="math math-inline">C_1, C_2, C_3</span>을 갖는 Parallel 노드에서, 각 자식이 3틱에 걸쳐 완료되는 경우의 타임라인을 시각화한다.</p>
+<pre><code>시간축 →
+
+Tick 1: [C1: step1] [C2: step1] [C3: step1]
+Tick 2: [C1: step2] [C2: step2] [C3: step2]
+Tick 3: [C1: step3] [C2: step3] [C3: step3]
+         (SUCCESS)   (SUCCESS)   (SUCCESS)
+</code></pre>
+<p>각 틱 내에서 <span class="math math-inline">C_1 \rightarrow C_2 \rightarrow C_3</span> 순서로 순차 실행되지만, 틱 단위로 보면 세 자식이 모두 한 단계씩 진행하므로 논리적 동시성이 성립한다.</p>
+<p>비교를 위해, 동일한 작업을 Sequence 노드로 실행하면 다음과 같다.</p>
+<pre><code>시간축 →
+
+Tick 1-3: [C1: step1] [C1: step2] [C1: step3] (SUCCESS)
+Tick 4-6: [C2: step1] [C2: step2] [C2: step3] (SUCCESS)
+Tick 7-9: [C3: step1] [C3: step2] [C3: step3] (SUCCESS)
+</code></pre>
+<p>Sequence에서는 <span class="math math-inline">C_1</span>이 완전히 완료된 후 <span class="math math-inline">C_2</span>가 시작되므로, 총 9틱이 소요된다. Parallel에서는 3틱 만에 모든 자식이 완료된다.</p>
+<h2>4. 순차적 실행의 함의</h2>
+<h3>4.1 블랙보드 갱신의 순서 의존성</h3>
+<p><span class="math math-inline">C_1</span>이 블랙보드에 값을 기록하면, 동일 틱 내에서 이후에 실행되는 <span class="math math-inline">C_2</span>와 <span class="math math-inline">C_3</span>가 그 값을 읽을 수 있다. 이 순서 의존성은 결정론적이지만, 설계 시 명시적으로 의도하지 않은 경우 예상치 못한 동작을 유발할 수 있다.</p>
+<pre><code>Tick k:
+  C1.tick() → 블랙보드에 obstacle_detected = true 기록
+  C2.tick() → 블랙보드에서 obstacle_detected 읽기 (true)
+  C3.tick() → 블랙보드에서 obstacle_detected 읽기 (true)
+</code></pre>
+<p>만약 <span class="math math-inline">C_2</span>가 <span class="math math-inline">C_1</span>보다 먼저 정의되었다면, <span class="math math-inline">C_2</span>는 이전 틱의 obstacle_detected 값을 읽게 되어 동작이 달라진다. 이는 자식의 정의 순서가 실행 의미론에 영향을 미치는 것을 의미한다.</p>
+<h3>4.2 tick() 실행 시간의 누적 효과</h3>
+<p>Parallel 노드의 단일 틱 실행 시간은 모든 자식의 <code>tick()</code> 실행 시간의 합이다.</p>
+<p><span class="math math-display">
+T_{\text{parallel\_tick}} = \sum_{i=1}^{N} t_i
+</span></p>
+<p>자식 수 <span class="math math-inline">N</span>이 증가하면 틱 실행 시간이 선형적으로 증가한다. 실시간 시스템에서 틱 주기 <span class="math math-inline">\Delta t</span>가 고정되어 있는 경우, <span class="math math-inline">T_{\text{parallel\_tick}} &gt; \Delta t</span>이면 틱 오버런(overrun)이 발생하여 시스템의 실시간성이 위반된다.</p>
+<h3>4.3 비차단 tick() 구현의 중요성</h3>
+<p>순차적 실행에서 하나의 자식이 <code>tick()</code> 내부에서 차단(blocking) 연산을 수행하면, 후속 자식의 틱이 지연된다. 예를 들어, <span class="math math-inline">C_2</span>의 <code>tick()</code>이 100ms 동안 차단되면, <span class="math math-inline">C_3</span>는 100ms 지연 후에야 틱을 수신한다.</p>
+<pre><code>[C1: 1ms] [C2: 100ms (차단)] [C3: 1ms]
+→ 전체 틱 시간: 102ms (틱 주기 초과 가능)
+</code></pre>
+<p>이를 방지하기 위해 모든 자식의 <code>tick()</code>은 비차단적으로 구현하고, 장시간 작업은 별도 스레드에 위임한 후 RUNNING을 반환해야 한다.</p>
+<h2>5. 라운드 로빈 스케줄링과의 유사성</h2>
+<p>Parallel 노드의 순차적 틱 전파는 운영체제의 라운드 로빈(round-robin) 스케줄링과 유사하다.</p>
+<table><thead><tr><th>특성</th><th>라운드 로빈 스케줄링</th><th>Parallel 노드 틱 전파</th></tr></thead><tbody>
+<tr><td>스케줄링 단위</td><td>프로세스/스레드</td><td>자식 노드</td></tr>
+<tr><td>시간 할당</td><td>고정 타임 슬라이스</td><td>단일 tick() 호출</td></tr>
+<tr><td>선점</td><td>타이머 인터럽트에 의한 강제 전환</td><td>없음 (협력적)</td></tr>
+<tr><td>공정성</td><td>타임 슬라이스에 의해 보장</td><td>매 틱 전원 참여에 의해 보장</td></tr>
+<tr><td>기아 가능성</td><td>없음</td><td>없음</td></tr>
+</tbody></table>
+<p>핵심적 차이는 라운드 로빈이 선점형(preemptive)인 반면, Parallel 노드는 협력적(cooperative)이라는 점이다. Parallel 노드에서 자식은 <code>tick()</code> 반환으로 자발적으로 제어권을 양도하며, 외부에 의한 강제 전환은 없다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

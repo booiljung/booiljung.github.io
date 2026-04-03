@@ -115,6 +115,160 @@
             </header>
             <article>
                 <h1>1295.91 Parallel 자식 수 증가에 따른 Tick 시간 영향</h1>
+<h2>1. 선형 증가 모델</h2>
+<p>Parallel 노드의 Tick 시간은 자식 수 <span class="math math-inline">N</span>에 대해 선형적으로 증가한다. 이는 단일 스레드에서 모든 자식을 순차적으로 Tick하는 구조에 기인한다.</p>
+<p><span class="math math-display">T_{\text{tick}}(N) = T_{\text{overhead}} + \sum_{i=1}^{N} T_{\text{child}_i}</span></p>
+<p>자식의 Tick 비용이 동일하다고 가정하면(<span class="math math-inline">T_{\text{child}_i} = T_c</span>) 다음과 같이 단순화된다.</p>
+<p><span class="math math-display">T_{\text{tick}}(N) = T_{\text{overhead}} + N \cdot T_c</span></p>
+<p><span class="math math-inline">T_{\text{overhead}}</span>는 정책 평가, 상태 집계 등의 비용으로, 자식 수에 대해 <span class="math math-inline">O(N)</span>이다. 따라서 전체 Tick 시간은 <span class="math math-inline">O(N)</span>이다.</p>
+<h2>2. 실측 데이터를 통한 검증</h2>
+<p>자식 수를 변화시키면서 Parallel 노드의 Tick 시간을 측정하는 벤치마크를 구성한다.</p>
+<pre><code class="language-cpp">void benchmarkParallelTickTime(BT::BehaviorTreeFactory&amp; factory)
+{
+    std::vector&lt;int&gt; child_counts = {2, 4, 8, 16, 32, 64};
+
+    for (int n : child_counts)
+    {
+        auto tree = createParallelTree(factory, n);
+
+        // 워밍업
+        for (int i = 0; i &lt; 10; i++)
+            tree-&gt;tickOnce();
+
+        // 측정
+        std::vector&lt;double&gt; times;
+        for (int i = 0; i &lt; 1000; i++)
+        {
+            tree-&gt;haltTree();
+            auto start = std::chrono::steady_clock::now();
+            tree-&gt;tickOnce();
+            auto elapsed = std::chrono::duration_cast&lt;
+                std::chrono::nanoseconds&gt;(
+                std::chrono::steady_clock::now() - start);
+            times.push_back(elapsed.count() / 1000.0);  // us
+        }
+
+        double avg = std::accumulate(times.begin(), times.end(), 0.0)
+                     / times.size();
+        auto max_it = std::max_element(times.begin(), times.end());
+
+        std::cout &lt;&lt; "N=" &lt;&lt; std::setw(3) &lt;&lt; n
+                  &lt;&lt; "  avg=" &lt;&lt; std::setw(8) &lt;&lt; std::fixed 
+                  &lt;&lt; std::setprecision(1) &lt;&lt; avg &lt;&lt; " us"
+                  &lt;&lt; "  max=" &lt;&lt; std::setw(8) &lt;&lt; *max_it &lt;&lt; " us"
+                  &lt;&lt; std::endl;
+    }
+}
+</code></pre>
+<p>경량 조건 노드(블랙보드 읽기만 수행)를 자식으로 사용하는 경우의 전형적 결과이다.</p>
+<table><thead><tr><th style="text-align: center">자식 수 (<span class="math math-inline">N</span>)</th><th style="text-align: center">평균 Tick 시간 (μs)</th><th style="text-align: center">최대 Tick 시간 (μs)</th><th style="text-align: center">자식당 비용 (μs)</th></tr></thead><tbody>
+<tr><td style="text-align: center">2</td><td style="text-align: center">3.2</td><td style="text-align: center">8.5</td><td style="text-align: center">1.6</td></tr>
+<tr><td style="text-align: center">4</td><td style="text-align: center">5.8</td><td style="text-align: center">12.3</td><td style="text-align: center">1.45</td></tr>
+<tr><td style="text-align: center">8</td><td style="text-align: center">11.2</td><td style="text-align: center">22.1</td><td style="text-align: center">1.4</td></tr>
+<tr><td style="text-align: center">16</td><td style="text-align: center">21.5</td><td style="text-align: center">38.7</td><td style="text-align: center">1.34</td></tr>
+<tr><td style="text-align: center">32</td><td style="text-align: center">42.3</td><td style="text-align: center">72.4</td><td style="text-align: center">1.32</td></tr>
+<tr><td style="text-align: center">64</td><td style="text-align: center">84.1</td><td style="text-align: center">145.2</td><td style="text-align: center">1.31</td></tr>
+</tbody></table>
+<p>자식당 비용이 <span class="math math-inline">N</span> 증가에 따라 약간 감소하는 것은 캐시 지역성(cache locality) 효과에 의한 것이다. 전체적으로 선형 증가 패턴이 확인된다.</p>
+<h2>3. 자식 유형별 영향 분석</h2>
+<p>자식 노드의 유형에 따라 Tick 비용이 크게 다르므로, 동일한 자식 수라도 전체 Tick 시간에 상이한 영향을 미친다.</p>
+<h3>3.1 경량 자식의 경우</h3>
+<p>블랙보드에서 값을 읽기만 하는 조건 노드의 Tick 비용은 1~5 μs 수준이다.</p>
+<p><span class="math math-display">T_{\text{tick}}(N) \approx 2 + 1.5N \text{ (μs)}</span></p>
+<p>자식 20개일 때 약 32 μs로, 대부분의 Tick 주기 예산 내에 수용된다.</p>
+<h3>중량 자식의 경우</h3>
+<p>ROS2 토픽 구독, 서비스 호출, 센서 데이터 처리 등을 수행하는 행동 노드의 Tick 비용은 100 μs ~ 수 ms이다.</p>
+<p><span class="math math-display">T_{\text{tick}}(N) \approx 2 + 500N \text{ (μs, 중량 자식 기준)}</span></p>
+<p>자식 10개일 때 약 5 ms로, 10 ms Tick 주기의 절반을 소비한다. 자식 20개이면 10 ms를 초과하여 Tick 주기 위반이 발생한다.</p>
+<h3>3.2 혼합 구성의 경우</h3>
+<p>실제 Parallel 구성은 경량 조건 노드와 중량 행동 노드가 혼합된다. 이 경우 전체 Tick 시간은 중량 자식에 의해 지배된다.</p>
+<pre><code>Parallel 구성: 조건 3개 (각 2 us) + 행동 2개 (각 300 us)
+총 Tick 시간 ≈ 2 + (3 × 2) + (2 × 300) = 608 us
+</code></pre>
+<p>조건 노드의 비용(6 μs)은 전체의 약 1%에 불과하며, 행동 노드의 비용(600 μs)이 99%를 차지한다.</p>
+<h2>4. 확장성 한계</h2>
+<h3>4.1 Tick 주기 기반 한계</h3>
+<p>Tick 주기 예산 <span class="math math-inline">T_{\text{budget}}</span>이 주어졌을 때, 허용 가능한 최대 자식 수 <span class="math math-inline">N_{\text{max}}</span>를 산출한다.</p>
+<p><span class="math math-display">N_{\text{max}} = \frac{T_{\text{budget}} - T_{\text{overhead}}}{\bar{T}_c}</span></p>
+<p>여기서 <span class="math math-inline">\bar{T}_c</span>는 자식의 평균 Tick 비용이다.</p>
+<table><thead><tr><th style="text-align: center">Tick 주기 예산</th><th style="text-align: center">경량 자식 (<span class="math math-inline">\bar{T}_c = 2</span> μs)</th><th style="text-align: center">중량 자식 (<span class="math math-inline">\bar{T}_c = 500</span> μs)</th></tr></thead><tbody>
+<tr><td style="text-align: center">1 ms</td><td style="text-align: center">~500</td><td style="text-align: center">~2</td></tr>
+<tr><td style="text-align: center">5 ms</td><td style="text-align: center">~2500</td><td style="text-align: center">~10</td></tr>
+<tr><td style="text-align: center">10 ms</td><td style="text-align: center">~5000</td><td style="text-align: center">~20</td></tr>
+<tr><td style="text-align: center">50 ms</td><td style="text-align: center">~25000</td><td style="text-align: center">~100</td></tr>
+</tbody></table>
+<p>경량 조건 노드만으로 구성하면 수천 개의 자식도 수용 가능하지만, 중량 행동 노드가 포함되면 자식 수가 수십 개로 제한된다.</p>
+<h3>메모리 영향</h3>
+<p>자식 수 증가는 메모리 사용량에도 영향을 미친다. BehaviorTree.CPP에서 각 노드는 상태 정보, 포트 정보, 블랙보드 참조 등을 유지하므로, 노드당 수백 바이트에서 수 킬로바이트의 메모리를 소비한다. 자식 수가 수백 개를 초과하면 임베디드 시스템에서 메모리 제약이 발생할 수 있다.</p>
+<h2>실용적 지침</h2>
+<h3>권장 자식 수</h3>
+<p>실무에서 Parallel 노드의 자식 수에 대한 지침은 다음과 같다.</p>
+<table><thead><tr><th>상황</th><th style="text-align: center">권장 자식 수</th><th>근거</th></tr></thead><tbody>
+<tr><td>안전 감시 + 주 행동</td><td style="text-align: center">2~3</td><td>안전 감시는 경량, 주 행동은 1개</td></tr>
+<tr><td>다중 센서 융합</td><td style="text-align: center">3~5</td><td>센서당 하나의 자식</td></tr>
+<tr><td>다중 행동 동시 실행</td><td style="text-align: center">2~4</td><td>중량 행동의 누적 비용</td></tr>
+<tr><td>대규모 모니터링</td><td style="text-align: center">5~10</td><td>조건 노드 위주의 경량 구성</td></tr>
+</tbody></table>
+<h3>자식 수 초과 시 대안</h3>
+<p>자식 수가 권장 범위를 초과하는 경우의 대안이다.</p>
+<ol>
+<li><strong>계층적 Parallel 구성</strong>: 하나의 Parallel에 모든 자식을 배치하는 대신, 관련 자식을 서브트리로 그룹화하여 계층적으로 구성한다.</li>
+</ol>
+<pre><code class="language-xml">&lt;!-- 비권장: 자식 8개의 단일 Parallel --&gt;
+&lt;ParallelAll max_failures="0"&gt;
+    &lt;Sensor1/&gt; &lt;Sensor2/&gt; &lt;Sensor3/&gt; &lt;Sensor4/&gt;
+    &lt;Action1/&gt; &lt;Action2/&gt; &lt;Action3/&gt; &lt;Action4/&gt;
+&lt;/ParallelAll&gt;
+
+&lt;!-- 권장: 계층적 Parallel --&gt;
+&lt;ParallelAll max_failures="0"&gt;
+    &lt;ParallelAll name="Sensors" max_failures="1"&gt;
+        &lt;Sensor1/&gt; &lt;Sensor2/&gt; &lt;Sensor3/&gt; &lt;Sensor4/&gt;
+    &lt;/ParallelAll&gt;
+    &lt;ParallelAll name="Actions" max_failures="0"&gt;
+        &lt;Action1/&gt; &lt;Action2/&gt; &lt;Action3/&gt; &lt;Action4/&gt;
+    &lt;/ParallelAll&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<ol start="2">
+<li>
+<p><strong>비동기 처리 위임</strong>: 중량 연산을 ROS2 액션 서버 등의 별도 프로세스로 위임하고, 행동 노드는 진행 상황만 확인하는 경량 폴링(polling)으로 구현한다.</p>
+</li>
+<li>
+<p><strong>Tick 주기 분리</strong>: 모든 자식을 매 Tick에서 실행하지 않고, 자식별로 다른 주기를 적용하여 Tick당 실행 자식 수를 제한한다.</p>
+</li>
+</ol>
+<h2>벤치마크 자동화</h2>
+<p>지속적 통합(CI) 환경에서 Parallel 노드의 Tick 시간 회귀(regression)를 감지하기 위한 벤치마크 자동화를 구성한다.</p>
+<pre><code class="language-cpp">TEST(PerformanceTest, ParallelTickTimeRegression)
+{
+    auto tree = createTypicalParallelTree();
+
+    // 1000회 Tick 측정
+    std::vector&lt;double&gt; times;
+    for (int i = 0; i &lt; 1000; i++)
+    {
+        tree-&gt;haltTree();
+        auto start = std::chrono::steady_clock::now();
+        tree-&gt;tickOnce();
+        auto elapsed = std::chrono::duration_cast&lt;
+            std::chrono::microseconds&gt;(
+            std::chrono::steady_clock::now() - start);
+        times.push_back(elapsed.count());
+    }
+
+    double avg = std::accumulate(times.begin(), times.end(), 0.0)
+                 / times.size();
+    double max_val = *std::max_element(times.begin(), times.end());
+
+    // 성능 회귀 감지: 평균이 기준의 150%를 초과하면 실패
+    EXPECT_LT(avg, 100.0)    // 평균 100 us 이내
+        &lt;&lt; "Average tick time regression detected";
+    EXPECT_LT(max_val, 500.0)  // 최대 500 us 이내
+        &lt;&lt; "Worst-case tick time regression detected";
+}
+</code></pre>
+<p>이 테스트를 CI 파이프라인에 포함하면, 코드 변경에 의한 성능 저하를 조기에 감지할 수 있다.</p>
 
             </article>
             <footer>

@@ -115,6 +115,103 @@
             </header>
             <article>
                 <h1>1295.15 Parallel 노드의 자식 완료 후 대기 처리</h1>
+<h2>1. 자식 완료 후 대기 문제의 정의</h2>
+<p>Parallel 노드에서 개별 자식 노드가 최종 상태(SUCCESS 또는 FAILURE)를 반환한 후, Parallel 노드 자체가 아직 최종 상태를 결정하지 못한 경우 해당 완료된 자식의 처리 방식이 문제가 된다. 이는 Parallel 노드 고유의 설계 문제로, Sequence나 Fallback 노드에서는 자식의 완료가 즉시 다음 자식으로의 전환 또는 노드 자체의 상태 반환으로 이어지므로 이러한 대기 문제가 발생하지 않는다.</p>
+<p>예를 들어, 3개의 자식을 갖는 SUCCESS_ALL 정책의 Parallel 노드에서, <span class="math math-inline">C_1</span>이 틱 2에서 SUCCESS를 반환했지만 <span class="math math-inline">C_2</span>와 <span class="math math-inline">C_3</span>가 아직 RUNNING 상태인 경우, 틱 3에서 <span class="math math-inline">C_1</span>을 어떻게 처리해야 하는가의 문제이다.</p>
+<h2>2. 처리 전략의 유형</h2>
+<h3>2.1 전략 1: 상태 캐싱(State Caching)</h3>
+<p>완료된 자식의 마지막 반환 상태를 내부 배열에 캐싱하고, 이후 틱에서는 해당 자식에 틱을 전달하지 않고 캐싱된 상태를 사용한다. BehaviorTree.CPP의 기본 <code>ParallelNode</code> 구현이 이 전략을 채택한다.</p>
+<pre><code>Tick 1: C1=RUNNING, C2=RUNNING, C3=RUNNING  → RUNNING
+Tick 2: C1=SUCCESS, C2=RUNNING, C3=RUNNING  → RUNNING
+Tick 3: C1=(캐싱: SUCCESS), C2=SUCCESS, C3=RUNNING  → RUNNING
+Tick 4: C1=(캐싱: SUCCESS), C2=(캐싱: SUCCESS), C3=SUCCESS  → SUCCESS
+</code></pre>
+<p>이 전략의 장점은 다음과 같다.</p>
+<ul>
+<li><strong>성능 효율성</strong>: 완료된 자식에 불필요한 틱을 전달하지 않으므로, 틱 주기의 계산 비용이 점진적으로 감소한다.</li>
+<li><strong>부작용 방지</strong>: 완료된 행동이 재실행되어 의도하지 않은 부작용을 초래하는 것을 방지한다.</li>
+<li><strong>리소스 보전</strong>: ROS2 액션 서버와 연동된 행동 노드의 경우, 이미 완료된 액션에 대한 불필요한 재요청이 방지된다.</li>
+</ul>
+<p>단점은 다음과 같다.</p>
+<ul>
+<li><strong>조건 재평가 불가</strong>: 조건 노드가 자식으로 포함된 경우, 환경 변화에 의해 조건의 참·거짓이 바뀌더라도 캐싱된 상태가 유지되어 반응성이 저하된다.</li>
+<li><strong>상태 비일관성 가능</strong>: 장시간 RUNNING이 지속되는 동안 외부 환경이 변화하면, 캐싱된 성공 상태가 현재 상황과 괴리될 수 있다.</li>
+</ul>
+<h3>2.2 전략 2: 매 틱 재실행(Per-Tick Re-execution)</h3>
+<p>완료 여부와 무관하게 모든 자식에 매 틱마다 틱을 전달한다. 이전에 SUCCESS를 반환한 자식도 다시 실행되므로, 상태가 동적으로 변경될 수 있다.</p>
+<pre><code>Tick 1: C1=RUNNING, C2=RUNNING, C3=RUNNING  → RUNNING
+Tick 2: C1=SUCCESS, C2=RUNNING, C3=RUNNING  → RUNNING
+Tick 3: C1=SUCCESS, C2=SUCCESS, C3=RUNNING  → RUNNING
+         (C1 재실행하여 여전히 SUCCESS 확인)
+</code></pre>
+<p>이 전략의 장점은 다음과 같다.</p>
+<ul>
+<li><strong>조건 재평가 가능</strong>: 조건 노드가 매 틱마다 재평가되므로, 환경 변화에 즉각 반응할 수 있다.</li>
+<li><strong>상태 일관성</strong>: 모든 자식의 상태가 현재 시점에서의 실제 상태를 반영한다.</li>
+</ul>
+<p>단점은 다음과 같다.</p>
+<ul>
+<li><strong>성능 오버헤드</strong>: 완료된 자식도 매 틱마다 재실행되므로, 불필요한 계산 비용이 발생한다.</li>
+<li><strong>부작용 위험</strong>: 행동 노드가 재실행되면 물리적 행동이 반복될 수 있다.</li>
+</ul>
+<h3>2.3 전략 3: 선택적 재실행(Selective Re-execution)</h3>
+<p>자식 노드의 유형에 따라 처리 방식을 달리한다. 조건 노드는 매 틱마다 재실행하고, 행동 노드는 상태를 캐싱한다.</p>
+<p>이 전략은 가장 유연하지만, 구현 복잡도가 높으며 자식 노드의 유형을 런타임에 판별해야 하는 추가적인 메커니즘이 필요하다.</p>
+<h2>3. BehaviorTree.CPP에서의 구현</h2>
+<p>BehaviorTree.CPP 4.x에서는 상태 캐싱 전략이 기본이다. 내부적으로 <code>completed_list_</code>라는 불리언 배열을 유지하여, 각 자식의 완료 여부를 추적한다.</p>
+<pre><code class="language-cpp">// 개념적 구현
+for (size_t i = 0; i &lt; children_count; i++)
+{
+    if (completed_list_[i])
+    {
+        // 캐싱된 상태 사용
+        const auto&amp; cached = cached_status_[i];
+        if (cached == NodeStatus::SUCCESS) success_count++;
+        else if (cached == NodeStatus::FAILURE) failure_count++;
+    }
+    else
+    {
+        auto status = children_[i]-&gt;executeTick();
+        if (status != NodeStatus::RUNNING)
+        {
+            completed_list_[i] = true;
+            cached_status_[i] = status;
+        }
+        if (status == NodeStatus::SUCCESS) success_count++;
+        else if (status == NodeStatus::FAILURE) failure_count++;
+    }
+}
+</code></pre>
+<h2>4. 대기 상태에서의 리소스 관리</h2>
+<p>완료된 자식이 대기 상태에 있는 동안, 해당 자식이 점유하고 있던 리소스의 관리가 중요하다.</p>
+<h3>4.1 ROS2 액션 클라이언트의 경우</h3>
+<p>행동 노드가 ROS2 액션 서버와 연동되어 있고, 액션이 성공적으로 완료된 경우, 액션 결과(result)는 클라이언트 측에 캐싱되어야 한다. 후속 처리에서 이 결과를 참조해야 할 수 있기 때문이다.</p>
+<h3>4.2 센서 데이터 수집의 경우</h3>
+<p>센서 데이터 수집 노드가 SUCCESS를 반환한 후, 수집된 데이터는 블랙보드에 저장되어 다른 자식이나 후속 노드에서 활용할 수 있어야 한다. 대기 상태에서 블랙보드의 데이터가 덮어씌워지지 않도록 주의해야 한다.</p>
+<h2>5. 대기 처리와 정책별 상호작용</h2>
+<table><thead><tr><th>정책</th><th>대기 발생 빈도</th><th>대기 기간 특성</th></tr></thead><tbody>
+<tr><td>SUCCESS_ALL</td><td>높음</td><td>가장 느린 자식까지 대기</td></tr>
+<tr><td>SUCCESS_ONE</td><td>낮음</td><td>첫 성공 시 즉시 종료</td></tr>
+<tr><td>SUCCESS_COUNT(<span class="math math-inline">M</span>)</td><td>중간</td><td><span class="math math-inline">M</span>번째 성공까지 대기</td></tr>
+<tr><td>FAILURE_ALL</td><td>높음</td><td>가장 느린 자식까지 대기</td></tr>
+<tr><td>FAILURE_ONE</td><td>낮음</td><td>첫 실패 시 즉시 종료</td></tr>
+</tbody></table>
+<p>SUCCESS_ALL이나 FAILURE_ALL 정책에서는 모든 자식의 완료를 기다려야 하므로, 먼저 완료된 자식의 대기 시간이 길어진다. 반면 SUCCESS_ONE이나 FAILURE_ONE 정책에서는 첫 번째 해당 상태가 반환되면 즉시 종료되므로 대기 문제가 거의 발생하지 않는다.</p>
+<h2>6. 설계 지침</h2>
+<ol>
+<li><strong>행동 노드 위주의 Parallel</strong>: 상태 캐싱 전략을 사용하라. 행동 노드는 한 번 완료되면 결과가 변하지 않으므로 캐싱이 적합하다.</li>
+<li><strong>조건 노드를 포함하는 Parallel</strong>: 매 틱 재실행 전략 또는 선택적 재실행 전략을 사용하라. 조건 노드의 상태는 환경에 따라 동적으로 변할 수 있으므로 재평가가 필요하다.</li>
+<li><strong>장시간 대기가 예상되는 경우</strong>: 타임아웃 데코레이터를 적용하여 무한 대기를 방지하라.</li>
+</ol>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; contributors. (2024). <em>BehaviorTree.CPP Documentation</em>. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<blockquote>
+<p><strong>Version:</strong> 1.0-2026.04.03</p>
+</blockquote>
 
             </article>
             <footer>

@@ -115,6 +115,284 @@
             </header>
             <article>
                 <h1>1295.82 단위 테스트 전략</h1>
+<h2>1. Parallel 및 Reactive 노드 테스트의 특수성</h2>
+<p>Parallel 노드와 Reactive 노드(ReactiveSequence, ReactiveFallback)는 행동 트리의 제어 노드 중에서 테스트가 가장 복잡한 범주에 속한다. 이들 노드는 다수의 자식 노드를 동시에 관리하며, 자식의 상태 조합에 따라 다양한 분기 경로를 생성한다. 단일 자식의 성공/실패뿐 아니라, 자식 간의 상태 조합, Tick 순서, Halt 전파, 재평가 동작 등이 정확히 구현되었는지를 검증하여야 하므로, 체계적인 단위 테스트 전략이 필수적이다.</p>
+<p>단위 테스트의 목표는 다음과 같다.</p>
+<ol>
+<li><strong>정책 정확성 검증</strong>: 성공/실패 정책이 명세대로 동작하는지 확인한다.</li>
+<li><strong>상태 전이 정확성 검증</strong>: 자식 상태의 변화에 따라 노드의 반환 상태가 올바르게 전이하는지 확인한다.</li>
+<li><strong>Halt 전파 정확성 검증</strong>: 성공/실패 판정 시 나머지 자식에 대한 Halt가 정확히 전파되는지 확인한다.</li>
+<li><strong>재평가 동작 검증</strong>: Reactive 노드에서 매 Tick마다 자식이 재평가되는지 확인한다.</li>
+<li><strong>경계 조건 검증</strong>: 자식이 0개, 1개, 다수인 경우와 정책 임계값의 경계에서의 동작을 확인한다.</li>
+</ol>
+<h2>2. BehaviorTree.CPP의 테스트 인프라</h2>
+<p>BehaviorTree.CPP 라이브러리는 단위 테스트를 위한 모의(mock) 노드를 제공한다. 테스트에서 자식 노드의 반환 상태를 프로그래밍 방식으로 제어할 수 있는 노드를 구성하여, 제어 노드의 동작을 격리된 환경에서 검증한다.</p>
+<h3>2.1 모의 행동 노드의 구현</h3>
+<pre><code class="language-cpp">#include &lt;gtest/gtest.h&gt;
+#include "behaviortree_cpp/bt_factory.h"
+
+// 반환 상태를 외부에서 제어 가능한 모의 노드
+class MockAction : public BT::SyncActionNode
+{
+public:
+    MockAction(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : SyncActionNode(name, config) {}
+
+    static BT::PortsList providedPorts() { return {}; }
+
+    BT::NodeStatus tick() override
+    {
+        tick_count_++;
+        return expected_status_;
+    }
+
+    void setExpectedResult(BT::NodeStatus status)
+    {
+        expected_status_ = status;
+    }
+
+    int tickCount() const { return tick_count_; }
+    void resetTickCount() { tick_count_ = 0; }
+
+private:
+    BT::NodeStatus expected_status_ = BT::NodeStatus::SUCCESS;
+    int tick_count_ = 0;
+};
+</code></pre>
+<p>이 모의 노드는 <code>setExpectedResult()</code>로 반환 상태를 설정하고, <code>tickCount()</code>로 Tick 호출 횟수를 추적한다. 이를 통해 제어 노드가 자식을 올바른 횟수만큼 Tick하는지를 정량적으로 검증할 수 있다.</p>
+<h3>2.2 비동기 모의 노드</h3>
+<p><code>RUNNING</code> 상태를 반환하는 비동기 행동을 시뮬레이션하기 위한 모의 노드이다.</p>
+<pre><code class="language-cpp">class MockAsyncAction : public BT::StatefulActionNode
+{
+public:
+    MockAsyncAction(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : StatefulActionNode(name, config) {}
+
+    static BT::PortsList providedPorts() { return {}; }
+
+    BT::NodeStatus onStart() override
+    {
+        tick_count_++;
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        tick_count_++;
+        return current_status_;
+    }
+
+    void onHalted() override
+    {
+        halt_count_++;
+    }
+
+    void setStatus(BT::NodeStatus status) { current_status_ = status; }
+    int tickCount() const { return tick_count_; }
+    int haltCount() const { return halt_count_; }
+    void reset() { tick_count_ = 0; halt_count_ = 0; }
+
+private:
+    BT::NodeStatus current_status_ = BT::NodeStatus::RUNNING;
+    int tick_count_ = 0;
+    int halt_count_ = 0;
+};
+</code></pre>
+<p><code>onHalted()</code>의 호출 횟수를 추적함으로써, Halt 전파가 정확히 수행되었는지를 검증할 수 있다.</p>
+<h2>3. 테스트 설계 원칙</h2>
+<h3>3.1 상태 조합의 체계적 열거</h3>
+<p>Parallel 노드의 자식이 <span class="math math-inline">N</span>개이고 각 자식의 상태가 SUCCESS, FAILURE, RUNNING의 3가지인 경우, 총 <span class="math math-inline">3^N</span>개의 상태 조합이 존재한다. 자식이 3개이면 27개, 4개이면 81개의 조합이 된다. 모든 조합을 열거하여 테스트하는 것이 이상적이나, 실용적으로는 동치 분할(equivalence partitioning)과 경계값 분석(boundary value analysis)을 적용하여 테스트 케이스를 축소한다.</p>
+<p><strong>동치 분할</strong>: 동일한 정책 결과를 산출하는 상태 조합을 하나의 동치 클래스로 묶는다. 예를 들어, SUCCESS_ALL 정책에서 자식 3개 중 2개가 SUCCESS이고 1개가 FAILURE인 모든 조합은 동일하게 FAILURE를 산출하므로, 대표 조합 하나만 테스트한다.</p>
+<p><strong>경계값 분석</strong>: 정책의 임계값 경계에서의 동작을 집중적으로 테스트한다. SUCCESS_COUNT(2) 정책에서 성공 자식이 1개(임계값 미달), 2개(임계값 도달), 3개(임계값 초과)인 경우를 각각 테스트한다.</p>
+<h3>3.2 다중 Tick 시뮬레이션</h3>
+<p>Parallel 및 Reactive 노드의 동작은 단일 Tick이 아닌 다중 Tick에 걸쳐 전개된다. 자식이 <code>RUNNING</code>을 반환한 후 후속 Tick에서 <code>SUCCESS</code>나 <code>FAILURE</code>로 전이하는 시나리오를 테스트하여야 한다.</p>
+<pre><code class="language-cpp">TEST(ParallelTest, MultiTickScenario)
+{
+    // 트리 구성
+    BT::BehaviorTreeFactory factory;
+    factory.registerNodeType&lt;MockAsyncAction&gt;("MockAsync");
+
+    auto tree = factory.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree ID="main"&gt;
+                &lt;ParallelAll max_failures="1"&gt;
+                    &lt;MockAsync name="child_A"/&gt;
+                    &lt;MockAsync name="child_B"/&gt;
+                    &lt;MockAsync name="child_C"/&gt;
+                &lt;/ParallelAll&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    // 자식 노드에 대한 참조 획득
+    auto* child_A = getNodeByName&lt;MockAsyncAction&gt;(tree, "child_A");
+    auto* child_B = getNodeByName&lt;MockAsyncAction&gt;(tree, "child_B");
+    auto* child_C = getNodeByName&lt;MockAsyncAction&gt;(tree, "child_C");
+
+    // Tick 1: 모든 자식 RUNNING
+    auto status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+
+    // Tick 2: child_A SUCCESS로 전이
+    child_A-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+
+    // Tick 3: child_B SUCCESS, child_C SUCCESS
+    child_B-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    child_C-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>3.3 테스트 픽스처의 구성</h3>
+<p>반복적인 테스트 설정을 테스트 픽스처(test fixture)로 추상화하여 코드 중복을 제거한다.</p>
+<pre><code class="language-cpp">class ParallelNodeTest : public ::testing::Test
+{
+protected:
+    BT::BehaviorTreeFactory factory_;
+    
+    void SetUp() override
+    {
+        factory_.registerNodeType&lt;MockAction&gt;("MockAction");
+        factory_.registerNodeType&lt;MockAsyncAction&gt;("MockAsync");
+    }
+    
+    std::unique_ptr&lt;BT::Tree&gt; createParallelTree(
+        int child_count, int max_failures)
+    {
+        std::string xml = R"(&lt;root BTCPP_format="4"&gt;&lt;BehaviorTree ID="main"&gt;)";
+        xml += "&lt;ParallelAll max_failures=\"" 
+             + std::to_string(max_failures) + "\"&gt;";
+        for (int i = 0; i &lt; child_count; i++)
+        {
+            xml += "&lt;MockAsync name=\"child_" 
+                 + std::to_string(i) + "\"/&gt;";
+        }
+        xml += "&lt;/ParallelAll&gt;&lt;/BehaviorTree&gt;&lt;/root&gt;";
+        
+        return std::make_unique&lt;BT::Tree&gt;(
+            factory_.createTreeFromText(xml));
+    }
+};
+</code></pre>
+<h2>4. 테스트 범주의 분류</h2>
+<p>Parallel 및 Reactive 노드의 단위 테스트는 다음의 범주로 분류한다.</p>
+<h3>4.1 정책 기반 테스트</h3>
+<p>성공/실패 정책의 정확한 동작을 검증한다. Parallel 노드의 각 정책(SUCCESS_ALL, SUCCESS_ONE, SUCCESS_COUNT 등)에 대해 정책이 충족되는 조건과 충족되지 않는 조건을 테스트한다.</p>
+<h3>4.2 상태 전이 테스트</h3>
+<p>자식 상태의 변화에 따른 노드의 상태 전이를 검증한다. 특히 RUNNING에서 SUCCESS 또는 FAILURE로의 전이, 그리고 이 전이가 부모 노드의 상태에 미치는 영향을 테스트한다.</p>
+<h3>4.3 Halt 전파 테스트</h3>
+<p>정책 충족 시 나머지 RUNNING 자식에 대한 Halt 호출이 정확히 수행되는지를 검증한다. <code>MockAsyncAction</code>의 <code>haltCount()</code>를 통해 Halt 호출 여부와 횟수를 확인한다.</p>
+<h3>4.4 재평가 동작 테스트</h3>
+<p>ReactiveSequence와 ReactiveFallback에서 매 Tick마다 이전에 SUCCESS 또는 FAILURE를 반환한 자식이 재Tick되는지를 검증한다. 이전 Tick에서 SUCCESS를 반환한 조건 노드가 현재 Tick에서 FAILURE를 반환하는 시나리오를 테스트하여, 재평가가 올바르게 수행되는지 확인한다.</p>
+<h3>4.5 경계 조건 테스트</h3>
+<p>자식이 0개인 경우, 자식이 1개인 경우, 모든 자식이 동일한 상태를 반환하는 경우 등의 경계 조건에서의 동작을 검증한다.</p>
+<h2>5. 테스트 자동화와 CI 통합</h2>
+<h3>5.1 Google Test 프레임워크의 활용</h3>
+<p>BehaviorTree.CPP 프로젝트는 Google Test(GTest) 프레임워크를 사용한다. 테스트 케이스는 <code>TEST()</code> 또는 <code>TEST_F()</code> 매크로로 정의하며, <code>EXPECT_EQ</code>, <code>ASSERT_EQ</code> 등의 단언(assertion) 매크로로 기대값을 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ParallelNodeTest, SuccessAllPolicy_AllSuccess)
+{
+    auto tree = createParallelTree(3, 0);
+    // max_failures=0 → 실패 하나도 허용 불가 → SUCCESS_ALL과 동치
+
+    auto* c0 = getNodeByName&lt;MockAsyncAction&gt;(*tree, "child_0");
+    auto* c1 = getNodeByName&lt;MockAsyncAction&gt;(*tree, "child_1");
+    auto* c2 = getNodeByName&lt;MockAsyncAction&gt;(*tree, "child_2");
+
+    // 첫 Tick: 모든 자식 RUNNING
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::RUNNING);
+
+    // 모든 자식 SUCCESS 설정
+    c0-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    c1-&gt;setStatus(BT::NodeStatus::SUCCESS);
+    c2-&gt;setStatus(BT::NodeStatus::SUCCESS);
+
+    // 두 번째 Tick: Parallel SUCCESS
+    EXPECT_EQ(tree-&gt;tickOnce(), BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>5.2 매개변수화 테스트</h3>
+<p>동일한 테스트 로직을 다양한 매개변수로 반복 실행하기 위해 Google Test의 매개변수화 테스트(parameterized test)를 활용한다.</p>
+<pre><code class="language-cpp">struct ParallelTestParam
+{
+    std::vector&lt;BT::NodeStatus&gt; child_statuses;
+    int max_failures;
+    BT::NodeStatus expected_result;
+};
+
+class ParameterizedParallelTest 
+    : public ::testing::TestWithParam&lt;ParallelTestParam&gt;
+{
+    // ...
+};
+
+TEST_P(ParameterizedParallelTest, PolicyEvaluation)
+{
+    auto param = GetParam();
+    // 자식 상태를 param.child_statuses로 설정
+    // max_failures를 param.max_failures로 설정
+    // 결과가 param.expected_result와 일치하는지 검증
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PolicyTests,
+    ParameterizedParallelTest,
+    ::testing::Values(
+        ParallelTestParam{{SUCCESS, SUCCESS, SUCCESS}, 0, SUCCESS},
+        ParallelTestParam{{SUCCESS, SUCCESS, FAILURE}, 0, FAILURE},
+        ParallelTestParam{{SUCCESS, SUCCESS, FAILURE}, 1, SUCCESS},
+        ParallelTestParam{{FAILURE, FAILURE, FAILURE}, 2, FAILURE}
+    )
+);
+</code></pre>
+<p>이 방식은 정책별 다양한 상태 조합을 간결하게 정의하고, 새로운 테스트 케이스의 추가를 용이하게 한다.</p>
+<h3>5.3 CMake 기반 테스트 구성</h3>
+<pre><code class="language-cmake">find_package(GTest REQUIRED)
+
+add_executable(parallel_reactive_tests
+    test_parallel_policies.cpp
+    test_reactive_reevaluation.cpp
+    test_halt_propagation.cpp
+    test_boundary_conditions.cpp
+)
+
+target_link_libraries(parallel_reactive_tests
+    PRIVATE
+    behaviortree_cpp
+    GTest::GTest
+    GTest::Main
+)
+
+gtest_discover_tests(parallel_reactive_tests)
+</code></pre>
+<p><code>gtest_discover_tests()</code>는 CTest와의 통합을 통해 CI/CD 파이프라인에서 자동으로 테스트를 탐색하고 실행한다.</p>
+<h2>6. 테스트 커버리지 목표</h2>
+<p>Parallel 및 Reactive 노드의 단위 테스트에서 달성하여야 할 커버리지 목표는 다음과 같다.</p>
+<table><thead><tr><th>커버리지 유형</th><th>목표</th><th>측정 기준</th></tr></thead><tbody>
+<tr><td>분기 커버리지</td><td>100%</td><td>모든 if/else 분기 실행</td></tr>
+<tr><td>정책 커버리지</td><td>100%</td><td>모든 정책의 성공/실패/RUNNING 반환</td></tr>
+<tr><td>경계값 커버리지</td><td>100%</td><td>모든 임계값의 경계 조건</td></tr>
+<tr><td>상태 전이 커버리지</td><td>≥ 90%</td><td>가능한 상태 전이의 90% 이상</td></tr>
+<tr><td>Halt 커버리지</td><td>100%</td><td>모든 Halt 경로의 실행</td></tr>
+</tbody></table>
+<p>분기 커버리지와 정책 커버리지는 100%를 목표로 한다. 상태 전이 커버리지는 <span class="math math-inline">3^N</span>의 조합 폭발로 인해 90% 이상을 실용적 목표로 설정한다.</p>
+<h2>7. 테스트 가능한 설계의 원칙</h2>
+<p>테스트 용이성을 보장하기 위한 설계 원칙을 정리한다.</p>
+<ol>
+<li>
+<p><strong>정책의 분리</strong>: 성공/실패 정책을 별도의 클래스로 분리하면, 정책 로직을 제어 노드와 독립적으로 테스트할 수 있다. 정책 클래스는 자식 상태 벡터를 입력으로 받아 결과를 반환하는 순수 함수로 구현한다.</p>
+</li>
+<li>
+<p><strong>의존성 주입</strong>: 모의 노드를 자식으로 주입할 수 있는 구조를 유지한다. BehaviorTree.CPP의 팩토리 패턴은 XML 기반으로 트리를 구성하므로, 모의 노드를 팩토리에 등록하여 테스트 트리를 구성한다.</p>
+</li>
+<li>
+<p><strong>관찰 가능성 확보</strong>: 노드의 내부 상태(성공 카운트, 실패 카운트, Halt 호출 여부 등)를 외부에서 관찰할 수 있는 인터페이스를 제공한다. 이는 테스트 전용 인터페이스로, 프로덕션 코드에는 영향을 미치지 않도록 설계한다.</p>
+</li>
+<li>
+<p><strong>결정론적 실행 보장</strong>: 테스트 환경에서 비결정론적 요소(시간, 외부 입력 등)를 제거하거나 제어한다. 시간 의존적 정책은 시간 소스를 주입 가능한 인터페이스로 추상화한다.</p>
+</li>
+</ol>
 
             </article>
             <footer>

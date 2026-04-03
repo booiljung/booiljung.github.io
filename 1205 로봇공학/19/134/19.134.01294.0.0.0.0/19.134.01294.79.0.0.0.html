@@ -115,6 +115,159 @@
             </header>
             <article>
                 <h1>1294.79 모든 자식 Failure 시 Fallback의 동작</h1>
+<h2>1. 모든 자식 FAILURE의 발생 조건</h2>
+<p>Fallback 노드가 FAILURE를 반환하는 유일한 조건은 모든 자식이 FAILURE를 반환하는 것이다. Fallback의 OR 의미론에 의해, 하나라도 SUCCESS를 반환하면 Fallback은 SUCCESS를 반환하므로, 모든 자식의 FAILURE는 “가용한 모든 대안이 소진되었다“는 극단적 상황을 의미한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 동기식 전체 FAILURE</h2>
+<h3>2.1 모든 자식이 즉시 FAILURE</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Condition ID="IsConditionA"/&gt;    &lt;!-- FAILURE --&gt;
+    &lt;Condition ID="IsConditionB"/&gt;    &lt;!-- FAILURE --&gt;
+    &lt;Condition ID="IsConditionC"/&gt;    &lt;!-- FAILURE --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>Tick: IsConditionA→F, IsConditionB→F, IsConditionC→F → Fallback: FAILURE
+</code></pre>
+<p>모든 조건 노드가 단일 Tick 내에서 FAILURE를 반환하면, Fallback은 동일 Tick에서 FAILURE를 반환한다. 조건 노드는 즉시 반환하므로, 세 조건의 평가와 Fallback의 FAILURE 반환이 모두 하나의 Tick 내에서 완료된다.</p>
+<h2>3. 비동기식 전체 FAILURE</h2>
+<h3>3.1 FallbackWithMemory에서의 점진적 FAILURE</h3>
+<pre><code class="language-xml">&lt;FallbackWithMemory&gt;
+    &lt;Action ID="Alternative1"/&gt;
+    &lt;Action ID="Alternative2"/&gt;
+    &lt;Action ID="Alternative3"/&gt;
+&lt;/FallbackWithMemory&gt;
+</code></pre>
+<pre><code>Tick 1: Alternative1→R               (idx=0, 1순위 시도 중)
+Tick 2: Alternative1→R               (1순위 진행 중)
+Tick 3: Alternative1→F, Alternative2→R (idx=1, 2순위로 전환)
+Tick 4: Alternative2→R               (2순위 진행 중)
+Tick 5: Alternative2→F, Alternative3→R (idx=2, 3순위로 전환)
+Tick 6: Alternative3→R               (3순위 진행 중)
+Tick 7: Alternative3→F               → FAILURE (모든 대안 소진)
+                                      (idx=0으로 초기화)
+</code></pre>
+<p>비동기 대안의 경우, 각 대안이 여러 Tick에 걸쳐 RUNNING 상태를 유지하다가 FAILURE로 전환된다. 모든 대안이 순차적으로 실패해야 비로소 전체 FAILURE가 발생한다.</p>
+<h3>3.2 ReactiveFallback에서의 전체 FAILURE</h3>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsCondA"/&gt;
+        &lt;Action ID="ActionA"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsCondB"/&gt;
+        &lt;Action ID="ActionB"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="ActionC"/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<pre><code>Tick: IsCondA→F → Sequence1: FAILURE
+     IsCondB→F → Sequence2: FAILURE
+     ActionC→F → FAILURE
+</code></pre>
+<p>ReactiveFallback에서는 매 Tick 첫 번째 자식부터 재평가하므로, 동적으로 변화하는 조건에 따라 전체 FAILURE 상태가 매 Tick 달라질 수 있다.</p>
+<h2>4. 전체 FAILURE 후의 상태 전이</h2>
+<h3>4.1 Fallback 변형별 상태 초기화</h3>
+<table><thead><tr><th>Fallback 변형</th><th>전체 FAILURE 후 idx</th><th>다음 Tick 시작 위치</th></tr></thead><tbody>
+<tr><td>Fallback (기본)</td><td>해당 없음</td><td>항상 idx=0</td></tr>
+<tr><td>FallbackWithMemory</td><td>idx=0으로 초기화</td><td>idx=0 (처음부터 재시도)</td></tr>
+<tr><td>ReactiveFallback</td><td>해당 없음</td><td>항상 idx=0</td></tr>
+</tbody></table>
+<p>모든 변형에서 전체 FAILURE 후에는 첫 번째 자식부터 다시 시작한다. FallbackWithMemory의 경우, 실패한 자식의 기억이 모두 소멸된다.</p>
+<h2>5. 전체 FAILURE의 상위 전파</h2>
+<h3>5.1 상위 Sequence로의 전파</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="Step1"/&gt;           &lt;!-- SUCCESS --&gt;
+    &lt;Fallback&gt;
+        &lt;Action ID="Alt1"/&gt;        &lt;!-- FAILURE --&gt;
+        &lt;Action ID="Alt2"/&gt;        &lt;!-- FAILURE --&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="Step3"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>Tick: Step1→S, Alt1→F, Alt2→F → Fallback: FAILURE
+     → Sequence: FAILURE (Step3 미실행)
+</code></pre>
+<p>Fallback의 전체 FAILURE가 상위 Sequence로 전파되어, 순차 작업 체인이 중단된다.</p>
+<h3>5.2 상위 Fallback으로의 전파</h3>
+<pre><code class="language-xml">&lt;Fallback name="Outer"&gt;
+    &lt;Fallback name="Inner"&gt;
+        &lt;Action ID="Alt1"/&gt;        &lt;!-- FAILURE --&gt;
+        &lt;Action ID="Alt2"/&gt;        &lt;!-- FAILURE --&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="LastResort"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>Tick: Alt1→F, Alt2→F → Inner: FAILURE (Outer가 흡수)
+     LastResort→S     → Outer: SUCCESS
+</code></pre>
+<p>Inner Fallback의 전체 FAILURE는 Outer Fallback에 의해 흡수되고, 다음 대안인 LastResort가 시도된다.</p>
+<h2>6. 전체 FAILURE 방지 전략</h2>
+<h3>6.1 전략 1: 항상 성공하는 최후 수단</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="PrimaryMethod"/&gt;
+    &lt;Action ID="SecondaryMethod"/&gt;
+    &lt;Action ID="AlwaysSucceedSafeAction"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>마지막 자식이 항상 SUCCESS를 반환하도록 구현하면, Fallback이 FAILURE를 반환하는 상황을 원천적으로 방지할 수 있다. 비상 정지, 안전 모드 전환, 대기 상태 진입 등이 이에 해당한다.</p>
+<h3>6.2 전략 2: ForceSuccess 데코레이터</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="PrimaryMethod"/&gt;
+    &lt;ForceSuccess&gt;
+        &lt;Action ID="BestEffortRecovery"/&gt;
+    &lt;/ForceSuccess&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>ForceSuccess 데코레이터는 자식의 반환 상태에 관계없이 항상 SUCCESS를 반환한다. 최선의 노력으로 복구를 시도하되, 복구 실패 여부와 무관하게 Fallback을 SUCCESS로 종료시킨다.</p>
+<h3>6.3 전략 3: Retry 데코레이터</h3>
+<pre><code class="language-xml">&lt;Retry num_attempts="3"&gt;
+    &lt;Fallback&gt;
+        &lt;Action ID="Method1"/&gt;
+        &lt;Action ID="Method2"/&gt;
+    &lt;/Fallback&gt;
+&lt;/Retry&gt;
+</code></pre>
+<p>Fallback 전체를 Retry 데코레이터로 감싸서, 모든 대안이 실패하면 전체 대안 체인을 지정 횟수만큼 재시도한다.</p>
+<h2>7. 로봇 공학에서의 전체 FAILURE 시나리오</h2>
+<h3>7.1 네비게이션 복구 전체 실패</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="ReplanPath"/&gt;
+    &lt;Action ID="ClearCostmapAndReplan"/&gt;
+    &lt;Action ID="SpinAndReplan"/&gt;
+    &lt;Action ID="BackUpAndReplan"/&gt;
+    &lt;Action ID="WaitAndReplan"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>모든 복구 전략이 실패하면, 상위 트리에서 “네비게이션 불가” 상태를 처리해야 한다. 이 경우 임무를 포기하고 안전 위치로 복귀하거나, 운영자에게 원격 지원을 요청하는 것이 일반적인 대응이다.</p>
+<h3>7.2 파지 전략 전체 실패</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Action ID="PrecisionGrasp"/&gt;
+    &lt;Action ID="EnvelopingGrasp"/&gt;
+    &lt;Action ID="SuctionGrasp"/&gt;
+    &lt;Action ID="PushAndGrasp"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>모든 파지 전략이 실패하면, 해당 물체는 현재 시스템으로 파지할 수 없는 것으로 판단된다. 상위 트리에서 물체를 건너뛰거나 인간 지원을 요청해야 한다.</p>
+<h2>8. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>전체 FAILURE의 의미 정의</strong>: Fallback의 전체 FAILURE가 시스템에 어떤 의미를 가지는지 설계 시점에 명확히 정의해야 한다. “치명적 오류“인지 “일시적 불가“인지에 따라 상위 트리의 대응이 달라진다.</p>
+</li>
+<li>
+<p><strong>최후 수단의 필수 포함</strong>: 안전이 중요한 로봇 시스템에서는 Fallback 체인의 마지막에 항상 성공하는 안전 행동을 배치하여 전체 FAILURE를 방지한다.</p>
+</li>
+<li>
+<p><strong>전체 FAILURE의 로깅</strong>: 전체 FAILURE가 발생하면 각 대안의 실패 원인을 기록하여, 사후 분석과 시스템 개선에 활용한다.</p>
+</li>
+<li>
+<p><strong>상위 트리의 복구 계획</strong>: 전체 FAILURE가 전파되는 경우에 대비하여, 상위 트리에 적절한 복구 행동이 준비되어 있어야 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,197 @@
             </header>
             <article>
                 <h1>1295.76 BehaviorTree.CPP에서의 ReactiveFallback 구현</h1>
+<h2>1. ReactiveFallback 클래스</h2>
+<p>BehaviorTree.CPP에서 ReactiveFallback은 <code>ControlNode</code>를 상속하는 내장 제어 노드이다. 일반 Fallback(FallbackNode)이 메모리를 가지는 반면, ReactiveFallback은 매 Tick에서 항상 첫 번째 자식부터 재평가한다.</p>
+<pre><code class="language-cpp">class ReactiveFallback : public ControlNode
+{
+public:
+    ReactiveFallback(const std::string&amp; name)
+        : ControlNode(name, {}) {}
+    
+    ReactiveFallback(const std::string&amp; name, const NodeConfig&amp; config)
+        : ControlNode(name, config) {}
+
+private:
+    NodeStatus tick() override;
+    void halt() override;
+};
+</code></pre>
+<p>ReactiveSequence와 마찬가지로 추가 포트를 정의하지 않는다.</p>
+<h2>2. tick() 메서드의 구현</h2>
+<pre><code class="language-cpp">NodeStatus ReactiveFallback::tick()
+{
+    for (size_t index = 0; index &lt; childrenCount(); index++)
+    {
+        TreeNode* current_child = children_nodes_[index];
+        const NodeStatus child_status = current_child-&gt;executeTick();
+        
+        switch (child_status)
+        {
+            case NodeStatus::RUNNING:
+            {
+                // 이후의 RUNNING 자식에 Halt 전파
+                for (size_t j = index + 1; j &lt; childrenCount(); j++)
+                {
+                    if (children_nodes_[j]-&gt;status() == NodeStatus::RUNNING)
+                    {
+                        haltChild(j);
+                    }
+                }
+                return NodeStatus::RUNNING;
+            }
+            
+            case NodeStatus::SUCCESS:
+            {
+                // 이후의 RUNNING 자식에 Halt 전파
+                for (size_t j = index + 1; j &lt; childrenCount(); j++)
+                {
+                    if (children_nodes_[j]-&gt;status() == NodeStatus::RUNNING)
+                    {
+                        haltChild(j);
+                    }
+                }
+                return NodeStatus::SUCCESS;
+            }
+            
+            case NodeStatus::FAILURE:
+            {
+                // 다음 자식으로 계속
+                break;
+            }
+            
+            default:
+                break;
+        }
+    }
+    
+    // 모든 자식이 FAILURE
+    return NodeStatus::FAILURE;
+}
+</code></pre>
+<p>ReactiveSequence와 대칭적인 구조이다. 핵심 차이는 다음과 같다.</p>
+<table><thead><tr><th>분기 조건</th><th>ReactiveSequence</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>SUCCESS</td><td>다음 자식으로 계속</td><td>Halt 후 SUCCESS 반환</td></tr>
+<tr><td>FAILURE</td><td>Halt 후 FAILURE 반환</td><td>다음 자식으로 계속</td></tr>
+<tr><td>RUNNING</td><td>Halt 후 RUNNING 반환</td><td>Halt 후 RUNNING 반환</td></tr>
+<tr><td>모든 자식 완료</td><td>모두 SUCCESS → SUCCESS</td><td>모두 FAILURE → FAILURE</td></tr>
+</tbody></table>
+<h2>3. ReactiveSequence와의 코드 대칭</h2>
+<p>ReactiveSequence와 ReactiveFallback의 <code>tick()</code> 메서드는 <code>SUCCESS</code>와 <code>FAILURE</code>의 역할이 교환된 대칭적 구조이다.</p>
+<pre><code>ReactiveSequence:
+  SUCCESS → continue
+  FAILURE → halt remaining, return FAILURE
+  all SUCCESS → return SUCCESS
+
+ReactiveFallback:
+  FAILURE → continue
+  SUCCESS → halt remaining, return SUCCESS
+  all FAILURE → return FAILURE
+</code></pre>
+<p>이 대칭성은 Sequence와 Fallback의 논리적 관계(AND vs OR)를 반영한다.</p>
+<h2>4. halt() 메서드의 구현</h2>
+<pre><code class="language-cpp">void ReactiveFallback::halt()
+{
+    haltChildren();
+    ControlNode::halt();
+}
+</code></pre>
+<p>ReactiveSequence의 <code>halt()</code>와 동일하다. 모든 <code>RUNNING</code> 상태의 자식에 Halt를 전파한다.</p>
+<h2>5. XML에서의 ReactiveFallback 정의</h2>
+<pre><code class="language-xml">&lt;BehaviorTree ID="ReactiveFallbackExample"&gt;
+    &lt;ReactiveFallback&gt;
+        &lt;Sequence&gt;
+            &lt;IsEmergency /&gt;
+            &lt;EmergencyStop /&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;IsBatteryLow /&gt;
+            &lt;ReturnToBase /&gt;
+        &lt;/Sequence&gt;
+        &lt;ExecuteMission waypoints="{mission_waypoints}" /&gt;
+    &lt;/ReactiveFallback&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>&lt;ReactiveFallback&gt;</code> 태그 내에 우선순위 순서대로 자식 노드를 배치한다.</p>
+<h2>6. 일반 FallbackNode와의 코드 차이</h2>
+<p>일반 <code>FallbackNode</code>는 <code>running_child_</code> 변수를 유지한다.</p>
+<pre><code class="language-cpp">// FallbackNode의 tick() (개념적)
+NodeStatus FallbackNode::tick()
+{
+    for (size_t index = running_child_; index &lt; childrenCount(); index++)
+    {
+        auto child_status = children_nodes_[index]-&gt;executeTick();
+        
+        if (child_status == NodeStatus::RUNNING)
+        {
+            running_child_ = index;
+            return NodeStatus::RUNNING;
+        }
+        
+        if (child_status == NodeStatus::SUCCESS)
+        {
+            running_child_ = 0;
+            return NodeStatus::SUCCESS;
+        }
+    }
+    
+    running_child_ = 0;
+    return NodeStatus::FAILURE;
+}
+</code></pre>
+<p>ReactiveFallback에는 <code>running_child_</code>가 없으며, 항상 <code>index = 0</code>부터 시작한다. 이것이 “reactive“의 의미이다.</p>
+<h2>7. ROS2 Nav2에서의 ReactiveFallback 사용</h2>
+<p>Nav2의 행동 트리에서 ReactiveFallback은 우선순위 기반 행동 선택에 사용된다.</p>
+<pre><code class="language-xml">&lt;!-- Nav2의 전형적인 ReactiveFallback 사용 --&gt;
+&lt;ReactiveFallback&gt;
+    &lt;Sequence&gt;
+        &lt;GoalUpdated /&gt;
+        &lt;ComputePathToPose goal="{goal}" path="{path}" 
+                           planner_id="GridBased" /&gt;
+    &lt;/Sequence&gt;
+    &lt;FollowPath path="{path}" controller_id="FollowPath" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>목표가 갱신되면 경로를 재계획하고, 갱신되지 않으면 기존 경로를 추종한다. 목표 갱신이 경로 추종보다 높은 우선순위를 가지므로, 새로운 목표가 설정되면 기존 경로 추종이 Halt되고 경로 재계획이 수행된다.</p>
+<h2>8. 우선순위 선점의 동작 추적</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Sequence name="Emergency"&gt;
+        &lt;IsEmergency /&gt;
+        &lt;EmergencyAction /&gt;
+    &lt;/Sequence&gt;
+    &lt;NormalAction /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<pre><code>Tick 1: Emergency/IsEmergency → FAILURE
+        → Emergency → FAILURE
+        NormalAction → RUNNING
+        → ReactiveFallback → RUNNING
+
+Tick 2: Emergency/IsEmergency → SUCCESS
+        Emergency/EmergencyAction → RUNNING
+        → Emergency → RUNNING
+        NormalAction은 Tick 미수신
+        → NormalAction.halt() (이전 RUNNING)
+        → ReactiveFallback → RUNNING
+
+Tick 3: Emergency/IsEmergency → FAILURE
+        → Emergency → FAILURE
+        NormalAction → RUNNING (새로 시작)
+        → ReactiveFallback → RUNNING
+</code></pre>
+<p>Tick 2에서 비상 상황이 감지되어 <code>NormalAction</code>이 선점되고, Tick 3에서 비상 해소 시 <code>NormalAction</code>이 자동으로 재시작된다.</p>
+<h2>9. 주의 사항</h2>
+<ol>
+<li>
+<p><strong>최하위 자식의 역할</strong>: ReactiveFallback의 마지막 자식은 모든 상위 조건이 <code>FAILURE</code>일 때 실행되는 기본(default) 행동이다. 이 행동은 <code>RUNNING</code>을 반환하여 지속적으로 실행될 수 있다.</p>
+</li>
+<li>
+<p><strong>조건-행동 쌍의 Sequence 구성</strong>: ReactiveFallback의 자식으로 “조건 → 행동“의 Sequence를 배치하는 것이 일반적이다. 조건이 <code>FAILURE</code>이면 해당 Sequence가 <code>FAILURE</code>를 반환하여 다음 분기로 진행한다.</p>
+</li>
+<li>
+<p><strong>상위 분기의 조건이 빈번히 전환되면 하위 분기의 행동이 반복 Halt된다</strong>: 조건에 히스테리시스를 적용하여 불필요한 선점을 방지하라.</p>
+</li>
+</ol>
 
             </article>
             <footer>

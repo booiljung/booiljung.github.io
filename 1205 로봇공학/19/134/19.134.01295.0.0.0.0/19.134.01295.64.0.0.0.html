@@ -115,6 +115,103 @@
             </header>
             <article>
                 <h1>1295.64 Parallel과 ReactiveFallback의 동작 차이</h1>
+<h2>1. 핵심 차이 요약</h2>
+<p>Parallel 노드와 ReactiveFallback은 구조적으로 전혀 다른 실행 모델을 가진다. Parallel은 모든 자식에게 동시에 Tick을 전파하여 복수의 행동을 병렬로 진행하는 반면, ReactiveFallback은 첫 번째 자식부터 순차적으로 평가하여 가장 높은 우선순위의 활성 행동을 선택한다. 두 노드의 동작 차이는 Tick 전파, 활성 자식 수, Halt 트리거, 반환값 결정 방식에서 명확히 드러난다.</p>
+<h2>2. Tick 전파의 차이</h2>
+<h3>2.1 Parallel의 Tick 전파</h3>
+<pre><code>Parallel (Tick t)
+├── Child_A.tick() → RUNNING     ✓ 항상 Tick 수신
+├── Child_B.tick() → SUCCESS     ✓ 항상 Tick 수신
+└── Child_C.tick() → RUNNING     ✓ 항상 Tick 수신
+</code></pre>
+<p>모든 자식이 무조건 Tick을 수신한다. 자식의 상태와 무관하게, 매 Tick에서 전체 자식이 평가된다.</p>
+<h3>2.2 ReactiveFallback의 Tick 전파</h3>
+<pre><code>ReactiveFallback (Tick t, Child_A = FAILURE, Child_B = SUCCESS)
+├── Child_A.tick() → FAILURE     ✓ Tick 수신
+├── Child_B.tick() → SUCCESS     ✓ Tick 수신 (A가 FAILURE이므로 계속)
+└── Child_C                      ✗ Tick 미수신 (B가 SUCCESS이므로 중단)
+</code></pre>
+<p>ReactiveFallback은 <code>SUCCESS</code>를 반환하는 자식을 만나면 이후의 자식에게 Tick을 전파하지 않는다. 따라서 한 번의 Tick에서 Tick을 수신하는 자식의 수는 첫 번째 <code>SUCCESS</code> 자식의 위치에 의존한다.</p>
+<h2>3. 활성 자식 수의 차이</h2>
+<p>Parallel에서는 복수의 자식이 동시에 <code>RUNNING</code> 상태일 수 있다. 모든 자식이 매 Tick에서 Tick을 수신하므로, 복수의 장기 실행 행동이 논리적으로 동시에 진행된다.</p>
+<p>ReactiveFallback에서는 최대 하나의 자식만이 <code>RUNNING</code> 상태이다. 첫 번째로 <code>SUCCESS</code>를 반환하는 자식을 만나면 후속 자식은 평가되지 않으므로, <code>RUNNING</code>을 반환하는 자식은 최대 하나이다. 이 특성은 ReactiveFallback이 “선택“의 의미론을 가진다는 것을 나타낸다.</p>
+<h2>4. Halt 트리거의 차이</h2>
+<h3>4.1 Parallel의 Halt 트리거</h3>
+<p>Parallel은 성공 정책 또는 실패 정책이 충족될 때 나머지 <code>RUNNING</code> 자식에 Halt를 전파한다.</p>
+<pre><code>Parallel (failure_policy: FAILURE_ONE, Tick t)
+├── Child_A.tick() → FAILURE     → 정책 충족
+├── Child_B (RUNNING)            → halt()
+└── Child_C (RUNNING)            → halt()
+</code></pre>
+<p>정책이 충족되지 않으면 Halt는 발생하지 않는다.</p>
+<h3>4.2 ReactiveFallback의 Halt 트리거</h3>
+<p>ReactiveFallback은 상위 우선순위 자식이 <code>SUCCESS</code>를 반환할 때, 이전 Tick에서 <code>RUNNING</code>이었던 하위 우선순위 자식에 Halt를 전파한다.</p>
+<pre><code>ReactiveFallback (이전 Tick: Child_C = RUNNING)
+├── Sequence [조건 A]
+│   ├── IsConditionA → SUCCESS   → 이 분기가 활성화
+│   └── ActionA → RUNNING
+├── Sequence [조건 B]            → Tick 미수신
+└── Child_C (이전 RUNNING)       → halt()
+</code></pre>
+<p>상위 우선순위 분기가 활성화되면, 이전에 <code>RUNNING</code>이었던 하위 분기에 자동으로 Halt가 전파된다. 이는 우선순위 선점(preemption) 메커니즘이다.</p>
+<h2>5. 반환값 결정 방식의 차이</h2>
+<h3>5.1 Parallel의 반환값</h3>
+<p>Parallel의 반환값은 모든 자식의 결과를 종합하여 정책에 따라 결정된다.</p>
+<ul>
+<li>SUCCESS_ALL: 모든 자식이 <code>SUCCESS</code>이면 <code>SUCCESS</code></li>
+<li>SUCCESS_ONE: 하나의 자식이 <code>SUCCESS</code>이면 <code>SUCCESS</code></li>
+<li>FAILURE_ONE: 하나의 자식이 <code>FAILURE</code>이면 <code>FAILURE</code></li>
+<li>FAILURE_ALL: 모든 자식이 <code>FAILURE</code>이면 <code>FAILURE</code></li>
+</ul>
+<h3>5.2 ReactiveFallback의 반환값</h3>
+<p>ReactiveFallback의 반환값은 첫 번째로 <code>SUCCESS</code> 또는 <code>RUNNING</code>을 반환하는 자식에 의해 결정된다.</p>
+<ul>
+<li>자식 중 하나가 <code>SUCCESS</code> → <code>SUCCESS</code></li>
+<li>자식 중 하나가 <code>RUNNING</code> (앞선 자식이 모두 <code>FAILURE</code>) → <code>RUNNING</code></li>
+<li>모든 자식이 <code>FAILURE</code> → <code>FAILURE</code></li>
+</ul>
+<h2>6. 동일 시나리오에서의 동작 비교</h2>
+<p>“배터리 부족이면 귀환, 아니면 임무 수행“이라는 요구 사항을 두 노드로 각각 구현한다.</p>
+<h3>6.1 Parallel 기반 구현</h3>
+<p>Parallel은 우선순위 기반 선택을 직접 표현하기에 적합하지 않다. 강제로 구현하면 다음과 같다.</p>
+<pre><code>Parallel (success_policy: SUCCESS_ONE)
+├── Sequence [배터리 부족 귀환]
+│   ├── IsBatteryLow
+│   └── ReturnToBase
+└── Sequence [정상 임무]
+    ├── Inverter
+    │   └── IsBatteryLow
+    └── ExecuteMission
+</code></pre>
+<p><code>IsBatteryLow</code>가 <code>SUCCESS</code>이면 귀환 분기가 활성화되고 임무 분기의 조건이 <code>FAILURE</code>가 되어야 한다. 그러나 두 분기 모두 Tick을 수신하므로, 배터리 부족 시에도 <code>ExecuteMission</code>의 조건이 <code>FAILURE</code>를 반환할 때까지 한 번 이상 평가된다. 또한 <code>IsBatteryLow</code> 조건이 두 번 평가되는 비효율이 있다.</p>
+<h3>6.2 ReactiveFallback 기반 구현</h3>
+<pre><code>ReactiveFallback
+├── Sequence [배터리 부족 귀환]
+│   ├── IsBatteryLow
+│   └── ReturnToBase
+└── ExecuteMission
+</code></pre>
+<p><code>IsBatteryLow</code>가 <code>SUCCESS</code>이면 <code>ReturnToBase</code>가 실행되고, <code>ExecuteMission</code>은 Tick을 수신하지 않는다. <code>IsBatteryLow</code>가 <code>FAILURE</code>이면 해당 Sequence가 <code>FAILURE</code>를 반환하고, <code>ExecuteMission</code>이 Tick을 수신한다.</p>
+<p>ReactiveFallback이 이 요구 사항을 더 자연스럽고 효율적으로 표현한다.</p>
+<h2>7. 우선순위 전환의 차이</h2>
+<h3>7.1 Parallel에서의 전환</h3>
+<p>Parallel은 우선순위 전환의 개념을 가지지 않는다. 모든 자식이 동등하게 Tick을 수신하며, 한 자식의 상태가 다른 자식의 Tick 수신에 영향을 미치지 않는다(정책 충족에 의한 Halt 제외).</p>
+<h3>7.2 ReactiveFallback에서의 전환</h3>
+<p>ReactiveFallback은 매 Tick에서 우선순위를 재평가한다. 상위 우선순위 분기의 조건이 활성화되면 하위 분기의 행동이 자동으로 Halt되고, 상위 분기의 행동이 시작된다. 이 전환은 하나의 Tick 내에서 이루어진다.</p>
+<pre><code>Tick t:   모든 상위 조건 FAILURE → ExecuteMission RUNNING
+Tick t+1: IsBatteryLow SUCCESS → ReturnToBase RUNNING
+          ExecuteMission.halt()  (자동 선점)
+</code></pre>
+<h2>8. 적용 시나리오별 선택</h2>
+<table><thead><tr><th>시나리오</th><th>Parallel</th><th>ReactiveFallback</th></tr></thead><tbody>
+<tr><td>복수 행동 동시 수행</td><td>적합</td><td>부적합</td></tr>
+<tr><td>우선순위 기반 행동 선택</td><td>부적합</td><td>적합</td></tr>
+<tr><td>행동 + 감시 동시 수행</td><td>적합</td><td>부적합</td></tr>
+<tr><td>비상 대응 선점</td><td>부적합</td><td>적합</td></tr>
+<tr><td>다중 센서 동시 처리</td><td>적합</td><td>부적합</td></tr>
+<tr><td>환경 적응적 행동 전환</td><td>간접적</td><td>직접적</td></tr>
+</tbody></table>
+<p>Parallel은 “동시에 수행“의 의미론에, ReactiveFallback은 “우선순위에 따라 선택“의 의미론에 각각 특화되어 있다. 설계 목적에 부합하는 노드를 선택하여야 한다.</p>
 
             </article>
             <footer>

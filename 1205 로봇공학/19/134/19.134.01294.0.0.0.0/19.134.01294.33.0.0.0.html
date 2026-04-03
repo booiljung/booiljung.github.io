@@ -115,6 +115,97 @@
             </header>
             <article>
                 <h1>1294.33 Fallback 노드의 Success 반환 조건</h1>
+<h2>1. SUCCESS 반환의 정의</h2>
+<p>Fallback 노드가 SUCCESS를 반환하는 조건은 “하나 이상의 자식이 SUCCESS를 반환하는 것“이다. 더 정확하게는, 좌→우 순차 평가에서 최초로 SUCCESS를 반환하는 자식이 발견되면, Fallback은 즉시 SUCCESS를 반환하고 나머지 자식의 평가를 중단한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 형식적 조건</h2>
+<p>자식 <span class="math math-inline">c_1, c_2, ..., c_N</span>을 가진 Fallback이 SUCCESS를 반환하는 필요충분조건은 다음과 같다:</p>
+<p><span class="math math-display">\exists k \in [1, N]: c_k = \text{SUCCESS} \land \forall j &lt; k: c_j = \text{FAILURE}</span></p>
+<p>즉, 인덱스 <span class="math math-inline">k</span>의 자식이 SUCCESS를 반환하고, 그 앞의 모든 자식(<span class="math math-inline">c_1</span>부터 <span class="math math-inline">c_{k-1}</span>까지)이 FAILURE를 반환해야 한다.</p>
+<h2>SUCCESS 반환의 다양한 경우</h2>
+<h3>경우 1: 첫 번째 자식의 즉시 성공</h3>
+<pre><code>children: [A, B, C]
+
+tick():
+  A.executeTick() → SUCCESS
+  → return SUCCESS    (B, C 미평가)
+</code></pre>
+<p>가장 선호되는 방안(A)이 성공하여 대안 탐색이 불필요한 경우이다.</p>
+<h3>경우 2: 중간 자식의 성공</h3>
+<pre><code>children: [A, B, C]
+
+tick():
+  A.executeTick() → FAILURE
+  B.executeTick() → SUCCESS
+  → return SUCCESS    (C 미평가)
+</code></pre>
+<p>첫 번째 방안이 실패하고 두 번째 대안이 성공한 경우이다.</p>
+<h3>경우 3: 마지막 자식의 성공</h3>
+<pre><code>children: [A, B, C]
+
+tick():
+  A.executeTick() → FAILURE
+  B.executeTick() → FAILURE
+  C.executeTick() → SUCCESS
+  → return SUCCESS
+</code></pre>
+<p>모든 선호 방안이 실패하고 최후 수단이 성공한 경우이다. 모든 자식이 평가되었지만 최종적으로 SUCCESS를 반환한다.</p>
+<h2>SUCCESS와 조기 종료</h2>
+<p>Fallback에서 SUCCESS 반환은 곧 조기 종료(short-circuit)를 의미한다. SUCCESS가 발생한 자식 이후의 모든 자식은 평가되지 않으며, 이는 OR 연산의 단락 평가 특성과 동일하다.</p>
+<pre><code>children: [A, B, C, D, E]
+
+A→FAILURE, B→SUCCESS
+→ return SUCCESS
+
+평가된 자식: A, B (2개)
+미평가 자식: C, D, E (3개)
+</code></pre>
+<p>이 조기 종료 특성은 성능 최적화에 기여한다. 성공 확률이 높은 자식을 왼쪽에 배치하면, 평균적으로 더 적은 자식이 평가된다.</p>
+<h2>조건 노드의 SUCCESS와 Fallback</h2>
+<p>Fallback의 첫 번째 자식이 조건 노드인 경우, 조건의 SUCCESS는 “이미 목표 상태에 도달해 있으므로 행동이 불필요하다“는 의미를 가진다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Condition ID="IsAtChargingStation"/&gt;    &lt;!-- 이미 충전소에 있는가? --&gt;
+    &lt;Action ID="NavigateToChargingStation"/&gt; &lt;!-- 아니라면 충전소로 이동 --&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>시나리오 1: 로봇이 충전소에 위치
+  IsAtChargingStation → SUCCESS
+  → Fallback SUCCESS (네비게이션 불필요)
+
+시나리오 2: 로봇이 충전소에 없음
+  IsAtChargingStation → FAILURE
+  NavigateToChargingStation → RUNNING/SUCCESS
+</code></pre>
+<p>조건의 SUCCESS는 Fallback을 즉시 종료시키므로, 불필요한 액션의 실행을 방지한다.</p>
+<h2>WithMemory와 Reactive에서의 SUCCESS 차이</h2>
+<h3>FallbackWithMemory의 SUCCESS</h3>
+<p>FallbackWithMemory에서 SUCCESS가 반환되면, <code>current_child_idx</code>가 0으로 초기화된다.</p>
+<pre><code>Tick 1: A→F, B→R (idx=1)
+Tick 2: B→S      (A 건너뜀)
+        idx ← 0
+        → SUCCESS
+</code></pre>
+<h3>ReactiveFallback의 SUCCESS</h3>
+<p>ReactiveFallback에서는 매 Tick마다 처음부터 재평가하므로, 이전에 FAILURE였던 앞쪽 자식이 SUCCESS로 변하면 뒤쪽의 RUNNING 자식이 Halt된다.</p>
+<pre><code>Tick 1: A→F, B→R
+Tick 2: A→S      (A가 SUCCESS로 변경)
+        B→Halt   (RUNNING 자식 중단)
+        → SUCCESS
+</code></pre>
+<p>이 동작은 “더 우선순위가 높은 방안이 가용해지면 즉시 전환“하는 의미론을 구현한다.</p>
+<h2>Sequence의 SUCCESS와의 비교</h2>
+<table><thead><tr><th>특성</th><th>Sequence의 SUCCESS</th><th>Fallback의 SUCCESS</th></tr></thead><tbody>
+<tr><td>조건</td><td>모든 자식 SUCCESS</td><td>하나의 자식 SUCCESS</td></tr>
+<tr><td>의미</td><td>“모든 단계 완료”</td><td>“하나의 대안 성공”</td></tr>
+<tr><td>평가된 자식 수</td><td>항상 N개</td><td>1개~N개</td></tr>
+<tr><td>조기 종료 여부</td><td>아니오 (모든 자식 필요)</td><td>예 (첫 SUCCESS에서 종료)</td></tr>
+</tbody></table>
+<p>Sequence의 SUCCESS는 모든 자식이 성공한 “완전한 달성“을 의미하는 반면, Fallback의 SUCCESS는 하나의 대안이 성공한 “부분적 달성“을 의미한다.</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

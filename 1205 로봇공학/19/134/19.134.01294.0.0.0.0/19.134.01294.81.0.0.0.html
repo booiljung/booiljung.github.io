@@ -115,6 +115,181 @@
             </header>
             <article>
                 <h1>1294.81 Sequence-Fallback 중첩에서의 오류 전파 흐름</h1>
+<h2>1. 중첩 구조에서의 오류 전파 개관</h2>
+<p>행동 트리의 실제 설계에서 Sequence와 Fallback은 다층으로 중첩되어 복잡한 오류 처리 구조를 형성한다. 오류(FAILURE)는 발생 지점에서 트리 구조를 따라 상향 전파되며, 각 노드의 유형에 따라 전파되거나 흡수된다. Sequence는 FAILURE를 즉시 상위로 전파하고, Fallback은 FAILURE를 흡수하여 다음 대안을 시도한다. 이 두 노드의 조합에 의해 오류의 전파 범위와 복구 전략이 결정된다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 오류 전파의 기본 규칙</h2>
+<h3>2.1 노드 유형별 FAILURE 처리</h3>
+<table><thead><tr><th>노드 유형</th><th>FAILURE 수신 시 동작</th><th>결과</th></tr></thead><tbody>
+<tr><td>Sequence</td><td>즉시 FAILURE 반환 (전파)</td><td>상위로 전파</td></tr>
+<tr><td>Fallback</td><td>다음 자식 시도 (흡수)</td><td>모두 실패 시에만 전파</td></tr>
+<tr><td>데코레이터</td><td>데코레이터 유형에 따라 다름</td><td>ForceSuccess: 흡수, Inverter: 반전</td></tr>
+</tbody></table>
+<h2>3. 계층 중첩의 오류 전파</h2>
+<h3>3.1 Fallback 내 Sequence 중첩</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="CondA"/&gt;      &lt;!-- FAILURE 발생 --&gt;
+        &lt;Action ID="ActionA"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="CondB"/&gt;      &lt;!-- SUCCESS --&gt;
+        &lt;Action ID="ActionB"/&gt;       &lt;!-- SUCCESS --&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>오류 전파 흐름:
+CondA→F → Sequence1: FAILURE
+          ↓ (Fallback이 흡수)
+          CondB→S, ActionB→S → Sequence2: SUCCESS
+          → Fallback: SUCCESS
+</code></pre>
+<p>CondA의 FAILURE가 Sequence1을 통해 전파되지만, Fallback이 이를 흡수하고 Sequence2를 시도한다. Sequence2가 성공하면 전체 Fallback이 SUCCESS를 반환한다.</p>
+<h3>3.2 Sequence 내 Fallback 중첩</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="Step1"/&gt;              &lt;!-- SUCCESS --&gt;
+    &lt;Fallback&gt;
+        &lt;Action ID="Primary"/&gt;        &lt;!-- FAILURE --&gt;
+        &lt;Action ID="Alternative"/&gt;    &lt;!-- FAILURE --&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="Step3"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>오류 전파 흐름:
+Step1→S
+Primary→F → (Fallback이 흡수) → Alternative→F
+           → Fallback: FAILURE (모든 대안 소진)
+           ↓ (Sequence로 전파)
+           → Sequence: FAILURE (Step3 미실행)
+</code></pre>
+<p>Fallback이 오류를 흡수하려 했으나 모든 대안이 실패하여, FAILURE가 Fallback을 벗어나 상위 Sequence로 전파된다.</p>
+<h2>4. 계층 중첩의 오류 전파</h2>
+<h3>4.1 전형적인 3계층 구조</h3>
+<pre><code class="language-xml">&lt;Fallback name="L1"&gt;
+    &lt;Sequence name="L2_Seq"&gt;
+        &lt;Condition ID="IsPrecondition"/&gt;    &lt;!-- FAILURE --&gt;
+        &lt;Fallback name="L3_FB"&gt;
+            &lt;Action ID="Method1"/&gt;
+            &lt;Action ID="Method2"/&gt;
+        &lt;/Fallback&gt;
+    &lt;/Sequence&gt;
+    &lt;Action ID="SafeAction"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>오류 전파 흐름:
+IsPrecondition→F → L2_Seq: FAILURE (L3_FB 미실행)
+                   ↓ (L1이 흡수)
+                   SafeAction→S
+                   → L1: SUCCESS
+</code></pre>
+<p>전제 조건의 FAILURE가 L2_Seq를 통해 전파되지만, 최외곽 L1 Fallback이 흡수하여 SafeAction을 실행한다.</p>
+<h3>4.2 깊은 중첩에서의 전파 경로</h3>
+<pre><code class="language-xml">&lt;Sequence name="Mission"&gt;
+    &lt;Fallback name="NavFB"&gt;
+        &lt;Sequence name="PrimaryNav"&gt;
+            &lt;Action ID="ComputePath"/&gt;
+            &lt;Action ID="FollowPath"/&gt;      &lt;!-- FAILURE 발생 --&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence name="RecoveryNav"&gt;
+            &lt;Action ID="ClearCostmap"/&gt;
+            &lt;Action ID="ComputePath"/&gt;
+            &lt;Action ID="FollowPath"/&gt;      &lt;!-- FAILURE 발생 --&gt;
+        &lt;/Sequence&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="PerformTask"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<pre><code>오류 전파 흐름 (최악의 경우):
+FollowPath→F → PrimaryNav: FAILURE
+               ↓ (NavFB가 흡수)
+               ClearCostmap→S, ComputePath→S, FollowPath→F
+               → RecoveryNav: FAILURE
+               → NavFB: FAILURE (모든 대안 소진)
+               ↓ (Mission Sequence로 전파)
+               → Mission: FAILURE (PerformTask 미실행)
+</code></pre>
+<h2>5. 오류 전파의 시각적 추적</h2>
+<h3>5.1 전파 경로 다이어그램</h3>
+<pre><code>Mission (Sequence)
+├── NavFB (Fallback)
+│   ├── PrimaryNav (Sequence)
+│   │   ├── ComputePath → S
+│   │   └── FollowPath → F ←── 오류 발생 지점
+│   │       ↓ FAILURE 전파
+│   │   PrimaryNav → F
+│   │       ↓ Fallback 흡수
+│   ├── RecoveryNav (Sequence)
+│   │   ├── ClearCostmap → S
+│   │   ├── ComputePath → S
+│   │   └── FollowPath → F ←── 2차 오류 발생
+│   │       ↓ FAILURE 전파
+│   │   RecoveryNav → F
+│   │       ↓ 모든 대안 소진
+│   NavFB → F
+│       ↓ FAILURE 전파
+Mission → F
+</code></pre>
+<p>오류는 발생 지점에서 시작하여, Sequence를 만나면 상향 전파되고, Fallback을 만나면 흡수되어 다음 대안으로 전환된다. 모든 대안이 소진되면 다시 상향 전파가 시작된다.</p>
+<h2>6. 오류 차단 지점의 설계</h2>
+<h3>6.1 차단 지점의 배치</h3>
+<pre><code class="language-xml">&lt;Sequence name="Mission"&gt;
+    &lt;!-- 차단 지점 1: 네비게이션 실패 차단 --&gt;
+    &lt;Fallback&gt;
+        &lt;Action ID="Navigate"/&gt;
+        &lt;Action ID="RecoverAndNavigate"/&gt;
+        &lt;Action ID="WaitAndNavigate"/&gt;
+    &lt;/Fallback&gt;
+    &lt;!-- 차단 지점 2: 파지 실패 차단 --&gt;
+    &lt;Fallback&gt;
+        &lt;Action ID="Grasp"/&gt;
+        &lt;Action ID="AdjustAndGrasp"/&gt;
+        &lt;Action ID="RequestHelp"/&gt;
+    &lt;/Fallback&gt;
+    &lt;Action ID="Deliver"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>각 Sequence 단계에서 실패 가능성이 있는 행동을 Fallback으로 감싸서, 개별 단계의 실패가 전체 임무를 중단시키지 않도록 오류를 차단한다.</p>
+<h3>6.2 오류 차단의 범위 결정</h3>
+<table><thead><tr><th>차단 범위</th><th>구조</th><th>효과</th></tr></thead><tbody>
+<tr><td>좁은 차단</td><td>개별 행동에 Fallback</td><td>세밀한 복구, 높은 가용성</td></tr>
+<tr><td>넓은 차단</td><td>행동 그룹에 Fallback</td><td>간결한 구조, 전체적 복구</td></tr>
+<tr><td>차단 없음</td><td>Fallback 없이 Sequence</td><td>단일 실패로 전체 중단</td></tr>
+</tbody></table>
+<h2>7. Halt와 오류 전파의 결합</h2>
+<h3>7.1 ReactiveSequence에서의 Halt + Fallback 복구</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsSafe"/&gt;
+        &lt;Action ID="Mission"/&gt;        &lt;!-- Halt 발생 가능 --&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;Action ID="SafeStop"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<pre><code>IsSafe→F → Mission.halt()           (Halt 발생)
+          → ReactiveSequence: FAILURE
+          → Fallback이 흡수 → SafeStop 실행
+</code></pre>
+<p>안전 조건 위반에 의한 Halt와 이로 인한 FAILURE가 Fallback에 의해 흡수되어, 안전 정지 행동으로 전환된다. Halt에 의한 오류와 Fallback에 의한 복구가 단일 Tick 내에서 결합된다.</p>
+<h2>8. 설계 시 고려 사항</h2>
+<ol>
+<li>
+<p><strong>전파 경로의 예측</strong>: 트리를 설계할 때 FAILURE의 전파 경로를 사전에 추적하여, 의도하지 않은 곳까지 오류가 전파되지 않도록 한다.</p>
+</li>
+<li>
+<p><strong>차단 지점의 적절한 배치</strong>: 복구 가능한 오류는 발생 지점 가까이에서 차단하고, 치명적 오류는 상위까지 전파되도록 설계한다.</p>
+</li>
+<li>
+<p><strong>부수 효과의 누적 인지</strong>: Sequence 내에서 여러 자식이 성공한 후 FAILURE가 발생하면, 이전 자식들의 부수 효과가 누적된 상태이다. 복구 행동은 이 누적된 부수 효과를 고려해야 한다.</p>
+</li>
+<li>
+<p><strong>디버깅을 위한 추적</strong>: 복잡한 중첩 구조에서의 오류 전파는 추적이 어려우므로, 각 노드의 반환 상태를 로깅하여 오류 경로를 시각화할 수 있도록 한다(Faconti, 2022).</p>
+</li>
+</ol>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D. (2022). BehaviorTree.CPP documentation and API reference. https://www.behaviortree.dev/</li>
+</ul>
 
             </article>
             <footer>

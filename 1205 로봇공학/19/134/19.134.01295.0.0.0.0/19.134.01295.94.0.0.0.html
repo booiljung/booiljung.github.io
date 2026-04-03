@@ -115,6 +115,139 @@
             </header>
             <article>
                 <h1>1295.94 Parallel과 Reactive 노드의 모범 사례</h1>
+<h2>1. Parallel 노드의 모범 사례</h2>
+<h3>1.1 자식 노드의 독립성 보장</h3>
+<p>Parallel 노드의 자식은 상호 독립적으로 동작하여야 한다. 자식 간에 실행 순서 의존성이 존재하면, 단일 스레드에서의 순차적 Tick 순서에 의존하는 암묵적 결합이 발생한다. 이는 행동 트리의 리팩토링이나 라이브러리 버전 변경 시 예측 불가능한 결함을 유발한다.</p>
+<pre><code class="language-xml">&lt;!-- 모범: 독립적 자식 --&gt;
+&lt;ParallelAll max_failures="0"&gt;
+    &lt;NavigateToGoal goal="{target}"/&gt;
+    &lt;MonitorBattery threshold="15.0"/&gt;
+&lt;/ParallelAll&gt;
+
+&lt;!-- 위반: 자식 간 블랙보드 의존 --&gt;
+&lt;ParallelAll max_failures="0"&gt;
+    &lt;ComputePath path="{computed_path}"/&gt;
+    &lt;FollowPath path="{computed_path}"/&gt;  &lt;!-- ComputePath에 의존 --&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<p>두 번째 예시에서 <code>FollowPath</code>는 <code>ComputePath</code>가 블랙보드에 기록한 경로에 의존하므로, Parallel이 아닌 Sequence로 구성하여야 한다.</p>
+<h3>1.2 안전 감시와 주 행동의 분리</h3>
+<p>Parallel 노드를 안전 감시에 활용할 때, 안전 감시 조건 노드와 주 행동 노드를 명확히 분리하고, 안전 조건이 FAILURE를 반환하면 주 행동이 즉시 중단되도록 정책을 설정한다.</p>
+<pre><code class="language-xml">&lt;ParallelAll max_failures="0"&gt;
+    &lt;IsSafeToOperate/&gt;     &lt;!-- 안전 조건 --&gt;
+    &lt;ExecuteMainTask/&gt;     &lt;!-- 주 행동 --&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<p><code>max_failures="0"</code>으로 설정하면 안전 조건이 FAILURE를 반환하는 즉시 Parallel이 FAILURE를 반환하고, 주 행동이 Halt된다.</p>
+<h3>1.3 정책 매개변수의 명시적 설정</h3>
+<p><code>max_failures</code>의 값을 명시적으로 설정하고, 해당 값의 의미를 XML 주석으로 기록한다. 기본값에 의존하면 정책의 의도가 불명확해진다.</p>
+<pre><code class="language-xml">&lt;!-- 모범: 명시적 설정과 주석 --&gt;
+&lt;ParallelAll max_failures="1"&gt;
+    &lt;!-- 3개 센서 중 1개 실패 허용: 2/3 다수결 --&gt;
+    &lt;LidarCheck/&gt;
+    &lt;CameraCheck/&gt;
+    &lt;UltrasonicCheck/&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
+<h3>1.4 자식 수의 제한</h3>
+<p>Parallel 노드의 자식 수를 실용적 범위(2~5개)로 제한한다. 자식 수가 증가하면 상태 조합이 기하급수적으로 증가하여 디버깅과 테스트가 어려워지고, Tick 시간이 선형적으로 증가한다. 자식이 5개를 초과하면 계층적 Parallel 구성을 고려한다.</p>
+<h3>1.5 Halt 처리의 완전성 보장</h3>
+<p>Parallel의 자식으로 사용되는 커스텀 행동 노드는 <code>onHalted()</code> 메서드를 반드시 구현하여, Halt 시 자원 해제와 상태 정리가 완전히 수행되도록 한다.</p>
+<pre><code class="language-cpp">class RobotAction : public BT::StatefulActionNode
+{
+    BT::NodeStatus onStart() override { /* ... */ }
+    BT::NodeStatus onRunning() override { /* ... */ }
+
+    void onHalted() override
+    {
+        // 반드시 구현: 자원 해제, 액션 취소
+        cancelRosAction();
+        releaseResources();
+    }
+};
+</code></pre>
+<h2>2. ReactiveSequence의 모범 사례</h2>
+<h3>2.1 조건 노드를 앞에, 행동 노드를 뒤에 배치</h3>
+<p>ReactiveSequence의 전형적 패턴은 조건 노드를 앞에, 행동 노드를 뒤에 배치하는 것이다. 조건 노드는 매 Tick마다 재평가되어 전제 조건의 지속적 충족을 보장하고, 조건 위반 시 행동이 즉시 중단된다.</p>
+<pre><code class="language-xml">&lt;!-- 모범: 조건 → 행동 패턴 --&gt;
+&lt;ReactiveSequence&gt;
+    &lt;IsLocalized/&gt;
+    &lt;IsPathValid path="{path}"/&gt;
+    &lt;FollowPath path="{path}"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<h3>2.2 조건 노드의 경량 구현</h3>
+<p>ReactiveSequence에서 매 Tick마다 재평가되는 조건 노드는 블랙보드에서 값을 읽는 것으로 한정하여 경량으로 구현한다. 무거운 연산은 별도의 비동기 프로세스에서 수행하고 결과를 블랙보드에 기록한다.</p>
+<pre><code class="language-cpp">// 모범: 블랙보드 읽기만 수행
+BT::NodeStatus IsLocalized::tick()
+{
+    bool localized = getInput&lt;bool&gt;("is_localized").value();
+    return localized ? BT::NodeStatus::SUCCESS 
+                     : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>2.3 조건의 안정성 확보</h3>
+<p>센서 잡음에 의해 조건이 빈번하게 SUCCESS와 FAILURE 사이를 진동하면, 행동의 반복적 시작과 Halt가 발생하여 로봇의 동작이 불안정해진다. 조건에 히스테리시스를 적용하여 안정성을 확보한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsBatteryLow::tick()
+{
+    double level = getInput&lt;double&gt;("battery_level").value();
+
+    if (was_low_)
+    {
+        // 이전에 LOW 판정 → 복귀 임계값(20%)을 초과해야 정상 복귀
+        was_low_ = (level &lt; 20.0);
+    }
+    else
+    {
+        // 이전에 정상 → 진입 임계값(15%) 미만이어야 LOW 판정
+        was_low_ = (level &lt; 15.0);
+    }
+
+    return was_low_ ? BT::NodeStatus::SUCCESS 
+                    : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>3. ReactiveFallback의 모범 사례</h2>
+<h3>3.1 우선순위의 명확한 설정</h3>
+<p>ReactiveFallback의 자식은 우선순위 순서(높은 → 낮은)로 배치한다. 각 분기에 명확한 이름과 주석을 부여하여 우선순위의 의도를 기록한다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;!-- P0: 인간 안전 (최고 우선순위) --&gt;
+    &lt;Sequence name="P0_HumanSafety"&gt;
+        &lt;IsHumanNearby distance="1.0"/&gt;
+        &lt;SafeStop/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- P1: 시스템 보호 --&gt;
+    &lt;Sequence name="P1_SystemProtection"&gt;
+        &lt;IsBatteryLow threshold="10.0"/&gt;
+        &lt;ReturnToBase/&gt;
+    &lt;/Sequence&gt;
+    &lt;!-- P2: 임무 수행 (기본 행동) --&gt;
+    &lt;ExecuteMission/&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<h3>3.2 기본 행동의 존재 보장</h3>
+<p>ReactiveFallback의 마지막 자식은 모든 상위 조건이 비활성일 때 실행되는 기본 행동이어야 한다. 기본 행동이 없으면 모든 조건이 FAILURE일 때 ReactiveFallback이 FAILURE를 반환하여 로봇이 무동작 상태에 빠진다.</p>
+<h3>3.3 조건-행동 쌍의 Sequence 구조</h3>
+<p>각 우선순위 분기를 조건-행동 쌍의 Sequence로 구성한다. 조건이 FAILURE이면 Sequence가 FAILURE를 반환하여 다음 분기로 진행하고, 조건이 SUCCESS이면 행동이 실행된다.</p>
+<h2>4. 공통 모범 사례</h2>
+<h3>4.1 블랙보드 접근의 최소화</h3>
+<p>블랙보드의 <code>getInput()</code>과 <code>setOutput()</code> 호출은 타입 변환 비용을 수반하므로, 불필요한 호출을 줄인다. 동일한 블랙보드 값을 여러 번 읽어야 하는 경우 지역 변수에 캐싱한다.</p>
+<h3>4.2 테스트 가능한 설계 유지</h3>
+<p>커스텀 노드는 모의(mock) 노드로 대체 가능한 인터페이스를 유지하여, 단위 테스트에서 격리된 환경을 구성할 수 있도록 한다. 정책 로직은 별도의 클래스로 분리하여 독립적으로 테스트한다.</p>
+<h3>4.3 로깅과 관찰 가능성 확보</h3>
+<p>Parallel 및 Reactive 노드에 로거를 연결하여, 상태 변화와 우선순위 전환을 기록한다. 개발 단계에서는 <code>StdCoutLogger</code>, 운영 단계에서는 <code>FileLogger2</code>를 활용한다.</p>
+<h3>4.4 중첩 깊이의 제한</h3>
+<p>Parallel 내부의 Reactive, Reactive 내부의 Parallel 등의 중첩은 2~3 수준 이내로 제한한다. 중첩이 깊어지면 상태 공간이 기하급수적으로 증가하여 동작 예측과 디버깅이 극히 어려워진다.</p>
+<h3>4.5 XML에서의 명확한 명명</h3>
+<p>모든 노드에 <code>name</code> 속성을 부여하여 로그와 시각화에서의 식별을 용이하게 한다.</p>
+<pre><code class="language-xml">&lt;ParallelAll name="SafeNavigation" max_failures="0"&gt;
+    &lt;ReactiveSequence name="SafetyGuard"&gt;
+        &lt;IsSafe name="CheckSafety"/&gt;
+        &lt;Navigate name="MoveToGoal" goal="{target}"/&gt;
+    &lt;/ReactiveSequence&gt;
+    &lt;MonitorEnvironment name="EnvMonitor"/&gt;
+&lt;/ParallelAll&gt;
+</code></pre>
 
             </article>
             <footer>

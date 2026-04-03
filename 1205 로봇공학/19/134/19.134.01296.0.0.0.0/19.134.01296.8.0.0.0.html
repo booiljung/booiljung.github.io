@@ -115,6 +115,110 @@
             </header>
             <article>
                 <h1>1296.8 동기 액션 노드의 실행 모델</h1>
+<h2>1. 실행 모델의 개요</h2>
+<p>동기 액션 노드(<code>SyncActionNode</code>)의 실행 모델은 단일 호출-반환(call-return) 패턴이다. 부모 제어 노드가 <code>executeTick()</code>을 호출하면, 동기 액션 노드는 <code>tick()</code> 메서드를 실행하고 SUCCESS 또는 FAILURE를 즉시 반환한다. 이 과정에서 상태 전이는 IDLE → SUCCESS(또는 FAILURE) → IDLE의 단순한 형태를 따른다.</p>
+<h2>2. 상태 전이 모델</h2>
+<p>동기 액션 노드의 상태 전이를 형식적으로 표현하면 다음과 같다.</p>
+<pre><code>                   tick() 호출
+        IDLE ─────────────────────→ SUCCESS
+                                         │
+                    부모에 의한 초기화    │
+        IDLE ←───────────────────────────┘
+        
+                   tick() 호출
+        IDLE ─────────────────────→ FAILURE
+                                         │
+                    부모에 의한 초기화    │
+        IDLE ←───────────────────────────┘
+</code></pre>
+<p>RUNNING 상태를 거치지 않으므로, 상태 전이 다이어그램이 극도로 단순하다. 이 단순성이 동기 액션 노드의 설계와 테스트를 용이하게 한다.</p>
+<h2>3. executeTick()의 내부 동작</h2>
+<p>BehaviorTree.CPP에서 <code>SyncActionNode::executeTick()</code>의 내부 동작 순서를 상세히 기술한다.</p>
+<pre><code class="language-cpp">NodeStatus SyncActionNode::executeTick()
+{
+    // 1. 사전 조건 검사 (4.x의 PreCondition 메커니즘)
+    auto pre_result = checkPreConditions();
+    if (pre_result.has_value())
+        return pre_result.value();
+
+    // 2. 상태를 RUNNING으로 임시 설정 (내부 용도)
+    setStatus(NodeStatus::RUNNING);
+
+    // 3. tick() 호출
+    NodeStatus status = tick();
+
+    // 4. RUNNING 반환 검사
+    if (status == NodeStatus::RUNNING)
+    {
+        throw LogicError(
+            "SyncActionNode MUST NOT return RUNNING");
+    }
+
+    // 5. 상태 설정 및 반환
+    setStatus(status);
+
+    // 6. 사후 조건 검사 (4.x의 PostCondition 메커니즘)
+    auto post_result = checkPostConditions(status);
+    if (post_result.has_value())
+        return post_result.value();
+
+    return status;
+}
+</code></pre>
+<p>단계 2에서 상태를 RUNNING으로 임시 설정하는 것은 로거가 상태 변화(IDLE → RUNNING → SUCCESS/FAILURE)를 추적할 수 있도록 하기 위한 내부 메커니즘이다. 외부에서 관찰하면 RUNNING 상태는 순간적이며, <code>executeTick()</code> 반환 시 이미 SUCCESS 또는 FAILURE로 전이된 상태이다.</p>
+<h2>4. 단일 Tick 실행 시맨틱</h2>
+<p>동기 액션 노드의 단일 Tick 실행 시맨틱은 다음과 같이 정의한다.</p>
+<ol>
+<li>
+<p><strong>원자성(Atomicity)</strong>: <code>tick()</code> 메서드의 실행은 원자적이다. 메서드 진입부터 반환까지 다른 노드가 개입할 수 없다.</p>
+</li>
+<li>
+<p><strong>결정론성(Determinism)</strong>: 동일한 입력(블랙보드 상태, 포트 값)에 대해 동일한 결과를 반환하여야 한다. 비결정론적 동작(난수, 시간 의존 등)은 가능하지만, 가능한 한 입력에 의해 결과가 결정되도록 설계하여야 한다.</p>
+</li>
+<li>
+<p><strong>무상태성(Statelessness) 경향</strong>: 동기 액션 노드는 이전 Tick의 상태를 유지할 필요가 없는 경우가 많다. 각 <code>tick()</code> 호출이 독립적으로 완료되므로, 내부 상태 없이 입력 포트만으로 동작을 결정하는 순수 함수적 설계가 자연스럽다.</p>
+</li>
+</ol>
+<h2>5. Sequence에서의 연속 실행</h2>
+<p>동기 액션 노드의 실행 모델이 Sequence에서 어떻게 작용하는지를 구체적 예시로 설명한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;SyncAction_A/&gt;  &lt;!-- SUCCESS --&gt;
+    &lt;SyncAction_B/&gt;  &lt;!-- SUCCESS --&gt;
+    &lt;SyncAction_C/&gt;  &lt;!-- FAILURE --&gt;
+    &lt;SyncAction_D/&gt;  &lt;!-- 실행되지 않음 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>단일 Tick에서의 실행 순서이다.</p>
+<ol>
+<li>Sequence가 <code>SyncAction_A</code>를 Tick → SUCCESS 반환</li>
+<li>Sequence가 <code>SyncAction_B</code>를 Tick → SUCCESS 반환</li>
+<li>Sequence가 <code>SyncAction_C</code>를 Tick → FAILURE 반환</li>
+<li>Sequence가 FAILURE 반환 (SyncAction_D는 Tick되지 않음)</li>
+</ol>
+<p>이 모든 과정이 단일 Tick 내에서 발생한다. 세 개의 SyncActionNode가 하나의 Tick에서 순차적으로 실행되었다.</p>
+<h2>6. 반복 실행에서의 동작</h2>
+<p>제어 노드에 의해 동기 액션 노드가 반복적으로 Tick되는 경우, 매 Tick에서 독립적으로 실행된다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;IsLocalized/&gt;         &lt;!-- 조건: 매 Tick 재평가 --&gt;
+    &lt;PublishHeartbeat/&gt;    &lt;!-- SyncAction: 매 Tick 실행 --&gt;
+    &lt;NavigateToGoal/&gt;      &lt;!-- StatefulAction: RUNNING 유지 --&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>ReactiveSequence에서 <code>PublishHeartbeat</code>은 매 Tick마다 재실행된다. 동기 액션은 RUNNING 상태를 유지하지 않으므로, 매 Tick에서 IDLE → SUCCESS의 전이를 반복한다. 이는 심박(heartbeat) 메시지 발행이나 상태 갱신 등의 주기적 작업에 적합한 패턴이다.</p>
+<h2>7. 실행 모델의 제약</h2>
+<p>동기 액션 노드의 실행 모델은 다음의 제약을 수반한다.</p>
+<ol>
+<li>
+<p><strong>차단 호출 금지</strong>: <code>tick()</code> 내부에서 네트워크 응답 대기, 파일 I/O 대기 등의 차단 호출을 수행하면 전체 트리의 Tick이 지연된다.</p>
+</li>
+<li>
+<p><strong>장시간 연산 회피</strong>: CPU 집약적 연산(경로 계획, 이미지 처리 등)을 <code>tick()</code> 내부에서 수행하면 Tick 주기를 위반할 수 있다.</p>
+</li>
+<li>
+<p><strong>진행 상태 추적 불가</strong>: 행동의 중간 진행 상태를 표현할 수 없다. 진행 상태 추적이 필요한 행동은 <code>StatefulActionNode</code>로 구현하여야 한다.</p>
+</li>
+</ol>
+<p>이러한 제약은 동기 액션 노드의 적용 범위를 경량 작업으로 한정하며, 이 한정이 오히려 설계의 명확성과 안전성을 보장한다.</p>
 
             </article>
             <footer>
