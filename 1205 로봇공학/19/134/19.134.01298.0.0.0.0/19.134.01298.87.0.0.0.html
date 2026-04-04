@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1298.87 커스텀 데코레이터 구현 사례</title>
+    <title>BIJUNG:커스텀 데코레이터 구현 사례 (Custom Decorator Implementation Examples)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,183 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1298.87 커스텀 데코레이터 구현 사례</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span>1298.87 커스텀 데코레이터 구현 사례</span></nav>
+                    <h1>커스텀 데코레이터 구현 사례 (Custom Decorator Implementation Examples)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span title="커스텀 데코레이터 구현 사례 (Custom Decorator Implementation Examples)">커스텀 데코레이터 구현 사례 (Custom Dec...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1298.87 커스텀 데코레이터 구현 사례</h1>
+                <h1>커스텀 데코레이터 구현 사례 (Custom Decorator Implementation Examples)</h1>
+<h2>1. 개요</h2>
+<p>본 절에서는 BehaviorTree.CPP의 내장 데코레이터로는 충족되지 않는 특수한 요구를 위한 커스텀 데코레이터의 구체적 구현 사례를 다룬다. 횟수 제한, 조건부 halt, 로깅, 프로파일링 등의 실용적 데코레이터를 구현하며, 각 사례는 <code>DecoratorNode</code> 상속, <code>tick()</code> ���현, <code>halt()</code> 구현, 포트 정의, 등록의 전체 과정을 포함한다.</p>
+<h2>2. 사례 1: 쿨다운 데코레이터</h2>
+<p>자식이 성공한 후 지정된 시간 동안 재실행을 방지한다.</p>
+<pre><code class="language-cpp">class CooldownDecorator : public BT::DecoratorNode
+{
+public:
+    CooldownDecorator(const std::string&amp; name,
+                      const BT::NodeConfiguration&amp; config)
+        : DecoratorNode(name, config),
+          last_success_(std::chrono::steady_clock::time_point::min())
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort&lt;double&gt;("sec", 5.0, "쿨다운 (초)")};
+    }
+
+private:
+    BT::NodeStatus tick() override
+    {
+        setStatus(BT::NodeStatus::RUNNING);
+        double sec;
+        getInput("sec", sec);
+
+        auto elapsed = std::chrono::duration&lt;double&gt;(
+            std::chrono::steady_clock::now() - last_success_).count();
+
+        if (elapsed &lt; sec)
+            return BT::NodeStatus::FAILURE;
+
+        auto status = child_node_-&gt;executeTick();
+        if (status == BT::NodeStatus::SUCCESS)
+            last_success_ = std::chrono::steady_clock::now();
+
+        return status;
+    }
+
+    void halt() override { DecoratorNode::halt(); }
+
+    std::chrono::steady_clock::time_point last_success_;
+};
+</code></pre>
+<h2>3. 사례 2: 실행 횟수 제한 데코레이터</h2>
+<p>자식의 총 실행 횟수를 제한한다.</p>
+<pre><code class="language-cpp">class ExecutionLimiter : public BT::DecoratorNode
+{
+public:
+    ExecutionLimiter(const std::string&amp; name,
+                     const BT::NodeConfiguration&amp; config)
+        : DecoratorNode(name, config), count_(0) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::InputPort&lt;int&gt;("max", 10, "최대 실행 횟수")};
+    }
+
+private:
+    BT::NodeStatus tick() override
+    {
+        int max;
+        getInput("max", max);
+        if (count_ &gt;= max)
+            return BT::NodeStatus::FAILURE;
+        ++count_;
+        return child_node_-&gt;executeTick();
+    }
+
+    void halt() override
+    {
+        count_ = 0;
+        DecoratorNode::halt();
+    }
+
+    int count_;
+};
+</code></pre>
+<h2>4. 사례 3: 로깅 데코레이터</h2>
+<p>자식의 상태 전환을 로깅한다.</p>
+<pre><code class="language-cpp">class LoggingDecorator : public BT::DecoratorNode
+{
+public:
+    LoggingDecorator(const std::string&amp; name,
+                     const BT::NodeConfiguration&amp; config)
+        : DecoratorNode(name, config),
+          prev_(BT::NodeStatus::IDLE) {}
+
+    static BT::PortsList providedPorts() { return {}; }
+
+private:
+    BT::NodeStatus tick() override
+    {
+        setStatus(BT::NodeStatus::RUNNING);
+        auto status = child_node_-&gt;executeTick();
+        if (status != prev_)
+        {
+            std::cout &lt;&lt; "[" &lt;&lt; name() &lt;&lt; "] "
+                      &lt;&lt; child()-&gt;name() &lt;&lt; ": "
+                      &lt;&lt; BT::toStr(prev_) &lt;&lt; " -&gt; "
+                      &lt;&lt; BT::toStr(status) &lt;&lt; std::endl;
+            prev_ = status;
+        }
+        return status;
+    }
+
+    void halt() override
+    {
+        prev_ = BT::NodeStatus::IDLE;
+        DecoratorNode::halt();
+    }
+
+    BT::NodeStatus prev_;
+};
+</code></pre>
+<h2>5. 사례 4: 프로파일링 데코레이터</h2>
+<p>자식의 tick 실행 시간을 측정한다.</p>
+<pre><code class="language-cpp">class ProfilingDecorator : public BT::DecoratorNode
+{
+public:
+    ProfilingDecorator(const std::string&amp; name,
+                       const BT::NodeConfiguration&amp; config)
+        : DecoratorNode(name, config) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {BT::OutputPort&lt;double&gt;("elapsed_ms", "실행 시간 (ms)")};
+    }
+
+private:
+    BT::NodeStatus tick() override
+    {
+        setStatus(BT::NodeStatus::RUNNING);
+        auto start = std::chrono::steady_clock::now();
+        auto status = child_node_-&gt;executeTick();
+        auto end = std::chrono::steady_clock::now();
+
+        double ms = std::chrono::duration&lt;double, std::milli&gt;(
+            end - start).count();
+        setOutput("elapsed_ms", ms);
+
+        return status;
+    }
+};
+</code></pre>
+<h2>6. 등록 및 XML 사용</h2>
+<pre><code class="language-cpp">factory.registerNodeType&lt;CooldownDecorator&gt;("Cooldown");
+factory.registerNodeType&lt;ExecutionLimiter&gt;("ExecutionLimit");
+factory.registerNodeType&lt;LoggingDecorator&gt;("Log");
+factory.registerNodeType&lt;ProfilingDecorator&gt;("Profile");
+</code></pre>
+<pre><code class="language-xml">&lt;Cooldown sec="10.0"&gt;
+    &lt;Action ID="RecoveryAction"/&gt;
+&lt;/Cooldown&gt;
+
+&lt;Log&gt;
+    &lt;Action ID="NavigateToPose"/&gt;
+&lt;/Log&gt;
+
+&lt;Profile elapsed_ms="{tick_time}"&gt;
+    &lt;Action ID="ComputePath"/&gt;
+&lt;/Profile&gt;
+</code></pre>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-05</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

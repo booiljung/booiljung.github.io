@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1298.91 프로파일링 데코레이터 구현</title>
+    <title>BIJUNG:프로파일링 데코레이터 구현 (Profiling Decorator Implementation)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,106 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1298.91 프로파일링 데코레이터 구현</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span>1298.91 프로파일링 데코레이터 구현</span></nav>
+                    <h1>프로파일링 데코레이터 구현 (Profiling Decorator Implementation)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span title="프로파일링 데코레이터 구현 (Profiling Decorator Implementation)">프로파일링 데코레이터 구현 (Profiling D...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1298.91 프로파일링 데코레이터 구현</h1>
+                <h1>프로파일링 데코레이터 구현 (Profiling Decorator Implementation)</h1>
+<h2>1. 개요</h2>
+<p>프로파일링 데코레이터는 자식 노드의 <code>tick()</code> 실행 시간을 측정하고 기록하는 투명한 커스텀 데코레이터이다. 행동 트리의 성능 병목 식별, tick 주기 영향 분석, 노드별 실행 시간 통계에 활용된다.</p>
+<h2>2. 구현</h2>
+<pre><code class="language-cpp">class ProfilingDecorator : public BT::DecoratorNode
+{
+public:
+    ProfilingDecorator(const std::string&amp; name,
+                       const BT::NodeConfiguration&amp; config)
+        : DecoratorNode(name, config),
+          total_time_ms_(0.0), tick_count_(0),
+          max_time_ms_(0.0) {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::OutputPort&lt;double&gt;("last_ms", "마지막 tick 소요 시간 (ms)"),
+            BT::OutputPort&lt;double&gt;("avg_ms", "평균 tick 소요 시간 (ms)"),
+            BT::OutputPort&lt;double&gt;("max_ms", "최대 tick 소요 시간 (ms)")
+        };
+    }
+
+private:
+    BT::NodeStatus tick() override
+    {
+        setStatus(BT::NodeStatus::RUNNING);
+
+        auto start = std::chrono::steady_clock::now();
+        auto status = child_node_-&gt;executeTick();
+        auto end = std::chrono::steady_clock::now();
+
+        double ms = std::chrono::duration&lt;double, std::milli&gt;(
+            end - start).count();
+
+        ++tick_count_;
+        total_time_ms_ += ms;
+        max_time_ms_ = std::max(max_time_ms_, ms);
+
+        setOutput("last_ms", ms);
+        setOutput("avg_ms", total_time_ms_ / tick_count_);
+        setOutput("max_ms", max_time_ms_);
+
+        return status;  // 투명 전달
+    }
+
+    void halt() override
+    {
+        total_time_ms_ = 0.0;
+        tick_count_ = 0;
+        max_time_ms_ = 0.0;
+        DecoratorNode::halt();
+    }
+
+    double total_time_ms_;
+    int tick_count_;
+    double max_time_ms_;
+};
+</code></pre>
+<h2>3. XML에서의 사용</h2>
+<pre><code class="language-xml">&lt;Profile last_ms="{nav_tick_ms}" avg_ms="{nav_avg_ms}" max_ms="{nav_max_ms}"&gt;
+    &lt;Action ID="NavigateToPose"/&gt;
+&lt;/Profile&gt;
+</code></pre>
+<h2>4. 활용 사례</h2>
+<h3>4.1 성능 병목 식별</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Profile last_ms="{path_time}"&gt;
+        &lt;Action ID="ComputePath"/&gt;
+    &lt;/Profile&gt;
+    &lt;Profile last_ms="{follow_time}"&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Profile&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>경로 계산과 경로 추종의 소요 시간을 각각 측정하여 성능 병목을 식별한다.</p>
+<h3>4.2 실행 시간 경고</h3>
+<p>블랙보드에 기록된 실행 시간을 조건 노드에서 평가���여, 지연이 발생하면 경고한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Profile last_ms="{tick_time}"&gt;
+        &lt;Action ID="ProcessSensorData"/&gt;
+    &lt;/Profile&gt;
+    &lt;Condition ID="IsValueBelow"
+               value="{tick_time}" threshold="50.0"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>5. 설계 시 고려 사항</h2>
+<p>프로파일링 데코레��터 자체의 오버헤드(시간 측정, 블랙보드 쓰기)가 측정 결과에 포함된다. 이 오버헤드는 수 마이크로초 수준이므로 대부분의 경우 무시할 수 있으나, 극히 짧은 실행 시간을 측정할 때는 고려하여야 한다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-05</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>
