@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.50 경로 유효성 확인 조건 노드</title>
+    <title>BIJUNG:경로 유효성 확인 조건 노드 (Path Validity Check Condition Node)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,216 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.50 경로 유효성 확인 조건 노드</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.50 경로 유효성 확인 조건 노드</span></nav>
+                    <h1>경로 유효성 확인 조건 노드 (Path Validity Check Condition Node)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="경로 유효성 확인 조건 노드 (Path Validity Check Condition Node)">경로 유효성 확인 조건 노드 (Path Valid...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.50 경로 유효성 확인 조건 노드</h1>
+                <h1>경로 유효성 확인 조건 노드 (Path Validity Check Condition Node)</h1>
+<h2>1. 개요</h2>
+<p>경로 유효성 확인 조건 노드는 현재 계획된 경로가 여전히 유효한지, 즉 경로 상에 장애물이 존재하지 않고 로봇이 안전하게 추종할 수 있는 상태인지를 판정하는 조건 노드이다. 동적 환경에서는 경로 계획 이후 새로운 장애물이 출현하거나 기존 장애물이 이동하여 경로가 차단될 수 있으므로, 경로의 유효성을 주기적으로 검증하는 것이 필수적이다.</p>
+<h2>2. 경로 유효성의 정의</h2>
+<p>경로 <span class="math math-inline">\mathcal{P} = \{\mathbf{p}_0, \mathbf{p}_1, \ldots, \mathbf{p}_N\}</span>가 유효하려면, 경로를 구성하는 모든 웨이포인트 <span class="math math-inline">\mathbf{p}_i</span>와 인접 웨이포인트 간의 선분이 장애물 영역과 교차하지 않아야 한다.</p>
+<p><span class="math math-display">\text{valid}(\mathcal{P}) = \bigwedge_{i=0}^{N} \text{free}(\mathbf{p}_i) \wedge \bigwedge_{i=0}^{N-1} \text{collision\_free}(\overline{\mathbf{p}_i \mathbf{p}_{i+1}})</span></p>
+<p>여기서 <span class="math math-inline">\text{free}(\mathbf{p})</span>는 위치 <span class="math math-inline">\mathbf{p}</span>가 장애물 영역에 속하지 않음을, <span class="math math-inline">\text{collision\_free}(\overline{\mathbf{p}_i \mathbf{p}_{i+1}})</span>는 두 점을 잇는 선분이 장애물과 교차하지 않음을 나타낸다.</p>
+<h2>Nav2 서비스 기반 구현</h2>
+<p>Nav2는 <code>IsPathValid</code> 서비스를 제공하여 경로의 유효성을 코스트맵 기반으로 검증한다.</p>
+<pre><code class="language-cpp">class IsCurrentPathValid : public BT::ConditionNode
+{
+public:
+    IsCurrentPathValid(const std::string&amp; name,
+                       const BT::NodeConfiguration&amp; config,
+                       rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          cached_result_(BT::NodeStatus::FAILURE),
+          has_cache_(false),
+          request_pending_(false)
+    {
+        client_ = node_-&gt;create_client&lt;nav2_msgs::srv::IsPathValid&gt;(
+            "/is_path_valid");
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;nav_msgs::msg::Path&gt;("path",
+                "검증할 경로"),
+            BT::InputPort&lt;double&gt;("cache_duration_sec", 1.0,
+                "캐시 유효 기간 (초)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double cache_duration;
+        getInput("cache_duration_sec", cache_duration);
+
+        if (has_cache_)
+        {
+            auto elapsed =
+                (node_-&gt;get_clock()-&gt;now() - cache_time_).seconds();
+            if (elapsed &lt; cache_duration)
+            {
+                return cached_result_;
+            }
+        }
+
+        if (!client_-&gt;service_is_ready())
+        {
+            return has_cache_ ? cached_result_
+                              : BT::NodeStatus::FAILURE;
+        }
+
+        if (!request_pending_)
+        {
+            auto request =
+                std::make_shared&lt;nav2_msgs::srv::IsPathValid::Request&gt;();
+            getInput("path", request-&gt;path);
+
+            request_pending_ = true;
+            client_-&gt;async_send_request(
+                request,
+                [this](rclcpp::Client&lt;nav2_msgs::srv::IsPathValid&gt;::
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20SharedFuture%20future) {
+                    std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                    auto response = future.get();
+                    cached_result_ = response-&gt;is_valid
+                                         ? BT::NodeStatus::SUCCESS
+                                         : BT::NodeStatus::FAILURE;
+                    cache_time_ = node_-&gt;get_clock()-&gt;now();
+                    has_cache_ = true;
+                    request_pending_ = false;
+                });
+        }
+
+        return has_cache_ ? cached_result_
+                          : BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Client&lt;nav2_msgs::srv::IsPathValid&gt;::SharedPtr client_;
+    std::mutex mutex_;
+    BT::NodeStatus cached_result_;
+    bool has_cache_;
+    bool request_pending_;
+    rclcpp::Time cache_time_;
+};
+</code></pre>
+<h2>코스트맵 기반 로컬 검증</h2>
+<p>서비스 호출 없이, 코스트맵 토픽을 구독하여 경로의 유효성을 로컬에서 검증하는 방식이다.</p>
+<pre><code class="language-cpp">class IsPathClearInCostmap : public BT::ConditionNode
+{
+public:
+    IsPathClearInCostmap(const std::string&amp; name,
+                         const BT::NodeConfiguration&amp; config,
+                         rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config), node_(node)
+    {
+        costmap_sub_ =
+            node_-&gt;create_subscription&lt;nav_msgs::msg::OccupancyGrid&gt;(
+                "/local_costmap/costmap",
+                rclcpp::QoS(1),
+                [this](const%20nav_msgs::msg::OccupancyGrid::SharedPtr%20msg) {
+                    std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                    costmap_ = msg;
+                });
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;nav_msgs::msg::Path&gt;("path",
+                "검증할 경로"),
+            BT::InputPort&lt;int&gt;("max_cost", 252,
+                "경로 상 최대 허용 비용")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+        if (!costmap_)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        nav_msgs::msg::Path path;
+        int max_cost;
+        getInput("path", path);
+        getInput("max_cost", max_cost);
+
+        for (const auto&amp; pose : path.poses)
+        {
+            int cost = getCostAtPosition(
+                pose.pose.position.x,
+                pose.pose.position.y);
+            if (cost &gt;= max_cost || cost &lt; 0)
+            {
+                return BT::NodeStatus::FAILURE;
+            }
+        }
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    int getCostAtPosition(double x, double y)
+    {
+        double resolution = costmap_-&gt;info.resolution;
+        double origin_x = costmap_-&gt;info.origin.position.x;
+        double origin_y = costmap_-&gt;info.origin.position.y;
+
+        int mx = static_cast&lt;int&gt;((x - origin_x) / resolution);
+        int my = static_cast&lt;int&gt;((y - origin_y) / resolution);
+
+        if (mx &lt; 0 || mx &gt;= static_cast&lt;int&gt;(costmap_-&gt;info.width) ||
+            my &lt; 0 || my &gt;= static_cast&lt;int&gt;(costmap_-&gt;info.height))
+        {
+            return -1;
+        }
+
+        return costmap_-&gt;data[my * costmap_-&gt;info.width + mx];
+    }
+
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Subscription&lt;nav_msgs::msg::OccupancyGrid&gt;::SharedPtr
+        costmap_sub_;
+    nav_msgs::msg::OccupancyGrid::SharedPtr costmap_;
+    std::mutex mutex_;
+};
+</code></pre>
+<h2>XML 행동 트리에서의 활용</h2>
+<h3>경로 유효성 감시 및 재계획</h3>
+<pre><code class="language-xml">&lt;BehaviorTree ID="ValidatedPathFollowing"&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsCurrentPathValid"
+                   path="{current_path}"
+                   cache_duration_sec="0.5"/&gt;
+        &lt;Action ID="FollowPath"
+                path="{current_path}"/&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p>경로가 무효화되면 <code>ReactiveSequence</code>에 의해 <code>FollowPath</code> 액션이 중단되고, 상위 제어 구조에서 경로 재계획이 실행된다.</p>
+<h2>설계 시 고려 사항</h2>
+<h3>검증 범위의 한정</h3>
+<p>전체 경로를 매 tick마다 검증하는 것은 계산 비용이 높을 수 있다. 로봇의 현재 위치로부터 일정 거리(예: 전방 5m) 내의 경로 구간만을 검증하는 것이 효율적이다.</p>
+<h3>코스트맵 갱신과의 시간 정합</h3>
+<p>코스트맵이 아직 갱신되지 않은 상태에서 경로를 검증하면, 이미 제거된 장애물이 여전히 경로를 차단하는 것으로 판정될 수 있다. 코스트맵의 갱신 시점과 경로 검증 시점의 시간 차이를 최소화하여야 한다.</p>
+<h3>로봇 형상 고려</h3>
+<p>경로 웨이포인트가 자유 공간에 위치하더라도, 로봇의 물리적 크기(footprint)를 고려하면 경로 통과가 불가능할 수 있다. 경로 유효성 검증 시 로봇 형상에 따른 팽창(inflation) 비용을 반영하여야 한다.</p>
+<h2>참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Macenski, S., et al. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>Nav2 공식 문서. https://docs.nav2.org/</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

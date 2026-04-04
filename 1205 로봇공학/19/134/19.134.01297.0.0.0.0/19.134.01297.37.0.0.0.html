@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.37 서비스 가용성 확인 조건 노드</title>
+    <title>BIJUNG:서비스 가용성 확인 조건 노드 (Service Availability Check Condition Node)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,315 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.37 서비스 가용성 확인 조건 노드</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.37 서비스 가용성 확인 조건 노드</span></nav>
+                    <h1>서비스 가용성 확인 조건 노드 (Service Availability Check Condition Node)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="서비스 가용성 확인 조건 노드 (Service Availability Check Condition Node)">서비스 가용성 확인 조건 노드 (Service A...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.37 서비스 가용성 확인 조건 노드</h1>
+                <h1>서비스 가용성 확인 조건 노드 (Service Availability Check Condition Node)</h1>
+<h2>1. 개요</h2>
+<p>서비스 가용성 확인 조건 노드는 특정 ROS2 서비스 서버가 현재 가용한 상태인지를 판정하는 조건 노드이다. 서비스를 실제로 호출하지 않고, 서비스 서버의 존재 여부와 응답 준비 상태만을 확인한다. 이 조건 노드는 서비스 호출을 수행하는 액션 노드의 전제 조건으로 활용되어, 서버가 가용하지 않은 상태에서의 불필요한 호출 시도를 방지하고, 시스템 구성 요소의 건전성을 모니터링하는 데 사용된다.</p>
+<h2>2. 서비스 가용성의 정의</h2>
+<h3>2.1 ROS2 DDS 기반 서비스 발견</h3>
+<p>ROS2에서 서비스 서버의 가용성은 DDS(Data Distribution Service) 발견(discovery) 프로토콜에 의해 결정된다. 서비스 클라이언트는 DDS 참여자(participant) 간의 통신을 통해 동일한 서비스 이름과 타입을 가진 서버의 존재를 감지한다.</p>
+<p><code>rclcpp::Client&lt;ServiceT&gt;</code>의 <code>service_is_ready()</code> 메서드는 다음 조건을 확인한다.</p>
+<ol>
+<li>서비스 서버가 DDS 네트워크에 등록되어 있는가.</li>
+<li>서비스 서버의 요청 수신 엔드포인트가 활성 상태인가.</li>
+</ol>
+<p>이 메서드는 비차단(non-blocking) 호출로, 즉시 <code>true</code> 또는 <code>false</code>를 반환하므로 조건 노드의 빠른 평가 원칙에 부합한다.</p>
+<h3>2.2 가용성 상태 분류</h3>
+<table><thead><tr><th>상태</th><th><code>service_is_ready()</code> 결과</th><th>조건 노드 반환</th></tr></thead><tbody>
+<tr><td>서버가 존재하고 활성 상태</td><td><code>true</code></td><td><code>SUCCESS</code></td></tr>
+<tr><td>서버가 존재하지 않음</td><td><code>false</code></td><td><code>FAILURE</code></td></tr>
+<tr><td>서버가 종료됨</td><td><code>false</code></td><td><code>FAILURE</code></td></tr>
+<tr><td>DDS 발견이 완료되지 않음</td><td><code>false</code></td><td><code>FAILURE</code></td></tr>
+</tbody></table>
+<h2>3. 기본 구현</h2>
+<h3>3.1 단일 서비스 가용성 확인</h3>
+<pre><code class="language-cpp">template &lt;typename ServiceT&gt;
+class IsServiceAvailable : public BT::ConditionNode
+{
+public:
+    IsServiceAvailable(const std::string&amp; name,
+                       const BT::NodeConfiguration&amp; config,
+                       rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config), node_(node)
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+        client_ = node_-&gt;create_client&lt;ServiceT&gt;(service_name);
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name",
+                                       "확인할 서비스 이름")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        if (client_-&gt;service_is_ready())
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    typename rclcpp::Client&lt;ServiceT&gt;::SharedPtr client_;
+};
+</code></pre>
+<p>이 구현은 매우 간결하며, <code>tick()</code> 메서드는 <code>service_is_ready()</code> 호출 결과만을 반환한다. 서비스를 실제로 호출하지 않으므로 부작용이 발생하지 않으며, 비차단 호출이므로 빠른 평가가 보장된다.</p>
+<h3>3.2 서비스 타입에 독립적인 구현</h3>
+<p>위 구현은 템플릿 매개변수로 서비스 타입을 요구하므로, 서비스 타입마다 별도의 인스턴스를 등록하여야 한다. 서비스 타입에 독립적으로 가용성만을 확인하고자 하는 경우, <code>rclcpp::Node</code>의 그래프 인터페이스를 활용할 수 있다.</p>
+<pre><code class="language-cpp">class IsServiceAvailableGeneric : public BT::ConditionNode
+{
+public:
+    IsServiceAvailableGeneric(const std::string&amp; name,
+                              const BT::NodeConfiguration&amp; config,
+                              rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config), node_(node)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name",
+                                       "확인할 서비스 이름")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+
+        auto service_names_and_types =
+            node_-&gt;get_service_names_and_types();
+
+        for (const auto&amp; [name, types] : service_names_and_types)
+        {
+            if (name == service_name)
+            {
+                return BT::NodeStatus::SUCCESS;
+            }
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<p><code>get_service_names_and_types()</code> 메서드는 현재 DDS 네트워크에서 발견된 모든 서비스의 이름과 타입을 반환한다. 이 방법은 서비스 타입을 알지 못하더라도 서비스의 존재를 확인할 수 있으나, DDS 발견 메커니즘에 의존하므로 약간의 지연이 존재할 수 있다.</p>
+<h2>4. 다중 서비스 가용성 확인</h2>
+<h3>4.1 Sequence 기반 다중 서비스 확인</h3>
+<p>복수의 서비스가 모두 가용한지를 확인하기 위해 개별 조건 노드를 <code>Sequence</code>로 결합한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree ID="SystemReadyCheck"&gt;
+    &lt;Sequence name="AllServicesReady"&gt;
+        &lt;Condition ID="IsServiceAvailable"
+                   service_name="/map_server/map"/&gt;
+        &lt;Condition ID="IsServiceAvailable"
+                   service_name="/controller_server/get_state"/&gt;
+        &lt;Condition ID="IsServiceAvailable"
+                   service_name="/planner_server/get_state"/&gt;
+        &lt;Action ID="StartMission"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>Sequence</code> 노드의 특성에 의해, 어느 하나의 서비스라도 가용하지 않으면 이후 노드의 평가가 중단되고 전체 시퀀스가 <code>FAILURE</code>를 반환한다.</p>
+<h3>4.2 단일 노드 내 다중 서비스 확인</h3>
+<p>복수의 서비스 이름을 입력 포트로 받아 단일 노드에서 확인하는 방식이다.</p>
+<pre><code class="language-cpp">class AreServicesAvailable : public BT::ConditionNode
+{
+public:
+    AreServicesAvailable(const std::string&amp; name,
+                         const BT::NodeConfiguration&amp; config,
+                         rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config), node_(node)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_names",
+                "세미콜론으로 구분된 서비스 이름 목록")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string service_names_str;
+        getInput("service_names", service_names_str);
+
+        auto available_services =
+            node_-&gt;get_service_names_and_types();
+
+        std::istringstream stream(service_names_str);
+        std::string service_name;
+
+        while (std::getline(stream, service_name, ';'))
+        {
+            bool found = false;
+            for (const auto&amp; [name, types] : available_services)
+            {
+                if (name == service_name)
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+            {
+                return BT::NodeStatus::FAILURE;
+            }
+        }
+        return BT::NodeStatus::SUCCESS;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<pre><code class="language-xml">&lt;Condition ID="AreServicesAvailable"
+           service_names="/map_server/map;/planner/get_state;/controller/get_state"/&gt;
+</code></pre>
+<h2>5. 캐싱 기반 가용성 확인</h2>
+<p><code>service_is_ready()</code>나 <code>get_service_names_and_types()</code>의 호출은 DDS 질의를 수반하므로, 매 tick마다 반복 호출하면 불필요한 오버헤드가 발생할 수 있다. 시간 기반 캐싱을 적용하여 호출 빈도를 제한한다.</p>
+<pre><code class="language-cpp">template &lt;typename ServiceT&gt;
+class IsServiceAvailableCached : public BT::ConditionNode
+{
+public:
+    IsServiceAvailableCached(const std::string&amp; name,
+                             const BT::NodeConfiguration&amp; config,
+                             rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          cached_available_(false),
+          has_cache_(false)
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+        client_ = node_-&gt;create_client&lt;ServiceT&gt;(service_name);
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name",
+                                       "확인할 서비스 이름"),
+            BT::InputPort&lt;double&gt;("cache_duration_sec", 5.0,
+                "캐시 유효 기간 (초)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double cache_duration;
+        getInput("cache_duration_sec", cache_duration);
+
+        auto now = node_-&gt;get_clock()-&gt;now();
+        if (has_cache_)
+        {
+            double elapsed = (now - cache_time_).seconds();
+            if (elapsed &lt; cache_duration)
+            {
+                return cached_available_ ? BT::NodeStatus::SUCCESS
+                                         : BT::NodeStatus::FAILURE;
+            }
+        }
+
+        cached_available_ = client_-&gt;service_is_ready();
+        cache_time_ = now;
+        has_cache_ = true;
+
+        return cached_available_ ? BT::NodeStatus::SUCCESS
+                                 : BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    typename rclcpp::Client&lt;ServiceT&gt;::SharedPtr client_;
+    bool cached_available_;
+    bool has_cache_;
+    rclcpp::Time cache_time_;
+};
+</code></pre>
+<p>서비스 가용성은 일반적으로 초 단위 이상의 시간 동안 유지되므로, 5초 정도의 캐시 유효 기간이 적절하다. 다만, 시스템 초기화 직후나 장애 발생 시에는 가용성이 빈번히 변경될 수 있으므로, 상황에 따라 캐시 유효 기간을 조정하여야 한다.</p>
+<h2>6. XML 행동 트리에서의 활용</h2>
+<h3>6.1 서비스 호출 전 가용성 전제 조건</h3>
+<p>서비스를 호출하는 액션 노드 앞에 가용성 확인 조건 노드를 배치하여, 서버가 가용한 경우에만 호출을 시도한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree ID="SafeServiceCall"&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsServiceAvailable"
+                   service_name="/compute_path_to_pose"/&gt;
+        &lt;Action ID="ComputePathToPose"
+                service_name="/compute_path_to_pose"
+                goal="{target_pose}"
+                path="{computed_path}"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>6.2 Fallback 기반 대체 서비스 선택</h3>
+<p>주 서비스가 가용하지 않은 경우 대체 서비스를 사용하는 패턴이다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree ID="FallbackService"&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsServiceAvailable"
+                       service_name="/planner_primary/compute_path"/&gt;
+            &lt;Action ID="ComputePath"
+                    service_name="/planner_primary/compute_path"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsServiceAvailable"
+                       service_name="/planner_backup/compute_path"/&gt;
+            &lt;Action ID="ComputePath"
+                    service_name="/planner_backup/compute_path"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="ReportPlannerFailure"/&gt;
+    &lt;/Fallback&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p>이 구조에서 <code>Fallback</code> 노드는 첫 번째 자식이 <code>FAILURE</code>를 반환하면 두 번째 자식을 시도한다. 주 경로 계획기가 가용하지 않으면 백업 경로 계획기를 시도하고, 두 서비스 모두 가용하지 않으면 실패 보고 액션을 실행한다.</p>
+<h3>6.3 시스템 초기화 대기 패턴</h3>
+<p>시스템 시작 후 필수 서비스가 모두 가용해질 때까지 대기하는 패턴이다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree ID="WaitForServices"&gt;
+    &lt;RetryNode num_attempts="60"&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsServiceAvailable"
+                       service_name="/map_server/map"/&gt;
+            &lt;Condition ID="IsServiceAvailable"
+                       service_name="/amcl/get_state"/&gt;
+            &lt;Action ID="InitializeNavigation"/&gt;
+        &lt;/Sequence&gt;
+    &lt;/RetryNode&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>RetryNode</code> 데코레이터는 자식 노드가 <code>FAILURE</code>를 반환하면 지정된 횟수만큼 재시도한다. 행동 트리의 tick 주기가 1초인 경우, 60회 재시도는 최대 60초 동안 서비스가 가용해지기를 대기하는 것에 해당한다.</p>
+<h2>7. 설계 시 고려 사항</h2>
+<h3>7.1 DDS 발견 지연</h3>
+<p>ROS2 노드가 시작된 직후에는 DDS 발견 프로토콜이 완료되기까지 수백 밀리초에서 수 초의 지연이 발생할 수 있다. 이 기간 동안 서비스 서버가 실제로 실행 중이더라도 <code>service_is_ready()</code>가 <code>false</code>를 반환할 수 있다. 시스템 초기화 단계에서는 이 지연을 고려하여 충분한 재시도 메커니즘을 적용하여야 한다.</p>
+<h3>7.2 가용성과 응답 가능성의 차이</h3>
+<p><code>service_is_ready()</code>가 <code>true</code>를 반환하더라도, 서비스 서버가 실제로 요청에 올바르게 응답하는지는 보장되지 않는다. 서버가 DDS 네트워크에 등록되어 있으나 내부 상태 오류로 인해 요청을 처리하지 못하는 경우가 존재한다. 따라서 가용성 확인은 필요 조건이나 충분 조건은 아니며, 실제 서비스 호출의 성공 여부는 별도로 처리하여야 한다.</p>
+<h3>7.3 네임스페이스 고려</h3>
+<p>ROS2의 서비스 이름은 네임스페이스(namespace)를 포함할 수 있다. 조건 노드에서 서비스 이름을 지정할 때, 절대 경로(예: <code>/robot1/map_server/map</code>)와 상대 경로(예: <code>map_server/map</code>)를 올바르게 구분하여야 한다. 상대 경로는 노드의 네임스페이스에 따라 확장되므로, 다중 로봇 환경에서는 절대 경로를 명시적으로 사용하는 것이 안전하다.</p>
+<h3>7.4 서비스 클라이언트의 생존 주기</h3>
+<p><code>rclcpp::Client</code> 객체는 생성 시 DDS에 클라이언트 엔드포인트를 등록한다. 조건 노드가 소멸되면 클라이언트도 함께 소멸되어 엔드포인트가 해제된다. 행동 트리가 동적으로 교체되는 환경에서는, 클라이언트의 빈번한 생성과 소멸이 DDS 발견 프로토콜에 부하를 줄 수 있으므로, 클라이언트의 생존 주기를 행동 트리와 분리하여 관리하는 방안을 검토할 필요가 있다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Macenski, S., et al. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+<li>ROS2 공식 문서. https://docs.ros.org/en/humble/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

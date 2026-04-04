@@ -115,6 +115,232 @@
             </header>
             <article>
                 <h1>1296.84 액션 노드의 재시도 로직 구현</h1>
+<h2>1. 개요</h2>
+<p>재시도 로직은 액션 노드의 실행이 실패했을 때, 동일한 작업을 일정 조건 하에서 반복 수행하여 일시적 오류로부터 복구하는 메커니즘이다. 로봇 시스템에서 통신 지연, 센서 데이터 일시 손실, 일시적 장애물 등에 의한 실패는 재시도를 통해 해결되는 경우가 빈번하므로, 적절한 재시도 전략은 시스템의 강건성(robustness)을 크게 향상시킨다.</p>
+<p>행동 트리에서 재시도 로직은 두 가지 수준에서 구현할 수 있다. 첫째는 BehaviorTree.CPP가 제공하는 <code>RetryNode</code> 데코레이터를 활용하는 트리 수준의 재시도이고, 둘째는 액션 노드 내부에 재시도 로직을 직접 구현하는 노드 수준의 재시도이다.</p>
+<h2>2. 트리 수준 재시도: RetryNode 데코레이터</h2>
+<h3>2.1 기본 사용법</h3>
+<p><code>RetryNode</code>는 자식 노드가 <code>FAILURE</code>를 반환하면 지정된 횟수만큼 재실행한다.</p>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="3"&gt;
+    &lt;CaptureImage camera_topic="/camera/image_raw"
+                  image="{image}" /&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<p>위 구조에서 이미지 촬영이 실패하면 최대 3회까지 재시도한다. 모든 시도가 실패하면 <code>RetryNode</code> 자체가 <code>FAILURE</code>를 반환한다.</p>
+<h3>2.2 RetryNode의 동작 원리</h3>
+<p><code>RetryNode</code>의 실행 흐름은 다음과 같다.</p>
+<ol>
+<li>자식 노드를 tick한다.</li>
+<li>자식이 <code>SUCCESS</code>를 반환하면 <code>SUCCESS</code>를 반환한다.</li>
+<li>자식이 <code>RUNNING</code>을 반환하면 <code>RUNNING</code>을 반환한다.</li>
+<li>자식이 <code>FAILURE</code>를 반환하면 시도 횟수를 증가시킨다.</li>
+<li>시도 횟수가 <code>num_attempts</code> 이하이면 자식을 halt한 후 다시 tick한다.</li>
+<li>시도 횟수가 <code>num_attempts</code>를 초과하면 <code>FAILURE</code>를 반환한다.</li>
+</ol>
+<h3>2.3 재시도 간 대기 시간 삽입</h3>
+<p>연속적인 재시도 사이에 대기 시간을 두어 일시적 오류의 해소를 기다리려면, <code>Sequence</code>와 <code>Wait</code> 노드를 결합한다.</p>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="3"&gt;
+    &lt;Sequence&gt;
+        &lt;ConnectToServer server="{server_addr}" /&gt;
+        &lt;Wait duration="2.0" /&gt;
+    &lt;/Sequence&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<p>그러나 이 구조에서 <code>Wait</code>은 연결 성공 후에도 실행된다. 대기를 실패 시에만 적용하려면 다음과 같이 구성한다.</p>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="3"&gt;
+    &lt;Fallback&gt;
+        &lt;ConnectToServer server="{server_addr}" /&gt;
+        &lt;Sequence&gt;
+            &lt;Wait duration="2.0" /&gt;
+            &lt;AlwaysFailure /&gt;
+        &lt;/Sequence&gt;
+    &lt;/Fallback&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<p>이 구조에서 연결이 실패하면 2초 대기 후 <code>AlwaysFailure</code>가 <code>FAILURE</code>를 반환하고, <code>Fallback</code>도 <code>FAILURE</code>를 반환하여 <code>RetryNode</code>가 재시도를 수행한다.</p>
+<h2>3. 노드 수준 재시도</h2>
+<h3>3.1 내부 재시도 구현</h3>
+<p>액션 노드 내부에서 재시도 로직을 구현하면, 재시도 조건과 전략을 세밀하게 제어할 수 있다.</p>
+<pre><code class="language-cpp">class ResilientAction : public BT::StatefulActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;int&gt;("max_retries", 3,
+                "최대 재시도 횟수"),
+            BT::InputPort&lt;double&gt;("retry_delay", 1.0,
+                "재시도 간격 (초)"),
+            // ... 기타 포트
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        retry_count_ = 0;
+        getInput("max_retries", max_retries_);
+        getInput("retry_delay", retry_delay_);
+        return attemptExecution();
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (waiting_for_retry_)
+        {
+            auto elapsed =
+                (node_-&gt;now() - retry_start_time_).seconds();
+            if (elapsed &gt;= retry_delay_)
+            {
+                waiting_for_retry_ = false;
+                return attemptExecution();
+            }
+            return BT::NodeStatus::RUNNING;
+        }
+
+        // 작업 진행 확인
+        if (task_failed_)
+        {
+            retry_count_++;
+            if (retry_count_ &gt;= max_retries_)
+            {
+                RCLCPP_ERROR(node_-&gt;get_logger(),
+                    "최대 재시도 횟수 초과 (%d회)",
+                    max_retries_);
+                return BT::NodeStatus::FAILURE;
+            }
+
+            RCLCPP_WARN(node_-&gt;get_logger(),
+                "재시도 %d/%d", retry_count_, max_retries_);
+            waiting_for_retry_ = true;
+            retry_start_time_ = node_-&gt;now();
+            return BT::NodeStatus::RUNNING;
+        }
+
+        if (task_succeeded_)
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        return BT::NodeStatus::RUNNING;
+    }
+
+private:
+    BT::NodeStatus attemptExecution();
+    int retry_count_{0};
+    int max_retries_{3};
+    double retry_delay_{1.0};
+    bool waiting_for_retry_{false};
+    rclcpp::Time retry_start_time_;
+    std::atomic&lt;bool&gt; task_failed_{false};
+    std::atomic&lt;bool&gt; task_succeeded_{false};
+};
+</code></pre>
+<h3>3.2 트리 수준과 노드 수준 비교</h3>
+<table><thead><tr><th style="text-align: center">특성</th><th style="text-align: left">트리 수준 (RetryNode)</th><th style="text-align: left">노드 수준 (내부 로직)</th></tr></thead><tbody>
+<tr><td style="text-align: center">구현 복잡도</td><td style="text-align: left">낮음 (XML 정의)</td><td style="text-align: left">높음 (C++ 코드)</td></tr>
+<tr><td style="text-align: center">유연성</td><td style="text-align: left">제한적</td><td style="text-align: left">높음</td></tr>
+<tr><td style="text-align: center">재시도 조건 제어</td><td style="text-align: left">전체 실패만</td><td style="text-align: left">부분 실패 구분 가능</td></tr>
+<tr><td style="text-align: center">상태 보존</td><td style="text-align: left">매 시도마다 초기화</td><td style="text-align: left">누적 상태 활용 가능</td></tr>
+<tr><td style="text-align: center">재사용성</td><td style="text-align: left">높음</td><td style="text-align: left">노드 종속</td></tr>
+</tbody></table>
+<h2>4. 재시도 전략</h2>
+<h3>4.1 고정 간격 재시도</h3>
+<p>매 재시도 사이에 동일한 대기 시간을 적용한다.</p>
+<p><span class="math math-display">
+T_{\text{wait}}(n) = T_{\text{fixed}} \quad \forall n
+</span></p>
+<p>구현이 간단하며 대부분의 일시적 오류에 효과적이다.</p>
+<h3>4.2 지수 백오프 (Exponential Backoff)</h3>
+<p>재시도 횟수가 증가할수록 대기 시간을 기하급수적으로 증가시킨다. 이 전략은 서버 과부하 등의 상황에서 재시도에 의한 추가 부하를 방지한다.</p>
+<p><span class="math math-display">
+T_{\text{wait}}(n) = T_{\text{base}} \times 2^{n-1}
+</span></p>
+<p>여기서 <span class="math math-inline">n</span>은 재시도 횟수, <span class="math math-inline">T_{\text{base}}</span>는 기본 대기 시간이다.</p>
+<pre><code class="language-cpp">double computeBackoffDelay(int retry_count,
+                           double base_delay,
+                           double max_delay)
+{
+    double delay = base_delay *
+                   std::pow(2.0, retry_count - 1);
+    return std::min(delay, max_delay);
+}
+</code></pre>
+<h3>4.3 지터 추가 (Jittered Backoff)</h3>
+<p>지수 백오프에 무작위 지터(jitter)를 추가하여, 다수의 클라이언트가 동시에 재시도하는 군집 효과(thundering herd problem)를 방지한다.</p>
+<p><span class="math math-display">
+T_{\text{wait}}(n) = T_{\text{base}} \times 2^{n-1} \times U(0.5, 1.5)
+</span></p>
+<p>여기서 <span class="math math-inline">U(a, b)</span>는 <span class="math math-inline">[a, b]</span> 범위의 균등 분포 난수이다.</p>
+<h3>4.4 조건부 재시도</h3>
+<p>오류의 종류에 따라 재시도 여부를 결정한다. 일시적 오류에 대해서만 재시도하고, 영구적 오류에 대해서는 즉시 실패를 반환한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    if (task_failed_)
+    {
+        if (isRetryableError(error_code_))
+        {
+            // 일시적 오류: 재시도
+            retry_count_++;
+            if (retry_count_ &lt; max_retries_)
+            {
+                return scheduleRetry();
+            }
+        }
+        // 영구적 오류 또는 재시도 소진: 즉시 실패
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+
+bool isRetryableError(int error_code)
+{
+    // 통신 타임아웃, 일시적 서버 거부 등
+    return (error_code == ERROR_TIMEOUT ||
+            error_code == ERROR_SERVER_BUSY ||
+            error_code == ERROR_TEMPORARY_FAILURE);
+}
+</code></pre>
+<h2>5. XML 행동 트리에서의 활용 패턴</h2>
+<h3>5.1 단순 재시도</h3>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="5"&gt;
+    &lt;SendMessage topic="/gcs/report"
+                 message="{status}" /&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<h3>5.2 재시도와 대체 행동 결합</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;RetryNode num_attempts="3"&gt;
+        &lt;NavigateToPose goal="{primary_goal}" /&gt;
+    &lt;/RetryNode&gt;
+    &lt;RetryNode num_attempts="2"&gt;
+        &lt;NavigateToPose goal="{secondary_goal}" /&gt;
+    &lt;/RetryNode&gt;
+    &lt;ReturnToHome /&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조에서는 주 목표로의 이동을 3회 재시도하고, 실패하면 보조 목표로 2회 재시도하며, 모든 시도가 실패하면 귀환한다.</p>
+<h3>5.3 재시도 횟수 동적 결정</h3>
+<p>블랙보드를 통해 재시도 횟수를 동적으로 설정할 수 있다.</p>
+<pre><code class="language-xml">&lt;SetBlackboard output_key="retries"
+               value="5" /&gt;
+&lt;RetryNode num_attempts="{retries}"&gt;
+    &lt;CaptureImage image="{image}" /&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<h2>6. 재시도 관련 주의 사항</h2>
+<ul>
+<li><strong>멱등성 보장</strong>: 재시도되는 동작은 멱등성(idempotency)을 보장해야 한다. 즉, 동일 동작을 여러 번 수행해도 결과가 동일해야 한다. 예를 들어, 데이터 전송 작업이 재시도되면 중복 전송이 발생할 수 있으므로, 수신 측에서 중복 감지 메커니즘을 갖추어야 한다.</li>
+<li><strong>부작용 누적 방지</strong>: 재시도 시 이전 시도의 부작용(생성된 파일, 변경된 상태 등)이 누적되지 않도록 정리해야 한다.</li>
+<li><strong>자원 소진 방지</strong>: 무제한 재시도는 배터리, 시간, 네트워크 대역폭 등의 자원을 소진할 수 있으므로, 최대 재시도 횟수와 총 소요 시간에 상한을 설정해야 한다.</li>
+</ul>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Nygard, M. T., “Release It! Design and Deploy Production-Ready Software,” 2nd ed., Pragmatic Bookshelf, 2018.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

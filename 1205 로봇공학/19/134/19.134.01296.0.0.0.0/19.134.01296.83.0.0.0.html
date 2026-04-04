@@ -115,6 +115,192 @@
             </header>
             <article>
                 <h1>1296.83 액션 노드의 타임아웃 처리</h1>
+<h2>1. 개요</h2>
+<p>타임아웃 처리는 액션 노드가 지정된 시간 내에 작업을 완료하지 못하는 경우, 해당 작업을 중단하고 <code>FAILURE</code>를 반환하는 메커니즘이다. 타임아웃은 로봇 시스템의 교착 상태(deadlock) 방지, 비정상 동작 감지, 자원 효율적 사용을 보장하는 핵심 안전 장치이다.</p>
+<p>비동기 액션 노드(<code>StatefulActionNode</code>)에서 <code>RUNNING</code> 상태가 무한히 지속되면, 행동 트리의 상위 제어 노드가 다른 경로를 탐색할 기회를 얻지 못한다. 타임아웃은 이러한 무한 대기를 방지하여 행동 트리의 반응성(reactivity)을 유지한다.</p>
+<h2>2. 타임아웃 구현 방식</h2>
+<h3>2.1 노드 내부 타임아웃</h3>
+<p>가장 직접적인 방식은 액션 노드 내부에서 시작 시각을 기록하고, <code>onRunning()</code> 콜백에서 경과 시간을 검사하는 것이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    start_time_ = node_-&gt;now();
+    // 작업 시작 ...
+    return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus onRunning() override
+{
+    double timeout;
+    getInput("timeout", timeout);
+
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+    if (elapsed &gt; timeout)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+            "타임아웃 발생: %.1f초 경과 (제한: %.1f초)",
+            elapsed, timeout);
+        cleanupOnTimeout();
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 정상 진행 확인 ...
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>이 방식은 타임아웃 값을 입력 포트로 파라미터화할 수 있어, XML 행동 트리 정의에서 임무별로 다른 타임아웃을 지정할 수 있다는 장점이 있다.</p>
+<h3>2.2 데코레이터 기반 타임아웃</h3>
+<p>BehaviorTree.CPP는 <code>Timeout</code> 데코레이터 노드를 제공한다. 이 데코레이터는 자식 노드의 실행 시간이 지정된 제한을 초과하면 자식 노드를 중단(halt)하고 <code>FAILURE</code>를 반환한다.</p>
+<pre><code class="language-xml">&lt;Timeout msec="30000"&gt;
+    &lt;NavigateToPose goal="{target_pose}" /&gt;
+&lt;/Timeout&gt;
+</code></pre>
+<p>데코레이터 방식은 액션 노드 내부에 타임아웃 로직을 구현하지 않아도 되므로, 기존 노드를 수정하지 않고 타임아웃을 추가할 수 있다. 그러나 타임아웃 발생 시 노드 내부의 자원 정리(cleanup)는 <code>onHalted()</code> 콜백에 의존하므로, <code>onHalted()</code>의 구현이 올바르게 되어 있어야 한다.</p>
+<h3>2.3 두 방식의 비교</h3>
+<table><thead><tr><th style="text-align: center">특성</th><th style="text-align: left">내부 타임아웃</th><th style="text-align: left">데코레이터 타임아웃</th></tr></thead><tbody>
+<tr><td style="text-align: center">구현 위치</td><td style="text-align: left">노드 내부 콜백</td><td style="text-align: left">XML 행동 트리 정의</td></tr>
+<tr><td style="text-align: center">자원 정리</td><td style="text-align: left">직접 수행 가능</td><td style="text-align: left"><code>onHalted()</code> 의존</td></tr>
+<tr><td style="text-align: center">세밀한 제어</td><td style="text-align: left">부분 타임아웃 가능</td><td style="text-align: left">전체 노드에 적용</td></tr>
+<tr><td style="text-align: center">재사용성</td><td style="text-align: left">노드에 종속</td><td style="text-align: left">임의 노드에 적용 가능</td></tr>
+<tr><td style="text-align: center">오류 정보</td><td style="text-align: left">상세 기록 가능</td><td style="text-align: left">제한적</td></tr>
+</tbody></table>
+<p>실무에서는 두 방식을 병용하는 것이 효과적이다. 노드 내부에 기본 타임아웃을 구현하되, 필요에 따라 데코레이터로 추가 제한을 적용한다.</p>
+<h2>3. 타임아웃 값 결정</h2>
+<h3>3.1 동작 특성에 기반한 결정</h3>
+<p>타임아웃 값은 해당 동작의 예상 소요 시간에 안전 여유(safety margin)를 추가하여 결정한다.</p>
+<p><span class="math math-display">
+T_{\text{timeout}} = T_{\text{expected}} + T_{\text{margin}}
+</span></p>
+<p>안전 여유는 일반적으로 예상 소요 시간의 50~100%를 추가하거나, 고정 시간(5~10초)을 추가하는 방식으로 설정한다.</p>
+<table><thead><tr><th style="text-align: center">동작 유형</th><th style="text-align: center">예상 소요 시간</th><th style="text-align: center">권장 타임아웃</th></tr></thead><tbody>
+<tr><td style="text-align: center">이륙 (10m)</td><td style="text-align: center">5~10초</td><td style="text-align: center">20~30초</td></tr>
+<tr><td style="text-align: center">경유점 비행 (1km)</td><td style="text-align: center">60~120초</td><td style="text-align: center">180~300초</td></tr>
+<tr><td style="text-align: center">착륙</td><td style="text-align: center">10~30초</td><td style="text-align: center">45~60초</td></tr>
+<tr><td style="text-align: center">이미지 촬영</td><td style="text-align: center">0.1~1초</td><td style="text-align: center">5초</td></tr>
+<tr><td style="text-align: center">물체 탐지</td><td style="text-align: center">0.5~5초</td><td style="text-align: center">10초</td></tr>
+</tbody></table>
+<h3>3.2 동적 타임아웃 계산</h3>
+<p>비행 거리에 따라 타임아웃을 동적으로 계산하는 방식이다. 예를 들어, 경유점 비행의 타임아웃은 거리와 비행 속도로부터 산출할 수 있다.</p>
+<p><span class="math math-display">
+T_{\text{timeout}} = \frac{d}{v_{\text{min}}} \times k_{\text{safety}}
+</span></p>
+<p>여기서 <span class="math math-inline">d</span>는 목표까지의 거리, <span class="math math-inline">v_{\text{min}}</span>은 최소 예상 비행 속도, <span class="math math-inline">k_{\text{safety}}</span>는 안전 계수(일반적으로 1.5~2.0)이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    double distance = computeDistance(
+        current_position_, target_position_);
+    double speed;
+    getInput("speed", speed);
+
+    // 동적 타임아웃 계산
+    double dynamic_timeout =
+        (distance / (speed * 0.5)) * 1.5;
+
+    // 최소/최대 타임아웃 적용
+    dynamic_timeout = std::clamp(
+        dynamic_timeout, 10.0, 600.0);
+
+    effective_timeout_ = dynamic_timeout;
+    // ...
+}
+</code></pre>
+<h2>4. 타임아웃 발생 시 자원 정리</h2>
+<h3>4.1 ROS2 액션 취소</h3>
+<p>진행 중인 ROS2 액션을 취소하여 서버 측 자원을 해제한다.</p>
+<pre><code class="language-cpp">void cleanupOnTimeout()
+{
+    if (goal_handle_)
+    {
+        RCLCPP_INFO(node_-&gt;get_logger(),
+            "타임아웃에 의한 액션 취소 요청");
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+        goal_handle_.reset();
+    }
+
+    // 구독 해제
+    subscription_.reset();
+
+    // 상태 초기화
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+}
+</code></pre>
+<h3>4.2 하드웨어 안전 상태 전환</h3>
+<p>타임아웃이 물리적 동작(비행, 이동 등)에서 발생한 경우, 로봇이 안전한 상태로 전환되도록 해야 한다. 드론의 경우 타임아웃 발생 시 위치 유지(position hold) 모드로 전환하는 것이 일반적이다.</p>
+<h2>5. 다단계 타임아웃</h2>
+<p>복잡한 동작에서는 전체 동작의 타임아웃과 하위 단계의 타임아웃을 구분하여 적용할 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+
+    // 1단계 타임아웃: 골 수락 대기
+    if (!goal_accepted_ &amp;&amp; elapsed &gt; goal_accept_timeout_)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+            "골 수락 타임아웃");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 2단계 타임아웃: 전체 동작 완료 대기
+    if (elapsed &gt; total_timeout_)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+            "전체 타임아웃");
+        cleanupOnTimeout();
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // ...
+}
+</code></pre>
+<h2>6. XML 행동 트리에서의 활용</h2>
+<h3>6.1 내부 타임아웃 파라미터화</h3>
+<pre><code class="language-xml">&lt;NavigateToPose goal="{target_pose}"
+                timeout="60.0" /&gt;
+</code></pre>
+<h3>6.2 데코레이터 타임아웃 적용</h3>
+<pre><code class="language-xml">&lt;Timeout msec="30000"&gt;
+    &lt;Sequence&gt;
+        &lt;CaptureImage image="{image}" /&gt;
+        &lt;DetectObject image="{image}"
+                      detections="{objects}" /&gt;
+    &lt;/Sequence&gt;
+&lt;/Timeout&gt;
+</code></pre>
+<h3>6.3 타임아웃과 재시도 결합</h3>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="3"&gt;
+    &lt;Timeout msec="15000"&gt;
+        &lt;ConnectToServer server="{addr}" /&gt;
+    &lt;/Timeout&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<p>이 구조에서는 서버 연결에 15초의 타임아웃을 적용하고, 타임아웃 실패 시 최대 3회 재시도한다. 전체 최대 소요 시간은 45초가 된다.</p>
+<h3>6.4 타임아웃 실패 시 대체 행동</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Timeout msec="60000"&gt;
+        &lt;NavigateToPose goal="{target}" /&gt;
+    &lt;/Timeout&gt;
+    &lt;Sequence&gt;
+        &lt;LogMessage level="WARN"
+                    message="내비게이션 타임아웃, 귀환" /&gt;
+        &lt;ReturnToHome /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>7. 타임아웃 관련 주의 사항</h2>
+<ul>
+<li><strong>너무 짧은 타임아웃</strong>: 정상적인 동작이 완료되기 전에 타임아웃이 발생하여 불필요한 실패가 빈번해진다.</li>
+<li><strong>너무 긴 타임아웃</strong>: 실제 오류 상황에서 시스템이 오랜 시간 대기하여 반응성이 저하된다.</li>
+<li><strong>시계 동기화</strong>: ROS2의 시뮬레이션 시간(simulation time)을 사용하는 환경에서는 <code>node_-&gt;now()</code>가 시뮬레이션 시간을 반환하므로, 실시간 타임아웃과 시뮬레이션 타임아웃이 일치하지 않을 수 있다.</li>
+<li><strong>네트워크 지연 고려</strong>: 분산 ROS2 환경에서는 통신 지연이 타임아웃 판정에 영향을 미칠 수 있으므로, 네트워크 왕복 시간(RTT)을 고려하여 여유를 설정해야 한다.</li>
+</ul>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Macenski, S. et al., “The Marathon 2: A Navigation System,” arXiv preprint arXiv:2003.00368, 2020.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

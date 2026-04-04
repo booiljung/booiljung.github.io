@@ -115,6 +115,222 @@
             </header>
             <article>
                 <h1>1296.92 SyncActionNode의 테스트 패턴</h1>
+<h2>1. 개요</h2>
+<p><code>SyncActionNode</code>는 단일 tick 내에서 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 즉시 반환하는 동기 액션 노드이다. 동기 노드의 테스트는 <code>tick()</code> 호출에 대한 반환 상태, 입출력 포트 처리, 부작용(side effect) 검증에 초점을 맞춘다. <code>RUNNING</code> 상태가 존재하지 않으므로 비동기 노드에 비해 테스트 구조가 단순하다.</p>
+<h2>2. 기본 테스트 구조</h2>
+<h3>2.1 독립 노드 테스트</h3>
+<p>행동 트리를 구성하지 않고 노드를 직접 인스턴스화하여 테스트한다.</p>
+<pre><code class="language-cpp">#include &lt;gtest/gtest.h&gt;
+#include &lt;behaviortree_cpp/bt_factory.h&gt;
+#include "my_nodes/log_message_action.hpp"
+
+class SyncActionTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        config_.blackboard =
+            BT::Blackboard::create();
+        config_.input_ports["message"] = "테스트 메시지";
+        config_.input_ports["level"] = "INFO";
+    }
+
+    BT::NodeConfiguration config_;
+};
+
+TEST_F(SyncActionTest, ReturnsSuccessOnValidInput)
+{
+    auto node = std::make_shared&lt;LogMessageAction&gt;(
+        "test_log", config_, ros_node_);
+
+    auto status = node-&gt;executeTick();
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>2.2 팩토리 기반 테스트</h3>
+<p><code>BehaviorTreeFactory</code>를 통해 XML 정의로부터 노드를 생성하여 테스트한다. 이 방식은 포트 바인딩과 블랙보드 연동을 포함한 통합적 검증이 가능하다.</p>
+<pre><code class="language-cpp">TEST_F(SyncActionTest, FactoryBasedTest)
+{
+    BT::BehaviorTreeFactory factory;
+    factory.registerNodeType&lt;LogMessageAction&gt;(
+        "LogMessage");
+
+    auto tree = factory.createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree&gt;
+                &lt;LogMessage message="테스트"
+                            level="INFO" /&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )");
+
+    auto status = tree.tickWhileRunning();
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h2>3. 테스트 패턴</h2>
+<h3>3.1 패턴 1: 입력 유효성 검증</h3>
+<p>필수 입력 포트가 누락되었을 때 <code>FAILURE</code>를 반환하는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(SyncActionTest, FailureOnMissingInput)
+{
+    // message 포트를 설정하지 않음
+    BT::NodeConfiguration empty_config;
+    empty_config.blackboard =
+        BT::Blackboard::create();
+
+    auto node = std::make_shared&lt;SendMessageAction&gt;(
+        "test_send", empty_config, ros_node_);
+
+    auto status = node-&gt;executeTick();
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h3>3.2 패턴 2: 출력 포트 기록 검증</h3>
+<p><code>tick()</code> 실행 후 출력 포트에 올바른 값이 기록되는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(SyncActionTest, OutputPortWritten)
+{
+    auto blackboard = BT::Blackboard::create();
+    BT::NodeConfiguration config;
+    config.blackboard = blackboard;
+    config.input_ports["input_value"] = "42";
+    config.output_ports["output_result"] = "{result}";
+
+    auto node = std::make_shared&lt;ComputeAction&gt;(
+        "test_compute", config);
+
+    node-&gt;executeTick();
+
+    int result;
+    EXPECT_TRUE(blackboard-&gt;get("result", result));
+    EXPECT_EQ(result, 42);
+}
+</code></pre>
+<h3>3.3 패턴 3: 부작용 검증</h3>
+<p>ROS2 토픽 발행 등의 부작용이 올바르게 수행되는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(SyncActionTest, MessagePublished)
+{
+    // 구독자로 발행된 메시지 캡처
+    std::string received_message;
+    auto subscription =
+        test_node_-&gt;create_subscription&lt;
+            std_msgs::msg::String&gt;(
+            "/robot/status",
+            rclcpp::QoS(10),
+            [&amp;received_message](
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20std_msgs::msg::String::SharedPtr%20msg)
+            {
+                received_message = msg-&gt;data;
+            });
+
+    // 노드 실행
+    auto node = createPublishStatusNode("ACTIVE");
+    node-&gt;executeTick();
+
+    // 메시지 수신 대기
+    rclcpp::spin_some(test_node_);
+
+    EXPECT_EQ(received_message, "ACTIVE");
+}
+</code></pre>
+<h3>3.4 패턴 4: 반복 실행 독립성</h3>
+<p>동일 노드를 여러 번 tick하여 각 실행이 독립적인지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(SyncActionTest, RepeatedExecution)
+{
+    auto node = createTestNode();
+
+    for (int i = 0; i &lt; 10; ++i)
+    {
+        auto status = node-&gt;executeTick();
+        EXPECT_EQ(status, BT::NodeStatus::SUCCESS)
+            &lt;&lt; "실패 발생: 반복 " &lt;&lt; i;
+    }
+}
+</code></pre>
+<h3>3.5 패턴 5: 경계값 테스트</h3>
+<p>입력 값의 경계 조건에서 올바르게 동작하는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(SyncActionTest, BoundaryValues)
+{
+    // 최소값
+    auto status_min = tickWithInput("value", 0.0);
+    EXPECT_EQ(status_min, BT::NodeStatus::SUCCESS);
+
+    // 최대값
+    auto status_max = tickWithInput("value", 1000.0);
+    EXPECT_EQ(status_max, BT::NodeStatus::SUCCESS);
+
+    // 음수값 (유효하지 않은 입력)
+    auto status_neg = tickWithInput("value", -1.0);
+    EXPECT_EQ(status_neg, BT::NodeStatus::FAILURE);
+
+    // NaN
+    auto status_nan = tickWithInput(
+        "value", std::numeric_limits&lt;double&gt;::quiet_NaN());
+    EXPECT_EQ(status_nan, BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h2>4. 테스트 도우미 함수</h2>
+<p>반복되는 테스트 설정을 도우미 함수로 추상화한다.</p>
+<pre><code class="language-cpp">class SyncActionTestHelper
+{
+public:
+    static BT::NodeStatus tickNodeWithPorts(
+        BT::BehaviorTreeFactory&amp; factory,
+        const std::string&amp; node_name,
+        const std::map&lt;std::string, std::string&gt;&amp; ports,
+        BT::Blackboard::Ptr blackboard = nullptr)
+    {
+        if (!blackboard)
+        {
+            blackboard = BT::Blackboard::create();
+        }
+
+        std::string xml = buildXml(node_name, ports);
+        auto tree = factory.createTreeFromText(
+            xml, blackboard);
+        return tree.tickWhileRunning();
+    }
+
+private:
+    static std::string buildXml(
+        const std::string&amp; node_name,
+        const std::map&lt;std::string, std::string&gt;&amp; ports)
+    {
+        std::string attrs;
+        for (const auto&amp; [key, value] : ports)
+        {
+            attrs += " " + key + "=\"" + value + "\"";
+        }
+        return "&lt;root BTCPP_format=\"4\"&gt;"
+               "&lt;BehaviorTree&gt;"
+               "&lt;" + node_name + attrs + " /&gt;"
+               "&lt;/BehaviorTree&gt;&lt;/root&gt;";
+    }
+};
+</code></pre>
+<h2>5. QoS 호환성 테스트</h2>
+<p>ROS2 토픽을 사용하는 동기 노드에서, 발행자와 구독자의 QoS 설정이 호환되는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(SyncActionTest, QosCompatibility)
+{
+    // RELIABLE 발행자 생성
+    auto publisher = test_node_-&gt;create_publisher&lt;
+        std_msgs::msg::String&gt;(
+        "/test_topic",
+        rclcpp::QoS(10).reliable());
+
+    // 노드가 올바르게 연결되는지 확인
+    auto node = createSendMessageNode("/test_topic");
+    auto status = node-&gt;executeTick();
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Google, “Google Test User’s Guide,” https://google.github.io/googletest/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

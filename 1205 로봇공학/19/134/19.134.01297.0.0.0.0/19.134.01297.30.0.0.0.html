@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.30 ROS2 토픽 기반 조건 노드</title>
+    <title>BIJUNG:ROS2 토픽 기반 조건 노드 (ROS2 Topic-Based Condition Nodes)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,197 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.30 ROS2 토픽 기반 조건 노드</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.30 ROS2 토픽 기반 조건 노드</span></nav>
+                    <h1>ROS2 토픽 기반 조건 노드 (ROS2 Topic-Based Condition Nodes)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="ROS2 토픽 기반 조건 노드 (ROS2 Topic-Based Condition Nodes)">ROS2 토픽 기반 조건 노드 (ROS2 Topi...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.30 ROS2 토픽 기반 조건 노드</h1>
+                <h1>ROS2 토픽 기반 조건 노드 (ROS2 Topic-Based Condition Nodes)</h1>
+<h2>1. 개요</h2>
+<p>행동 트리에서 조건 노드는 로봇의 현재 상태를 평가하여 의사 결정의 분기를 결정하는 핵심 요소이다. ROS2 환경에서 로봇 시스템의 상태 정보는 대부분 토픽(Topic)을 통해 발행(publish)되고 구독(subscribe)되므로, 토픽 메시지를 기반으로 조건을 평가하는 노드의 설계는 행동 트리와 ROS2를 통합하는 데 있어 필수적인 과제이다. ROS2 토픽 기반 조건 노드는 토픽으로부터 수신한 메시지의 존재 여부, 값, 필드 상태 등을 평가하여 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 반환하며, 행동 트리의 제어 흐름에 직접적으로 관여한다.</p>
+<h2>2. ROS2 토픽과 조건 노드의 통합 구조</h2>
+<h3>2.1 토픽 구독 메커니즘</h3>
+<p>ROS2 토픽 기반 조건 노드는 내부적으로 ROS2 구독자(Subscriber)를 유지하며, 특정 토픽으로부터 메시지를 비동기적으로 수신한다. 조건 노드의 <code>tick()</code> 메서드가 호출되는 시점에서 가장 최근에 수신된 메시지를 기준으로 조건을 평가한다. 이 구조의 핵심은 토픽 구독과 조건 평가의 분리에 있다. 구독 콜백(callback)은 메시지를 수신하여 내부 버퍼에 저장하고, <code>tick()</code> 메서드는 저장된 메시지를 읽어 조건을 판정한다.</p>
+<pre><code class="language-cpp">template &lt;typename MessageT&gt;
+class TopicConditionNode : public BT::ConditionNode
+{
+public:
+    TopicConditionNode(const std::string&amp; name,
+                       const BT::NodeConfiguration&amp; config,
+                       rclcpp::Node::SharedPtr ros_node)
+        : BT::ConditionNode(name, config),
+          ros_node_(ros_node),
+          message_received_(false)
+    {
+        std::string topic_name;
+        getInput("topic_name", topic_name);
+
+        subscription_ = ros_node_-&gt;create_subscription&lt;MessageT&gt;(
+            topic_name,
+            rclcpp::QoS(10),
+            [this](const%20typename%20MessageT::SharedPtr%20msg) {
+                std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                last_message_ = msg;
+                message_received_ = true;
+            });
+    }
+
+protected:
+    rclcpp::Node::SharedPtr ros_node_;
+    typename rclcpp::Subscription&lt;MessageT&gt;::SharedPtr subscription_;
+    typename MessageT::SharedPtr last_message_;
+    std::mutex mutex_;
+    bool message_received_;
+};
+</code></pre>
+<p>위 구현에서 템플릿 매개변수 <code>MessageT</code>는 ROS2 메시지 타입을 나타내며, 구독 콜백은 <code>std::mutex</code>를 통해 스레드 안전성(thread safety)을 보장한다. 행동 트리의 tick 루프와 ROS2의 콜백 실행기(executor)가 서로 다른 스레드에서 동작할 수 있으므로, 공유 자원인 <code>last_message_</code>에 대한 동기화는 필수적이다.</p>
+<h3>2.2 노드 구성과 블랙보드 포트</h3>
+<p>토픽 기반 조건 노드는 일반적으로 다음과 같은 입력 포트를 정의한다.</p>
+<table><thead><tr><th>포트 이름</th><th>타입</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>topic_name</code></td><td><code>std::string</code></td><td>구독할 토픽의 이름</td></tr>
+<tr><td><code>qos_profile</code></td><td><code>std::string</code></td><td>QoS 프로파일 설정 (선택)</td></tr>
+<tr><td><code>timeout_ms</code></td><td><code>int</code></td><td>메시지 수신 대기 제한 시간 (선택)</td></tr>
+</tbody></table>
+<p>블랙보드 포트를 통해 토픽 이름을 동적으로 지정할 수 있으므로, 동일한 조건 노드 클래스를 서로 다른 토픽에 재사용할 수 있다. 이는 행동 트리의 XML 정의에서 유연한 매개변수화를 가능하게 한다.</p>
+<pre><code class="language-xml">&lt;Condition ID="IsTopicReceived"
+           topic_name="/scan"
+           timeout_ms="1000"/&gt;
+</code></pre>
+<h2>3. QoS 프로파일 고려 사항</h2>
+<p>ROS2의 품질 서비스(Quality of Service, QoS) 설정은 토픽 기반 조건 노드의 동작에 직접적인 영향을 미친다. 조건 노드가 센서 데이터와 같이 주기적으로 발행되는 토픽을 구독하는 경우, 일반적으로 <code>SENSOR_DATA</code> QoS 프로파일(신뢰성: Best Effort, 내구성: Volatile)을 사용한다. 반면, 상태 정보와 같이 신뢰성이 요구되는 토픽에는 <code>RELIABLE</code> QoS 프로파일을 적용한다.</p>
+<pre><code class="language-cpp">rclcpp::QoS qos_profile = rclcpp::SensorDataQoS();
+subscription_ = ros_node_-&gt;create_subscription&lt;MessageT&gt;(
+    topic_name, qos_profile, callback);
+</code></pre>
+<p>QoS 불일치(mismatch)는 토픽 메시지가 수신되지 않는 주요 원인 중 하나이다. 발행자(publisher)와 구독자(subscriber)의 QoS 설정이 호환되지 않으면 통신이 성립되지 않으므로, 조건 노드 설계 시 대상 토픽의 QoS 정책을 사전에 파악하여야 한다.</p>
+<h2>4. 메시지 유효성 판정</h2>
+<h3>4.1 메시지 수신 여부 확인</h3>
+<p>가장 기본적인 토픽 기반 조건은 특정 토픽으로부터 메시지가 수신되었는지를 판정하는 것이다. 메시지가 한 번도 수신되지 않은 상태에서 조건 노드가 tick되면 <code>FAILURE</code>를 반환하여야 한다. 이는 시스템 초기화 단계에서 센서나 다른 노드가 아직 활성화되지 않은 경우를 처리하는 데 유용하다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+    if (!message_received_)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+    return evaluateCondition(last_message_);
+}
+</code></pre>
+<h3>4.2 메시지 신선도 (Freshness) 확인</h3>
+<p>토픽 메시지의 수신 여부뿐만 아니라, 해당 메시지가 충분히 최근의 것인지를 판정하는 것도 중요하다. 메시지의 헤더에 포함된 타임스탬프(<code>header.stamp</code>)와 현재 시각을 비교하여 메시지의 신선도를 평가할 수 있다. 일정 시간 이상 경과한 메시지는 유효하지 않은 것으로 간주하여 <code>FAILURE</code>를 반환한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+    if (!message_received_)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto now = ros_node_-&gt;get_clock()-&gt;now();
+    auto msg_time = rclcpp::Time(last_message_-&gt;header.stamp);
+    auto age = now - msg_time;
+
+    double timeout_sec;
+    getInput("max_age_sec", timeout_sec);
+
+    if (age.seconds() &gt; timeout_sec)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+    return evaluateCondition(last_message_);
+}
+</code></pre>
+<p>이 패턴은 센서 장애나 통신 지연으로 인해 오래된 데이터를 기반으로 잘못된 판단을 내리는 것을 방지한다.</p>
+<h2>5. ROS2 노드 생명주기와의 통합</h2>
+<h3>5.1 공유 노드 패턴</h3>
+<p>BehaviorTree.CPP와 ROS2를 통합할 때, 각 조건 노드가 독립적인 <code>rclcpp::Node</code>를 생성하는 것은 비효율적이다. 대신, 단일 ROS2 노드를 여러 행동 트리 노드가 공유하는 패턴을 적용한다. 이를 위해 <code>RosNodeParams</code> 구조체나 팩토리 패턴을 통해 공유 노드를 주입한다.</p>
+<pre><code class="language-cpp">struct RosNodeParams
+{
+    rclcpp::Node::SharedPtr nh;
+    std::string default_port_value;
+};
+</code></pre>
+<p>BehaviorTree.ROS2 패키지에서 제공하는 <code>RosTopicSubNode&lt;MessageT&gt;</code> 기반 클래스는 이러한 공유 노드 패턴을 내장하고 있어, 개발자가 토픽 구독의 세부 사항을 직접 관리하지 않고도 토픽 기반 조건 노드를 구현할 수 있다.</p>
+<h3>5.2 RosTopicSubNode 기반 조건 노드 구현</h3>
+<p>BehaviorTree.ROS2 패키지의 <code>RosTopicSubNode&lt;MessageT&gt;</code> 클래스를 활용하면, 토픽 구독 로직이 이미 캡슐화되어 있으므로 개발자는 조건 평가 로직에만 집중할 수 있다.</p>
+<pre><code class="language-cpp">class IsScanReceived
+    : public BT::RosTopicSubNode&lt;sensor_msgs::msg::LaserScan&gt;
+{
+public:
+    IsScanReceived(const std::string&amp; name,
+                   const BT::NodeConfiguration&amp; config,
+                   const BT::RosNodeParams&amp; params)
+        : RosTopicSubNode(name, config, params)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        return providedBasicPorts({
+            BT::InputPort&lt;double&gt;("min_range", 0.5, "최소 감지 거리")
+        });
+    }
+
+    BT::NodeStatus onTick(
+        const sensor_msgs::msg::LaserScan::SharedPtr&amp; msg) override
+    {
+        if (!msg)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        double min_range;
+        getInput("min_range", min_range);
+
+        for (const auto&amp; range : msg-&gt;ranges)
+        {
+            if (std::isfinite(range) &amp;&amp; range &lt; min_range)
+            {
+                return BT::NodeStatus::SUCCESS;
+            }
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<p>위 예시에서 <code>onTick()</code> 메서드는 가장 최근에 수신된 <code>LaserScan</code> 메시지를 인자로 받으며, 메시지가 <code>nullptr</code>인 경우(메시지가 아직 수신되지 않은 경우)에는 <code>FAILURE</code>를 반환한다. 이 구조는 토픽 구독, 스레드 동기화, QoS 설정 등의 하위 수준 세부 사항을 기반 클래스에 위임하여 구현의 복잡도를 낮춘다.</p>
+<h2>6. XML 행동 트리에서의 등록과 활용</h2>
+<p>토픽 기반 조건 노드를 행동 트리에서 사용하기 위해서는 <code>BehaviorTreeFactory</code>에 등록하여야 한다.</p>
+<pre><code class="language-cpp">BT::BehaviorTreeFactory factory;
+BT::RosNodeParams params;
+params.nh = ros_node;
+params.default_port_value = "/scan";
+
+factory.registerNodeType&lt;IsScanReceived&gt;("IsScanReceived", params);
+</code></pre>
+<p>등록 후 XML 행동 트리 정의에서 다음과 같이 사용할 수 있다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree ID="ObstacleAvoidance"&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsScanReceived"
+                   topic_name="/scan"
+                   min_range="0.5"/&gt;
+        &lt;Action ID="AvoidObstacle"/&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>ReactiveSequence</code> 내부에 조건 노드를 배치하면, 매 tick마다 조건이 재평가되므로, 토픽 메시지의 변화에 즉각적으로 반응하는 행동 패턴을 구현할 수 있다.</p>
+<h2>7. 설계 시 주의 사항</h2>
+<h3>7.1 부작용 금지 원칙의 준수</h3>
+<p>토픽 기반 조건 노드는 토픽을 구독하여 메시지를 읽기만 하여야 하며, 토픽 발행, 서비스 호출, 블랙보드 출력 포트 기록 등의 부작용(side effect)을 발생시켜서는 안 된다. 조건 노드가 부작용을 포함하면, <code>ReactiveSequence</code>나 <code>ReactiveFallback</code>에 의한 반복적 tick에서 예측 불가능한 동작이 발생할 수 있다.</p>
+<h3>7.2 스레드 안전성 확보</h3>
+<p>ROS2 구독 콜백은 콜백 그룹(callback group)과 실행기(executor)의 구성에 따라 별도의 스레드에서 실행될 수 있다. 행동 트리의 tick 루프와 콜백 스레드 간의 데이터 경합(data race)을 방지하기 위해, 공유 데이터에 대한 뮤텍스(mutex) 보호가 반드시 필요하다. 다만, 뮤텍스의 잠금 구간을 최소화하여 tick 성능에 미치는 영향을 줄여야 한다.</p>
+<h3>7.3 메시지 손실 대응</h3>
+<p>토픽 기반 조건 노드는 가장 최근에 수신된 단일 메시지만을 기준으로 조건을 평가하는 것이 일반적이다. 구독 큐의 깊이(depth)를 1로 설정하면, 항상 최신 메시지를 기준으로 평가할 수 있다. 그러나 메시지 발행 빈도가 tick 빈도보다 현저히 낮은 경우, 메시지가 수신되지 않은 상태가 지속될 수 있으므로 타임아웃 메커니즘을 함께 적용하는 것이 바람직하다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Macenski, S., et al. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+<li>ROS2 공식 문서. https://docs.ros.org/en/humble/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

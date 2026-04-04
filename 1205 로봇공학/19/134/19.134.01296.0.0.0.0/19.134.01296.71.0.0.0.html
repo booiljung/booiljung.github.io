@@ -115,6 +115,168 @@
             </header>
             <article>
                 <h1>1296.71 센서 처리 관련 액션 노드 설계</h1>
+<h2>1. 개요</h2>
+<p>센서 처리 관련 액션 노드는 로봇에 장착된 다양한 센서로부터 데이터를 획득하고 처리하는 동작을 행동 트리 내에서 수행하는 리프 노드 군(群)이다. 로봇 시스템에서 센서 데이터의 획득과 처리는 환경 인식, 장애물 탐지, 물체 인식 등 자율 의사 결정의 기반이 되며, 행동 트리를 통해 이러한 센서 처리 동작의 실행 시점과 순서를 체계적으로 제어할 수 있다.</p>
+<p>센서 처리 액션 노드의 설계는 센서의 물리적 특성, 데이터 처리 시간, ROS2 통신 인터페이스의 선택에 따라 달라진다. 본 절에서는 센서 처리 액션 노드의 일반적인 설계 원칙과 아키텍처를 기술한다.</p>
+<h2>2. 센서 처리 액션 노드의 분류</h2>
+<h3>2.1 처리 시간에 따른 분류</h3>
+<p>센서 처리 작업은 소요 시간에 따라 동기 처리와 비동기 처리로 분류된다.</p>
+<table><thead><tr><th style="text-align: center">분류</th><th style="text-align: center">소요 시간</th><th style="text-align: center">기반 클래스</th><th style="text-align: left">예시</th></tr></thead><tbody>
+<tr><td style="text-align: center">동기 처리</td><td style="text-align: center">수 밀리초</td><td style="text-align: center"><code>SyncActionNode</code></td><td style="text-align: left">센서 상태 확인, 단일 값 읽기</td></tr>
+<tr><td style="text-align: center">비동기 처리</td><td style="text-align: center">수십 밀리초 이상</td><td style="text-align: center"><code>StatefulActionNode</code></td><td style="text-align: left">이미지 촬영, 포인트 클라우드 처리, 물체 탐지</td></tr>
+</tbody></table>
+<p>동기 센서 처리 노드는 단일 tick 내에서 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 즉시 반환하며, 비동기 센서 처리 노드는 <code>RUNNING</code> 상태를 유지하면서 처리 완료를 대기한다. 이미지 기반 물체 인식이나 3차원 포인트 클라우드 처리와 같이 연산 비용이 높은 작업은 반드시 비동기 방식으로 구현해야 한다.</p>
+<h3>2.2 센서 유형에 따른 분류</h3>
+<p>로봇 시스템에서 활용되는 주요 센서 유형과 이에 대응하는 액션 노드는 다음과 같이 분류할 수 있다.</p>
+<table><thead><tr><th style="text-align: center">센서 유형</th><th style="text-align: center">데이터 형태</th><th style="text-align: center">ROS2 메시지 타입</th><th style="text-align: left">대응 액션 노드</th></tr></thead><tbody>
+<tr><td style="text-align: center">카메라</td><td style="text-align: center">2D 이미지</td><td style="text-align: center"><code>sensor_msgs/Image</code></td><td style="text-align: left">CaptureImage</td></tr>
+<tr><td style="text-align: center">깊이 카메라</td><td style="text-align: center">깊이 맵</td><td style="text-align: center"><code>sensor_msgs/Image</code></td><td style="text-align: left">CaptureDepthImage</td></tr>
+<tr><td style="text-align: center">라이다</td><td style="text-align: center">3D 포인트 클라우드</td><td style="text-align: center"><code>sensor_msgs/PointCloud2</code></td><td style="text-align: left">ProcessPointCloud</td></tr>
+<tr><td style="text-align: center">레이더</td><td style="text-align: center">탐지 목록</td><td style="text-align: center">사용자 정의</td><td style="text-align: left">ProcessRadarDetections</td></tr>
+<tr><td style="text-align: center">IMU</td><td style="text-align: center">관성 데이터</td><td style="text-align: center"><code>sensor_msgs/Imu</code></td><td style="text-align: left">ReadIMU</td></tr>
+<tr><td style="text-align: center">GPS</td><td style="text-align: center">위치 데이터</td><td style="text-align: center"><code>sensor_msgs/NavSatFix</code></td><td style="text-align: left">ReadGPS</td></tr>
+</tbody></table>
+<h2>3. 설계 원칙</h2>
+<h3>3.1 센서 추상화 계층</h3>
+<p>센서 처리 액션 노드는 특정 센서 하드웨어에 종속되지 않도록 추상화 계층을 통해 설계해야 한다. ROS2의 토픽 기반 통신 모델은 이러한 추상화를 자연스럽게 지원한다. 센서 드라이버가 표준 메시지 타입으로 데이터를 발행하면, 액션 노드는 메시지 타입에만 의존하고 특정 센서 제조사나 모델에는 의존하지 않는다.</p>
+<pre><code>[센서 하드웨어] → [센서 드라이버 노드] → [ROS2 토픽]
+                                            ↓
+                            [센서 처리 액션 노드 (행동 트리)]
+</code></pre>
+<h3>3.2 데이터 흐름 설계</h3>
+<p>센서 처리 액션 노드의 데이터 흐름은 다음 세 단계로 구성된다.</p>
+<ol>
+<li><strong>데이터 획득(Acquisition)</strong>: ROS2 토픽 구독, 서비스 호출, 또는 액션 클라이언트를 통해 센서 데이터를 수신한다.</li>
+<li><strong>데이터 처리(Processing)</strong>: 수신된 원시 데이터에 대해 필터링, 변환, 특징 추출 등의 처리를 수행한다.</li>
+<li><strong>결과 출력(Output)</strong>: 처리 결과를 블랙보드의 출력 포트에 기록하여 후속 노드에서 활용할 수 있도록 한다.</li>
+</ol>
+<p>이 중 데이터 처리 단계는 액션 노드 내부에서 직접 수행하거나, 별도의 ROS2 처리 노드에 위임할 수 있다. 연산 집약적인 처리는 별도의 서비스 또는 액션 서버에 위임하는 것이 행동 트리의 tick 주기에 미치는 영향을 최소화하는 관점에서 바람직하다.</p>
+<h3>3.3 단일 책임 원칙의 적용</h3>
+<p>각 센서 처리 액션 노드는 하나의 센서 데이터 유형에 대한 하나의 처리 작업만을 담당해야 한다. 예를 들어, 이미지 촬영과 물체 탐지를 하나의 노드에서 수행하는 것은 단일 책임 원칙을 위반한다. 이를 CaptureImage와 DetectObject의 두 개 노드로 분리하면, 각 노드를 독립적으로 재사용하고 조합할 수 있다.</p>
+<pre><code class="language-xml">&lt;!-- 단일 책임 원칙을 따르는 구성 --&gt;
+&lt;Sequence&gt;
+    &lt;CaptureImage camera_topic="/camera/image_raw"
+                  image="{captured_image}" /&gt;
+    &lt;DetectObject image="{captured_image}"
+                  detections="{detected_objects}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>3.4 블랙보드 포트 설계</h3>
+<p>센서 처리 액션 노드의 포트 설계에서는 다음 사항을 고려한다.</p>
+<p><strong>입력 포트:</strong></p>
+<ul>
+<li>센서 토픽 이름 또는 서비스 이름</li>
+<li>처리 파라미터(임계값, 필터 계수, 검출 신뢰도 등)</li>
+<li>타임아웃 시간</li>
+</ul>
+<p><strong>출력 포트:</strong></p>
+<ul>
+<li>처리 결과 데이터(검출 결과, 측정값 등)</li>
+<li>처리 성공 여부에 대한 부가 정보</li>
+</ul>
+<p>센서 데이터 자체(이미지, 포인트 클라우드 등)를 블랙보드에 저장할 때는 데이터 크기를 고려해야 한다. 대용량 센서 데이터는 블랙보드에 직접 저장하는 대신 공유 메모리 또는 ROS2 토픽을 통해 전달하고, 블랙보드에는 데이터에 대한 참조(타임스탬프, 토픽 이름 등)만 저장하는 방식이 메모리 효율 측면에서 유리하다.</p>
+<h2>4. ROS2 통신 인터페이스 선택</h2>
+<h3>4.1 토픽 구독 기반</h3>
+<p>센서 드라이버가 주기적으로 발행하는 토픽을 구독하여 최신 데이터를 획득하는 방식이다. 이 방식은 연속적으로 데이터를 생성하는 센서(카메라 스트림, 라이다 스캔 등)에 적합하다.</p>
+<pre><code class="language-cpp">// 토픽 구독 기반 센서 데이터 획득
+subscription_ = node_-&gt;create_subscription&lt;sensor_msgs::msg::Image&gt;(
+    topic_name, rclcpp::SensorDataQoS(),
+    [this](const%20sensor_msgs::msg::Image::SharedPtr%20msg)
+    {
+        latest_image_ = msg;
+        data_received_ = true;
+    });
+</code></pre>
+<p><code>rclcpp::SensorDataQoS()</code>를 사용하여 센서 데이터에 적합한 QoS(Quality of Service) 프로파일을 적용한다. 이 프로파일은 <code>BEST_EFFORT</code> 신뢰도와 <code>VOLATILE</code> 내구성을 설정하여 데이터 전달의 지연을 최소화한다.</p>
+<h3>4.2 서비스 호출 기반</h3>
+<p>카메라 트리거와 같이 요청-응답 패턴으로 동작하는 센서 인터페이스에는 서비스를 사용한다.</p>
+<pre><code class="language-cpp">// 서비스 호출 기반 센서 데이터 획득
+auto request =
+    std::make_shared&lt;sensor_srvs::srv::CaptureImage::Request&gt;();
+request-&gt;exposure_time = exposure_time;
+
+auto future = service_client_-&gt;async_send_request(request);
+</code></pre>
+<h3>4.3 액션 클라이언트 기반</h3>
+<p>장시간 소요되는 센서 처리 작업(3D 맵 구성, 대규모 포인트 클라우드 정합 등)에는 피드백을 제공하는 액션 인터페이스를 사용한다.</p>
+<h2>5. 센서 데이터의 시간 동기화</h2>
+<h3>5.1 타임스탬프 기반 동기화</h3>
+<p>복수의 센서 데이터를 결합하여 처리해야 하는 경우, 데이터의 시간 동기화가 필수적이다. ROS2에서는 <code>message_filters</code> 패키지의 <code>ApproximateTimeSynchronizer</code>를 활용하여 근사 시간 동기화를 수행할 수 있다.</p>
+<pre><code class="language-cpp">#include &lt;message_filters/subscriber.h&gt;
+#include &lt;message_filters/sync_policies/approximate_time.h&gt;
+
+using SyncPolicy = message_filters::sync_policies::ApproximateTime&lt;
+    sensor_msgs::msg::Image,
+    sensor_msgs::msg::PointCloud2&gt;;
+
+sync_ = std::make_shared&lt;message_filters::Synchronizer&lt;SyncPolicy&gt;&gt;(
+    SyncPolicy(10), image_sub_, cloud_sub_);
+
+sync_-&gt;registerCallback(
+    std::bind(&amp;SensorFusionAction::syncCallback, this,
+              std::placeholders::_1,
+              std::placeholders::_2));
+</code></pre>
+<h3>5.2 TF2 좌표 변환</h3>
+<p>센서 데이터를 로봇의 기준 좌표계(base frame)로 변환하기 위해 TF2 라이브러리를 활용한다. 각 센서의 장착 위치와 방향은 로봇 모델(URDF)에 정의되며, TF2가 좌표 변환 트리를 관리한다.</p>
+<h2>6. 오류 처리 전략</h2>
+<p>센서 처리 액션 노드에서 발생할 수 있는 오류와 대응 방안은 다음과 같다.</p>
+<ul>
+<li><strong>센서 데이터 미수신</strong>: 지정된 타임아웃 내에 센서 데이터가 수신되지 않으면 <code>FAILURE</code>를 반환한다. 이는 센서 연결 해제, 드라이버 장애, 토픽 이름 불일치 등의 원인에 기인할 수 있다.</li>
+<li><strong>데이터 품질 저하</strong>: 센서 데이터의 품질 지표(SNR, 유효 측정점 수 등)가 임계값 이하이면 <code>FAILURE</code>를 반환하거나, 데이터 품질 정보를 출력 포트에 기록하여 후속 노드에서 판단하도록 한다.</li>
+<li><strong>처리 알고리즘 실패</strong>: 물체 탐지 미검출, 특징점 추출 실패 등의 알고리즘 수준 실패는 <code>FAILURE</code>로 반환하되, 이는 환경 조건에 따른 정상적인 결과일 수 있으므로 상위 행동 트리에서 재시도 또는 대체 전략을 구성해야 한다.</li>
+</ul>
+<h2>7. XML 행동 트리에서의 활용 패턴</h2>
+<h3>7.1 순차 센서 처리 파이프라인</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;CaptureImage camera_topic="/camera/image_raw"
+                  image="{raw_image}" /&gt;
+    &lt;ProcessPointCloud lidar_topic="/lidar/points"
+                       cloud="{processed_cloud}" /&gt;
+    &lt;DetectObject image="{raw_image}"
+                  cloud="{processed_cloud}"
+                  detections="{objects}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>7.2 병렬 센서 데이터 획득</h3>
+<p>복수의 센서 데이터를 동시에 획득해야 하는 경우 <code>Parallel</code> 제어 노드를 활용한다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="3" failure_count="1"&gt;
+    &lt;CaptureImage camera_topic="/front_camera/image"
+                  image="{front_image}" /&gt;
+    &lt;CaptureImage camera_topic="/down_camera/image"
+                  image="{down_image}" /&gt;
+    &lt;ProcessPointCloud lidar_topic="/lidar/points"
+                       cloud="{cloud}" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<h3>7.3 조건부 센서 처리</h3>
+<p>환경 조건에 따라 사용할 센서를 동적으로 선택하는 행동 트리 구조이다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;CheckVisibility min_visibility="100.0" /&gt;
+        &lt;CaptureImage camera_topic="/camera/image"
+                      image="{image}" /&gt;
+        &lt;DetectObject image="{image}"
+                      detections="{objects}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;ProcessPointCloud lidar_topic="/lidar/points"
+                           cloud="{cloud}" /&gt;
+        &lt;DetectObject cloud="{cloud}"
+                      detections="{objects}" /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조에서 시정(visibility)이 충분하면 카메라 기반 탐지를 시도하고, 시정이 불량하면 라이다 기반 탐지로 전환한다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Macenski, S. et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” Science Robotics, vol. 7, no. 66, 2022.</li>
+<li>Siegwart, R., Nourbakhsh, I. R., and Scaramuzza, D., “Introduction to Autonomous Mobile Robots,” 2nd ed., MIT Press, 2011.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

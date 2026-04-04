@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.96 조건 평가 결과 로깅</title>
+    <title>BIJUNG:조건 평가 결과 로깅 (Condition Evaluation Result Logging)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,135 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.96 조건 평가 결과 로깅</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.96 조건 평가 결과 로깅</span></nav>
+                    <h1>조건 평가 결과 로깅 (Condition Evaluation Result Logging)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="조건 평가 결과 로깅 (Condition Evaluation Result Logging)">조건 평가 결과 로깅 (Condition Eval...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.96 조건 평가 결과 로깅</h1>
+                <h1>조건 평가 결과 로깅 (Condition Evaluation Result Logging)</h1>
+<h2>1. 개요</h2>
+<p>조건 평가 결과 로깅은 조건 노드의 매 tick에서의 반환 상태를 체계적으로 기록하는 기법이다. 이를 통해 조건 노드의 동작 이력을 추적하고, 예상치 못한 상태 전환의 원인을 분석하며, 시스템의 전반적인 의사 결정 과정을 사후적으로 검토할 수 있다.</p>
+<h2>2. 로깅 수준과 전략</h2>
+<h3>2.1 상태 전환 로깅</h3>
+<p>매 tick이 아닌, 조건 결과가 변경된 시점에서만 로깅하여 로그 볼륨을 제한한다.</p>
+<pre><code class="language-cpp">class LoggingConditionWrapper : public BT::ConditionNode
+{
+public:
+    BT::NodeStatus tick() override
+    {
+        BT::NodeStatus result = evaluateCondition();
+
+        if (result != previous_result_)
+        {
+            RCLCPP_INFO(node_-&gt;get_logger(),
+                "Condition [%s] changed: %s → %s",
+                name().c_str(),
+                BT::toStr(previous_result_).c_str(),
+                BT::toStr(result).c_str());
+            previous_result_ = result;
+        }
+
+        return result;
+    }
+
+protected:
+    virtual BT::NodeStatus evaluateCondition() = 0;
+
+private:
+    BT::NodeStatus previous_result_{BT::NodeStatus::IDLE};
+    rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<h3>2.2 주기적 요약 로깅</h3>
+<p>지정된 주기마다 조건 평가 통계를 요약하여 로깅한다.</p>
+<pre><code class="language-cpp">void logSummary()
+{
+    auto elapsed = (now() - summary_start_).seconds();
+    if (elapsed &gt;= summary_interval_)
+    {
+        RCLCPP_INFO(node_-&gt;get_logger(),
+            "Condition [%s] summary (%.0fs): "
+            "SUCCESS=%d, FAILURE=%d, rate=%.1f%%",
+            name().c_str(), elapsed,
+            success_count_, failure_count_,
+            100.0 * success_count_ /
+            (success_count_ + failure_count_));
+
+        success_count_ = 0;
+        failure_count_ = 0;
+        summary_start_ = now();
+    }
+}
+</code></pre>
+<h2>3. BehaviorTree.CPP의 로깅 인프라</h2>
+<h3>3.1 TreeObserver 기반 자동 로깅</h3>
+<pre><code class="language-cpp">BT::Tree tree = factory.createTree("MainTree");
+BT::TreeObserver observer(tree);
+
+tree.tickWhileRunning();
+
+// 모든 조건 노드의 통계 조회
+for (const auto&amp; [uid, stats] : observer.statistics())
+{
+    if (stats.success_count + stats.failure_count &gt; 0)
+    {
+        RCLCPP_INFO(node-&gt;get_logger(),
+            "Node [%s]: SUCCESS=%d, FAILURE=%d",
+            tree.getNode(uid)-&gt;name().c_str(),
+            stats.success_count, stats.failure_count);
+    }
+}
+</code></pre>
+<h3>3.2 FileLogger2를 통한 영구 로깅</h3>
+<pre><code class="language-cpp">BT::FileLogger2 file_logger(tree, "condition_log.btlog");
+tree.tickWhileRunning();
+</code></pre>
+<p>생성된 <code>.btlog</code> 파일은 Groot2에서 시각적으로 재생하거나, 스크립트로 파싱하여 분석할 수 있다.</p>
+<h2>4. ROS2 diagnostics를 통한 조건 상태 발행</h2>
+<p>조건 노드의 상태를 ROS2 진단 시스템에 통합하여 발행한다.</p>
+<pre><code class="language-cpp">class DiagnosticCondition : public BT::ConditionNode
+{
+public:
+    BT::NodeStatus tick() override
+    {
+        BT::NodeStatus result = evaluateCondition();
+
+        diagnostic_msgs::msg::DiagnosticStatus status;
+        status.name = "BT Condition: " + name();
+        status.hardware_id = "behavior_tree";
+
+        if (result == BT::NodeStatus::SUCCESS)
+        {
+            status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+            status.message = "Condition satisfied";
+        }
+        else
+        {
+            status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+            status.message = "Condition not satisfied";
+        }
+
+        diagnostics_pub_-&gt;publish(createDiagArray(status));
+        return result;
+    }
+};
+</code></pre>
+<h2>5. 설계 시 고려 사항</h2>
+<h3>5.1 로깅 성능 영향</h3>
+<p>매 tick마다 로깅을 수행하면 I/O 오버헤드가 발생한다. 프로덕션 환경에서는 상태 전환 시에만 로깅하거나, 로그 수준을 <code>DEBUG</code>로 설정하여 필요 시에만 활성화한다.</p>
+<h3>5.2 로그 데이터의 구조화</h3>
+<p>로그 메시지에 타임스탬프, 노드 이름, 입력 값, 결과를 구조화된 형식으로 포함하면 자동화된 분석이 용이하다.</p>
+<h3>5.3 개인정보 보호</h3>
+<p>로봇이 사람과 상호작용하는 환경에서는 로그 데이터에 민감한 정보(카메라 영상, 위치 정보 등)가 포함될 수 있으므로, 로그 데이터의 보존 정책과 접근 제한을 설정하여야 한다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

@@ -115,6 +115,239 @@
             </header>
             <article>
                 <h1>1297.26 범위 검사 조건 노드의 구현</h1>
+<h2>1. 범위 검사의 정의</h2>
+<p>범위 검사 조건 노드(range check condition node)는 블랙보드에서 읽은 값이 지정된 하한(lower bound)과 상한(upper bound) 사이에 있는지를 판정하는 조건 노드이다. 값 <span class="math math-inline">v</span>, 하한 <span class="math math-inline">l</span>, 상한 <span class="math math-inline">u</span>에 대하여 <span class="math math-inline">l \leq v \leq u</span>이면 <code>SUCCESS</code>를, 그렇지 않으면 <code>FAILURE</code>를 반환한다(Colledanchise &amp; Ogren, 2018).</p>
+<p>범위 검사는 로봇공학에서 센서 값의 정상 범위 확인, 관절 각도의 허용 한계 확인, 속도/고도/온도 등의 운용 범위 검증에 광범위하게 사용된다. 단일 임계값 비교(부등호 비교)와 달리, 상한과 하한을 동시에 검사하므로 하나의 노드로 양방향 경계를 검증할 수 있다.</p>
+<h2>2. 폐구간 범위 검사 구현</h2>
+<p>가장 일반적인 형태인 폐구간(closed interval) 범위 검사 <span class="math math-inline">[l, u]</span>의 구현이다. 경계값 자체가 허용 범위에 포함된다.</p>
+<pre><code class="language-cpp">class IsValueInRange : public BT::ConditionNode
+{
+public:
+    IsValueInRange(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        double value;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        double min_val, max_val;
+        getInput("min", min_val);
+        getInput("max", max_val);
+
+        return (value &gt;= min_val &amp;&amp; value &lt;= max_val)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("value", "검사 대상 값"),
+            BT::InputPort&lt;double&gt;("min", "하한값"),
+            BT::InputPort&lt;double&gt;("max", "상한값")
+        };
+    }
+};
+</code></pre>
+<h2>3. 개구간 및 반개구간 범위 검사</h2>
+<p>경계값의 포함 여부에 따라 네 가지 구간 유형이 존재한다:</p>
+<table><thead><tr><th>구간 유형</th><th>수학 표기</th><th>조건</th><th>경계값 포함</th></tr></thead><tbody>
+<tr><td>폐구간</td><td><span class="math math-inline">[l, u]</span></td><td><span class="math math-inline">l \leq v \leq u</span></td><td>양쪽 포함</td></tr>
+<tr><td>개구간</td><td><span class="math math-inline">(l, u)</span></td><td><span class="math math-inline">l &lt; v &lt; u</span></td><td>양쪽 제외</td></tr>
+<tr><td>반개구간 (좌개)</td><td><span class="math math-inline">(l, u]</span></td><td><span class="math math-inline">l &lt; v \leq u</span></td><td>상한만 포함</td></tr>
+<tr><td>반개구간 (우개)</td><td><span class="math math-inline">[l, u)</span></td><td><span class="math math-inline">l \leq v &lt; u</span></td><td>하한만 포함</td></tr>
+</tbody></table>
+<p>구간 유형을 매개변수로 지정할 수 있는 확장 구현은 다음과 같다:</p>
+<pre><code class="language-cpp">class IsValueInRangeEx : public BT::ConditionNode
+{
+public:
+    IsValueInRangeEx(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        double value, min_val, max_val;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+        getInput("min", min_val);
+        getInput("max", max_val);
+
+        bool include_min, include_max;
+        getInput("include_min", include_min);
+        getInput("include_max", include_max);
+
+        bool above_min = include_min ? (value &gt;= min_val) : (value &gt; min_val);
+        bool below_max = include_max ? (value &lt;= max_val) : (value &lt; max_val);
+
+        return (above_min &amp;&amp; below_max)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("value", "검사 대상 값"),
+            BT::InputPort&lt;double&gt;("min", "하한값"),
+            BT::InputPort&lt;double&gt;("max", "상한값"),
+            BT::InputPort&lt;bool&gt;("include_min", true, "하한 포함 여부 (기본값: true)"),
+            BT::InputPort&lt;bool&gt;("include_max", true, "상한 포함 여부 (기본값: true)")
+        };
+    }
+};
+</code></pre>
+<h2>4. XML에서의 활용</h2>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 온도가 10~40°C 범위인지 확인 --&gt;
+    &lt;Condition ID="IsValueInRange"
+        value="{temperature}" min="10.0" max="40.0"/&gt;
+
+    &lt;!-- 고도가 10~120m 범위인지 확인 --&gt;
+    &lt;Condition ID="IsValueInRange"
+        value="{altitude}" min="10.0" max="120.0"/&gt;
+
+    &lt;!-- 속도가 0~2.0 m/s 범위인지 확인 --&gt;
+    &lt;Condition ID="IsValueInRange"
+        value="{speed}" min="0.0" max="2.0"/&gt;
+
+    &lt;Action ID="Execute"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>동적 범위 설정이 필요한 경우 하한과 상한을 블랙보드 키로 매핑한다:</p>
+<pre><code class="language-xml">&lt;Condition ID="IsValueInRange"
+    value="{joint_angle}"
+    min="{joint_min_limit}"
+    max="{joint_max_limit}"/&gt;
+</code></pre>
+<h2>5. 범위 외 검사 (Out-of-Range)</h2>
+<p>값이 범위 밖에 있는지를 판정하는 역조건도 필요한 경우가 있다. 이는 범위 검사 노드에 Inverter 데코레이터를 적용하여 구현할 수 있다:</p>
+<pre><code class="language-xml">&lt;Inverter&gt;
+    &lt;Condition ID="IsValueInRange"
+        value="{temperature}" min="0.0" max="80.0"/&gt;
+&lt;/Inverter&gt;
+</code></pre>
+<p>또는 전용 범위 외 검사 노드를 구현할 수 있다:</p>
+<pre><code class="language-cpp">class IsValueOutOfRange : public BT::ConditionNode
+{
+public:
+    IsValueOutOfRange(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        double value, min_val, max_val;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+        getInput("min", min_val);
+        getInput("max", max_val);
+
+        return (value &lt; min_val || value &gt; max_val)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("value", "검사 대상 값"),
+            BT::InputPort&lt;double&gt;("min", "하한값"),
+            BT::InputPort&lt;double&gt;("max", "상한값")
+        };
+    }
+};
+</code></pre>
+<h2>6. 비정상 입력 처리</h2>
+<h3>6.1 NaN 및 Inf 검사</h3>
+<p>부동소수점 값이 NaN이나 Inf인 경우, 범위 검사 전에 유효성을 확인해야 한다. NaN과의 비교는 IEEE 754 표준에 따라 항상 거짓을 반환하므로 범위 검사가 의도대로 동작하지 않을 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    double value, min_val, max_val;
+    auto result = getInput("value", value);
+    if (!result)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // NaN 및 Inf 검사
+    if (std::isnan(value) || std::isinf(value))
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    getInput("min", min_val);
+    getInput("max", max_val);
+
+    return (value &gt;= min_val &amp;&amp; value &lt;= max_val)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>6.2 역전된 범위 검사</h3>
+<p>하한이 상한보다 큰 경우(<span class="math math-inline">l &gt; u</span>)는 범위가 역전된 비정상 상태이다. 이 상황을 방어적으로 처리한다:</p>
+<pre><code class="language-cpp">if (min_val &gt; max_val)
+{
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>7. 정수형 범위 검사</h2>
+<p>정수(int) 타입에 대한 범위 검사도 동일한 패턴으로 구현된다. 부동소수점 오차 문제가 없으므로 경계값 처리가 명확하다.</p>
+<pre><code class="language-cpp">class IsIntInRange : public BT::ConditionNode
+{
+public:
+    IsIntInRange(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        int value, min_val, max_val;
+        auto result = getInput("value", value);
+        if (!result) return BT::NodeStatus::FAILURE;
+        getInput("min", min_val);
+        getInput("max", max_val);
+
+        return (value &gt;= min_val &amp;&amp; value &lt;= max_val)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;int&gt;("value", "검사 대상 정수 값"),
+            BT::InputPort&lt;int&gt;("min", "하한값"),
+            BT::InputPort&lt;int&gt;("max", "상한값")
+        };
+    }
+};
+</code></pre>
+<h2>8. 로봇공학에서의 범위 검사 적용 사례</h2>
+<table><thead><tr><th>적용 분야</th><th>검사 대상</th><th>하한</th><th>상한</th><th>단위</th></tr></thead><tbody>
+<tr><td>관절 제어</td><td>관절 각도</td><td>관절 최소 한계</td><td>관절 최대 한계</td><td>rad</td></tr>
+<tr><td>내비게이션</td><td>로봇 속도</td><td>0.0</td><td>최대 허용 속도</td><td>m/s</td></tr>
+<tr><td>드론 비행</td><td>비행 고도</td><td>최저 안전 고도</td><td>최대 허용 고도</td><td>m</td></tr>
+<tr><td>환경 감시</td><td>센서 온도</td><td>운용 최저 온도</td><td>운용 최고 온도</td><td>°C</td></tr>
+<tr><td>전원 관리</td><td>공급 전압</td><td>최소 동작 전압</td><td>최대 허용 전압</td><td>V</td></tr>
+<tr><td>매니퓰레이션</td><td>파지 힘</td><td>최소 파지 힘</td><td>최대 안전 힘</td><td>N</td></tr>
+</tbody></table>
+<p>이러한 범위 검사는 로봇 시스템의 안전 운용을 보장하는 핵심 조건으로, 행동 트리의 ReactiveSequence와 결합하여 실시간으로 지속 감시되는 것이 일반적이다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

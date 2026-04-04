@@ -115,6 +115,248 @@
             </header>
             <article>
                 <h1>1296.62 MoveToPose 액션 노드 구현</h1>
+<h2>1. MoveToPose의 정의와 역할</h2>
+<p>MoveToPose는 로봇 매니퓰레이터의 말단 장치(end-effector)를 지정된 목표 자세(위치 + 방향)로 이동시키는 행동 트리 액션 노드이다. 이 노드는 작업 공간(Cartesian space)에서 목표를 지정하며, MoveIt2의 <code>MoveGroup</code> 액션 서버를 통해 역기구학 계산, 경로 계획, 궤적 실행을 수행한다.</p>
+<p>MoveToPose는 물체 파지, 배치, 도구 사용 등 말단 장치의 정밀한 위치·방향 제어가 요구되는 매니퓰레이션 작업에서 핵심적으로 활용된다(Coleman et al., 2014).</p>
+<h2>2. 액션 인터페이스</h2>
+<p>MoveToPose는 <code>moveit_msgs::action::MoveGroup</code> 액션 인터페이스를 호출한다. 목표 자세는 <code>goal_constraints</code>로 변환되어 골 메시지에 포함된다.</p>
+<h2>3. 클래스 구조와 구현</h2>
+<pre><code class="language-cpp">#include "behaviortree_cpp/action_node.h"
+#include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
+#include "moveit_msgs/action/move_group.hpp"
+#include "moveit_msgs/msg/constraints.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+
+class MoveToPose : public BT::StatefulActionNode
+{
+public:
+  MoveToPose(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::StatefulActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    action_client_ =
+      rclcpp_action::create_client&lt;moveit_msgs::action::MoveGroup&gt;(
+        node_, "move_action");
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+        "target_pose", "Target end-effector pose"),
+      BT::InputPort&lt;std::string&gt;(
+        "planning_group", "manipulator", "MoveIt2 planning group"),
+      BT::InputPort&lt;std::string&gt;(
+        "end_effector_link", "", "End-effector link name"),
+      BT::InputPort&lt;double&gt;(
+        "planning_time", 5.0, "Allowed planning time [s]"),
+      BT::InputPort&lt;int&gt;(
+        "num_attempts", 10, "Number of planning attempts"),
+      BT::InputPort&lt;double&gt;(
+        "position_tolerance", 0.001, "Position tolerance [m]"),
+      BT::InputPort&lt;double&gt;(
+        "orientation_tolerance", 0.01, "Orientation tolerance [rad]"),
+      BT::OutputPort&lt;int&gt;(
+        "error_code", "MoveIt2 error code")
+    };
+  }
+
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  rclcpp_action::Client&lt;moveit_msgs::action::MoveGroup&gt;::SharedPtr
+    action_client_;
+  rclcpp_action::ClientGoalHandle&lt;
+    moveit_msgs::action::MoveGroup&gt;::SharedPtr goal_handle_;
+  bool goal_accepted_{false};
+  bool result_received_{false};
+  moveit_msgs::action::MoveGroup::Result::SharedPtr result_;
+};
+</code></pre>
+<h2>4. onStart() 구현</h2>
+<p><code>onStart()</code>에서 MoveGroup 골 메시지를 구성하고 비동기적으로 전송한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus MoveToPose::onStart()
+{
+  // 입력 포트 읽기
+  geometry_msgs::msg::PoseStamped target_pose;
+  getInput("target_pose", target_pose);
+
+  std::string planning_group, end_effector_link;
+  double planning_time, position_tol, orientation_tol;
+  int num_attempts;
+
+  getInput("planning_group", planning_group);
+  getInput("end_effector_link", end_effector_link);
+  getInput("planning_time", planning_time);
+  getInput("num_attempts", num_attempts);
+  getInput("position_tolerance", position_tol);
+  getInput("orientation_tolerance", orientation_tol);
+
+  // 서버 가용성 확인
+  if (!action_client_-&gt;wait_for_action_server(std::chrono::seconds(5))) {
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+      "MoveGroup action server not available");
+    return BT::NodeStatus::FAILURE;
+  }
+
+  // 골 메시지 구성
+  auto goal = moveit_msgs::action::MoveGroup::Goal();
+  goal.request.group_name = planning_group;
+  goal.request.num_planning_attempts = num_attempts;
+  goal.request.allowed_planning_time = planning_time;
+
+  // 목표 제약 조건 설정
+  moveit_msgs::msg::Constraints goal_constraints;
+  goal_constraints.name = "target_pose_constraint";
+
+  // 위치 제약
+  moveit_msgs::msg::PositionConstraint pos_constraint;
+  pos_constraint.header = target_pose.header;
+  pos_constraint.link_name = end_effector_link;
+  pos_constraint.target_point_offset.x = 0.0;
+  pos_constraint.target_point_offset.y = 0.0;
+  pos_constraint.target_point_offset.z = 0.0;
+
+  shape_msgs::msg::SolidPrimitive bounding_volume;
+  bounding_volume.type = shape_msgs::msg::SolidPrimitive::SPHERE;
+  bounding_volume.dimensions.push_back(position_tol);
+  pos_constraint.constraint_region.primitives.push_back(bounding_volume);
+
+  geometry_msgs::msg::Pose region_pose;
+  region_pose.position = target_pose.pose.position;
+  region_pose.orientation.w = 1.0;
+  pos_constraint.constraint_region.primitive_poses.push_back(region_pose);
+  pos_constraint.weight = 1.0;
+  goal_constraints.position_constraints.push_back(pos_constraint);
+
+  // 방향 제약
+  moveit_msgs::msg::OrientationConstraint orient_constraint;
+  orient_constraint.header = target_pose.header;
+  orient_constraint.link_name = end_effector_link;
+  orient_constraint.orientation = target_pose.pose.orientation;
+  orient_constraint.absolute_x_axis_tolerance = orientation_tol;
+  orient_constraint.absolute_y_axis_tolerance = orientation_tol;
+  orient_constraint.absolute_z_axis_tolerance = orientation_tol;
+  orient_constraint.weight = 1.0;
+  goal_constraints.orientation_constraints.push_back(orient_constraint);
+
+  goal.request.goal_constraints.push_back(goal_constraints);
+  goal.planning_options.plan_only = false;
+
+  // 비동기 골 전송
+  auto send_goal_options =
+    rclcpp_action::Client&lt;moveit_msgs::action::MoveGroup&gt;::SendGoalOptions();
+
+  send_goal_options.goal_response_callback =
+    [this](auto%20goal_handle) {
+      goal_handle_ = goal_handle;
+      goal_accepted_ = (goal_handle != nullptr);
+    };
+
+  send_goal_options.result_callback =
+    [this](auto%20result) {
+      result_ = std::make_shared&lt;
+        moveit_msgs::action::MoveGroup::Result&gt;(result.result);
+      result_received_ = true;
+    };
+
+  goal_accepted_ = false;
+  result_received_ = false;
+  action_client_-&gt;async_send_goal(goal, send_goal_options);
+
+  return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>5. onRunning() 구현</h2>
+<pre><code class="language-cpp">BT::NodeStatus MoveToPose::onRunning()
+{
+  if (result_received_) {
+    if (result_-&gt;error_code.val ==
+        moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+    {
+      return BT::NodeStatus::SUCCESS;
+    } else {
+      setOutput("error_code", static_cast&lt;int&gt;(result_-&gt;error_code.val));
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+
+  if (!goal_accepted_) {
+    // 골이 아직 수락/거부되지 않은 상태
+    return BT::NodeStatus::RUNNING;
+  }
+
+  return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>6. onHalted() 구현</h2>
+<pre><code class="language-cpp">void MoveToPose::onHalted()
+{
+  if (goal_handle_) {
+    action_client_-&gt;async_cancel_goal(goal_handle_);
+  }
+  goal_handle_.reset();
+  goal_accepted_ = false;
+  result_received_ = false;
+}
+</code></pre>
+<p>행동 트리의 halt 호출 시 MoveGroup 서버에 골 취소를 전송하여 궤적 실행을 중단한다. MoveIt2는 취소 요청을 수신하면 로봇 팔의 현재 위치에서 안전하게 정지한다.</p>
+<h2>7. XML 행동 트리에서의 사용</h2>
+<h3>7.1 기본 사용</h3>
+<pre><code class="language-xml">&lt;MoveToPose target_pose="{pick_pose}"
+            planning_group="manipulator"
+            end_effector_link="tool0"
+            planning_time="5.0"/&gt;
+</code></pre>
+<h3>7.2 접근-파지-복귀 시퀀스</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+  &lt;MoveToPose target_pose="{pre_grasp_pose}"
+              planning_group="manipulator"/&gt;
+  &lt;MoveToPose target_pose="{grasp_pose}"
+              planning_group="manipulator"/&gt;
+  &lt;GripperCommand position="0.0" max_effort="50.0"/&gt;
+  &lt;MoveToPose target_pose="{post_grasp_pose}"
+              planning_group="manipulator"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>8. 경로 제약 조건</h2>
+<p>MoveToPose는 경로 제약(path constraints)을 설정하여 궤적의 중간 경로에도 제약을 부과할 수 있다. 예를 들어, 액체가 담긴 용기를 운반할 때 말단 장치의 방향을 수직으로 유지하도록 방향 제약을 설정할 수 있다.</p>
+<h2>9. 오류 코드 체계</h2>
+<p>MoveIt2의 <code>MoveItErrorCodes</code>는 매니퓰레이션 실패의 원인을 체계적으로 분류한다.</p>
+<table><thead><tr><th>오류 코드</th><th>의미</th></tr></thead><tbody>
+<tr><td>SUCCESS (1)</td><td>성공</td></tr>
+<tr><td>PLANNING_FAILED (-1)</td><td>경로 계획 실패</td></tr>
+<tr><td>INVALID_MOTION_PLAN (-2)</td><td>유효하지 않은 동작 계획</td></tr>
+<tr><td>MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE (-3)</td><td>환경 변화로 계획 무효화</td></tr>
+<tr><td>CONTROL_FAILED (-4)</td><td>궤적 실행 제어 실패</td></tr>
+<tr><td>TIMED_OUT (-6)</td><td>시간 초과</td></tr>
+<tr><td>START_STATE_IN_COLLISION (-10)</td><td>시작 상태 충돌</td></tr>
+<tr><td>GOAL_IN_COLLISION (-12)</td><td>목표 상태 충돌</td></tr>
+</tbody></table>
+<h2>10. 플러그인 등록</h2>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+BT_REGISTER_NODES(factory)
+{
+  factory.registerNodeType&lt;MoveToPose&gt;("MoveToPose");
+}
+</code></pre>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Coleman, D., Sucan, I., Chitta, S., &amp; Correll, N. (2014). “Reducing the Barrier to Entry of Complex Robotic Software: a MoveIt! Case Study.” <em>Journal of Software Engineering for Robotics</em>, 5(1), 3-16.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>MoveIt2 공식 문서: https://moveit.picknik.ai/main/index.html</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: MoveIt2 Humble (ROS2 Humble) 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

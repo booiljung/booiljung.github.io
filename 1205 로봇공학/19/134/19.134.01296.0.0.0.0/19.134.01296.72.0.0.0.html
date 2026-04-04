@@ -115,6 +115,275 @@
             </header>
             <article>
                 <h1>1296.72 CaptureImage 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>CaptureImage 액션 노드는 로봇에 장착된 카메라로부터 이미지를 획득하여 행동 트리의 블랙보드에 저장하는 리프 노드이다. 이미지 획득은 물체 인식, 환경 매핑, 시각 검사, 감시 등 다양한 로봇 응용의 기초 단계이며, 행동 트리를 통해 촬영 시점과 조건을 체계적으로 제어할 수 있다.</p>
+<p>이미지 획득 동작은 카메라 토픽 구독 방식에서는 수 밀리초 내에 완료되므로 <code>BT::SyncActionNode</code>로 구현할 수 있으나, 카메라 트리거 방식이나 고해상도 이미지의 후처리가 포함되는 경우에는 <code>BT::StatefulActionNode</code>로 구현하여 비동기 처리한다.</p>
+<h2>2. 이미지 획득 방식</h2>
+<h3>2.1 토픽 구독 방식</h3>
+<p>카메라 드라이버가 지속적으로 이미지를 발행하는 환경에서, CaptureImage 노드는 해당 토픽을 구독하여 최신 이미지를 획득한다. 이 방식은 구현이 간결하며 대부분의 ROS2 카메라 드라이버와 호환된다.</p>
+<p>ROS2에서 카메라 이미지는 <code>sensor_msgs/msg/Image</code> 메시지 타입으로 전달된다. 이 메시지는 이미지의 너비, 높이, 인코딩 방식, 픽셀 데이터를 포함한다. 압축 이미지의 경우 <code>sensor_msgs/msg/CompressedImage</code> 메시지 타입을 사용한다.</p>
+<h3>2.2 서비스 트리거 방식</h3>
+<p>일부 산업용 카메라는 외부 트리거 신호에 의해 촬영을 수행한다. 이 경우 ROS2 서비스를 통해 트리거 명령을 전송하고, 촬영된 이미지를 응답으로 수신하거나 후속 토픽에서 획득한다.</p>
+<h2>3. 클래스 구조 설계</h2>
+<h3>3.1 토픽 구독 기반 구현</h3>
+<p>토픽 구독 방식의 CaptureImage 노드는 <code>StatefulActionNode</code>를 상속하여, 최신 이미지 수신을 대기하는 비동기 패턴으로 구현한다.</p>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;sensor_msgs/msg/image.hpp&gt;
+#include &lt;cv_bridge/cv_bridge.h&gt;
+
+class CaptureImageAction : public BT::StatefulActionNode
+{
+public:
+    CaptureImageAction(const std::string&amp; name,
+                       const BT::NodeConfiguration&amp; config,
+                       rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config),
+          node_(node)
+    {
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("camera_topic",
+                "/camera/image_raw",
+                "카메라 이미지 토픽 이름"),
+            BT::InputPort&lt;double&gt;("timeout", 5.0,
+                "이미지 수신 타임아웃 (초)"),
+            BT::InputPort&lt;std::string&gt;("save_path", "",
+                "이미지 저장 경로 (빈 문자열: 저장 안 함)"),
+            BT::OutputPort&lt;std::shared_ptr&lt;
+                sensor_msgs::msg::Image&gt;&gt;("image",
+                "획득한 이미지")
+        };
+    }
+
+    BT::NodeStatus onStart() override;
+    BT::NodeStatus onRunning() override;
+    void onHalted() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Subscription&lt;sensor_msgs::msg::Image&gt;::SharedPtr
+        subscription_;
+    sensor_msgs::msg::Image::SharedPtr captured_image_;
+    std::atomic&lt;bool&gt; image_received_{false};
+    rclcpp::Time start_time_;
+};
+</code></pre>
+<p><code>OutputPort</code>에 <code>sensor_msgs::msg::Image</code>의 공유 포인터를 저장하여, 블랙보드를 통해 후속 노드(물체 탐지, 이미지 처리 등)로 이미지를 전달한다.</p>
+<h2>4. 콜백 메서드 구현</h2>
+<h3>4.1 onStart() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus CaptureImageAction::onStart()
+{
+    std::string camera_topic;
+    getInput("camera_topic", camera_topic);
+
+    image_received_ = false;
+    captured_image_.reset();
+
+    // 이미지 토픽 구독 생성
+    subscription_ =
+        node_-&gt;create_subscription&lt;sensor_msgs::msg::Image&gt;(
+            camera_topic,
+            rclcpp::SensorDataQoS(),
+            [this](const%20sensor_msgs::msg::Image::SharedPtr%20msg)
+            {
+                if (!image_received_)
+                {
+                    captured_image_ = msg;
+                    image_received_ = true;
+                }
+            });
+
+    start_time_ = node_-&gt;now();
+
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+                 "이미지 획득 시작: %s", camera_topic.c_str());
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>SensorDataQoS()</code>는 <code>BEST_EFFORT</code> 신뢰도 정책을 적용하여, 카메라 드라이버의 QoS 설정과 호환성을 보장한다. 센서 데이터 토픽은 일반적으로 <code>BEST_EFFORT</code>를 사용하므로, 구독자가 <code>RELIABLE</code>로 설정하면 토픽 연결이 수립되지 않는다.</p>
+<h3>4.2 onRunning() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus CaptureImageAction::onRunning()
+{
+    double timeout;
+    getInput("timeout", timeout);
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+
+    if (elapsed &gt; timeout)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "이미지 수신 타임아웃 (%.1f초)", elapsed);
+        subscription_.reset();
+        return BT::NodeStatus::FAILURE;
+    }
+
+    if (image_received_)
+    {
+        // 이미지 출력 포트에 기록
+        setOutput("image", captured_image_);
+
+        // 선택적 파일 저장
+        std::string save_path;
+        getInput("save_path", save_path);
+        if (!save_path.empty())
+        {
+            try
+            {
+                auto cv_image = cv_bridge::toCvShare(
+                    captured_image_, "bgr8");
+                cv::imwrite(save_path, cv_image-&gt;image);
+                RCLCPP_INFO(node_-&gt;get_logger(),
+                    "이미지 저장: %s", save_path.c_str());
+            }
+            catch (const cv_bridge::Exception&amp; e)
+            {
+                RCLCPP_ERROR(node_-&gt;get_logger(),
+                    "이미지 변환 오류: %s", e.what());
+            }
+        }
+
+        subscription_.reset();
+
+        RCLCPP_DEBUG(node_-&gt;get_logger(),
+            "이미지 획득 완료: %dx%d, 인코딩: %s",
+            captured_image_-&gt;width,
+            captured_image_-&gt;height,
+            captured_image_-&gt;encoding.c_str());
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>cv_bridge</code> 라이브러리를 사용하여 ROS2 이미지 메시지를 OpenCV의 <code>cv::Mat</code> 형식으로 변환한다. 이미지 인코딩 형식은 카메라 드라이버에 따라 <code>bgr8</code>, <code>rgb8</code>, <code>mono8</code>, <code>bayer_rggb8</code> 등 다양하므로, <code>cv_bridge</code>의 인코딩 변환 기능을 활용한다.</p>
+<h3>4.3 onHalted() 콜백</h3>
+<pre><code class="language-cpp">void CaptureImageAction::onHalted()
+{
+    subscription_.reset();
+    image_received_ = false;
+    captured_image_.reset();
+}
+</code></pre>
+<p>구독 객체를 해제하여 불필요한 콜백 호출을 방지한다.</p>
+<h2>5. 이미지 품질 검증</h2>
+<p>획득한 이미지의 품질을 검증하는 것은 후속 처리 단계의 신뢰성을 보장하기 위해 중요하다.</p>
+<h3>5.1 노출 검증</h3>
+<p>이미지의 평균 밝기 값을 분석하여 과노출(overexposure) 또는 저노출(underexposure) 여부를 판정한다.</p>
+<pre><code class="language-cpp">bool validateExposure(const cv::Mat&amp; image,
+                      double min_brightness,
+                      double max_brightness)
+{
+    cv::Scalar mean_val = cv::mean(image);
+    double brightness = (mean_val[0] + mean_val[1] +
+                         mean_val[2]) / 3.0;
+    return (brightness &gt;= min_brightness &amp;&amp;
+            brightness &lt;= max_brightness);
+}
+</code></pre>
+<h3>5.2 흐림 검증</h3>
+<p>라플라시안(Laplacian) 연산자의 분산 값을 기반으로 이미지의 초점 상태를 평가한다. Pech-Pacheco et al.이 제안한 방법에 따르면, 라플라시안 분산 값이 낮을수록 이미지가 흐린 것으로 판정한다.</p>
+<pre><code class="language-cpp">double computeBlurMetric(const cv::Mat&amp; image)
+{
+    cv::Mat gray, laplacian;
+    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+    cv::Laplacian(gray, laplacian, CV_64F);
+
+    cv::Scalar mean, stddev;
+    cv::meanStdDev(laplacian, mean, stddev);
+
+    return stddev.val[0] * stddev.val[0];  // 분산
+}
+</code></pre>
+<h2>6. 카메라 정보 활용</h2>
+<h3>6.1 CameraInfo 메시지</h3>
+<p>카메라의 내부 파라미터(초점 거리, 주점, 왜곡 계수)는 <code>sensor_msgs/msg/CameraInfo</code> 메시지를 통해 제공된다. 이 정보는 3차원 좌표 복원, 왜곡 보정 등의 후속 처리에 필수적이다.</p>
+<pre><code class="language-cpp">// 카메라 정보 토픽 구독
+camera_info_sub_ =
+    node_-&gt;create_subscription&lt;sensor_msgs::msg::CameraInfo&gt;(
+        camera_info_topic,
+        rclcpp::SensorDataQoS(),
+        [this](const%20sensor_msgs::msg::CameraInfo::SharedPtr%20msg)
+        {
+            camera_info_ = msg;
+        });
+</code></pre>
+<p>CaptureImage 노드에 <code>camera_info</code> 출력 포트를 추가하면, 이미지와 함께 카메라 정보를 후속 노드에 전달할 수 있다.</p>
+<h2>7. 다중 카메라 지원</h2>
+<h3>7.1 카메라 선택 파라미터화</h3>
+<p>입력 포트를 통해 카메라 토픽을 파라미터화하면, 동일한 CaptureImage 노드를 다중 카메라 환경에서 재사용할 수 있다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;CaptureImage camera_topic="/front_camera/image_raw"
+                  image="{front_image}" /&gt;
+    &lt;CaptureImage camera_topic="/rear_camera/image_raw"
+                  image="{rear_image}" /&gt;
+    &lt;CaptureImage camera_topic="/down_camera/image_raw"
+                  image="{down_image}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>7.2 스테레오 카메라</h3>
+<p>스테레오 카메라의 좌우 이미지를 동시에 획득해야 하는 경우, 두 개의 CaptureImage 노드를 <code>Parallel</code> 제어 노드로 묶어 동시 실행하거나, 스테레오 카메라 전용 노드를 별도로 구현한다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;CaptureImage camera_topic="/stereo/left/image_raw"
+                  image="{left_image}" /&gt;
+    &lt;CaptureImage camera_topic="/stereo/right/image_raw"
+                  image="{right_image}" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<h2>8. XML 행동 트리에서의 활용</h2>
+<h3>8.1 노드 등록</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;CaptureImageAction&gt;(
+    "CaptureImage",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;CaptureImageAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>8.2 주기적 촬영 임무</h3>
+<p>드론이 체공하면서 일정 간격으로 이미지를 촬영하는 임무는 다음과 같이 구성한다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;Hover duration="60.0" /&gt;
+    &lt;Repeat num_cycles="12"&gt;
+        &lt;Sequence&gt;
+            &lt;CaptureImage camera_topic="/camera/image_raw"
+                          save_path="/data/image_{timestamp}.jpg"
+                          image="{latest_image}" /&gt;
+            &lt;Wait duration="5.0" /&gt;
+        &lt;/Sequence&gt;
+    &lt;/Repeat&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<h3>8.3 조건부 촬영</h3>
+<p>조도 센서의 값을 확인한 후 촬영 파라미터를 조정하는 구조이다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;CheckLightLevel min_lux="500" /&gt;
+        &lt;CaptureImage camera_topic="/camera/image_raw"
+                      image="{image}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;SetCameraExposure exposure="0.1" /&gt;
+        &lt;CaptureImage camera_topic="/camera/image_raw"
+                      image="{image}" /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Pech-Pacheco, J. L. et al., “Diatom Autofocusing in Brightfield Microscopy: A Comparative Study,” IEEE International Conference on Pattern Recognition, 2000.</li>
+<li>Bradski, G. and Kaehler, A., “Learning OpenCV: Computer Vision with the OpenCV Library,” O’Reilly Media, 2008.</li>
+<li>Open Robotics, “cv_bridge — ROS 2 Documentation,” https://docs.ros.org/en/rolling/p/cv_bridge/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

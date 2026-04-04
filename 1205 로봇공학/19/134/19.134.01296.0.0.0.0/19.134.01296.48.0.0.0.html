@@ -115,6 +115,214 @@
             </header>
             <article>
                 <h1>1296.48 ROS2 서비스 응답 처리 액션 노드</h1>
+<h2>1. 서비스 응답 처리의 역할</h2>
+<p>서비스 응답 처리 액션 노드는 ROS2 서비스 서버로부터 수신한 응답(Response) 메시지를 분석하고, 그 결과에 따라 행동 트리의 노드 상태(<code>SUCCESS</code> 또는 <code>FAILURE</code>)를 결정하며, 응답에 포함된 유용한 데이터를 블랙보드에 기록하는 역할을 수행한다. 서비스 요청 생성과 서비스 호출이 선행 단계에서 완료된 이후, 응답 처리는 서비스 통신의 최종 단계로서 행동 트리의 제어 흐름에 결과를 반영한다.</p>
+<h2>2. 응답 메시지의 구조와 접근</h2>
+<p>ROS2 서비스 응답 메시지는 <code>.srv</code> 파일의 <code>---</code> 구분자 하위에 정의된 필드들로 구성된다. C++ 코드에서는 <code>ServiceT::Response</code> 타입을 통하여 접근한다.</p>
+<pre><code># GetMap.srv
+---
+nav_msgs/OccupancyGrid map
+</code></pre>
+<p>비동기 서비스 호출의 경우, <code>SharedFuture</code>를 통하여 응답 메시지를 획득한다.</p>
+<pre><code class="language-cpp">auto response = future_result_.get();
+</code></pre>
+<p>동기 서비스 호출에서는 <code>spin_until_future_complete()</code> 이후 동일한 방식으로 응답에 접근한다.</p>
+<h2>3. 응답 상태 코드의 해석</h2>
+<p>많은 ROS2 서비스 인터페이스는 응답 메시지에 성공 여부를 나타내는 상태 필드를 포함한다. 이 상태 필드의 형태는 서비스 인터페이스에 따라 상이하며, 대표적인 패턴은 다음과 같다.</p>
+<table><thead><tr><th>응답 패턴</th><th>필드 타입</th><th>예시</th></tr></thead><tbody>
+<tr><td>불리언 성공 플래그</td><td><code>bool success</code></td><td><code>std_srvs::srv::SetBool</code></td></tr>
+<tr><td>정수 오류 코드</td><td><code>uint16 error_code</code></td><td>Nav2 서비스 인터페이스</td></tr>
+<tr><td>문자열 메시지</td><td><code>string message</code></td><td>오류 설명 전달용</td></tr>
+<tr><td>결과 데이터 유무</td><td>데이터 필드의 비어 있음 여부</td><td>경로가 비어 있는 경우 실패</td></tr>
+</tbody></table>
+<p>응답 상태 코드에 따른 행동 트리 노드 상태 결정의 구현 예시는 다음과 같다.</p>
+<pre><code class="language-cpp">BT::NodeStatus processResponse(
+    typename rclcpp::Client&lt;ServiceT&gt;::SharedResponse response)
+{
+    if (!response) {
+        RCLCPP_ERROR(node_-&gt;get_logger(), "서비스 응답이 null이다.");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    if (response-&gt;error_code != 0) {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "서비스 오류 코드: %d", response-&gt;error_code);
+        setOutput("error_code", response-&gt;error_code);
+        return BT::NodeStatus::FAILURE;
+    }
+
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h2>4. 응답 데이터의 블랙보드 기록</h2>
+<p>서비스 응답에 포함된 데이터를 행동 트리의 다른 노드에서 활용하기 위하여, 출력 포트를 통하여 블랙보드에 기록한다. 이 과정에서 응답 메시지의 원시 필드를 그대로 기록하거나, 필요에 따라 변환 처리를 수행할 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus processResponse(
+    typename rclcpp::Client&lt;ServiceT&gt;::SharedResponse response)
+{
+    if (!response-&gt;path.poses.empty()) {
+        setOutput("path", response-&gt;path);
+        setOutput("path_length",
+                  static_cast&lt;int&gt;(response-&gt;path.poses.size()));
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    RCLCPP_WARN(node_-&gt;get_logger(), "수신된 경로가 비어 있다.");
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>출력 포트의 정의는 <code>providedPorts()</code> 정적 메서드에서 수행한다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::OutputPort&lt;nav_msgs::msg::Path&gt;("path", "계산된 경로"),
+        BT::OutputPort&lt;int&gt;("path_length", "경로 웨이포인트 수"),
+        BT::OutputPort&lt;uint16_t&gt;("error_code", "오류 코드")
+    };
+}
+</code></pre>
+<h2>5. 통합 서비스 호출 및 응답 처리 패턴</h2>
+<p>서비스 호출과 응답 처리를 단일 액션 노드 내에서 통합 구현하는 패턴에서, 응답 처리는 비동기 호출의 결과가 수신된 시점에서 수행된다.</p>
+<pre><code class="language-cpp">class GetMapService : public BT::StatefulActionNode
+{
+public:
+    GetMapService(const std::string&amp; name,
+                  const BT::NodeConfiguration&amp; config,
+                  rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config), node_(node)
+    {
+        client_ = node_-&gt;create_client&lt;nav_msgs::srv::GetMap&gt;("map_server/map");
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        if (!client_-&gt;service_is_ready()) {
+            return BT::NodeStatus::FAILURE;
+        }
+        auto request = std::make_shared&lt;nav_msgs::srv::GetMap::Request&gt;();
+        future_result_ = client_-&gt;async_send_request(request);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        auto status = future_result_.wait_for(std::chrono::milliseconds(0));
+        if (status == std::future_status::ready) {
+            return processResponse(future_result_.get());
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::OutputPort&lt;nav_msgs::msg::OccupancyGrid&gt;("map", "점유 격자 지도")
+        };
+    }
+
+private:
+    BT::NodeStatus processResponse(
+        rclcpp::Client&lt;nav_msgs::srv::GetMap&gt;::SharedResponse response)
+    {
+        if (!response) {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        if (response-&gt;map.data.empty()) {
+            RCLCPP_WARN(node_-&gt;get_logger(), "수신된 지도 데이터가 비어 있다.");
+            return BT::NodeStatus::FAILURE;
+        }
+
+        setOutput("map", response-&gt;map);
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Client&lt;nav_msgs::srv::GetMap&gt;::SharedPtr client_;
+    rclcpp::Client&lt;nav_msgs::srv::GetMap&gt;::SharedFuture future_result_;
+};
+</code></pre>
+<h2>6. 응답 처리 시 예외 상황 관리</h2>
+<p>서비스 응답 처리 과정에서 발생할 수 있는 예외 상황에는 다음이 포함된다.</p>
+<p>첫째, 서비스 서버의 비정상 종료로 인하여 응답이 수신되지 않는 경우이다. 이 경우 <code>future.get()</code>이 예외를 발생시킬 수 있으므로, 타임아웃 메커니즘과 결합하여 처리한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onRunning() override
+{
+    auto elapsed = node_-&gt;now() - request_time_;
+    if (elapsed.seconds() &gt; timeout_sec_) {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "서비스 응답 대기 타임아웃이 발생하였다.");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto status = future_result_.wait_for(std::chrono::milliseconds(0));
+    if (status == std::future_status::ready) {
+        try {
+            auto response = future_result_.get();
+            return processResponse(response);
+        } catch (const std::exception&amp; e) {
+            RCLCPP_ERROR(node_-&gt;get_logger(),
+                         "서비스 응답 처리 중 예외 발생: %s", e.what());
+            return BT::NodeStatus::FAILURE;
+        }
+    }
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>둘째, 응답 메시지의 데이터가 기대하는 형식이나 범위를 벗어나는 경우이다. 이에 대비하여 응답 데이터의 유효성을 검증한 후 블랙보드에 기록하여야 한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus processResponse(
+    rclcpp::Client&lt;ServiceT&gt;::SharedResponse response)
+{
+    if (!response) {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 응답 데이터의 유효성 검증
+    if (!std::isfinite(response-&gt;value) ||
+        response-&gt;value &lt; MIN_VALUE ||
+        response-&gt;value &gt; MAX_VALUE)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "응답 값이 유효 범위를 벗어난다: %f", response-&gt;value);
+        return BT::NodeStatus::FAILURE;
+    }
+
+    setOutput("result_value", response-&gt;value);
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h2>7. 응답 타입 변환과 적응</h2>
+<p>서비스 응답 메시지의 필드 타입이 블랙보드에 저장하기에 적합하지 않은 경우, 응답 처리 노드에서 타입 변환을 수행한다. 예를 들어, 응답에 포함된 시간 정보를 부동소수점 초 단위로 변환하거나, 좌표 배열을 경로 메시지로 재구성하는 작업이 이에 해당한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus processResponse(
+    rclcpp::Client&lt;ServiceT&gt;::SharedResponse response)
+{
+    // builtin_interfaces::msg::Duration을 double 초 단위로 변환
+    double duration_sec =
+        response-&gt;estimated_duration.sec +
+        response-&gt;estimated_duration.nanosec * 1e-9;
+
+    setOutput("duration_seconds", duration_sec);
+
+    // 쿼터니언을 yaw 각도로 변환
+    tf2::Quaternion q;
+    tf2::fromMsg(response-&gt;orientation, q);
+    double roll, pitch, yaw;
+    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+
+    setOutput("heading_yaw", yaw);
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>이러한 변환을 통하여 행동 트리의 다른 노드들이 도메인에 적합한 데이터 형태로 응답 결과를 활용할 수 있게 된다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction.</em> CRC Press.</li>
+<li>ROS 2 Documentation. <em>Understanding Services.</em> Open Robotics. https://docs.ros.org/en/rolling/Tutorials/Beginner-CLI-Tools/Understanding-ROS2-Services.html</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><em>본 문서는 ROS 2 Humble Hawksbill 및 BehaviorTree.CPP v4.x 기준으로 작성되었다.</em></p>
 
             </article>
             <footer>

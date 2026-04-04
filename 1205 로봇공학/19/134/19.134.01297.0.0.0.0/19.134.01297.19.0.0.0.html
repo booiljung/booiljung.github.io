@@ -115,6 +115,114 @@
             </header>
             <article>
                 <h1>1297.19 블랙보드 키 기반 조건 값 참조</h1>
+<h2>1. 블랙보드 키의 개념</h2>
+<p>블랙보드(blackboard)는 행동 트리(Behavior Tree)에서 노드 간 데이터를 공유하기 위한 키-값(key-value) 저장소이다. 블랙보드 키(blackboard key)는 저장소 내의 데이터 항목을 식별하는 문자열이다. 조건 노드는 블랙보드 키를 통해 다른 노드가 저장한 데이터를 참조하여 조건 평가를 수행한다(Faconti &amp; Colledanchise, 2022).</p>
+<p>블랙보드 키 기반 참조는 조건 노드와 데이터 생산자(액션 노드, 외부 프로세스 등) 사이의 결합도(coupling)를 낮추는 역할을 한다. 조건 노드는 데이터의 출처를 알 필요 없이 블랙보드 키만을 통해 값을 획득한다.</p>
+<h2>2. XML에서의 블랙보드 키 매핑</h2>
+<p>XML 트리 정의에서 입력 포트에 블랙보드 키를 매핑할 때, 중괄호(<code>{}</code>)로 키 이름을 감싼다.</p>
+<pre><code class="language-xml">&lt;Condition ID="IsBatteryOk" battery_level="{battery}" threshold="20.0"/&gt;
+</code></pre>
+<p>위 예시에서 <code>battery_level</code> 포트는 블랙보드 키 <code>battery</code>에 매핑된다. <code>tick()</code> 호출 시 <code>getInput("battery_level", value)</code>를 실행하면, 블랙보드에서 <code>battery</code> 키에 저장된 값이 <code>value</code>에 전달된다.</p>
+<p>정적 값(<code>"20.0"</code>)과 블랙보드 키 참조(<code>"{battery}"</code>)를 혼합하여 사용할 수 있다. 정적 값은 문자열에서 해당 타입으로 변환되어 매 tick마다 동일한 값을 반환하며, 블랙보드 키 참조는 매 tick마다 블랙보드의 최신 값을 읽는다.</p>
+<h2>3. 블랙보드 키 참조의 동작 메커니즘</h2>
+<h3>3.1 값 읽기 과정</h3>
+<p><code>getInput&lt;T&gt;(port_name, destination)</code> 호출 시 내부적으로 다음의 과정이 수행된다:</p>
+<ol>
+<li><code>NodeConfig</code>에서 <code>port_name</code>에 대응하는 포트 매핑 정보를 조회한다.</li>
+<li>매핑이 정적 값이면 문자열을 <code>T</code> 타입으로 변환하여 반환한다.</li>
+<li>매핑이 블랙보드 키 참조(<code>{key}</code> 형식)이면, 블랙보드에서 해당 키의 값을 읽어 반환한다.</li>
+<li>블랙보드에 해당 키가 존재하지 않으면 오류를 반환한다.</li>
+</ol>
+<pre><code class="language-cpp">BT::NodeStatus IsDistanceSafe::tick()
+{
+    double distance;
+    // 블랙보드 키 "obstacle_dist"에서 값 읽기
+    auto result = getInput("distance", distance);
+
+    if (!result)
+    {
+        // 키가 존재하지 않거나 타입 불일치
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double threshold;
+    getInput("threshold", threshold);
+
+    return (distance &gt; threshold) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.2 값의 동적 갱신</h3>
+<p>블랙보드 키에 매핑된 포트는 매 tick마다 블랙보드의 최신 값을 읽는다. 따라서 다른 노드가 블랙보드 값을 갱신하면, 조건 노드는 다음 tick에서 갱신된 값을 참조하게 된다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Action ID="UpdateSensorData" output_distance="{obstacle_dist}"/&gt;
+    &lt;Condition ID="IsDistanceSafe" distance="{obstacle_dist}" threshold="1.0"/&gt;
+    &lt;Action ID="MoveForward"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>위 구조에서 <code>UpdateSensorData</code> 액션 노드가 블랙보드 키 <code>obstacle_dist</code>에 최신 센서 값을 저장하고, <code>IsDistanceSafe</code> 조건 노드가 매 tick마다 이 값을 읽어 평가한다.</p>
+<h2>4. 복수 블랙보드 키의 참조</h2>
+<p>하나의 조건 노드가 복수의 블랙보드 키를 참조할 수 있다. 각 입력 포트는 독립적으로 서로 다른 블랙보드 키에 매핑된다.</p>
+<pre><code class="language-xml">&lt;Condition ID="IsGoalReached"
+    robot_x="{robot_pose_x}"
+    robot_y="{robot_pose_y}"
+    goal_x="{goal_x}"
+    goal_y="{goal_y}"
+    tolerance="0.5"/&gt;
+</code></pre>
+<pre><code class="language-cpp">BT::NodeStatus IsGoalReached::tick()
+{
+    double rx, ry, gx, gy, tolerance;
+    getInput("robot_x", rx);
+    getInput("robot_y", ry);
+    getInput("goal_x", gx);
+    getInput("goal_y", gy);
+    getInput("tolerance", tolerance);
+
+    double dist = std::hypot(rx - gx, ry - gy);
+    return (dist &lt;= tolerance) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>5. 블랙보드 키 부재 시의 처리</h2>
+<p>블랙보드에 참조하는 키가 존재하지 않는 경우는 다음과 같이 처리한다.</p>
+<h3>5.1 초기화 전 상태</h3>
+<p>시스템 시작 직후, 아직 데이터가 블랙보드에 저장되지 않은 상태에서 조건 노드가 호출될 수 있다. 이 경우 <code>getInput()</code>이 실패하며, 실패 안전 원칙에 따라 <code>FAILURE</code>를 반환한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    auto result = getInput&lt;double&gt;("value");
+    if (!result)
+    {
+        // 키 미존재 또는 초기화 전: FAILURE 반환
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+</code></pre>
+<h3>5.2 키 존재 확인 조건</h3>
+<p>특정 블랙보드 키의 존재 여부 자체를 조건으로 평가하는 패턴도 가능하다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsKeySet::tick()
+{
+    std::string key_name;
+    getInput("key", key_name);
+
+    auto entry = config().blackboard-&gt;getEntry(key_name);
+    return entry ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>6. 블랙보드 키 명명 규칙</h2>
+<p>블랙보드 키는 트리 전체에서 공유되는 네임스페이스(namespace)를 사용하므로, 명확한 명명 규칙을 따라야 한다.</p>
+<table><thead><tr><th>권장 패턴</th><th>예시</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>{도메인}_{속성}</code></td><td><code>robot_position_x</code></td><td>도메인별 구분</td></tr>
+<tr><td><code>{센서}_{측정}</code></td><td><code>lidar_min_range</code></td><td>센서 데이터</td></tr>
+<tr><td><code>{서브시스템}_{상태}</code></td><td><code>nav_goal_reached</code></td><td>서브시스템 상태</td></tr>
+</tbody></table>
+<p>키 이름의 충돌을 방지하기 위해 도메인 접두사를 사용하는 것이 바람직하다. 서브트리를 사용하는 경우, 블랙보드의 자동 매핑(autoremapping)이나 포트 매핑을 통해 키 이름의 격리를 달성할 수 있다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

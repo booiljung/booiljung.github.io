@@ -115,6 +115,248 @@
             </header>
             <article>
                 <h1>1296.61 매니퓰레이션 관련 액션 노드 설계</h1>
+<h2>1. 매니퓰레이션 액션 노드의 개요</h2>
+<p>매니퓰레이션 관련 액션 노드는 로봇 팔(manipulator arm)의 동작을 행동 트리에서 제어하기 위한 리프 노드 집합이다. 이 노드들은 관절 이동, 말단 장치(end-effector) 위치 제어, 그리퍼 개폐 등 매니퓰레이션 스택의 핵심 기능을 행동 트리 인터페이스로 캡슐화한다.</p>
+<p>ROS2 환경에서 매니퓰레이션은 주로 MoveIt2 프레임워크를 통해 구현되며, MoveIt2가 제공하는 ROS2 액션 인터페이스를 행동 트리 노드에서 클라이언트로 호출하는 구조를 채택한다(Coleman et al., 2014).</p>
+<h2>2. 매니퓰레이션 스택과 행동 트리의 관계</h2>
+<p>매니퓰레이션 스택은 다수의 서버 컴포넌트로 구성되며, 행동 트리는 이 컴포넌트들의 클라이언트로서 매니퓰레이션 임무의 실행 순서를 제어한다.</p>
+<pre><code>[행동 트리 엔진]
+    ├── MoveToPose 노드 ──→ [MoveGroup 액션 서버]
+    ├── MoveToJointPositions 노드 ──→ [MoveGroup 액션 서버]
+    ├── GripperCommand 노드 ──→ [GripperCommand 액션 서버]
+    └── 조건 노드들 ──→ [센서/상태 토픽 구독]
+</code></pre>
+<p>MoveIt2의 <code>MoveGroup</code> 노드는 경로 계획, 충돌 검사, 궤적 실행을 통합적으로 제공하는 액션 서버이며, 행동 트리의 매니퓰레이션 노드는 이 서버에 목표를 전송하고 결과를 수신한다.</p>
+<h2>3. 매니퓰레이션 액션 노드의 분류 체계</h2>
+<p>매니퓰레이션 관련 액션 노드는 제어 공간(control space)과 기능적 역할에 따라 다음과 같이 분류된다.</p>
+<h3>3.1 작업 공간 제어 노드</h3>
+<p>말단 장치의 목표 자세를 직교 좌표계(Cartesian space)에서 지정하여 로봇 팔을 이동시키는 노드이다. 역기구학(inverse kinematics) 계산을 통해 관절 궤적을 생성한다.</p>
+<ul>
+<li><strong>MoveToPose</strong>: 말단 장치를 지정된 자세(위치 + 방향)로 이동</li>
+</ul>
+<h3>3.2 관절 공간 제어 노드</h3>
+<p>각 관절의 목표 각도를 직접 지정하여 로봇 팔을 이동시키는 노드이다. 역기구학을 거치지 않고 관절 공간에서 직접 궤적을 계획한다.</p>
+<ul>
+<li><strong>MoveToJointPositions</strong>: 모든 관절을 지정된 각도로 이동</li>
+</ul>
+<h3>3.3 말단 장치 제어 노드</h3>
+<p>그리퍼, 흡착기 등 말단 장치의 동작을 제어하는 노드이다.</p>
+<ul>
+<li><strong>GripperCommand</strong>: 그리퍼의 개폐 동작 실행</li>
+</ul>
+<h2>4. 공통 설계 패턴</h2>
+<p>매니퓰레이션 액션 노드는 <code>BT::StatefulActionNode</code> 또는 Nav2 스타일의 <code>BtActionNode</code>를 기반으로 구현된다. 매니퓰레이션 동작은 수 초에서 수십 초가 소요되는 장시간 작업이므로, <code>RUNNING</code> 상태를 반환할 수 있는 비동기 액션 노드를 사용하여야 한다.</p>
+<pre><code class="language-cpp">template&lt;class ActionT&gt;
+class ManipulationActionNode
+  : public BT::StatefulActionNode
+{
+public:
+  ManipulationActionNode(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::StatefulActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    action_client_ = rclcpp_action::create_client&lt;ActionT&gt;(
+      node_, action_name_);
+  }
+
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+protected:
+  rclcpp::Node::SharedPtr node_;
+  typename rclcpp_action::Client&lt;ActionT&gt;::SharedPtr action_client_;
+  typename rclcpp_action::ClientGoalHandle&lt;ActionT&gt;::SharedPtr goal_handle_;
+  std::string action_name_;
+};
+</code></pre>
+<h2>5. MoveIt2 ROS2 액션 인터페이스</h2>
+<p>매니퓰레이션 액션 노드가 호출하는 주요 MoveIt2 액션 인터페이스를 정리한다.</p>
+<h3>5.1 moveit_msgs::action::MoveGroup</h3>
+<p>MoveGroup 액션은 MoveIt2의 핵심 인터페이스로, 경로 계획과 궤적 실행을 단일 호출로 수행한다.</p>
+<pre><code># Goal (주요 필드)
+moveit_msgs/MotionPlanRequest request
+  - group_name: 계획 그룹 이름
+  - goal_constraints: 목표 제약 조건
+  - path_constraints: 경로 제약 조건
+  - num_planning_attempts: 계획 시도 횟수
+  - allowed_planning_time: 허용 계획 시간
+moveit_msgs/PlanningOptions planning_options
+  - plan_only: true이면 계획만 수행, false이면 실행까지 포함
+---
+# Result
+moveit_msgs/MoveItErrorCodes error_code
+moveit_msgs/RobotTrajectory planned_trajectory
+float64 planning_time
+---
+# Feedback
+string state
+</code></pre>
+<h3>5.2 control_msgs::action::GripperCommand</h3>
+<p>그리퍼의 개폐를 제어하는 표준 액션 인터페이스이다.</p>
+<pre><code># Goal
+control_msgs/GripperCommand command
+  - position: 그리퍼 위치 [m 또는 rad]
+  - max_effort: 최대 파지력 [N 또는 Nm]
+---
+# Result
+float64 position
+float64 effort
+bool stalled
+bool reached_goal
+---
+# Feedback
+float64 position
+float64 effort
+bool stalled
+bool reached_goal
+</code></pre>
+<h2>6. 입출력 포트 설계 원칙</h2>
+<p>매니퓰레이션 액션 노드의 포트 설계는 다음의 원칙을 따른다.</p>
+<h3>6.1 입력 포트</h3>
+<ul>
+<li><strong>목표 자세</strong>: <code>geometry_msgs::msg::PoseStamped</code> 타입으로 말단 장치의 목표 위치와 방향을 전달한다.</li>
+<li><strong>관절 목표</strong>: <code>std::vector&lt;double&gt;</code> 타입으로 각 관절의 목표 각도를 전달한다.</li>
+<li><strong>계획 그룹</strong>: 문자열 타입으로 MoveIt2의 계획 그룹 이름을 지정한다.</li>
+<li><strong>그리퍼 명령</strong>: 부동소수점 타입으로 그리퍼의 목표 위치와 파지력을 전달한다.</li>
+</ul>
+<h3>6.2 출력 포트</h3>
+<ul>
+<li><strong>계획된 궤적</strong>: 경로 계획 결과를 블랙보드에 기록한다.</li>
+<li><strong>오류 코드</strong>: MoveIt2의 오류 코드를 출력하여 실패 원인 분석에 활용한다.</li>
+<li><strong>실행 결과</strong>: 그리퍼의 파지 성공 여부 등 실행 결과를 출력한다.</li>
+</ul>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+  return {
+    BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+      "target_pose", "Target end-effector pose"),
+    BT::InputPort&lt;std::string&gt;(
+      "planning_group", "manipulator", "MoveIt2 planning group"),
+    BT::InputPort&lt;double&gt;(
+      "planning_time", 5.0, "Allowed planning time [s]"),
+    BT::OutputPort&lt;int&gt;(
+      "error_code", "MoveIt2 error code")
+  };
+}
+</code></pre>
+<h2>7. 매니퓰레이션 행동 트리 구성 패턴</h2>
+<h3>7.1 기본 파지 시퀀스</h3>
+<p>물체를 파지하는 기본적인 행동 트리 구성을 제시한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+  &lt;!-- 접근 자세로 이동 --&gt;
+  &lt;MoveToPose target_pose="{approach_pose}"
+              planning_group="manipulator"/&gt;
+  
+  &lt;!-- 그리퍼 개방 --&gt;
+  &lt;GripperCommand position="0.04" max_effort="10.0"/&gt;
+  
+  &lt;!-- 파지 자세로 이동 --&gt;
+  &lt;MoveToPose target_pose="{grasp_pose}"
+              planning_group="manipulator"/&gt;
+  
+  &lt;!-- 그리퍼 닫기 (파지) --&gt;
+  &lt;GripperCommand position="0.0" max_effort="50.0"/&gt;
+  
+  &lt;!-- 들어올리기 --&gt;
+  &lt;MoveToPose target_pose="{lift_pose}"
+              planning_group="manipulator"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>7.2 파지 실패 시 재시도</h3>
+<p>파지 동작이 실패할 경우 재시도하는 구성이다.</p>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="3"&gt;
+  &lt;Sequence&gt;
+    &lt;MoveToPose target_pose="{grasp_pose}"
+                planning_group="manipulator"/&gt;
+    &lt;GripperCommand position="0.0" max_effort="50.0"/&gt;
+    &lt;Condition ID="IsObjectGrasped"/&gt;
+  &lt;/Sequence&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<h3>7.3 안전한 홈 위치 복귀</h3>
+<p>매니퓰레이션 실패 시 로봇 팔을 안전한 홈 위치로 복귀시키는 구성이다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+  &lt;Sequence&gt;
+    &lt;MoveToPose target_pose="{task_pose}"
+                planning_group="manipulator"/&gt;
+    &lt;GripperCommand position="0.0" max_effort="50.0"/&gt;
+  &lt;/Sequence&gt;
+  &lt;!-- 실패 시 홈 위치로 복귀 --&gt;
+  &lt;MoveToJointPositions joint_positions="{home_positions}"
+                         planning_group="manipulator"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>8. 충돌 검사와 안전성</h2>
+<p>MoveIt2는 경로 계획과 궤적 실행 과정에서 자동으로 충돌 검사를 수행한다. 매니퓰레이션 액션 노드에서 충돌 검사는 다음의 수준에서 이루어진다.</p>
+<h3>8.1 자기 충돌 검사</h3>
+<p>로봇 팔의 링크 간 충돌을 검사한다. 관절 궤적의 모든 중간 지점에서 링크 간 최소 거리를 계산하여 충돌이 발생하지 않도록 보장한다.</p>
+<h3>8.2 환경 충돌 검사</h3>
+<p>작업 환경에 존재하는 장애물과의 충돌을 검사한다. MoveIt2의 계획 장면(Planning Scene)에 등록된 충돌 객체와 점군(point cloud) 기반의 실시간 장애물 데이터를 사용한다.</p>
+<h3>8.3 작업대/테이블 충돌 검사</h3>
+<p>물체 파지 시 로봇 팔이 작업대에 충돌하지 않도록 검사한다. 이를 위해 작업대의 형상을 계획 장면에 등록하여야 한다.</p>
+<h2>9. 좌표계 처리</h2>
+<p>매니퓰레이션 액션 노드에서 사용되는 자세는 다음의 좌표계 체계에서 정의된다.</p>
+<ul>
+<li><strong>베이스 프레임</strong>: 로봇 팔의 기저부에 고정된 좌표계. 일반적으로 <code>base_link</code> 또는 로봇 팔 전용의 기저 프레임이 사용된다.</li>
+<li><strong>말단 장치 프레임</strong>: 말단 장치(그리퍼, 도구)의 좌표계. <code>tool0</code> 또는 사용자 정의 프레임이 사용된다.</li>
+<li><strong>월드 프레임</strong>: 전역 좌표계. 이동 로봇에 장착된 매니퓰레이터의 경우 내비게이션과의 좌표계 연동이 필요하다.</li>
+</ul>
+<p>MoveIt2는 TF2를 통해 좌표계 간 변환을 자동으로 수행하므로, 목표 자세의 <code>header.frame_id</code>를 정확히 지정하면 된다.</p>
+<h2>10. 이동 매니퓰레이션에서의 행동 트리 통합</h2>
+<p>이동 로봇에 매니퓰레이터가 장착된 모바일 매니퓰레이터(mobile manipulator) 시스템에서는 내비게이션 액션 노드와 매니퓰레이션 액션 노드를 동일한 행동 트리 내에서 통합하여 사용한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+  &lt;!-- 작업 위치로 이동 --&gt;
+  &lt;NavigateToPose goal="{work_station_pose}"/&gt;
+  
+  &lt;!-- 물체 감지 --&gt;
+  &lt;DetectObject target_object="{target_object}"
+                detected_pose="{object_pose}"/&gt;
+  
+  &lt;!-- 물체 파지 --&gt;
+  &lt;Sequence&gt;
+    &lt;MoveToPose target_pose="{approach_pose}"
+                planning_group="arm"/&gt;
+    &lt;GripperCommand position="0.04" max_effort="10.0"/&gt;
+    &lt;MoveToPose target_pose="{object_pose}"
+                planning_group="arm"/&gt;
+    &lt;GripperCommand position="0.0" max_effort="50.0"/&gt;
+    &lt;MoveToPose target_pose="{stow_pose}"
+                planning_group="arm"/&gt;
+  &lt;/Sequence&gt;
+  
+  &lt;!-- 배달 위치로 이동 --&gt;
+  &lt;NavigateToPose goal="{delivery_pose}"/&gt;
+  
+  &lt;!-- 물체 배치 --&gt;
+  &lt;Sequence&gt;
+    &lt;MoveToPose target_pose="{place_pose}"
+                planning_group="arm"/&gt;
+    &lt;GripperCommand position="0.04" max_effort="10.0"/&gt;
+    &lt;MoveToPose target_pose="{stow_pose}"
+                planning_group="arm"/&gt;
+  &lt;/Sequence&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>11. 설계 시 고려 사항</h2>
+<h3>11.1 계획 시간 제한</h3>
+<p>MoveIt2의 경로 계획은 확률적 알고리즘(RRT, PRM 등)을 사용하므로, 계획 시간에 상한을 설정하여야 한다. <code>allowed_planning_time</code> 파라미터를 통해 제한하며, 복잡한 환경에서는 더 긴 시간을 허용한다.</p>
+<h3>11.2 궤적 실행 모니터링</h3>
+<p>궤적 실행 중 외부 요인(충돌 감지, 비상 정지 등)에 의해 실행이 중단될 수 있다. 행동 트리의 halt 메커니즘을 통해 궤적 실행 취소를 서버에 전달하고, 로봇 팔을 안전하게 정지시키는 것이 중요하다.</p>
+<h3>11.3 관절 한계</h3>
+<p>각 관절의 물리적 한계(최대/최소 각도, 최대 속도, 최대 가속도)를 준수하여야 한다. MoveIt2는 URDF에 정의된 관절 한계를 자동으로 적용하므로, URDF 모델의 정확한 정의가 전제된다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Coleman, D., Sucan, I., Chitta, S., &amp; Correll, N. (2014). “Reducing the Barrier to Entry of Complex Robotic Software: a MoveIt! Case Study.” <em>Journal of Software Engineering for Robotics</em>, 5(1), 3-16.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>MoveIt2 공식 문서: https://moveit.picknik.ai/main/index.html</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: MoveIt2 Humble (ROS2 Humble) 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

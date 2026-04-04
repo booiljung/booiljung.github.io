@@ -115,6 +115,93 @@
             </header>
             <article>
                 <h1>1297.6 조건 노드의 Running 미반환 원칙</h1>
+<h2>1. Running 상태의 의미</h2>
+<p>행동 트리(Behavior Tree)에서 <code>RUNNING</code> 상태는 노드의 실행이 현재 tick 내에서 완료되지 않았으며, 후속 tick에서 실행이 계속될 것임을 나타내는 상태이다. <code>RUNNING</code>은 주로 장시간 소요되는 비동기적 동작을 수행하는 액션 노드에서 사용된다. 내비게이션, 매니퓰레이션, 센서 캘리브레이션 등 물리적 시간이 요구되는 동작이 진행 중일 때 반환된다(Colledanchise &amp; Ogren, 2018).</p>
+<p><code>RUNNING</code> 상태는 행동 트리의 실행 엔진에 대하여 “이 노드가 다음 tick에서도 다시 호출되어야 한다“는 신호로 기능한다. 제어 노드는 <code>RUNNING</code>을 반환한 자식 노드의 위치를 기억하고, 다음 tick에서 해당 노드부터 실행을 재개한다.</p>
+<h2>2. 조건 노드에서의 Running 금지</h2>
+<p>조건 노드는 <code>RUNNING</code> 상태를 반환해서는 안 된다. 이것은 행동 트리의 이론적 정의와 BehaviorTree.CPP 라이브러리의 구현 양쪽 모두에서 강제되는 원칙이다.</p>
+<p>조건 노드의 반환 공역(codomain)은 다음과 같이 제한된다:</p>
+<p><span class="math math-display">
+f_c: \mathcal{S} \rightarrow \{\text{SUCCESS}, \text{FAILURE}\}
+</span></p>
+<p><code>RUNNING</code>이 공역에서 제외됨으로써, 조건 노드는 항상 확정적인 이진(binary) 결과를 반환하는 것이 보장된다.</p>
+<h2>3. Running 미반환 원칙의 이론적 근거</h2>
+<h3>3.1 조건 평가의 즉시성</h3>
+<p>조건 노드가 평가하는 대상은 “현재 시점에서의 상태“이다. “배터리가 충분한가?”, “목표에 도달하였는가?“와 같은 명제는 현재 상태에서 즉시 참 또는 거짓으로 결정된다. 이러한 명제에 대하여 “아직 판정 중“이라는 상태는 논리적으로 성립하지 않는다. 조건은 현재 참이거나 거짓이며, 그 중간 상태는 존재하지 않는다.</p>
+<h3>3.2 halt 메커니즘과의 정합성</h3>
+<p><code>RUNNING</code> 상태를 반환하는 노드는 제어 노드에 의해 <code>halt()</code>가 호출될 수 있다. 예를 들어, Sequence 노드의 형제 노드가 <code>FAILURE</code>를 반환하면, <code>RUNNING</code> 상태에 있는 노드에 <code>halt()</code>가 호출되어 진행 중인 동작을 중단한다.</p>
+<p>BehaviorTree.CPP에서 <code>ConditionNode</code>의 <code>halt()</code> 메서드는 <code>final</code>로 선언되어 있다:</p>
+<pre><code class="language-cpp">virtual void halt() override final
+{
+    resetStatus();
+}
+</code></pre>
+<p><code>halt()</code>가 재정의 불가능하므로, 조건 노드는 중단 시 수행해야 할 정리(cleanup) 로직을 포함할 수 없다. 이는 조건 노드가 <code>RUNNING</code> 상태를 가질 수 없다는 전제와 정합한다. <code>RUNNING</code>이 불가능하면 중단해야 할 진행 중인 동작도 존재하지 않으므로, halt에서 추가적인 처리가 불필요하다.</p>
+<h3>3.3 반응적 제어 노드와의 호환성</h3>
+<p>ReactiveSequence는 매 tick마다 첫 번째 자식부터 재평가한다. 조건 노드가 <code>RUNNING</code>을 반환하면, ReactiveSequence의 재평가 메커니즘이 비정상적으로 동작한다.</p>
+<pre><code>ReactiveSequence
+├── ConditionNode  ← RUNNING 반환 시 문제 발생
+└── ActionNode
+</code></pre>
+<p>ReactiveSequence는 자식이 <code>RUNNING</code>을 반환하면 해당 노드를 “진행 중“으로 간주한다. 그러나 조건 노드는 단일 tick 내에서 판정이 완료되어야 하는 노드이므로, <code>RUNNING</code>은 의미론적으로 모순이다. 이 상황에서 ReactiveSequence는 다음 tick에서 조건 노드를 재평가할지, 아니면 <code>RUNNING</code> 중인 조건 노드를 건너뛸지 결정할 수 없게 된다.</p>
+<h3>3.4 Sequence와 Fallback에서의 실행 흐름 혼란</h3>
+<p>Sequence 노드에서 조건 노드가 <code>RUNNING</code>을 반환하면, Sequence는 해당 위치에서 실행을 일시 정지하고 다음 tick에서 재개한다. 그러나 조건 노드는 가드(guard) 역할로 사용되는 경우가 많으며, 가드가 <code>RUNNING</code>을 반환하면 후속 액션 노드가 실행되지도, 차단되지도 않는 모호한 상태에 놓인다.</p>
+<pre><code>Sequence
+├── ConditionNode: "안전한가?" → RUNNING (문제)
+└── ActionNode: "이동"         → 실행 보류 상태
+</code></pre>
+<p>이 상황에서 안전 조건의 판정이 완료되지 않은 상태에서 이동 액션이 보류되는 것은 의도된 동작일 수 있으나, 조건 노드의 설계 의도와 부합하지 않는다. 안전 조건은 즉시 판정 가능해야 하며, 판정할 수 없는 경우에는 실패 안전(fail-safe) 원칙에 따라 <code>FAILURE</code>를 반환해야 한다.</p>
+<h2>4. BehaviorTree.CPP에서의 강제 메커니즘</h2>
+<p>BehaviorTree.CPP 라이브러리는 조건 노드의 <code>RUNNING</code> 반환을 다음과 같은 방식으로 방지한다.</p>
+<p>첫째, <code>ConditionNode</code> 클래스는 <code>halt()</code> 메서드를 <code>final</code>로 선언하여 구조적으로 <code>RUNNING</code> 상태와 관련된 중단 처리를 불가능하게 한다.</p>
+<p>둘째, 트리 실행 엔진은 노드의 반환값을 검증하며, 조건 노드가 <code>RUNNING</code>을 반환하면 런타임 오류를 발생시킨다:</p>
+<pre><code class="language-cpp">// 개념적 구현
+NodeStatus status = condition_node-&gt;executeTick();
+if (status == NodeStatus::RUNNING)
+{
+    throw LogicError(
+        "ConditionNode [" + condition_node-&gt;name() +
+        "] must not return RUNNING");
+}
+</code></pre>
+<p>이 검증은 개발 단계에서 잘못된 조건 노드 구현을 조기에 발견하도록 돕는다.</p>
+<h2>5. Running이 필요한 경우의 올바른 대안</h2>
+<p>조건 평가에 비동기적 연산이 불가피한 경우, 조건 노드가 아닌 다른 설계 패턴을 사용해야 한다.</p>
+<h3>5.1 비동기 데이터 수집과 조건 평가의 분리</h3>
+<p>비동기적으로 수집해야 하는 데이터는 별도의 액션 노드에서 수집하여 블랙보드에 저장하고, 조건 노드는 블랙보드의 값만을 참조하여 평가를 수행한다.</p>
+<pre><code>Sequence
+├── ActionNode: "센서 데이터 수집" → SUCCESS/RUNNING/FAILURE
+├── ConditionNode: "수집된 값 확인" → SUCCESS/FAILURE
+└── ActionNode: "행동 실행"
+</code></pre>
+<h3>5.2 구독 기반 데이터 참조</h3>
+<p>ROS2 토픽을 통해 비동기적으로 수신되는 데이터를 콜백에서 저장하고, 조건 노드는 저장된 최신 데이터를 참조한다. 이 패턴에서는 데이터 수신의 비동기성이 조건 노드 외부에서 처리되므로, 조건 노드 자체는 즉시 반환 원칙을 위반하지 않는다.</p>
+<h3>5.3 데이터 미수신 시의 처리</h3>
+<p>아직 한 번도 데이터가 수신되지 않은 초기 상태에서는 <code>FAILURE</code>를 반환하는 것이 실패 안전 원칙에 부합한다. 데이터가 존재하지 않는 상태에서 조건을 참으로 판정하는 것은 잠재적 위험을 수반한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsDataFresh::tick()
+{
+    if (!data_received_)
+    {
+        // 데이터 미수신: FAILURE 반환 (fail-safe)
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto age = std::chrono::steady_clock::now() - last_received_time_;
+    double max_age_sec;
+    getInput("max_age", max_age_sec);
+
+    return (age &lt; std::chrono::duration&lt;double&gt;(max_age_sec))
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

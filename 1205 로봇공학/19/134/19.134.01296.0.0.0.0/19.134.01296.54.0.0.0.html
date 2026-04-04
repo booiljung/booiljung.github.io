@@ -115,6 +115,294 @@
             </header>
             <article>
                 <h1>1296.54 NavigateToPose 액션 노드 구현</h1>
+<h2>1. NavigateToPose의 정의와 역할</h2>
+<p>NavigateToPose는 Nav2 프레임워크에서 제공하는 행동 트리 액션 노드로, 로봇을 지정된 단일 목표 자세(goal pose)로 이동시키는 내비게이션 임무를 실행한다. 이 노드는 <code>nav2_msgs::action::NavigateToPose</code> ROS2 액션 인터페이스의 클라이언트로 동작하며, <code>bt_navigator</code> 서버에 내비게이션 요청을 전송한다.</p>
+<p>NavigateToPose는 내비게이션 스택의 전체 파이프라인을 단일 호출로 실행한다. 즉, 전역 경로 계획, 지역 경로 추종, 장애물 회피, 목표 도달 판정까지의 모든 과정이 서버 측에서 일괄적으로 처리된다. 이는 행동 트리에서 가장 빈번하게 사용되는 내비게이션 노드이다(Macenski et al., 2020).</p>
+<h2>2. 액션 인터페이스 정의</h2>
+<p>NavigateToPose가 호출하는 ROS2 액션 인터페이스의 구조는 다음과 같다.</p>
+<pre><code># nav2_msgs/action/NavigateToPose
+
+# Goal
+geometry_msgs/PoseStamped pose
+string behavior_tree
+---
+# Result
+std_msgs/Empty result
+---
+# Feedback
+geometry_msgs/PoseStamped current_pose
+builtin_interfaces/Duration navigation_time
+builtin_interfaces/Duration estimated_time_remaining
+int16 number_of_recoveries
+float32 distance_remaining
+</code></pre>
+<p><strong>골(Goal) 필드</strong>:</p>
+<ul>
+<li><code>pose</code>: 목표 위치와 방향을 나타내는 <code>PoseStamped</code> 메시지로, 좌표계(<code>frame_id</code>)와 타임스탬프를 포함한다.</li>
+<li><code>behavior_tree</code>: 서버 측에서 사용할 행동 트리 XML 파일의 경로이다. 빈 문자열일 경우 서버의 기본 행동 트리가 사용된다.</li>
+</ul>
+<p><strong>피드백(Feedback) 필드</strong>:</p>
+<ul>
+<li><code>current_pose</code>: 로봇의 현재 자세</li>
+<li><code>navigation_time</code>: 내비게이션 시작 이후 경과 시간</li>
+<li><code>estimated_time_remaining</code>: 예상 잔여 시간</li>
+<li><code>number_of_recoveries</code>: 복구 행동 실행 횟수</li>
+<li><code>distance_remaining</code>: 목표까지의 잔여 거리</li>
+</ul>
+<h2>3. 클래스 구조와 상속 관계</h2>
+<p>NavigateToPose 노드는 <code>nav2_behavior_tree::BtActionNode</code>를 상속하여 구현된다. 템플릿 매개변수로 <code>nav2_msgs::action::NavigateToPose</code>를 지정한다.</p>
+<pre><code class="language-cpp">#include "nav2_behavior_tree/bt_action_node.hpp"
+#include "nav2_msgs/action/navigate_to_pose.hpp"
+
+namespace nav2_behavior_tree
+{
+
+class NavigateToPoseAction
+  : public BtActionNode&lt;nav2_msgs::action::NavigateToPose&gt;
+{
+public:
+  NavigateToPoseAction(
+    const std::string &amp; xml_tag_name,
+    const std::string &amp; action_name,
+    const BT::NodeConfiguration &amp; conf);
+
+  void on_tick() override;
+
+  void on_wait_for_result(
+    std::shared_ptr&lt;const nav2_msgs::action::NavigateToPose::Feedback&gt;
+      feedback) override;
+
+  BT::NodeStatus on_success() override;
+  BT::NodeStatus on_aborted() override;
+  BT::NodeStatus on_cancelled() override;
+
+  static BT::PortsList providedPorts();
+};
+
+}  // namespace nav2_behavior_tree
+</code></pre>
+<h2>4. 포트 정의</h2>
+<p>NavigateToPose 노드는 다음의 입출력 포트를 제공한다.</p>
+<pre><code class="language-cpp">BT::PortsList NavigateToPoseAction::providedPorts()
+{
+  return providedBasicPorts({
+    BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+      "goal", "Destination pose"),
+    BT::InputPort&lt;std::string&gt;(
+      "behavior_tree", "",
+      "Behavior tree XML file path on the server"),
+    BT::OutputPort&lt;int&gt;(
+      "error_code", "Error code on failure"),
+    BT::OutputPort&lt;geometry_msgs::msg::PoseStamped&gt;(
+      "current_pose", "Current robot pose from feedback"),
+    BT::OutputPort&lt;float&gt;(
+      "distance_remaining", "Remaining distance to goal")
+  });
+}
+</code></pre>
+<p><code>goal</code> 포트는 필수 입력으로, 목표 자세를 <code>geometry_msgs::msg::PoseStamped</code> 타입으로 수신한다. 이 자세는 일반적으로 <code>map</code> 프레임에서 정의되며, 위치(position)와 방향(orientation)을 포함한다.</p>
+<h2>5. on_tick() 구현</h2>
+<p><code>on_tick()</code> 콜백은 최초 Tick에서 호출되며, 블랙보드 입력 포트로부터 값을 읽어 골 메시지를 구성한다.</p>
+<pre><code class="language-cpp">void NavigateToPoseAction::on_tick()
+{
+  geometry_msgs::msg::PoseStamped goal_pose;
+  getInput("goal", goal_pose);
+  goal_.pose = goal_pose;
+
+  std::string behavior_tree;
+  getInput("behavior_tree", behavior_tree);
+  goal_.behavior_tree = behavior_tree;
+}
+</code></pre>
+<p><code>goal_</code> 멤버 변수는 기반 클래스 <code>BtActionNode</code>에서 정의되며, <code>on_tick()</code> 완료 후 기반 클래스의 <code>tick()</code> 메서드가 이 골을 ROS2 액션 서버에 비동기적으로 전송한다.</p>
+<h2>6. on_wait_for_result() 구현</h2>
+<p><code>on_wait_for_result()</code> 콜백은 서버에서 골이 처리되는 동안 매 Tick마다 호출되며, 최신 피드백 메시지를 매개변수로 수신한다. 이 콜백에서 피드백 정보를 블랙보드에 기록하여 행동 트리의 다른 노드에서 참조할 수 있도록 한다.</p>
+<pre><code class="language-cpp">void NavigateToPoseAction::on_wait_for_result(
+  std::shared_ptr&lt;const nav2_msgs::action::NavigateToPose::Feedback&gt;
+    feedback)
+{
+  setOutput("current_pose", feedback-&gt;current_pose);
+  setOutput("distance_remaining", feedback-&gt;distance_remaining);
+
+  // 로그 출력
+  RCLCPP_DEBUG(
+    node_-&gt;get_logger(),
+    "NavigateToPose: distance remaining = %.2f m, "
+    "recovery count = %d",
+    feedback-&gt;distance_remaining,
+    feedback-&gt;number_of_recoveries);
+}
+</code></pre>
+<p>피드백 정보는 다음과 같은 용도로 활용된다.</p>
+<ul>
+<li><strong>distance_remaining</strong>: 조건 노드에서 목표 근접 여부를 판정하는 데 사용된다.</li>
+<li><strong>number_of_recoveries</strong>: 복구 시도 횟수가 임계값을 초과하면 내비게이션을 포기하는 전략의 기준으로 활용된다.</li>
+<li><strong>current_pose</strong>: 로봇의 실시간 위치를 블랙보드에 갱신하여 다른 노드에서 활용할 수 있도록 한다.</li>
+</ul>
+<h2>7. 결과 처리 콜백 구현</h2>
+<h3>7.1 on_success()</h3>
+<p>서버가 골을 성공적으로 완료한 경우 호출된다. 로봇이 목표 자세에 도달하였음을 의미��다.</p>
+<pre><code class="language-cpp">BT::NodeStatus NavigateToPoseAction::on_success()
+{
+  return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>7.2 on_aborted()</h3>
+<p>서버가 골 처리를 중단한 경우 호출된다. 경로를 찾을 수 없거나, 복구 행동이 모두 실패한 경우에 해당한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus NavigateToPoseAction::on_aborted()
+{
+  setOutput("error_code",
+    static_cast&lt;int&gt;(result_.result-&gt;error_code));
+  return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>7.3 on_cancelled()</h3>
+<p>행동 트리의 halt 호출에 의해 골 취소가 서버에 의해 수락된 경우 호출된다.</p>
+<pre><code class="language-cpp">BT::NodeStatus NavigateToPoseAction::on_cancelled()
+{
+  return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>취소 시 <code>SUCCESS</code>를 반환하는 것은, halt에 의한 중단이 오류가 아닌 정상적인 제어 흐름의 일부임을 나타낸다.</p>
+<h2>8. 플러그인 등록</h2>
+<p>NavigateToPose 노드를 BehaviorTree.CPP 팩토리에 등록하여 XML 트리 정의에서 참조 가능하도록 한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+BT_REGISTER_NODES(factory)
+{
+  BT::NodeBuilder builder =
+    [](const%20std::string%20&amp;%20name,%20const%20BT::NodeConfiguration%20&amp;%20config)
+    {
+      return std::make_unique&lt;nav2_behavior_tree::NavigateToPoseAction&gt;(
+        name, "navigate_to_pose", config);
+    };
+  factory.registerBuilder&lt;nav2_behavior_tree::NavigateToPoseAction&gt;(
+    "NavigateToPose", builder);
+}
+</code></pre>
+<p>여기서 <code>"navigate_to_pose"</code>는 ROS2 액션 서버의 이름이다. 기본적으로 Nav2의 <code>bt_navigator</code> 노드가 이 이름으로 액션 서버를 제공한다.</p>
+<h2>9. XML 행동 트리에서의 사용</h2>
+<h3>9.1 기본 사용</h3>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;NavigateToPose goal="{target_pose}"
+                  server_name="navigate_to_pose"
+                  server_timeout="10"/&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>9.2 블랙보드를 통한 목표 자세 전달</h3>
+<p>목표 자세는 블랙보드 키를 통해 동적으로 전달된다. 상위 수준의 임무 계획 노드가 블랙보드에 목표 자세를 기록하면, NavigateToPose 노드가 이를 읽어 내비게이션을 실행한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;!-- 임무 계획에서 목표 설정 --&gt;
+    &lt;SetBlackboard output_key="target_pose"
+                   value="{next_waypoint}"/&gt;
+    
+    &lt;!-- 내비게이션 실행 --&gt;
+    &lt;NavigateToPose goal="{target_pose}"/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>9.3 복구 행동과의 통합</h3>
+<p>NavigateToPose가 실패할 경우 복구 행동을 실행하고 재시도하는 구성을 제시한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;RetryNode num_attempts="3"&gt;
+    &lt;RecoveryNode number_of_retries="2" name="NavigateRecovery"&gt;
+      &lt;PipelineSequence&gt;
+        &lt;RateController hz="1.0"&gt;
+          &lt;RecoveryNode number_of_retries="1"&gt;
+            &lt;ComputePathToPose goal="{goal}" path="{path}"/&gt;
+            &lt;ClearEntireCostmap name="ClearGlobalCostmap"
+                                service_name="/global_costmap/clear_entirely_global_costmap"/&gt;
+          &lt;/RecoveryNode&gt;
+        &lt;/RateController&gt;
+        &lt;RecoveryNode number_of_retries="1"&gt;
+          &lt;FollowPath path="{path}"/&gt;
+          &lt;ClearEntireCostmap name="ClearLocalCostmap"
+                              service_name="/local_costmap/clear_entirely_local_costmap"/&gt;
+        &lt;/RecoveryNode&gt;
+      &lt;/PipelineSequence&gt;
+      &lt;SequenceStar&gt;
+        &lt;ClearEntireCostmap name="ClearGlobalCostmap"
+                            service_name="/global_costmap/clear_entirely_global_costmap"/&gt;
+        &lt;ClearEntireCostmap name="ClearLocalCostmap"
+                            service_name="/local_costmap/clear_entirely_local_costmap"/&gt;
+        &lt;Spin spin_dist="1.57"/&gt;
+        &lt;Wait wait_duration="5"/&gt;
+      &lt;/SequenceStar&gt;
+    &lt;/RecoveryNode&gt;
+  &lt;/RetryNode&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p>이 구성은 Nav2의 기본 행동 트리 구조를 기반으로 하며, 다음의 복구 전략을 계층적으로 적용한다.</p>
+<ol>
+<li>경로 계획 실패 시 코스트맵을 초기화하고 재계획한다.</li>
+<li>경로 추종 실패 시 지역 코스트맵을 초기화하고 재시도한다.</li>
+<li>상위 수준 실패 시 전역/지역 코스트맵 초기화, 제자리 회전, 대기를 순차적으로 실행한다.</li>
+<li>최종적으로 전체 과정을 최대 3회까지 재시도한다.</li>
+</ol>
+<h2>10. 골 선점(Goal Preemption)</h2>
+<p>NavigateToPose 노드는 반응적 행동 트리 구성에서 골 선점을 지원한다. 기존 골이 실행 중인 상태에서 새로운 골이 입력 포트에 설정되면, 기반 클래스 <code>BtActionNode</code>가 기존 골을 취소하고 새로운 골을 전송한다.</p>
+<p>이 메커니즘은 다음과 같은 상황에서 활용된다.</p>
+<ul>
+<li>운영자가 실시간으로 목표 지점을 변경하는 경우</li>
+<li>동적 임무 계획에 의해 목표가 갱신되는 경우</li>
+<li>장애물 발견으로 인해 대체 목표로 전환하는 경우</li>
+</ul>
+<pre><code class="language-cpp">// BtActionNode 내부의 골 선점 로직 (개념적 표현)
+void on_new_goal_received()
+{
+  if (goal_updated_) {
+    // 기존 골 취소
+    action_client_-&gt;async_cancel_goal(goal_handle_);
+    // 새로운 골 전송
+    send_new_goal();
+    goal_updated_ = false;
+  }
+}
+</code></pre>
+<h2>11. 좌표계 처리</h2>
+<p>NavigateToPose에 전달되는 목표 자세는 <code>header.frame_id</code>를 통해 좌표계를 지정한다. 서버 측에서는 TF2를 사용하여 로봇의 현재 자세와 목표 자세를 동일한 좌표계로 변환한다.</p>
+<p>일반적으로 목표 자세는 <code>map</code> 프레임에서 지정하며, 이는 SLAM 또는 위치 추정 시스템이 제공하는 전역 좌표계에 해당한다. <code>odom</code> 프레임에서 지정할 경우 오도메트리 누적 오차에 의해 목표 위치의 정확도가 저하될 수 있으므로, 전역 위치 기반 내비게이션에서는 <code>map</code> 프레임을 사용하는 것이 원칙이다.</p>
+<pre><code class="language-cpp">// 목표 자세 설정 예시
+geometry_msgs::msg::PoseStamped goal_pose;
+goal_pose.header.frame_id = "map";
+goal_pose.header.stamp = node_-&gt;now();
+goal_pose.pose.position.x = 3.0;
+goal_pose.pose.position.y = 1.5;
+goal_pose.pose.position.z = 0.0;
+
+// 목표 방향 설정 (yaw = 90도)
+tf2::Quaternion q;
+q.setRPY(0.0, 0.0, M_PI / 2.0);
+goal_pose.pose.orientation = tf2::toMsg(q);
+</code></pre>
+<h2>12. 도착 판정 기준</h2>
+<p>NavigateToPose의 도착 판정은 서버 측의 Goal Checker 플러그인에 의해 수행된다. Nav2에서는 다음의 Goal Checker 플러그인을 제공한다.</p>
+<h3>12.1 SimpleGoalChecker</h3>
+<p>로봇의 현재 위치와 목표 위치 사이의 유클리드 거리(Euclidean distance)가 허용 오차 이내이고, 방향 차이가 허용 오차 이내일 때 도착으로 판정한다.</p>
+<p><span class="math math-display">
+d = \sqrt{(x_{goal} - x_{robot})^2 + (y_{goal} - y_{robot})^2}
+</span></p>
+<ul>
+<li>위치 허용 오차: <code>xy_goal_tolerance</code> (기본값: 0.25 m)</li>
+<li>방향 허용 오차: <code>yaw_goal_tolerance</code> (기본값: 0.25 rad)</li>
+</ul>
+<h3>12.2 StoppedGoalChecker</h3>
+<p>SimpleGoalChecker의 조건에 추가하여 로봇이 정지 상태(속도가 임계값 이하)일 때에만 도착으로 판정한다. 이는 로봇이 목표 지점을 통과하여 지나가는 것을 방지한다.</p>
+<p>도착 판정 기준은 행동 트리 노드가 아닌 서버 측 파라미터로 구성되므로, NavigateToPose 노드 자체에서는 이를 직접 제어하지 않는다. 필요한 경우 파라미터 설정 액션 노드를 사용하여 런타임에 허용 오차를 변경할 수 있다.</p>
+<h2>13. 성능 고려 사항</h2>
+<p>NavigateToPose는 내비게이션 스택의 전체 파이프라인을 단일 액션 호출로 실행하므로, 개별 경로 계획과 경로 추종을 분리하여 실행하는 방식에 비해 행동 트리의 복잡도가 감소한다. 그러나 서버 측에서 내부적으로 별도의 행동 트리를 실행하므로, 중첩된 행동 트리 실행에 따른 연산 부하를 고려하여야 한다.</p>
+<p>대규모 환경이나 복잡한 복구 전략이 필요한 임무에서는 NavigateToPose 대신 ComputePathToPose와 FollowPath를 분리하여 사용하는 것이 행동 트리 수준에서의 제어 유연성을 제공한다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Nav2 공식 문서 — NavigateToPose: https://docs.nav2.org/</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: Nav2 Humble Hawksbill (ROS2 Humble) 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

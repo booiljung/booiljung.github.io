@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.35 ROS2 서비스 기반 조건 노드</title>
+    <title>BIJUNG:ROS2 서비스 기반 조건 노드 (ROS2 Service-Based Condition Nodes)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,292 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.35 ROS2 서비스 기반 조건 노드</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.35 ROS2 서비스 기반 조건 노드</span></nav>
+                    <h1>ROS2 서비스 기반 조건 노드 (ROS2 Service-Based Condition Nodes)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="ROS2 서비스 기반 조건 노드 (ROS2 Service-Based Condition Nodes)">ROS2 서비스 기반 조건 노드 (ROS2 Ser...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.35 ROS2 서비스 기반 조건 노드</h1>
+                <h1>ROS2 서비스 기반 조건 노드 (ROS2 Service-Based Condition Nodes)</h1>
+<h2>1. 개요</h2>
+<p>ROS2 서비스 기반 조건 노드는 ROS2 서비스(Service)를 호출하여 그 응답 결과를 기반으로 조건을 평가하는 조건 노드이다. 토픽 기반 조건 노드가 지속적으로 발행되는 데이터 스트림을 구독하여 조건을 판정하는 반면, 서비스 기반 조건 노드는 요청-응답(request-response) 패턴을 통해 특정 시점의 상태를 질의한다. 이 방식은 주기적으로 발행되지 않는 정보, 계산이 필요한 질의, 외부 시스템과의 동기적 상호작용이 요구되는 상황에서 활용된다.</p>
+<h2>2. 서비스와 토픽의 통신 패턴 차이</h2>
+<h3>2.1 통신 모델 비교</h3>
+<table><thead><tr><th>특성</th><th>토픽 (Topic)</th><th>서비스 (Service)</th></tr></thead><tbody>
+<tr><td>통신 패턴</td><td>발행-구독 (Publish-Subscribe)</td><td>요청-응답 (Request-Response)</td></tr>
+<tr><td>시간 특성</td><td>비동기, 연속적</td><td>동기적, 일회성</td></tr>
+<tr><td>결합도</td><td>느슨한 결합 (loose coupling)</td><td>밀접한 결합 (tight coupling)</td></tr>
+<tr><td>데이터 흐름</td><td>단방향 (Publisher → Subscriber)</td><td>양방향 (Client ↔ Server)</td></tr>
+<tr><td>적합한 용도</td><td>센서 데이터 스트림, 상태 정보</td><td>상태 질의, 설정 변경, 계산 요청</td></tr>
+</tbody></table>
+<p>서비스 기반 조건 노드를 사용하는 주요 동기는, 해당 정보가 토픽으로 발행되지 않거나 요청 시점에 동적으로 계산되어야 하는 경우에 있다.</p>
+<h2>3. 서비스 기반 조건 노드의 설계 과제</h2>
+<h3>3.1 동기 호출과 빠른 평가 원칙의 충돌</h3>
+<p>조건 노드의 핵심 원칙 중 하나는 빠른 평가(fast evaluation)이다. <code>tick()</code> 메서드는 가능한 한 짧은 시간 내에 반환되어야 하며, 행동 트리의 전체 tick 주기를 지연시켜서는 안 된다. 그러나 ROS2 서비스의 동기 호출은 서버의 응답을 대기하는 시간이 포함되므로, 이 원칙과 상충할 수 있다.</p>
+<p>이 문제를 해결하기 위한 접근 방식은 다음과 같다.</p>
+<ol>
+<li><strong>비동기 서비스 호출과 결과 캐싱</strong>: 서비스를 비동기적으로 호출하고, 응답이 도착하면 결과를 캐싱한다. <code>tick()</code> 메서드는 캐싱된 결과를 기반으로 즉시 평가한다.</li>
+<li><strong>타임아웃 설정</strong>: 서비스 호출에 타임아웃을 설정하여, 서버가 응답하지 않는 경우 <code>FAILURE</code>를 반환한다.</li>
+<li><strong>주기적 사전 호출</strong>: 별도의 타이머로 서비스를 주기적으로 호출하여 결과를 갱신하고, <code>tick()</code> 메서드는 최신 결과만 참조한다.</li>
+</ol>
+<h3>3.2 Running 미반환 원칙과의 조화</h3>
+<p>조건 노드는 <code>RUNNING</code> 상태를 반환하지 않는다. 서비스 응답을 기다리는 동안 <code>RUNNING</code>을 반환할 수 없으므로, 응답이 아직 도착하지 않은 경우에는 <code>FAILURE</code>를 반환하거나, 이전에 캐싱된 결과를 사용하여 판정하여야 한다.</p>
+<h2>4. 비동기 서비스 호출 기반 구현</h2>
+<h3>4.1 기본 구조</h3>
+<p>다음은 비동기 서비스 호출과 결과 캐싱을 결합한 서비스 기반 조건 노드의 일반적 구현이다.</p>
+<pre><code class="language-cpp">template &lt;typename ServiceT&gt;
+class ServiceConditionNode : public BT::ConditionNode
+{
+public:
+    ServiceConditionNode(const std::string&amp; name,
+                         const BT::NodeConfiguration&amp; config,
+                         rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          request_pending_(false),
+          response_received_(false)
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+
+        client_ = node_-&gt;create_client&lt;ServiceT&gt;(service_name);
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name",
+                                       "서비스 이름"),
+            BT::InputPort&lt;double&gt;("timeout_sec", 1.0,
+                                  "서비스 응답 대기 시간 (초)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+
+        if (!client_-&gt;service_is_ready())
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        if (!request_pending_ &amp;&amp; !response_received_)
+        {
+            sendRequest();
+        }
+
+        if (response_received_)
+        {
+            response_received_ = false;
+            request_pending_ = false;
+            return evaluateResponse(last_response_);
+        }
+
+        // 응답 대기 중: 이전 결과가 있으면 사용, 없으면 FAILURE
+        if (has_previous_result_)
+        {
+            return previous_result_;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+protected:
+    virtual typename ServiceT::Request::SharedPtr
+    createRequest() = 0;
+
+    virtual BT::NodeStatus evaluateResponse(
+        const typename ServiceT::Response::SharedPtr&amp; response) = 0;
+
+private:
+    void sendRequest()
+    {
+        auto request = createRequest();
+        request_pending_ = true;
+
+        client_-&gt;async_send_request(
+            request,
+            [this](typename%20rclcpp::Client&lt;ServiceT&gt;::SharedFuture%20future) {
+                std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                last_response_ = future.get();
+                response_received_ = true;
+                request_pending_ = false;
+            });
+    }
+
+    rclcpp::Node::SharedPtr node_;
+    typename rclcpp::Client&lt;ServiceT&gt;::SharedPtr client_;
+    typename ServiceT::Response::SharedPtr last_response_;
+    std::mutex mutex_;
+    bool request_pending_;
+    bool response_received_;
+    bool has_previous_result_{false};
+    BT::NodeStatus previous_result_;
+};
+</code></pre>
+<p>이 구현에서 <code>tick()</code> 메서드의 실행 흐름은 다음과 같다.</p>
+<ol>
+<li>서비스 서버가 준비되지 않은 경우 즉시 <code>FAILURE</code>를 반환한다.</li>
+<li>요청이 진행 중이 아니고 응답도 수신되지 않은 경우 비동기 요청을 전송한다.</li>
+<li>응답이 수신된 경우 <code>evaluateResponse()</code> 메서드를 호출하여 결과를 평가한다.</li>
+<li>응답 대기 중인 경우, 이전에 캐싱된 결과가 있으면 이를 반환하고, 없으면 <code>FAILURE</code>를 반환한다.</li>
+</ol>
+<h3>4.2 구체적 구현 예시: 경로 유효성 확인</h3>
+<p><code>nav2_msgs::srv::IsPathValid</code> 서비스를 호출하여 현재 경로의 유효성을 확인하는 조건 노드이다.</p>
+<pre><code class="language-cpp">class IsPathValid
+    : public ServiceConditionNode&lt;nav2_msgs::srv::IsPathValid&gt;
+{
+public:
+    IsPathValid(const std::string&amp; name,
+                const BT::NodeConfiguration&amp; config,
+                rclcpp::Node::SharedPtr node)
+        : ServiceConditionNode(name, config, node)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        auto ports = ServiceConditionNode::providedPorts();
+        ports.emplace(BT::InputPort&lt;nav_msgs::msg::Path&gt;("path",
+                      "검증할 경로"));
+        return ports;
+    }
+
+protected:
+    nav2_msgs::srv::IsPathValid::Request::SharedPtr
+    createRequest() override
+    {
+        auto request =
+            std::make_shared&lt;nav2_msgs::srv::IsPathValid::Request&gt;();
+        getInput("path", request-&gt;path);
+        return request;
+    }
+
+    BT::NodeStatus evaluateResponse(
+        const nav2_msgs::srv::IsPathValid::Response::SharedPtr&amp;
+            response) override
+    {
+        if (response &amp;&amp; response-&gt;is_valid)
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<h2>5. BehaviorTree.ROS2의 RosServiceNode 활용</h2>
+<p>BehaviorTree.ROS2 패키지는 <code>RosServiceNode&lt;ServiceT&gt;</code> 기반 클래스를 제공한다. 이 클래스는 서비스 클라이언트 관리, 비동기 호출, 타임아웃 처리 등을 내장하고 있어 개발자가 서비스 기반 노드를 간결하게 구현할 수 있다. 다만, <code>RosServiceNode</code>는 기본적으로 액션 노드의 의미론(<code>RUNNING</code> 반환 가능)을 따르므로, 조건 노드로 활용하려면 추가적인 설계 고려가 필요하다.</p>
+<p>조건 노드에서 서비스를 사용하는 대안적 접근으로, 서비스 호출 결과를 블랙보드에 기록하는 별도의 액션 노드를 구현하고, 조건 노드는 블랙보드의 값만을 참조하여 판정하는 패턴이 있다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree ID="PathValidation"&gt;
+    &lt;Sequence&gt;
+        &lt;Action ID="CheckPathValidity"
+                service_name="/is_path_valid"
+                path="{current_path}"
+                result="{path_valid}"/&gt;
+        &lt;Condition ID="IsBoolTrue"
+                   value="{path_valid}"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p>이 패턴은 서비스 호출의 비동기 특성을 액션 노드가 처리하고, 조건 노드는 순수한 값 비교만 수행하므로 각 노드의 역할이 명확히 분리된다.</p>
+<h2>6. 동기 서비스 호출 기반 조건 노드</h2>
+<p>서비스 서버의 응답 시간이 매우 짧아(수 밀리초 이내) tick 주기에 영향을 미치지 않는 경우, 동기적 서비스 호출을 사용하는 것도 허용될 수 있다.</p>
+<pre><code class="language-cpp">class IsNodeActive : public BT::ConditionNode
+{
+public:
+    IsNodeActive(const std::string&amp; name,
+                 const BT::NodeConfiguration&amp; config,
+                 rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config), node_(node)
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+        client_ = node_-&gt;create_client&lt;lifecycle_msgs::srv::GetState&gt;(
+            service_name);
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name",
+                "생명주기 상태 질의 서비스 이름"),
+            BT::InputPort&lt;int&gt;("expected_state", 3,
+                "기대 상태 ID (3=active)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        if (!client_-&gt;service_is_ready())
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto request =
+            std::make_shared&lt;lifecycle_msgs::srv::GetState::Request&gt;();
+        auto future = client_-&gt;async_send_request(request);
+
+        auto timeout = std::chrono::milliseconds(50);
+        if (future.wait_for(timeout) != std::future_status::ready)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto response = future.get();
+        int expected_state;
+        getInput("expected_state", expected_state);
+
+        if (response-&gt;current_state.id ==
+            static_cast&lt;uint8_t&gt;(expected_state))
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Client&lt;lifecycle_msgs::srv::GetState&gt;::SharedPtr client_;
+};
+</code></pre>
+<p>위 구현에서 <code>future.wait_for()</code> 호출에 50밀리초의 타임아웃을 설정하여, 서버 응답 지연으로 인한 tick 차단(blocking)을 방지한다. 타임아웃이 경과하면 <code>FAILURE</code>를 반환하며, 이는 “상태를 확인할 수 없다“는 보수적 판단에 해당한다.</p>
+<h2>7. XML 행동 트리에서의 활용</h2>
+<pre><code class="language-xml">&lt;BehaviorTree ID="LifecycleCheck"&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsNodeActive"
+                   service_name="/map_server/get_state"
+                   expected_state="3"/&gt;
+        &lt;Action ID="NavigateToGoal"/&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>8. 설계 시 고려 사항</h2>
+<h3>8.1 서비스 호출의 부작용 문제</h3>
+<p>조건 노드는 부작용 금지 원칙을 준수하여야 한다. 서비스 호출 자체가 서버 측에서 상태를 변경하는 부작용을 초래하는 경우(예: 카운터 증가, 로그 기록), 해당 서비스를 조건 노드에서 호출하는 것은 부적절하다. 조건 노드에서 호출하는 서비스는 읽기 전용(read-only) 질의에 한정하여야 한다.</p>
+<h3>8.2 서비스 서버 장애 대응</h3>
+<p>서비스 서버가 비정상 종료하거나 응답하지 않는 경우, 조건 노드는 <code>FAILURE</code>를 반환하여야 한다. <code>client_-&gt;service_is_ready()</code> 검사를 통해 서버의 가용성을 사전에 확인하고, 타임아웃 메커니즘을 통해 응답 지연에 대응한다.</p>
+<h3>8.3 호출 빈도 제어</h3>
+<p><code>ReactiveSequence</code> 내부에 서비스 기반 조건 노드를 배치하면 매 tick마다 서비스가 호출될 수 있다. 서비스 호출은 토픽 구독보다 높은 오버헤드를 수반하므로, 캐싱 전략을 적용하여 호출 빈도를 제한하는 것이 바람직하다. 일정 시간 이내에 수신된 응답은 재사용하고, 캐시가 만료된 경우에만 새로운 요청을 전송하는 시간 기반 캐싱이 효과적이다.</p>
+<h3>8.4 서비스와 토픽의 선택 기준</h3>
+<p>동일한 정보를 서비스와 토픽 중 어느 것을 통해 얻을지 판단하는 기준은 다음과 같다.</p>
+<table><thead><tr><th>기준</th><th>토픽 선호</th><th>서비스 선호</th></tr></thead><tbody>
+<tr><td>데이터 갱신 빈도</td><td>높음 (주기적)</td><td>낮음 (비주기적)</td></tr>
+<tr><td>조건 평가 빈도</td><td>높음 (매 tick)</td><td>낮음 (간헐적)</td></tr>
+<tr><td>응답 시간 요구</td><td>엄격</td><td>유연</td></tr>
+<tr><td>계산 비용</td><td>낮음</td><td>높음 (요청 시 계산)</td></tr>
+<tr><td>발행자 존재 여부</td><td>이미 발행 중</td><td>발행되지 않음</td></tr>
+</tbody></table>
+<p>가능한 한 토픽 기반 조건 노드를 우선적으로 사용하고, 토픽으로 제공되지 않는 정보에 한하여 서비스 기반 조건 노드를 적용하는 것이 행동 트리의 반응성을 유지하는 데 유리하다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Macenski, S., et al. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+<li>ROS2 공식 문서. https://docs.ros.org/en/humble/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

@@ -115,6 +115,120 @@
             </header>
             <article>
                 <h1>1297.7 조건 노드의 부작용 금지 원칙 (Side-Effect Free)</h1>
+<h2>1. 부작용의 정의</h2>
+<p>프로그래밍에서 부작용(side effect)이란 함수가 반환값을 생성하는 것 이외에 외부 상태를 변경하는 모든 동작을 의미한다. 변수의 값 변경, 파일 쓰기, 네트워크 메시지 전송, 하드웨어 제어 명령 발행 등이 대표적인 부작용이다. 부작용이 없는 함수는 동일한 입력에 대하여 항상 동일한 출력을 반환하며, 외부 환경에 어떠한 영향도 미치지 않는다.</p>
+<p>행동 트리(Behavior Tree)에서 조건 노드는 부작용이 없어야 한다는 원칙은, 조건 노드의 <code>tick()</code> 메서드가 실행될 때 블랙보드 값의 변경, 토픽 메시지의 발행, 서비스 호출을 통한 상태 변경, 액추에이터 제어 명령 전송 등을 수행해서는 안 된다는 것을 의미한다(Colledanchise &amp; Ogren, 2018).</p>
+<h2>2. 부작용 금지의 이론적 근거</h2>
+<h3>2.1 반복 평가의 안전성</h3>
+<p>조건 노드는 행동 트리의 실행 과정에서 반복적으로 평가될 수 있다. 특히 ReactiveSequence나 ReactiveFallback 하위에 배치된 조건 노드는 매 tick마다 재평가된다. 조건 노드에 부작용이 존재하면, 반복 평가 시 부작용이 누적되어 예기치 않은 시스템 상태 변화를 초래한다.</p>
+<p>예를 들어, 조건 노드가 평가될 때마다 카운터를 증가시키거나 로그를 기록하는 부작용이 있다면, ReactiveSequence에서 초당 수십 회 이상 호출되어 카운터가 급증하거나 로그 파일이 과도하게 증가하는 문제가 발생한다.</p>
+<pre><code class="language-cpp">// 잘못된 구현: 부작용이 포함된 조건 노드
+BT::NodeStatus BadCondition::tick()
+{
+    evaluation_count_++;                          // 부작용: 내부 상태 변경
+    publishDebugMessage("Condition evaluated");   // 부작용: 메시지 발행
+    setOutput("last_check_time", now());          // 부작용: 블랙보드 값 변경
+
+    double value;
+    getInput("sensor_value", value);
+    return (value &gt; threshold_) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>2.2 평가 순서 독립성</h3>
+<p>행동 트리의 제어 노드는 자식 노드의 반환 상태에 따라 후속 자식의 평가 여부를 결정한다. Sequence 노드에서 첫 번째 자식이 <code>FAILURE</code>를 반환하면 두 번째 자식은 평가되지 않는다. 조건 노드에 부작용이 있으면, 해당 조건 노드가 평가되었는지 여부에 따라 시스템 상태가 달라진다. 이는 트리 구조의 변경만으로 시스템의 동작이 변경되는 비직관적인 결과를 초래한다.</p>
+<pre><code>Sequence
+├── ConditionNode_A: FAILURE → Sequence 중단
+└── ConditionNode_B: (평가되지 않음)
+</code></pre>
+<p>위 구조에서 <code>ConditionNode_B</code>에 부작용이 있다면, <code>ConditionNode_A</code>의 결과에 따라 <code>ConditionNode_B</code>의 부작용 발생 여부가 결정된다. 이는 조건 노드 간의 암묵적 의존성(implicit dependency)을 생성하여 트리의 모듈성을 저해한다.</p>
+<h3>2.3 참조 투명성</h3>
+<p>부작용이 없는 조건 노드는 참조 투명성(referential transparency)을 만족한다. 참조 투명성이란, 표현식(expression)을 그 결과값으로 대체하여도 프로그램의 동작이 변경되지 않는 성질을 의미한다. 조건 노드가 참조 투명하면, 동일한 상태에서 조건 노드를 몇 번 호출하든 동일한 결과가 반환되며, 호출 자체가 시스템에 어떠한 영향도 미치지 않는다.</p>
+<p>이 성질은 조건 노드의 캐싱(caching)을 안전하게 적용할 수 있는 근거를 제공한다. 동일한 입력에 대하여 결과가 동일하고 부작용이 없으므로, 이전 평가 결과를 재사용하여도 시스템의 정확성에 영향이 없다.</p>
+<h2>3. 부작용의 유형별 금지 사항</h2>
+<h3>3.1 블랙보드 값 변경 금지</h3>
+<p>조건 노드는 블랙보드의 입력 포트(input port)를 통해 값을 읽을 수 있으나, 출력 포트(output port)를 통해 값을 쓰는 것은 원칙적으로 금지된다. 블랙보드 값의 변경은 다른 노드의 동작에 영향을 미치는 부작용이다.</p>
+<pre><code class="language-cpp">// 올바른 구현: 읽기만 수행
+BT::NodeStatus IsValueAboveThreshold::tick()
+{
+    double value;
+    getInput("value", value);
+
+    double threshold;
+    getInput("threshold", threshold);
+
+    return (value &gt; threshold) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.2 ROS2 토픽 발행 금지</h3>
+<p>조건 노드 내에서 ROS2 토픽 메시지를 발행하는 것은 부작용에 해당한다. 토픽 메시지는 구독자(subscriber)의 동작에 영향을 미치며, 조건 노드가 반복 평가될 때마다 메시지가 발행되어 구독자에 과부하를 유발할 수 있다.</p>
+<h3>3.3 서비스 호출을 통한 상태 변경 금지</h3>
+<p>조건 노드에서 ROS2 서비스를 호출하여 외부 시스템의 상태를 변경하는 것은 금지된다. 서비스 호출 자체가 차단적(blocking) 연산이 될 수 있으며, 호출 결과로 인한 상태 변경은 부작용에 해당한다.</p>
+<h3>3.4 액추에이터 제어 명령 금지</h3>
+<p>조건 노드에서 모터, 그리퍼, 센서 등의 하드웨어에 직접 제어 명령을 전송하는 것은 엄격히 금지된다. 하드웨어 제어는 물리적이고 비가역적인 결과를 초래할 수 있으며, 이는 반드시 액션 노드에서 수행해야 한다.</p>
+<h2>4. 허용되는 경미한 예외</h2>
+<p>디버깅 목적의 로깅(logging)은 엄밀히는 부작용이나, 실무에서는 제한적으로 허용하는 경우가 있다. 다만, 로깅이 성능에 미치는 영향을 최소화해야 하며, 프로덕션 환경에서는 로깅 수준을 조절하여 비활성화할 수 있어야 한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsDistanceSafe::tick()
+{
+    double distance;
+    getInput("distance", distance);
+
+    double threshold;
+    getInput("threshold", threshold);
+
+    bool result = (distance &gt; threshold);
+
+    // 디버깅 로깅: 제한적 허용
+    RCLCPP_DEBUG(logger_, "Distance: %.2f, Threshold: %.2f, Result: %s",
+                 distance, threshold, result ? "SUCCESS" : "FAILURE");
+
+    return result ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>5. 부작용 금지 원칙의 검증</h2>
+<p>조건 노드가 부작용 금지 원칙을 준수하는지 검증하기 위해 다음의 테스트 기법을 사용할 수 있다.</p>
+<h3>5.1 반복 호출 불변성 테스트</h3>
+<p>동일한 입력 상태에서 조건 노드를 복수 회 호출하고, 매 호출의 반환값이 동일하며, 호출 전후로 블랙보드와 외부 시스템의 상태가 변경되지 않았음을 검증한다.</p>
+<pre><code class="language-cpp">TEST(ConditionNodeTest, SideEffectFree)
+{
+    auto blackboard = BT::Blackboard::create();
+    blackboard-&gt;set("sensor_value", 5.0);
+    blackboard-&gt;set("threshold", 3.0);
+
+    // 상태 스냅샷 저장
+    auto snapshot_before = captureSystemState();
+
+    // 조건 노드를 100회 반복 호출
+    for (int i = 0; i &lt; 100; i++)
+    {
+        auto status = condition_node.executeTick();
+        EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+    }
+
+    // 상태 변경이 없음을 검증
+    auto snapshot_after = captureSystemState();
+    EXPECT_EQ(snapshot_before, snapshot_after);
+}
+</code></pre>
+<h3>5.2 평가 순서 무관성 테스트</h3>
+<p>조건 노드의 평가 순서를 변경하거나, 특정 조건 노드를 평가하지 않아도 시스템의 최종 상태가 동일한지 검증한다. 이 테스트는 조건 노드 간의 암묵적 의존성이 없음을 확인한다.</p>
+<h2>6. 부작용과 액션 노드의 역할 분리</h2>
+<p>부작용이 필요한 동작은 반드시 액션 노드에서 수행해야 한다. 조건 노드와 액션 노드의 역할을 명확히 분리함으로써, 행동 트리의 각 노드가 예측 가능하고 독립적으로 동작하는 것이 보장된다.</p>
+<table><thead><tr><th>동작</th><th>조건 노드</th><th>액션 노드</th></tr></thead><tbody>
+<tr><td>센서 값 읽기</td><td>허용</td><td>허용</td></tr>
+<tr><td>블랙보드 값 읽기</td><td>허용</td><td>허용</td></tr>
+<tr><td>블랙보드 값 쓰기</td><td>금지</td><td>허용</td></tr>
+<tr><td>토픽 메시지 발행</td><td>금지</td><td>허용</td></tr>
+<tr><td>서비스 호출(상태 변경)</td><td>금지</td><td>허용</td></tr>
+<tr><td>하드웨어 제어</td><td>금지</td><td>허용</td></tr>
+</tbody></table>
+<p>이 분리 원칙은 행동 트리의 모듈성, 테스트 용이성, 예측 가능성을 동시에 보장하는 기반이다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

@@ -115,6 +115,362 @@
             </header>
             <article>
                 <h1>1296.80 RecordData 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>RecordData 액션 노드는 행동 트리 실행 중 지정된 ROS2 토픽의 데이터를 일정 시간 동안 파일에 기록하는 리프 노드이다. 이 노드는 센서 데이터, 상태 정보, 제어 명령 등을 시계열로 저장하여 사후 분석(post-mission analysis), 기계 학습 데이터 수집, 사고 조사, 성능 평가 등의 목적에 활용한다.</p>
+<p>데이터 기록은 지정된 시간 동안 지속적으로 수행되므로, <code>BT::StatefulActionNode</code>를 상속하여 비동기 방식으로 구현한다. 노드는 기록 시작 후 <code>RUNNING</code> 상태를 유지하며, 지정된 시간이 경과하거나 외부에서 중단(halt)되면 기록을 종료하고 <code>SUCCESS</code>를 반환한다.</p>
+<h2>2. ROS2 Bag 기반 데이터 기록</h2>
+<h3>2.1 rosbag2 라이브러리</h3>
+<p>ROS2의 표준 데이터 기록 도구인 <code>rosbag2</code>는 토픽 메시지를 시간 순서대로 파일에 저장한다. <code>rosbag2_cpp</code> 라이브러리를 프로그래밍 방식으로 활용하면, 행동 트리 노드 내에서 기록의 시작과 종료를 제어할 수 있다.</p>
+<p>rosbag2는 다양한 저장 백엔드(storage backend)를 지원한다.</p>
+<table><thead><tr><th style="text-align: center">백엔드</th><th style="text-align: center">형식</th><th style="text-align: left">특성</th></tr></thead><tbody>
+<tr><td style="text-align: center">sqlite3</td><td style="text-align: center">.db3</td><td style="text-align: left">기본 백엔드, 범용적, 랜덤 접근 가능</td></tr>
+<tr><td style="text-align: center">mcap</td><td style="text-align: center">.mcap</td><td style="text-align: left">고성능, 압축 지원, 대용량 적합</td></tr>
+</tbody></table>
+<h3>2.2 제네릭 구독(Generic Subscription)</h3>
+<p>기록 대상 토픽의 메시지 타입이 사전에 알려지지 않은 경우, <code>rclcpp</code>의 제네릭 구독(generic subscription) 기능을 활용하여 임의의 메시지 타입을 직렬화된 형태로 수신하고 저장한다.</p>
+<pre><code class="language-cpp">auto subscription = node_-&gt;create_generic_subscription(
+    topic_name,
+    "*",  // 임의의 메시지 타입
+    rclcpp::SensorDataQoS(),
+    [this, topic_name](
+%20%20%20%20%20%20%20%20std::shared_ptr&lt;rclcpp::SerializedMessage&gt;%20msg)
+    {
+        writer_-&gt;write(msg, topic_name,
+                       node_-&gt;now());
+    });
+</code></pre>
+<h2>3. 클래스 구조 설계</h2>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rosbag2_cpp/writer.hpp&gt;
+
+class RecordDataAction : public BT::StatefulActionNode
+{
+public:
+    RecordDataAction(
+        const std::string&amp; name,
+        const BT::NodeConfiguration&amp; config,
+        rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config),
+          node_(node)
+    {
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("topics",
+                "기록 대상 토픽 (쉼표 구분)"),
+            BT::InputPort&lt;double&gt;("duration", 0.0,
+                "기록 시간 (초, 0: 무제한)"),
+            BT::InputPort&lt;std::string&gt;("save_path",
+                "/tmp/bt_record",
+                "저장 경로"),
+            BT::InputPort&lt;std::string&gt;("storage_id",
+                "sqlite3",
+                "저장 백엔드 (sqlite3, mcap)"),
+            BT::InputPort&lt;int&gt;("max_cache_size", 100,
+                "최대 캐시 크기 (메시지 수)"),
+            BT::OutputPort&lt;std::string&gt;("file_path",
+                "실제 저장 파일 경로"),
+            BT::OutputPort&lt;int&gt;("message_count",
+                "기록된 메시지 수")
+        };
+    }
+
+    BT::NodeStatus onStart() override;
+    BT::NodeStatus onRunning() override;
+    void onHalted() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    std::unique_ptr&lt;rosbag2_cpp::Writer&gt; writer_;
+    std::vector&lt;rclcpp::GenericSubscription::SharedPtr&gt;
+        subscriptions_;
+    rclcpp::Time start_time_;
+    double duration_{0.0};
+    std::string save_path_;
+    std::atomic&lt;int&gt; message_count_{0};
+
+    void startRecording(
+        const std::vector&lt;std::string&gt;&amp; topic_list,
+        const std::string&amp; save_path,
+        const std::string&amp; storage_id);
+    void stopRecording();
+    std::vector&lt;std::string&gt; parseTopics(
+        const std::string&amp; topics_str);
+};
+</code></pre>
+<h2>4. 콜백 메서드 구현</h2>
+<h3>4.1 onStart() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus RecordDataAction::onStart()
+{
+    std::string topics_str, storage_id;
+    getInput("topics", topics_str);
+    getInput("duration", duration_);
+    getInput("save_path", save_path_);
+    getInput("storage_id", storage_id);
+
+    if (topics_str.empty())
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "기록 대상 토픽이 지정되지 않음");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto topic_list = parseTopics(topics_str);
+
+    try
+    {
+        startRecording(topic_list, save_path_, storage_id);
+    }
+    catch (const std::exception&amp; e)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "데이터 기록 시작 실패: %s", e.what());
+        return BT::NodeStatus::FAILURE;
+    }
+
+    start_time_ = node_-&gt;now();
+    message_count_ = 0;
+
+    RCLCPP_INFO(node_-&gt;get_logger(),
+        "데이터 기록 시작: %zu개 토픽, 경로: %s",
+        topic_list.size(), save_path_.c_str());
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>4.2 기록 시작 구현</h3>
+<pre><code class="language-cpp">void RecordDataAction::startRecording(
+    const std::vector&lt;std::string&gt;&amp; topic_list,
+    const std::string&amp; save_path,
+    const std::string&amp; storage_id)
+{
+    writer_ = std::make_unique&lt;rosbag2_cpp::Writer&gt;();
+
+    rosbag2_cpp::StorageOptions storage_options;
+    storage_options.uri = save_path;
+    storage_options.storage_id = storage_id;
+
+    rosbag2_cpp::ConverterOptions converter_options;
+    converter_options.input_serialization_format = "cdr";
+    converter_options.output_serialization_format = "cdr";
+
+    writer_-&gt;open(storage_options, converter_options);
+
+    // 각 토픽에 대한 제네릭 구독 생성
+    for (const auto&amp; topic : topic_list)
+    {
+        // 토픽의 메시지 타입 탐색
+        auto topic_info =
+            node_-&gt;get_publishers_info_by_topic(topic);
+
+        if (topic_info.empty())
+        {
+            RCLCPP_WARN(node_-&gt;get_logger(),
+                "토픽 '%s'에 대한 발행자를 찾을 수 없음",
+                topic.c_str());
+            continue;
+        }
+
+        std::string msg_type =
+            topic_info[0].topic_type();
+
+        // 토픽 메타데이터 등록
+        rosbag2_storage::TopicMetadata topic_metadata;
+        topic_metadata.name = topic;
+        topic_metadata.type = msg_type;
+        topic_metadata.serialization_format = "cdr";
+        writer_-&gt;create_topic(topic_metadata);
+
+        // 제네릭 구독 생성
+        auto subscription =
+            node_-&gt;create_generic_subscription(
+                topic, msg_type,
+                rclcpp::SensorDataQoS(),
+                [this, topic](
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20std::shared_ptr&lt;
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20rclcpp::SerializedMessage&gt;%20msg)
+                {
+                    auto bag_msg =
+                        std::make_shared&lt;
+                            rosbag2_storage::
+                                SerializedBagMessage&gt;();
+                    bag_msg-&gt;topic_name = topic;
+                    bag_msg-&gt;time_stamp =
+                        node_-&gt;now().nanoseconds();
+                    bag_msg-&gt;serialized_data =
+                        std::shared_ptr&lt;
+                            rcutils_uint8_array_t&gt;(
+                            &amp;msg-&gt;get_rcl_serialized_message(),
+                            [](rcutils_uint8_array_t*) {});
+
+                    writer_-&gt;write(bag_msg);
+                    message_count_++;
+                });
+
+        subscriptions_.push_back(subscription);
+    }
+}
+</code></pre>
+<h3>4.3 onRunning() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus RecordDataAction::onRunning()
+{
+    // 무제한 기록 모드(duration == 0)에서는
+    // onHalted()에 의해서만 종료
+    if (duration_ &lt;= 0.0)
+    {
+        return BT::NodeStatus::RUNNING;
+    }
+
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+
+    if (elapsed &gt;= duration_)
+    {
+        stopRecording();
+
+        setOutput("file_path", save_path_);
+        setOutput("message_count",
+                  message_count_.load());
+
+        RCLCPP_INFO(node_-&gt;get_logger(),
+            "데이터 기록 완료: %d개 메시지, %.1f초",
+            message_count_.load(), elapsed);
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>4.4 onHalted() 콜백</h3>
+<pre><code class="language-cpp">void RecordDataAction::onHalted()
+{
+    stopRecording();
+
+    RCLCPP_INFO(node_-&gt;get_logger(),
+        "데이터 기록 중단: %d개 메시지 저장",
+        message_count_.load());
+}
+
+void RecordDataAction::stopRecording()
+{
+    subscriptions_.clear();
+
+    if (writer_)
+    {
+        writer_.reset();
+    }
+}
+</code></pre>
+<h3>4.5 유틸리티 메서드</h3>
+<pre><code class="language-cpp">std::vector&lt;std::string&gt; RecordDataAction::parseTopics(
+    const std::string&amp; topics_str)
+{
+    std::vector&lt;std::string&gt; topics;
+    std::stringstream ss(topics_str);
+    std::string topic;
+
+    while (std::getline(ss, topic, ','))
+    {
+        // 앞뒤 공백 제거
+        size_t start = topic.find_first_not_of(' ');
+        size_t end = topic.find_last_not_of(' ');
+        if (start != std::string::npos)
+        {
+            topics.push_back(
+                topic.substr(start, end - start + 1));
+        }
+    }
+
+    return topics;
+}
+</code></pre>
+<h2>5. 저장 용량 관리</h2>
+<h3>5.1 용량 제한</h3>
+<p>장시간 기록 시 저장 용량이 부족해지는 것을 방지하기 위해, 최대 파일 크기 또는 최대 기록 시간을 제한할 수 있다. rosbag2의 <code>StorageOptions</code>에서 <code>max_bagfile_size</code>를 설정하여 파일 분할(splitting)을 수행한다.</p>
+<pre><code class="language-cpp">storage_options.max_bagfile_size = 1024 * 1024 * 100;
+    // 100 MB 단위로 분할
+</code></pre>
+<h3>5.2 데이터 압축</h3>
+<p>기록 데이터의 압축을 활성화하면 저장 용량을 절약할 수 있다. rosbag2는 <code>zstd</code> 압축 알고리즘을 지원한다.</p>
+<pre><code class="language-cpp">storage_options.storage_preset_profile = "zstd_fast";
+</code></pre>
+<p>압축은 CPU 부하를 증가시키므로, 실시간 제약이 엄격한 환경에서는 비압축 저장 후 임무 종료 시 일괄 압축하는 방식이 적절하다.</p>
+<h3>5.3 센서별 데이터 크기 참고</h3>
+<table><thead><tr><th style="text-align: center">센서 데이터</th><th style="text-align: center">메시지 크기</th><th style="text-align: center">10Hz 기준 초당 용량</th></tr></thead><tbody>
+<tr><td style="text-align: center">IMU</td><td style="text-align: center">~200 B</td><td style="text-align: center">~2 KB/s</td></tr>
+<tr><td style="text-align: center">GPS</td><td style="text-align: center">~300 B</td><td style="text-align: center">~3 KB/s</td></tr>
+<tr><td style="text-align: center">2D 라이다</td><td style="text-align: center">~10 KB</td><td style="text-align: center">~100 KB/s</td></tr>
+<tr><td style="text-align: center">3D 라이다</td><td style="text-align: center">~1 MB</td><td style="text-align: center">~10 MB/s</td></tr>
+<tr><td style="text-align: center">카메라 (640×480, RGB)</td><td style="text-align: center">~900 KB</td><td style="text-align: center">~9 MB/s</td></tr>
+<tr><td style="text-align: center">카메라 (1920×1080, RGB)</td><td style="text-align: center">~6 MB</td><td style="text-align: center">~60 MB/s</td></tr>
+</tbody></table>
+<p>고해상도 카메라나 3D 라이다 데이터를 장시간 기록하면 수 GB에서 수십 GB의 저장 공간이 필요하므로, 기록 대상 토픽과 기간을 신중하게 선택해야 한다.</p>
+<h2>6. XML 행동 트리에서의 활용</h2>
+<h3>6.1 노드 등록</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;RecordDataAction&gt;(
+    "RecordData",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;RecordDataAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>6.2 비행 구간 데이터 기록</h3>
+<p>특정 비행 구간의 센서 데이터를 기록하는 구조이다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;Sequence&gt;
+        &lt;FlyToWaypoint latitude="{wp_lat}"
+                       longitude="{wp_lon}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;RecordData topics="/imu/data, /gps/fix, /lidar/points"
+                duration="0"
+                save_path="/data/flight_segment_01"
+                file_path="{recorded_path}"
+                message_count="{num_messages}" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<h3>6.3 이벤트 기반 데이터 기록</h3>
+<p>물체 탐지 시 해당 시점의 센서 데이터를 기록하는 구조이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;DetectObject image="{image}"
+                  detection_count="{count}" /&gt;
+    &lt;Precondition if="{count} &gt; 0" else="SKIP"&gt;
+        &lt;RecordData topics="/camera/image_raw, /lidar/points"
+                    duration="10.0"
+                    save_path="/data/detection_event" /&gt;
+    &lt;/Precondition&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>6.4 주기적 데이터 수집 임무</h3>
+<p>지정된 위치에서 일정 시간 동안 환경 데이터를 수집하는 임무이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;FlyToWaypoint latitude="{survey_lat}"
+                   longitude="{survey_lon}" /&gt;
+    &lt;Parallel success_count="2" failure_count="1"&gt;
+        &lt;Hover duration="120.0" /&gt;
+        &lt;RecordData topics="/camera/image_raw,
+                            /lidar/points,
+                            /imu/data,
+                            /gps/fix"
+                    duration="120.0"
+                    save_path="/data/survey_site_01"
+                    storage_id="mcap" /&gt;
+    &lt;/Parallel&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Open Robotics, “rosbag2 — ROS 2 Documentation,” https://docs.ros.org/en/rolling/p/rosbag2/.</li>
+<li>Foxglove Technologies, “MCAP: A modular container format for heterogeneous timestamped data,” https://mcap.dev/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

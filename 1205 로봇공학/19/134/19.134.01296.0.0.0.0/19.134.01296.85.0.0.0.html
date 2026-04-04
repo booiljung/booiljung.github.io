@@ -115,6 +115,244 @@
             </header>
             <article>
                 <h1>1296.85 액션 노드의 실패 원인 보고</h1>
+<h2>1. 개요</h2>
+<p>액션 노드의 실패 원인 보고는 노드가 <code>FAILURE</code>를 반환할 때 실패의 원인, 맥락, 심각도를 체계적으로 기록하고 전달하는 메커니즘이다. 행동 트리에서 <code>FAILURE</code> 반환값만으로는 실패의 구체적 원인을 파악할 수 없으므로, 보조적인 실패 정보 전달 채널이 필요하다.</p>
+<p>실패 원인 보고는 실시간 오류 진단, 사후 분석, 자동 복구 결정 등의 목적으로 활용된다. 상위 노드가 실패 원인을 참조하여 적절한 복구 전략을 선택할 수 있도록 하는 것이 설계의 핵심 목표이다.</p>
+<h2>2. 실패 정보 전달 방식</h2>
+<h3>2.1 블랙보드 출력 포트를 통한 전달</h3>
+<p>가장 직접적인 방식은 블랙보드의 출력 포트를 통해 실패 정보를 전달하는 것이다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // 기능 포트
+        BT::InputPort&lt;double&gt;("target_altitude",
+            "목표 고도"),
+        // 실패 보고 포트
+        BT::OutputPort&lt;int&gt;("error_code",
+            "오류 코드"),
+        BT::OutputPort&lt;std::string&gt;("error_message",
+            "오류 메시지"),
+        BT::OutputPort&lt;std::string&gt;("error_context",
+            "오류 발생 맥락")
+    };
+}
+
+BT::NodeStatus onRunning() override
+{
+    if (action_rejected_)
+    {
+        setOutput("error_code", 1201);
+        setOutput("error_message",
+                  "액션 서버가 목표를 거부함");
+        setOutput("error_context",
+                  "target_altitude=" +
+                  std::to_string(target_altitude_));
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+</code></pre>
+<h3>2.2 ROS2 로깅을 통한 기록</h3>
+<p><code>rclcpp</code> 로깅 매크로를 통해 실패 정보를 로그에 기록한다. 이 방식은 <code>/rosout</code> 토픽을 통해 중앙 로그 수집 시스템에서 실패 이력을 분석할 수 있는 장점이 있다.</p>
+<pre><code class="language-cpp">if (timeout_expired)
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "[%s] 타임아웃 발생 - "
+        "경과: %.1f초, 제한: %.1f초, "
+        "잔여 거리: %.1f m",
+        name().c_str(),
+        elapsed, timeout, remaining_distance);
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>2.3 진단 토픽을 통한 발행</h3>
+<p><code>diagnostic_msgs/msg/DiagnosticStatus</code> 메시지를 활용하여 구조화된 실패 정보를 전용 진단 토픽으로 발행한다.</p>
+<pre><code class="language-cpp">void reportFailure(const std::string&amp; error_msg,
+                   int error_code,
+                   const std::map&lt;std::string,
+                       std::string&gt;&amp; details)
+{
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.level =
+        diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+    status.name = name();
+    status.message = error_msg;
+    status.hardware_id = "behavior_tree";
+
+    for (const auto&amp; [key, value] : details)
+    {
+        diagnostic_msgs::msg::KeyValue kv;
+        kv.key = key;
+        kv.value = value;
+        status.values.push_back(kv);
+    }
+
+    diagnostic_msgs::msg::DiagnosticArray diag_array;
+    diag_array.header.stamp = node_-&gt;now();
+    diag_array.status.push_back(status);
+    diagnostics_pub_-&gt;publish(diag_array);
+}
+</code></pre>
+<h2>3. 오류 코드 체계</h2>
+<h3>3.1 체계적 오류 코드 설계</h3>
+<p>오류 코드는 실패 원인을 정수값으로 표현하여 프로그래밍적 비교와 자동화된 처리를 가능하게 한다.</p>
+<pre><code class="language-cpp">namespace ErrorCode
+{
+    // 통신 오류 (1000~1099)
+    constexpr int SERVER_UNAVAILABLE = 1001;
+    constexpr int CONNECTION_TIMEOUT = 1002;
+    constexpr int GOAL_REJECTED      = 1003;
+    constexpr int ACTION_ABORTED     = 1004;
+
+    // 입력 오류 (1100~1199)
+    constexpr int PORT_READ_FAILURE  = 1101;
+    constexpr int INVALID_PARAMETER  = 1102;
+    constexpr int MISSING_INPUT      = 1103;
+
+    // 실행 오류 (1200~1299)
+    constexpr int EXECUTION_TIMEOUT  = 1201;
+    constexpr int PRECONDITION_FAIL  = 1202;
+    constexpr int HARDWARE_ERROR     = 1203;
+
+    // 환경 오류 (1300~1399)
+    constexpr int OBSTACLE_DETECTED  = 1301;
+    constexpr int GEOFENCE_VIOLATION = 1302;
+    constexpr int WEATHER_LIMIT      = 1303;
+}
+</code></pre>
+<h3>3.2 오류 코드를 이용한 조건 분기</h3>
+<p>상위 행동 트리에서 오류 코드를 참조하여 실패 원인에 따른 분기를 수행할 수 있다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;NavigateToPose goal="{target}"
+                    error_code="{nav_error}" /&gt;
+    &lt;Sequence&gt;
+        &lt;!-- 장애물에 의한 실패인 경우 우회 경로 시도 --&gt;
+        &lt;CheckEquals value="{nav_error}" target="1301" /&gt;
+        &lt;ComputeAlternativePath
+            original="{target}"
+            alternative="{alt_target}" /&gt;
+        &lt;NavigateToPose goal="{alt_target}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;!-- 기타 실패: 귀환 --&gt;
+        &lt;ReturnToHome /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>4. 실패 보고 기반 클래스</h2>
+<p>반복되는 실패 보고 로직을 기반 클래스로 추상화하여 일관성을 확보할 수 있다.</p>
+<pre><code class="language-cpp">class ReportableActionNode : public BT::StatefulActionNode
+{
+public:
+    ReportableActionNode(
+        const std::string&amp; name,
+        const BT::NodeConfiguration&amp; config)
+        : BT::StatefulActionNode(name, config)
+    {
+    }
+
+    static BT::PortsList commonPorts()
+    {
+        return {
+            BT::OutputPort&lt;int&gt;("error_code",
+                "오류 코드"),
+            BT::OutputPort&lt;std::string&gt;("error_message",
+                "오류 메시지")
+        };
+    }
+
+protected:
+    BT::NodeStatus reportFailure(
+        int code, const std::string&amp; message)
+    {
+        setOutput("error_code", code);
+        setOutput("error_message", message);
+        RCLCPP_ERROR(logger_, "[%s] 오류 %d: %s",
+            name().c_str(), code, message.c_str());
+        return BT::NodeStatus::FAILURE;
+    }
+
+    rclcpp::Logger logger_{
+        rclcpp::get_logger("action_node")};
+};
+</code></pre>
+<p>파생 클래스에서는 <code>reportFailure()</code>를 호출하여 간결하게 실패를 보고한다.</p>
+<pre><code class="language-cpp">class TakeoffAction : public ReportableActionNode
+{
+    BT::NodeStatus onStart() override
+    {
+        if (!action_client_-&gt;wait_for_action_server(
+                std::chrono::seconds(3)))
+        {
+            return reportFailure(
+                ErrorCode::SERVER_UNAVAILABLE,
+                "Takeoff 서버 연결 불가");
+        }
+        // ...
+    }
+};
+</code></pre>
+<h2>5. 실패 이력 관리</h2>
+<h3>5.1 실패 이력 누적</h3>
+<p>행동 트리의 실행 과정에서 발생한 실패를 누적하여 기록하면, 반복되는 실패 패턴을 식별하고 시스템 수준의 문제를 진단할 수 있다.</p>
+<pre><code class="language-cpp">struct FailureRecord
+{
+    rclcpp::Time timestamp;
+    std::string node_name;
+    int error_code;
+    std::string error_message;
+};
+
+class FailureHistory
+{
+public:
+    void addRecord(const FailureRecord&amp; record)
+    {
+        records_.push_back(record);
+        if (records_.size() &gt; max_records_)
+        {
+            records_.erase(records_.begin());
+        }
+    }
+
+    int countRecentFailures(
+        const std::string&amp; node_name,
+        double window_seconds) const;
+
+    std::vector&lt;FailureRecord&gt; getRecords() const
+    {
+        return records_;
+    }
+
+private:
+    std::vector&lt;FailureRecord&gt; records_;
+    size_t max_records_{1000};
+};
+</code></pre>
+<h3>5.2 반복 실패 감지</h3>
+<p>동일 노드에서 단기간에 반복적으로 실패가 발생하면, 일시적 오류가 아닌 구조적 문제일 가능성이 높다. 이 경우 재시도를 중단하고 상위 시스템에 경고를 발행해야 한다.</p>
+<h2>6. XML 행동 트리에서의 활용</h2>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Fallback&gt;
+        &lt;CaptureImage image="{image}"
+                      error_code="{cap_error}"
+                      error_message="{cap_msg}" /&gt;
+        &lt;Sequence&gt;
+            &lt;LogMessage level="ERROR"
+                        message="촬영 실패: {cap_msg}" /&gt;
+            &lt;ForceFailure /&gt;
+        &lt;/Sequence&gt;
+    &lt;/Fallback&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Open Robotics, “ROS 2 Diagnostics,” ROS 2 Documentation, https://docs.ros.org/en/rolling/p/diagnostic_msgs/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

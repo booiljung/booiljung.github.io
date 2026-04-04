@@ -115,6 +115,154 @@
             </header>
             <article>
                 <h1>1297.9 단일 조건 평가 원칙</h1>
+<h2>1. 원칙의 정의</h2>
+<p>단일 조건 평가 원칙(Single Condition Evaluation Principle)은 하나의 조건 노드가 정확히 하나의 논리적 명제만을 평가해야 한다는 설계 원칙이다. 이 원칙은 소프트웨어 공학의 단일 책임 원칙(Single Responsibility Principle, SRP)을 행동 트리(Behavior Tree)의 조건 노드에 적용한 것이다(Martin, 2003).</p>
+<p>하나의 조건 노드는 “배터리가 충분한가?”, “장애물이 감지되었는가?”, “목표에 도달하였는가?“와 같이 하나의 명확한 질문에 대한 답을 제공해야 한다. 복수의 질문을 하나의 노드에서 동시에 답하는 것은 이 원칙에 위배된다.</p>
+<h2>2. 원칙의 근거</h2>
+<h3>2.1 실패 원인의 식별</h3>
+<p>복수의 조건을 하나의 노드에서 평가하면, <code>FAILURE</code> 반환 시 어떤 조건이 미충족되었는지를 외부에서 판별할 수 없다. 이는 디버깅을 어렵게 하고, 행동 트리 로그의 진단적 가치를 저하시킨다.</p>
+<pre><code class="language-cpp">// 단일 조건 평가 원칙 위반
+BT::NodeStatus IsReadyToNavigate::tick()
+{
+    double battery;
+    getInput("battery", battery);
+
+    double localization_quality;
+    getInput("localization_quality", localization_quality);
+
+    bool has_path;
+    getInput("has_path", has_path);
+
+    // 세 가지 조건을 동시 평가 → FAILURE 시 원인 불명
+    if (battery &gt; 20.0 &amp;&amp; localization_quality &gt; 0.7 &amp;&amp; has_path)
+    {
+        return BT::NodeStatus::SUCCESS;
+    }
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>위 구현에서 <code>FAILURE</code>가 반환되면, 배터리 부족인지, 위치 추정 품질 저하인지, 경로 부재인지를 노드 외부에서 구분할 수 없다.</p>
+<h3>2.2 재사용성</h3>
+<p>단일 조건을 평가하는 노드는 다양한 트리 구조에서 재사용할 수 있다. <code>IsBatteryOk</code> 노드는 내비게이션 트리, 충전 트리, 비상 정지 트리 등 배터리 상태를 확인해야 하는 모든 곳에서 동일하게 사용된다. 그러나 <code>IsReadyToNavigate</code>처럼 복합 조건을 포함하는 노드는 내비게이션 맥락에서만 의미를 가지며, 다른 맥락에서 재사용하기 어렵다.</p>
+<h3>2.3 조합의 유연성</h3>
+<p>행동 트리의 제어 노드는 자체적으로 논리 연산을 구현한다. Sequence는 AND 연산을, Fallback은 OR 연산을, Inverter 데코레이터는 NOT 연산을 수행한다. 단일 조건 노드를 이러한 제어 노드와 조합하면, 임의의 복합 조건을 트리 구조로 표현할 수 있다.</p>
+<pre><code>// AND 조합: 세 조건 모두 충족 시 내비게이션 실행
+Sequence
+├── IsBatteryOk
+├── IsLocalized
+├── HasValidPath
+└── Navigate
+</code></pre>
+<pre><code>// OR 조합: 하나라도 충족되면 대기
+Fallback
+├── IsCharging
+├── IsWaitingForCommand
+└── Idle
+</code></pre>
+<p>이 방식은 복합 조건 노드를 작성하는 것보다 유연하다. 조건의 추가, 제거, 순서 변경이 XML 트리 정의의 수정만으로 가능하며, C++ 코드의 변경이 필요하지 않다.</p>
+<h2>3. 단일 조건의 정의 기준</h2>
+<p>어떤 평가가 “단일 조건“에 해당하는지를 판단하기 위한 기준은 다음과 같다.</p>
+<h3>3.1 하나의 명제</h3>
+<p>조건 노드가 평가하는 내용을 하나의 자연어 문장으로 표현할 수 있어야 한다. “배터리가 20% 이상인가?“는 단일 조건이다. “배터리가 20% 이상이고 온도가 정상 범위인가?“는 두 개의 조건이 결합된 복합 조건이다.</p>
+<h3>3.2 하나의 데이터 소스</h3>
+<p>이상적으로 하나의 조건 노드는 하나의 데이터 소스로부터 정보를 읽어 판정을 내린다. 배터리 잔량, 장애물 거리, 위치 추정 품질 등 각각 독립적인 데이터 소스에 기반한 판정은 별도의 조건 노드로 분리한다.</p>
+<h3>3.3 하나의 변경 이유</h3>
+<p>단일 책임 원칙에 따라, 조건 노드의 구현이 변경되어야 하는 이유가 하나여야 한다. 배터리 임계값의 변경과 온도 범위의 변경은 서로 독립적인 변경 이유이므로, 이를 하나의 노드에서 처리하면 안 된다.</p>
+<h2>4. 올바른 분리 사례</h2>
+<h3>4.1 분리 전: 복합 조건 노드</h3>
+<pre><code class="language-cpp">BT::NodeStatus IsSafeToFly::tick()
+{
+    double altitude, wind_speed, battery;
+    getInput("altitude", altitude);
+    getInput("wind_speed", wind_speed);
+    getInput("battery", battery);
+
+    bool altitude_ok = (altitude &gt;= min_altitude_ &amp;&amp; altitude &lt;= max_altitude_);
+    bool wind_ok = (wind_speed &lt; max_wind_speed_);
+    bool battery_ok = (battery &gt; min_battery_);
+
+    return (altitude_ok &amp;&amp; wind_ok &amp;&amp; battery_ok)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>4.2 분리 후: 단일 조건 노드의 조합</h3>
+<pre><code class="language-cpp">// 고도 범위 확인
+BT::NodeStatus IsAltitudeInRange::tick()
+{
+    double altitude;
+    getInput("altitude", altitude);
+    double min_alt, max_alt;
+    getInput("min_altitude", min_alt);
+    getInput("max_altitude", max_alt);
+    return (altitude &gt;= min_alt &amp;&amp; altitude &lt;= max_alt)
+        ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+// 풍속 한계 확인
+BT::NodeStatus IsWindSpeedSafe::tick()
+{
+    double wind_speed, max_wind;
+    getInput("wind_speed", wind_speed);
+    getInput("max_wind_speed", max_wind);
+    return (wind_speed &lt; max_wind)
+        ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+// 배터리 잔량 확인
+BT::NodeStatus IsBatteryOk::tick()
+{
+    double battery, threshold;
+    getInput("battery", battery);
+    getInput("threshold", threshold);
+    return (battery &gt; threshold)
+        ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<pre><code class="language-xml">&lt;Sequence name="SafeToFly"&gt;
+    &lt;Condition ID="IsAltitudeInRange"
+        altitude="{altitude}" min_altitude="10.0" max_altitude="120.0"/&gt;
+    &lt;Condition ID="IsWindSpeedSafe"
+        wind_speed="{wind_speed}" max_wind_speed="15.0"/&gt;
+    &lt;Condition ID="IsBatteryOk"
+        battery="{battery}" threshold="30.0"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>분리 후의 구조에서는 각 조건의 성공/실패가 개별적으로 추적되며, 임계값의 독립적 조정이 가능하고, 각 노드를 다른 트리에서 재사용할 수 있다.</p>
+<h2>5. 단일 조건의 범위 판단</h2>
+<p>단일 조건의 범위가 지나치게 좁아져 사소한 연산까지 별도의 노드로 분리하는 것은 비효율적이다. 다음의 경우는 하나의 조건 노드 내에서 처리하는 것이 적절하다.</p>
+<ul>
+<li><strong>범위 검사</strong>: 하한과 상한을 동시에 비교하는 것은 “값이 범위 내에 있는가?“라는 단일 명제이다.</li>
+<li><strong>거리 계산과 비교</strong>: 유클리드 거리를 계산하고 임계값과 비교하는 것은 “목표까지의 거리가 임계값 이내인가?“라는 단일 명제이다.</li>
+<li><strong>널(null) 검사와 값 비교</strong>: 값의 존재 여부를 확인한 후 비교하는 것은 하나의 평가 절차의 일부이다.</li>
+</ul>
+<pre><code class="language-cpp">// 적절한 단일 조건: 거리 계산 + 비교
+BT::NodeStatus IsGoalReached::tick()
+{
+    double robot_x, robot_y, goal_x, goal_y, tolerance;
+    getInput("robot_x", robot_x);
+    getInput("robot_y", robot_y);
+    getInput("goal_x", goal_x);
+    getInput("goal_y", goal_y);
+    getInput("tolerance", tolerance);
+
+    double distance = std::sqrt(
+        std::pow(robot_x - goal_x, 2) + std::pow(robot_y - goal_y, 2));
+
+    return (distance &lt;= tolerance)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>이 구현에서 거리 계산과 임계값 비교는 하나의 논리적 명제(“목표에 도달하였는가?”)를 평가하기 위한 연산이므로, 분리할 필요가 없다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Martin, R. C. (2003). <em>Agile Software Development: Principles, Patterns, and Practices</em>. Prentice Hall.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

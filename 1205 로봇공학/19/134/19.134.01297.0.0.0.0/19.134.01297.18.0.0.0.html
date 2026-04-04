@@ -115,6 +115,141 @@
             </header>
             <article>
                 <h1>1297.18 입력 포트를 통한 조건 매개변수 수신</h1>
+<h2>1. 입력 포트의 역할</h2>
+<p>입력 포트(InputPort)는 조건 노드가 블랙보드(blackboard)로부터 데이터를 수신하는 공식적인 인터페이스이다. 조건 노드의 평가에 필요한 모든 외부 데이터, 즉 센서 값, 임계값, 설정 매개변수 등은 입력 포트를 통해 전달된다. 이 메커니즘은 조건 노드의 하드코딩된 의존성을 제거하고, 동일한 노드 클래스를 상이한 매개변수로 재사용할 수 있게 한다(Faconti &amp; Colledanchise, 2022).</p>
+<h2>2. 입력 포트의 선언</h2>
+<p>입력 포트는 <code>providedPorts()</code> 정적 메서드에서 <code>BT::InputPort&lt;T&gt;</code> 템플릿을 사용하여 선언한다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;double&gt;("sensor_value", "센서 측정값"),
+        BT::InputPort&lt;double&gt;("threshold", 5.0, "비교 임계값 (기본값: 5.0)")
+    };
+}
+</code></pre>
+<p><code>InputPort&lt;T&gt;</code>의 생성자는 다음과 같은 오버로드를 제공한다:</p>
+<table><thead><tr><th>형식</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>InputPort&lt;T&gt;(name, description)</code></td><td>기본값 없는 필수 포트</td></tr>
+<tr><td><code>InputPort&lt;T&gt;(name, default_value, description)</code></td><td>기본값이 있는 선택 포트</td></tr>
+</tbody></table>
+<h2>3. 입력 포트에서 값 읽기</h2>
+<p><code>tick()</code> 메서드 내에서 <code>getInput&lt;T&gt;()</code> 메서드를 호출하여 입력 포트의 값을 읽는다. 이 메서드는 두 가지 호출 형식을 지원한다.</p>
+<h3>3.1 참조 매개변수 형식</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    double value;
+    auto result = getInput("sensor_value", value);
+
+    if (!result)
+    {
+        // 값 읽기 실패
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // value에 읽은 값이 저장됨
+    return (value &gt; 0.0) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.2 Expected 반환 형식</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    auto expected = getInput&lt;double&gt;("sensor_value");
+
+    if (!expected)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double value = expected.value();
+    return (value &gt; 0.0) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>4. XML에서의 매개변수 전달</h2>
+<p>XML 트리 정의에서 조건 노드의 입력 포트에 값을 전달하는 방식은 세 가지이다.</p>
+<h3>4.1 정적 리터럴 값</h3>
+<pre><code class="language-xml">&lt;Condition ID="IsValueAbove" sensor_value="{sensor_data}" threshold="10.0"/&gt;
+</code></pre>
+<p><code>threshold</code>에 정적 값 <code>10.0</code>이 할당된다. 이 값은 트리 실행 중 변경되지 않는다. 문자열 <code>"10.0"</code>은 <code>BT::convertFromString&lt;double&gt;()</code>에 의해 double 타입으로 변환된다.</p>
+<h3>4.2 블랙보드 키 참조</h3>
+<pre><code class="language-xml">&lt;Condition ID="IsValueAbove" sensor_value="{sensor_data}" threshold="{dynamic_threshold}"/&gt;
+</code></pre>
+<p>중괄호(<code>{}</code>)로 감싼 값은 블랙보드 키에 대한 참조이다. <code>tick()</code> 호출 시마다 블랙보드에서 해당 키의 최신 값이 읽힌다. 이를 통해 조건의 매개변수를 런타임에 동적으로 변경할 수 있다.</p>
+<h3>4.3 기본값 활용</h3>
+<pre><code class="language-xml">&lt;!-- threshold 생략 → providedPorts()에서 설정한 기본값 5.0 사용 --&gt;
+&lt;Condition ID="IsValueAbove" sensor_value="{sensor_data}"/&gt;
+</code></pre>
+<p>기본값이 설정된 포트는 XML에서 생략 가능하다. 기본값이 없는 포트를 생략하면 트리 빌드 시 오류가 발생한다.</p>
+<h2>5. 매개변수화의 장점</h2>
+<h3>5.1 노드 재사용성</h3>
+<p>동일한 조건 노드 클래스를 다양한 매개변수로 인스턴스화할 수 있다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 동일한 IsValueAbove 클래스를 다른 매개변수로 사용 --&gt;
+    &lt;Condition ID="IsValueAbove" name="BatteryCheck"
+        sensor_value="{battery_level}" threshold="20.0"/&gt;
+    &lt;Condition ID="IsValueAbove" name="TemperatureCheck"
+        sensor_value="{cpu_temperature}" threshold="80.0"/&gt;
+    &lt;Condition ID="IsValueAbove" name="SignalCheck"
+        sensor_value="{signal_strength}" threshold="-70.0"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>세 가지 조건이 모두 동일한 <code>IsValueAbove</code> 클래스로 구현되지만, 서로 다른 데이터 소스와 임계값으로 동작한다.</p>
+<h3>5.2 코드 변경 없는 매개변수 조정</h3>
+<p>조건의 임계값이나 기준치를 변경할 때 C++ 코드를 수정하고 재컴파일할 필요 없이, XML 파일의 수정만으로 조정이 가능하다. 이는 로봇 시스템의 현장 배포(field deployment) 시 특히 유용하다.</p>
+<h3>5.3 동적 매개변수</h3>
+<p>블랙보드 키 매핑을 사용하면, 다른 노드가 블랙보드에 갱신한 값을 조건 노드의 매개변수로 활용할 수 있다. 예를 들어, 적응적 임계값(adaptive threshold)을 계산하는 액션 노드가 블랙보드에 결과를 저장하고, 조건 노드가 이를 참조하는 패턴이 가능하다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Action ID="ComputeAdaptiveThreshold" output="{adaptive_threshold}"/&gt;
+    &lt;Condition ID="IsValueAbove" sensor_value="{measurement}"
+        threshold="{adaptive_threshold}"/&gt;
+    &lt;Action ID="ExecuteTask"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>6. 복합 타입의 매개변수 수신</h2>
+<p>단순 스칼라 타입 외에 구조체, 열거형 등의 복합 타입도 입력 포트를 통해 수신할 수 있다. 이를 위해 해당 타입에 대한 <code>BT::convertFromString&lt;T&gt;()</code> 특수화가 필요하다.</p>
+<pre><code class="language-cpp">// geometry_msgs::msg::Point를 입력 포트로 사용
+static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;geometry_msgs::msg::Point&gt;("robot_position", "로봇 현재 위치"),
+        BT::InputPort&lt;geometry_msgs::msg::Point&gt;("goal_position", "목표 위치"),
+        BT::InputPort&lt;double&gt;("tolerance", 0.5, "도달 판정 오차")
+    };
+}
+</code></pre>
+<p>블랙보드에 직접 ROS2 메시지 타입의 값을 저장하고, 조건 노드에서 이를 읽어 평가하는 것이 가능하다. 이 경우 문자열 변환이 아닌 블랙보드의 타입 안전 저장 메커니즘이 사용된다.</p>
+<h2>7. 입력 포트 읽기 실패 처리</h2>
+<p>입력 포트에서 값을 읽는 과정은 다음의 이유로 실패할 수 있다:</p>
+<ol>
+<li>XML에서 포트에 값을 할당하지 않았고 기본값도 없는 경우</li>
+<li>블랙보드 키가 존재하지 않는 경우</li>
+<li>블랙보드에 저장된 값의 타입이 기대 타입과 불일치하는 경우</li>
+<li>문자열에서 타입으로의 변환이 실패하는 경우</li>
+</ol>
+<p>모든 경우에 대하여 <code>getInput()</code> 반환값을 검사하고, 실패 시 <code>FAILURE</code>를 반환하는 것이 실패 안전 원칙에 부합한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    double value;
+    if (!getInput("sensor_value", value))
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double threshold;
+    if (!getInput("threshold", threshold))
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    return (value &gt;= threshold) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

@@ -115,6 +115,397 @@
             </header>
             <article>
                 <h1>1296.50 ROS2 토픽 발행 기반 액션 노드 구현</h1>
+<h2>1. 토픽 발행 액션 노드의 개념</h2>
+<p>행동 트리에서 ROS2 토픽 발행 기반 액션 노드는 행동 트리의 Tick 사이클 내에서 특정 ROS2 토픽에 메시지를 발행(publish)하는 리프 노드이다. 이 유형의 액션 노드는 로봇의 상태 보고, 명령 전달, 이벤트 통지 등 단방향 통신이 요구되는 상황에서 활용된다.</p>
+<p>토픽 발행은 ROS2의 발행-구독(publish-subscribe) 통신 패턴에 기반하며, 서비스나 액션과 달리 응답을 기대하지 않는 비동기적 단방향 통신이다. 따라서 토픽 발행 액션 노드는 메시지 발행 즉시 완료되며, 일반적으로 <code>BT::SyncActionNode</code>를 기반으로 구현한다.</p>
+<h2>2. 설계 구조와 기반 클래스 선택</h2>
+<p>토픽 발행은 메시지를 전송하는 즉각적인 연산이므로, <code>RUNNING</code> 상태를 반환할 필요가 없다. 따라서 <code>BT::SyncActionNode</code>를 상속하는 것이 적합하다. <code>SyncActionNode</code>는 <code>tick()</code> 메서드가 반드시 <code>SUCCESS</code> 또는 <code>FAILURE</code>만을 반환하도록 강제하므로, 토픽 발행의 즉시 완료 특성과 부합한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/action_node.h"
+#include "rclcpp/rclcpp.hpp"
+
+template&lt;class MessageT&gt;
+class TopicPublisherNode : public BT::SyncActionNode
+{
+public:
+  TopicPublisherNode(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::SyncActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    
+    std::string topic_name;
+    getInput("topic_name", topic_name);
+    
+    rclcpp::QoS qos(10);
+    publisher_ = node_-&gt;create_publisher&lt;MessageT&gt;(topic_name, qos);
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;("topic_name", "name of the ROS2 topic")
+    };
+  }
+
+protected:
+  rclcpp::Node::SharedPtr node_;
+  typename rclcpp::Publisher&lt;MessageT&gt;::SharedPtr publisher_;
+};
+</code></pre>
+<h2>3. ROS2 퍼블리셔 초기화</h2>
+<p>토픽 발행 액션 노드의 생성자에서 ROS2 퍼블리셔를 초기화하는 과정은 다음의 단계로 구성된다.</p>
+<h3>3.1 노드 핸들 획득</h3>
+<p>행동 트리의 블랙보드에 저장된 공유 ROS2 노드 핸들을 획득한다. 이 노드 핸들은 행동 트리 엔진이 초기화 시점에 블랙보드에 등록하며, 모든 행동 트리 노드가 공유한다.</p>
+<pre><code class="language-cpp">node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+</code></pre>
+<h3>3.2 토픽 이름 설정</h3>
+<p>발행 대상 토픽의 이름은 입력 포트를 통해 동적으로 지정한다. 이를 통해 동일한 노드 클래스를 서로 다른 토픽에 재사용할 수 있다.</p>
+<h3>3.3 QoS(Quality of Service) 프로파일 구성</h3>
+<p>ROS2의 QoS 프로파일은 메시지 전달의 신뢰성과 지연 특성을 결정한다. 토픽 발행 액션 노드에서는 용도에 따라 적절한 QoS를 선택하여야 한다.</p>
+<table><thead><tr><th>QoS 정책</th><th>명령/제어 토픽</th><th>상태 보고 토픽</th><th>센서 데이터 토픽</th></tr></thead><tbody>
+<tr><td>Reliability</td><td>RELIABLE</td><td>BEST_EFFORT</td><td>BEST_EFFORT</td></tr>
+<tr><td>Durability</td><td>VOLATILE</td><td>TRANSIENT_LOCAL</td><td>VOLATILE</td></tr>
+<tr><td>History depth</td><td>1</td><td>1</td><td>5~10</td></tr>
+</tbody></table>
+<pre><code class="language-cpp">// 명령 전달용 QoS
+rclcpp::QoS cmd_qos(1);
+cmd_qos.reliable();
+
+// 상태 보고용 QoS (최신 상태만 유지)
+rclcpp::QoS status_qos(1);
+status_qos.best_effort();
+status_qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
+</code></pre>
+<h3>3.4 퍼블리셔 생성</h3>
+<p>구성된 QoS 프로파일과 토픽 이름을 사용하여 <code>rclcpp::Publisher</code>를 생성한다. 퍼블리셔는 노드의 생명주기 동안 유지되므로 멤버 변수로 저장한다.</p>
+<pre><code class="language-cpp">publisher_ = node_-&gt;create_publisher&lt;MessageT&gt;(topic_name, qos);
+</code></pre>
+<h2>4. tick() 메서드 구현</h2>
+<p>토픽 발행 액션 노드의 <code>tick()</code> 메서드는 메시지를 구성하고 발행하는 핵심 로직을 포함한다.</p>
+<h3>4.1 메시지 구성</h3>
+<p>발행할 메시지의 필드를 블랙보드 입력 포트로부터 읽어 들여 설정한다. 메시지 구성 과정에서 필수 필드의 누락 여부를 검증하고, 누락된 경우 <code>FAILURE</code>를 반환한다.</p>
+<h3>4.2 메시지 발행</h3>
+<p>구성된 메시지를 퍼블리셔를 통해 발행한다. <code>publish()</code> 메서드는 비블로킹 호출이므로, Tick 루프의 지연을 유발하지 않는다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+  auto message = std::make_unique&lt;MessageT&gt;();
+  
+  // 블랙보드로부터 메시지 필드 설정
+  if (!populateMessage(*message)) {
+    return BT::NodeStatus::FAILURE;
+  }
+  
+  // 타임스탬프 설정
+  message-&gt;header.stamp = node_-&gt;now();
+  
+  publisher_-&gt;publish(std::move(message));
+  return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h2>5. 구체적 구현 사례: 속도 명령 발행 노드</h2>
+<p><code>geometry_msgs::msg::Twist</code> 메시지를 발행하여 로봇에 속도 명령을 전달하는 액션 노드의 구현 사례를 제시한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/action_node.h"
+#include "rclcpp/rclcpp.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+
+class PublishVelocity : public BT::SyncActionNode
+{
+public:
+  PublishVelocity(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::SyncActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    
+    std::string topic_name;
+    getInput("topic_name", topic_name);
+    
+    rclcpp::QoS qos(1);
+    qos.reliable();
+    publisher_ = node_-&gt;create_publisher&lt;geometry_msgs::msg::Twist&gt;(
+      topic_name, qos);
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;("topic_name", "/cmd_vel", "velocity topic"),
+      BT::InputPort&lt;double&gt;("linear_x", 0.0, "linear velocity in x [m/s]"),
+      BT::InputPort&lt;double&gt;("linear_y", 0.0, "linear velocity in y [m/s]"),
+      BT::InputPort&lt;double&gt;("angular_z", 0.0, "angular velocity in z [rad/s]")
+    };
+  }
+
+  BT::NodeStatus tick() override
+  {
+    geometry_msgs::msg::Twist msg;
+    getInput("linear_x", msg.linear.x);
+    getInput("linear_y", msg.linear.y);
+    getInput("angular_z", msg.angular.z);
+    
+    publisher_-&gt;publish(msg);
+    return BT::NodeStatus::SUCCESS;
+  }
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Publisher&lt;geometry_msgs::msg::Twist&gt;::SharedPtr publisher_;
+};
+</code></pre>
+<p>이 노드를 XML 행동 트리에서 사용하는 방법은 다음과 같다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;!-- 전진 명령 발행 --&gt;
+    &lt;PublishVelocity topic_name="/cmd_vel"
+                     linear_x="0.5"
+                     angular_z="0.0"/&gt;
+    &lt;Wait duration="2.0"/&gt;
+    &lt;!-- 정지 명령 발행 --&gt;
+    &lt;PublishVelocity topic_name="/cmd_vel"
+                     linear_x="0.0"
+                     angular_z="0.0"/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>6. 구체적 구현 사례: 문자열 메시지 발행 노드</h2>
+<p><code>std_msgs::msg::String</code> 메시지를 발행하여 시스템 상태나 이벤트를 알리는 액션 노드의 구현을 제시한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/action_node.h"
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
+
+class PublishString : public BT::SyncActionNode
+{
+public:
+  PublishString(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::SyncActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    
+    std::string topic_name;
+    getInput("topic_name", topic_name);
+    
+    rclcpp::QoS qos(10);
+    publisher_ = node_-&gt;create_publisher&lt;std_msgs::msg::String&gt;(
+      topic_name, qos);
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;("topic_name", "target topic name"),
+      BT::InputPort&lt;std::string&gt;("message", "message content to publish")
+    };
+  }
+
+  BT::NodeStatus tick() override
+  {
+    std_msgs::msg::String msg;
+    if (!getInput("message", msg.data)) {
+      return BT::NodeStatus::FAILURE;
+    }
+    
+    publisher_-&gt;publish(msg);
+    return BT::NodeStatus::SUCCESS;
+  }
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr publisher_;
+};
+</code></pre>
+<h2>7. 구체적 구현 사례: 스탬프 포즈 발행 노드</h2>
+<p><code>geometry_msgs::msg::PoseStamped</code> 메시지를 발행하여 목표 위치나 현재 자세를 보고하는 액션 노드의 구현을 제시한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/action_node.h"
+#include "rclcpp/rclcpp.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+
+class PublishPoseStamped : public BT::SyncActionNode
+{
+public:
+  PublishPoseStamped(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::SyncActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    
+    std::string topic_name;
+    getInput("topic_name", topic_name);
+    
+    rclcpp::QoS qos(1);
+    qos.reliable();
+    qos.durability(rclcpp::DurabilityPolicy::TransientLocal);
+    publisher_ = node_-&gt;create_publisher&lt;geometry_msgs::msg::PoseStamped&gt;(
+      topic_name, qos);
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;("topic_name", "target topic"),
+      BT::InputPort&lt;std::string&gt;("frame_id", "map", "reference frame"),
+      BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;("pose", "pose to publish")
+    };
+  }
+
+  BT::NodeStatus tick() override
+  {
+    geometry_msgs::msg::PoseStamped msg;
+    if (!getInput("pose", msg)) {
+      return BT::NodeStatus::FAILURE;
+    }
+    
+    std::string frame_id;
+    getInput("frame_id", frame_id);
+    msg.header.frame_id = frame_id;
+    msg.header.stamp = node_-&gt;now();
+    
+    publisher_-&gt;publish(msg);
+    return BT::NodeStatus::SUCCESS;
+  }
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Publisher&lt;geometry_msgs::msg::PoseStamped&gt;::SharedPtr publisher_;
+};
+</code></pre>
+<h2>8. 주기적 발행과 StatefulActionNode 활용</h2>
+<p>특정 상황에서는 단일 메시지 발행이 아닌 주기적인 반복 발행이 요구된다. 예를 들어, 로봇이 특정 행동을 수행하는 동안 지속적으로 속도 명령을 발행하여야 하는 경우가 이에 해당한다. 이러한 경우에는 <code>BT::StatefulActionNode</code>를 기반으로 구현하여 <code>RUNNING</code> 상태를 활용한다.</p>
+<pre><code class="language-cpp">class ContinuousVelocityPublisher : public BT::StatefulActionNode
+{
+public:
+  ContinuousVelocityPublisher(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::StatefulActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    publisher_ = node_-&gt;create_publisher&lt;geometry_msgs::msg::Twist&gt;(
+      "/cmd_vel", rclcpp::QoS(1));
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;double&gt;("linear_x", 0.0, "linear velocity [m/s]"),
+      BT::InputPort&lt;double&gt;("angular_z", 0.0, "angular velocity [rad/s]"),
+      BT::InputPort&lt;double&gt;("duration", "publishing duration [s]")
+    };
+  }
+
+  BT::NodeStatus onStart() override
+  {
+    getInput("duration", duration_);
+    start_time_ = node_-&gt;now();
+    publishVelocity();
+    return BT::NodeStatus::RUNNING;
+  }
+
+  BT::NodeStatus onRunning() override
+  {
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+    if (elapsed &gt;= duration_) {
+      // 정지 명령 발행
+      geometry_msgs::msg::Twist stop_msg;
+      publisher_-&gt;publish(stop_msg);
+      return BT::NodeStatus::SUCCESS;
+    }
+    publishVelocity();
+    return BT::NodeStatus::RUNNING;
+  }
+
+  void onHalted() override
+  {
+    // 중단 시 정지 명령 발행
+    geometry_msgs::msg::Twist stop_msg;
+    publisher_-&gt;publish(stop_msg);
+  }
+
+private:
+  void publishVelocity()
+  {
+    geometry_msgs::msg::Twist msg;
+    getInput("linear_x", msg.linear.x);
+    getInput("angular_z", msg.angular.z);
+    publisher_-&gt;publish(msg);
+  }
+
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Publisher&lt;geometry_msgs::msg::Twist&gt;::SharedPtr publisher_;
+  rclcpp::Time start_time_;
+  double duration_;
+};
+</code></pre>
+<p>이 구현에서 <code>onHalted()</code> 콜백은 행동 트리의 제어 노드에 의해 노드가 중단될 때 호출되며, 정지 명령을 발행하여 로봇이 안전하게 정지하도록 보장한다. 이는 행동 트리의 반응적 중단 메커니즘과 로봇 안전성을 연계하는 중요한 설계 패턴이다.</p>
+<h2>9. 퍼블리셔 수명 주기 관리</h2>
+<p>토픽 발행 액션 노드에서 퍼블리셔의 수명 주기를 적절히 관리하는 것은 자원 효율성과 시스템 안정성 측면에서 중요하다.</p>
+<h3>9.1 생성자 초기화 패턴</h3>
+<p>퍼블리셔를 생성자에서 한 번 생성하고 노드의 전체 수명 동안 유지하는 방식이다. 행동 트리 노드는 트리가 존재하는 동안 파괴되지 않으므로, 퍼블리셔도 동일한 수명을 갖는다. 이 패턴은 ROS2 그래프의 안정성을 보장하며, 반복적인 퍼블리셔 생성과 파괴에 따른 오버헤드를 제거한다.</p>
+<pre><code class="language-cpp">// 권장: 생성자에서 퍼블리셔 초기화
+TopicPublisherNode(...)
+{
+  publisher_ = node_-&gt;create_publisher&lt;MessageT&gt;(topic_name, qos);
+}
+</code></pre>
+<h3>9.2 지연 초기화 패턴</h3>
+<p>퍼블리셔의 생성을 최초 <code>tick()</code> 호출 시점까지 지연하는 방식이다. 이 패턴은 토픽 이름이 블랙보드에서 동적으로 결정되어 생성자 시점에 아직 사용할 수 없는 경우에 필요하다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+  if (!publisher_) {
+    std::string topic_name;
+    getInput("topic_name", topic_name);
+    publisher_ = node_-&gt;create_publisher&lt;MessageT&gt;(topic_name, qos);
+  }
+  // 메시지 발행 로직
+}
+</code></pre>
+<h2>10. 플러그인 등록과 XML 통합</h2>
+<p>구현한 토픽 발행 액션 노드를 BehaviorTree.CPP의 플러그인 시스템에 등록하여 XML 트리 정의에서 사용할 수 있도록 한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+BT_REGISTER_NODES(factory)
+{
+  factory.registerNodeType&lt;PublishVelocity&gt;("PublishVelocity");
+  factory.registerNodeType&lt;PublishString&gt;("PublishString");
+  factory.registerNodeType&lt;PublishPoseStamped&gt;("PublishPoseStamped");
+  factory.registerNodeType&lt;ContinuousVelocityPublisher&gt;(
+    "ContinuousVelocityPublisher");
+}
+</code></pre>
+<p>등록된 노드는 XML 행동 트리 정의에서 태그 이름으로 참조된다. 입력 포트의 값은 XML 속성으로 지정하거나, 블랙보드 키를 <code>{key}</code> 구문으로 참조하여 동적으로 설정할 수 있다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;PublishString topic_name="/mission_status"
+                   message="mission_started"/&gt;
+    &lt;ContinuousVelocityPublisher linear_x="{target_speed}"
+                                  angular_z="0.0"
+                                  duration="5.0"/&gt;
+    &lt;PublishString topic_name="/mission_status"
+                   message="mission_completed"/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>11. 토픽 발행 노드의 설계 시 고려 사항</h2>
+<h3>11.1 메시지 발행 빈도</h3>
+<p><code>SyncActionNode</code> 기반의 토픽 발행 노드는 Tick마다 한 번 발행된다. 행동 트리의 Tick 주기가 메시지 소비자의 기대 주기와 일치하지 않을 수 있으므로, 주기적 발행이 필요한 경우에는 <code>StatefulActionNode</code>를 사용하거나 별도의 ROS2 타이머를 내장하는 것을 고려하여야 한다.</p>
+<h3>11.2 발행 실패 처리</h3>
+<p>ROS2의 <code>publish()</code> 메서드는 반환값이 없으며, 메시지 전달의 보장 여부는 QoS 설정에 의존한다. <code>RELIABLE</code> QoS를 사용하더라도 구독자가 존재하지 않으면 메시지는 폐기된다. 따라서 토픽 발행 액션 노드는 메시지 발행 자체의 성공을 기준으로 <code>SUCCESS</code>를 반환하며, 구독자 측의 수신 여부를 검증하지는 않는다.</p>
+<h3>11.3 스레드 안전성</h3>
+<p><code>SyncActionNode</code> 기반의 토픽 발행 노드는 행동 트리의 Tick 스레드에서 실행되므로, 별도의 스레드 동기화가 필요하지 않다. 그러나 블랙보드에서 읽어 들이는 데이터가 외부 스레드에 의해 갱신되는 경우에는 해당 블랙보드 항목에 대한 동기화를 보장하여야 한다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>ROS2 공식 문서: https://docs.ros.org/en/humble/</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: ROS2 Humble Hawksbill 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

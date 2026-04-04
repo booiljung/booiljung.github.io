@@ -115,6 +115,263 @@
             </header>
             <article>
                 <h1>1296.69 Hover 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>Hover 액션 노드는 드론(UAV)이 현재 위치에서 지정된 시간 동안 공중 체공(hovering)하는 동작을 행동 트리 내에서 수행하는 리프 노드이다. 체공은 드론이 3차원 공간의 특정 지점에서 위치와 고도를 유지하며 정지 비행하는 상태를 의미하며, 센서 데이터 수집, 대기 명령 수행, 상황 감시 등의 임무에서 활용된다.</p>
+<p>체공 동작은 지정된 지속 시간(duration) 동안 유지되어야 하므로, <code>BT::StatefulActionNode</code>를 상속하여 비동기 방식으로 구현한다. 노드는 체공 명령 전송 후 <code>RUNNING</code> 상태를 유지하며, 지정된 시간이 경과하면 <code>SUCCESS</code>를 반환한다.</p>
+<h2>2. 체공의 물리적 원리</h2>
+<p>멀티로터 드론의 체공은 중력과 양력이 평형을 이루는 상태에서 달성된다. 체공 시 각 로터의 추력 합이 기체 중량과 같아야 하며, 이를 수식으로 표현하면 다음과 같다.</p>
+<p><span class="math math-display">
+\sum_{i=1}^{n} T_i = mg
+</span></p>
+<p>여기서 <span class="math math-inline">T_i</span>는 <span class="math math-inline">i</span>번째 로터의 추력, <span class="math math-inline">n</span>은 로터 수, <span class="math math-inline">m</span>은 기체 질량, <span class="math math-inline">g</span>는 중력 가속도이다. 실제 환경에서는 풍속 변화, 기온 변화에 따른 공기 밀도 변화 등의 외란이 존재하므로, 비행 제어기의 위치 제어 루프(position control loop)가 PID 제어 또는 비선형 제어 기법을 통해 지속적으로 위치 편차를 보상한다.</p>
+<h2>3. ROS2 인터페이스 설계</h2>
+<h3>3.1 액션 인터페이스 정의</h3>
+<pre><code># Hover.action
+# Goal
+float64 duration            # 체공 지속 시간 (초)
+float64 altitude            # 체공 고도 (미터, 선택적 재지정)
+float64 position_tolerance  # 위치 허용 오차 (미터)
+---
+# Result
+bool success                # 체공 완료 여부
+float64 actual_duration     # 실제 체공 시간 (초)
+float64 max_drift           # 최대 위치 편차 (미터)
+---
+# Feedback
+float64 elapsed_time        # 경과 시간 (초)
+float64 current_drift       # 현재 위치 편차 (미터)
+float64 current_altitude    # 현재 고도 (미터)
+</code></pre>
+<p>결과 메시지에 <code>max_drift</code> 필드를 포함하여, 체공 기간 동안 발생한 최대 위치 편차를 기록한다. 이 정보는 위치 유지 성능 평가와 비행 제어기 튜닝에 활용할 수 있다.</p>
+<h3>3.2 서비스 기반 대안</h3>
+<p>체공 동작을 ROS2 액션 대신 비행 모드 전환 서비스로 구현하는 방식도 존재한다. PX4에서는 <code>LOITER</code> 또는 <code>POSITION</code> 비행 모드로 전환하면 드론이 현재 위치에서 체공하며, MAVROS의 <code>mavros/set_mode</code> 서비스를 통해 모드를 전환할 수 있다. 그러나 이 방식은 지속 시간 관리와 완료 판정을 행동 트리 노드 내부에서 직접 처리해야 하므로, 액션 인터페이스에 비해 구현이 복잡해질 수 있다.</p>
+<h2>4. 클래스 구조 설계</h2>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rclcpp_action/rclcpp_action.hpp&gt;
+#include "drone_interfaces/action/hover.hpp"
+
+class HoverAction : public BT::StatefulActionNode
+{
+public:
+    using Hover = drone_interfaces::action::Hover;
+    using GoalHandleHover =
+        rclcpp_action::ClientGoalHandle&lt;Hover&gt;;
+
+    HoverAction(const std::string&amp; name,
+                const BT::NodeConfiguration&amp; config,
+                rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config),
+          node_(node)
+    {
+        action_client_ =
+            rclcpp_action::create_client&lt;Hover&gt;(
+                node_, "hover");
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("duration", 10.0,
+                                  "체공 지속 시간 (초)"),
+            BT::InputPort&lt;double&gt;("altitude", -1.0,
+                                  "체공 고도 (미터, -1: 현재 고도 유지)"),
+            BT::InputPort&lt;double&gt;("position_tolerance", 1.0,
+                                  "위치 허용 오차 (미터)"),
+            BT::InputPort&lt;double&gt;("timeout", 0.0,
+                                  "타임아웃 (초, 0: duration + 여유)"),
+            BT::OutputPort&lt;double&gt;("max_drift",
+                                   "최대 위치 편차")
+        };
+    }
+
+    BT::NodeStatus onStart() override;
+    BT::NodeStatus onRunning() override;
+    void onHalted() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp_action::Client&lt;Hover&gt;::SharedPtr action_client_;
+    GoalHandleHover::SharedPtr goal_handle_;
+    std::atomic&lt;bool&gt; goal_completed_{false};
+    std::atomic&lt;bool&gt; goal_succeeded_{false};
+    double max_drift_{0.0};
+    rclcpp::Time start_time_;
+    double effective_timeout_{0.0};
+};
+</code></pre>
+<p><code>altitude</code> 입력 포트의 기본값을 -1.0으로 설정하여, 별도의 고도가 지정되지 않으면 현재 고도를 그대로 유지하도록 한다.</p>
+<h2>5. 콜백 메서드 구현</h2>
+<h3>5.1 onStart() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus HoverAction::onStart()
+{
+    if (!action_client_-&gt;wait_for_action_server(
+            std::chrono::seconds(5)))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "Hover 액션 서버 연결 실패");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double duration, altitude, position_tolerance, timeout;
+    getInput("duration", duration);
+    getInput("altitude", altitude);
+    getInput("position_tolerance", position_tolerance);
+    getInput("timeout", timeout);
+
+    // 타임아웃이 0이면 duration + 10초 여유로 설정
+    effective_timeout_ =
+        (timeout &gt; 0.0) ? timeout : duration + 10.0;
+
+    auto goal_msg = Hover::Goal();
+    goal_msg.duration = duration;
+    goal_msg.altitude = altitude;
+    goal_msg.position_tolerance = position_tolerance;
+
+    auto send_goal_options =
+        rclcpp_action::Client&lt;Hover&gt;::SendGoalOptions();
+
+    send_goal_options.goal_response_callback =
+        [this](const%20GoalHandleHover::SharedPtr&amp;%20goal_handle)
+        {
+            goal_handle_ = goal_handle;
+        };
+
+    send_goal_options.result_callback =
+        [this](const%20GoalHandleHover::WrappedResult&amp;%20result)
+        {
+            goal_completed_ = true;
+            goal_succeeded_ =
+                (result.code ==
+                 rclcpp_action::ResultCode::SUCCEEDED);
+            if (goal_succeeded_)
+            {
+                max_drift_ =
+                    result.result-&gt;max_drift;
+            }
+        };
+
+    action_client_-&gt;async_send_goal(goal_msg,
+                                     send_goal_options);
+    start_time_ = node_-&gt;now();
+
+    RCLCPP_INFO(node_-&gt;get_logger(),
+                "체공 시작: %.1f초, 허용 오차: %.2f m",
+                duration, position_tolerance);
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>5.2 onRunning() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus HoverAction::onRunning()
+{
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+
+    if (elapsed &gt; effective_timeout_)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "Hover 타임아웃 (%.1f초 경과)", elapsed);
+        if (goal_handle_)
+        {
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+    if (goal_completed_)
+    {
+        if (goal_succeeded_)
+        {
+            setOutput("max_drift", max_drift_);
+            RCLCPP_INFO(node_-&gt;get_logger(),
+                        "체공 완료: 최대 편차 %.3f m",
+                        max_drift_);
+            return BT::NodeStatus::SUCCESS;
+        }
+        else
+        {
+            RCLCPP_ERROR(node_-&gt;get_logger(),
+                         "체공 실패");
+            return BT::NodeStatus::FAILURE;
+        }
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>5.3 onHalted() 콜백</h3>
+<pre><code class="language-cpp">void HoverAction::onHalted()
+{
+    if (goal_handle_)
+    {
+        RCLCPP_INFO(node_-&gt;get_logger(),
+                    "Hover 액션 중단 요청");
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+    goal_handle_.reset();
+}
+</code></pre>
+<p>체공 중 <code>onHalted()</code>가 호출되는 경우는 상위 행동 트리에서 더 높은 우선순위의 작업이 할당되었거나, 비상 상황이 발생한 경우이다. 체공 취소 후 드론은 비행 제어기의 기본 동작에 따라 현재 위치를 유지하므로, 즉각적인 안전 위험은 발생하지 않는다.</p>
+<h2>6. 위치 유지 성능과 외란 보상</h2>
+<h3>6.1 풍속 영향</h3>
+<p>체공 중 풍속은 드론의 위치 유지 성능에 직접적인 영향을 미친다. 비행 제어기는 IMU와 GPS 데이터를 기반으로 풍속에 의한 위치 편차를 감지하고, 기체를 풍상(upwind) 방향으로 기울여 보상 추력을 생성한다. 보프트 풍력 계급(Beaufort wind scale) 기준으로 5등급(풍속 8~10.7 m/s) 이상의 풍속에서는 소형 멀티로터 드론의 체공 안정성이 현저히 저하된다.</p>
+<h3>6.2 GPS 위치 편차</h3>
+<p>GPS 기반 위치 유지에서는 GPS 수신기의 수평 정밀도(CEP, Circular Error Probable)가 체공 정밀도의 하한을 결정한다. 단독 GPS의 경우 CEP가 2~5미터이므로, <code>position_tolerance</code>를 이보다 작게 설정하면 GPS 잡음에 의한 위치 보정 진동이 발생할 수 있다. RTK-GPS를 사용하면 CEP를 수 센티미터 수준으로 낮출 수 있어 정밀 체공이 가능하다.</p>
+<h2>7. XML 행동 트리에서의 활용</h2>
+<h3>7.1 노드 등록</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;HoverAction&gt;(
+    "Hover",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;HoverAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>7.2 감시 임무에서의 활용</h3>
+<p>특정 지점에서 체공하며 카메라 촬영을 수행하는 임무는 다음과 같이 구성한다.</p>
+<pre><code class="language-xml">&lt;root BTCPP_format="4"&gt;
+    &lt;BehaviorTree ID="SurveillanceMission"&gt;
+        &lt;Sequence&gt;
+            &lt;Takeoff target_altitude="30.0" /&gt;
+            &lt;FlyToWaypoint latitude="{target_lat}"
+                           longitude="{target_lon}"
+                           altitude="30.0" /&gt;
+            &lt;Parallel success_count="2"
+                      failure_count="1"&gt;
+                &lt;Hover duration="60.0"
+                       position_tolerance="2.0" /&gt;
+                &lt;CaptureImage interval="5.0"
+                              count="12" /&gt;
+            &lt;/Parallel&gt;
+            &lt;ReturnToHome /&gt;
+            &lt;Land descent_rate="1.5" /&gt;
+        &lt;/Sequence&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<p>이 구조에서 <code>Parallel</code> 제어 노드를 활용하여 체공과 이미지 촬영을 동시에 수행한다. <code>success_count="2"</code>로 설정하여 두 작업이 모두 완료되어야 <code>SUCCESS</code>를 반환하도록 한다.</p>
+<h3>7.3 대기 목적의 체공</h3>
+<p>경유점 간 이동 중 특정 조건이 충족될 때까지 대기해야 하는 경우, Hover 노드를 조건 노드와 결합하여 사용할 수 있다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;CheckCondition condition="{clearance_granted}" /&gt;
+    &lt;Hover duration="300.0"
+           position_tolerance="3.0" /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>이 구조에서 <code>ReactiveFallback</code>은 매 tick마다 <code>CheckCondition</code>을 먼저 평가하므로, 허가(<code>clearance_granted</code>)가 승인되면 체공을 즉시 중단하고 다음 단계로 진행한다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Mahony, R., Kumar, V., and Corke, P., “Multirotor Aerial Vehicles: Modeling, Estimation, and Control of Quadrotor,” IEEE Robotics and Automation Magazine, vol. 19, no. 3, pp. 20-32, 2012.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Quan, Q., “Introduction to Multicopter Design and Control,” Springer, 2017.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

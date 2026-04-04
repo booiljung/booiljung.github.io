@@ -115,6 +115,191 @@
             </header>
             <article>
                 <h1>1297.15 ConditionNode의 tick() 메서드 구현</h1>
+<h2>1. tick() 메서드의 역할</h2>
+<p><code>tick()</code> 메서드는 조건 노드의 핵심 실행 지점으로, 부모 제어 노드로부터 tick 신호가 전달될 때 호출되어 조건 평가를 수행한다. 사용자 정의 조건 노드를 구현할 때, 이 메서드에 조건 평가 로직을 작성하는 것이 개발자의 주된 작업이다(Faconti &amp; Colledanchise, 2022).</p>
+<pre><code class="language-cpp">virtual BT::NodeStatus tick() override;
+</code></pre>
+<p>이 메서드는 <code>BT::TreeNode</code>에서 순수 가상 함수(pure virtual function)로 선언되어 있으므로, 모든 사용자 정의 조건 노드에서 반드시 구현해야 한다.</p>
+<h2>2. tick() 메서드의 실행 흐름</h2>
+<p>트리 실행 엔진이 조건 노드의 tick을 처리하는 과정은 다음과 같다:</p>
+<ol>
+<li>부모 제어 노드가 자식 노드에 tick을 전달한다.</li>
+<li><code>executeTick()</code> 메서드가 호출되어 노드 상태를 <code>IDLE</code>에서 활성 상태로 전환한다.</li>
+<li>사용자가 구현한 <code>tick()</code> 메서드가 호출된다.</li>
+<li><code>tick()</code>이 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 반환한다.</li>
+<li>반환 상태가 검증되고(RUNNING 반환 시 오류 발생), 부모 노드에 전달된다.</li>
+</ol>
+<pre><code class="language-cpp">// 트리 실행 엔진의 내부 처리 (개념적)
+NodeStatus TreeNode::executeTick()
+{
+    NodeStatus prev_status = status();
+    setStatus(NodeStatus::RUNNING);  // 임시 상태
+
+    NodeStatus new_status = tick();  // 사용자 구현 호출
+
+    setStatus(new_status);
+    return new_status;
+}
+</code></pre>
+<h2>3. tick() 구현의 기본 구조</h2>
+<p>조건 노드의 <code>tick()</code> 메서드는 일반적으로 다음의 세 단계로 구성된다.</p>
+<h3>3.1 단계: 입력 값 획득</h3>
+<p>블랙보드에서 조건 평가에 필요한 입력값을 읽는다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 1단계: 입력 값 획득
+    double value;
+    auto result = getInput("value", value);
+    if (!result)
+    {
+        return BT::NodeStatus::FAILURE;  // 입력 불가 시 FAILURE
+    }
+</code></pre>
+<h3>3.2 단계: 조건 평가</h3>
+<p>획득한 입력값에 대하여 조건 판정을 수행한다.</p>
+<pre><code class="language-cpp">    // 2단계: 조건 평가
+    double threshold;
+    getInput("threshold", threshold);
+
+    bool condition_met = (value &gt;= threshold);
+</code></pre>
+<h3>3.3 단계: 결과 반환</h3>
+<p>조건 평가 결과를 <code>SUCCESS</code> 또는 <code>FAILURE</code>로 변환하여 반환한다.</p>
+<pre><code class="language-cpp">    // 3단계: 결과 반환
+    return condition_met
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>4. 입력 값 획득의 오류 처리</h2>
+<p><code>getInput()</code> 메서드는 블랙보드에서 값을 읽는 과정에서 다음과 같은 이유로 실패할 수 있다:</p>
+<ul>
+<li>지정된 키가 블랙보드에 존재하지 않는 경우</li>
+<li>저장된 값의 타입이 요청한 타입과 일치하지 않는 경우</li>
+<li>포트 매핑이 올바르게 설정되지 않은 경우</li>
+</ul>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    auto expected = getInput&lt;double&gt;("distance");
+    if (!expected)
+    {
+        // 오류 원인 로깅 후 FAILURE 반환
+        RCLCPP_WARN(logger_, "Failed to get input 'distance': %s",
+                    expected.error().c_str());
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double distance = expected.value();
+    // ... 조건 평가 계속
+}
+</code></pre>
+<p>입력 획득 실패 시 <code>FAILURE</code>를 반환하는 것은 실패 안전(fail-safe) 원칙에 부합한다. 데이터가 불완전한 상태에서 조건을 참으로 판정하는 것보다 거짓으로 판정하여 후속 행동의 실행을 차단하는 것이 안전하다.</p>
+<h2>5. 다양한 조건 평가 패턴</h2>
+<h3>5.1 단순 비교 패턴</h3>
+<p>단일 값을 임계값과 비교하는 가장 기본적인 패턴이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsBatteryOk::tick()
+{
+    double battery;
+    getInput("battery_level", battery);
+
+    double threshold;
+    getInput("threshold", threshold);
+
+    return (battery &gt;= threshold) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.2 범위 검사 패턴</h3>
+<p>값이 지정된 범위 내에 있는지를 확인하는 패턴이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsAltitudeInRange::tick()
+{
+    double altitude, min_alt, max_alt;
+    getInput("altitude", altitude);
+    getInput("min_altitude", min_alt);
+    getInput("max_altitude", max_alt);
+
+    return (altitude &gt;= min_alt &amp;&amp; altitude &lt;= max_alt)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.3 거리 기반 비교 패턴</h3>
+<p>두 위치 사이의 유클리드 거리를 계산하여 임계값과 비교하는 패턴이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsGoalReached::tick()
+{
+    double rx, ry, gx, gy, tolerance;
+    getInput("robot_x", rx);
+    getInput("robot_y", ry);
+    getInput("goal_x", gx);
+    getInput("goal_y", gy);
+    getInput("tolerance", tolerance);
+
+    double distance = std::hypot(rx - gx, ry - gy);
+    return (distance &lt;= tolerance) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.4 불리언 확인 패턴</h3>
+<p>블랙보드에 저장된 불리언 값을 직접 확인하는 패턴이다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsEmergencyStop::tick()
+{
+    bool e_stop;
+    auto result = getInput("emergency_stop", e_stop);
+
+    if (!result)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    return e_stop ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.5 비동기 데이터 참조 패턴</h3>
+<p>ROS2 토픽을 통해 비동기적으로 수신된 데이터를 참조하는 패턴이다. 데이터 수신은 콜백에서 처리하고, <code>tick()</code>에서는 저장된 최신 값만을 읽는다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsObstacleNear::tick()
+{
+    double threshold;
+    getInput("threshold", threshold);
+
+    // 원자적 변수에서 최신 값 읽기 (콜백에서 비동기 갱신)
+    double min_range = latest_min_range_.load();
+
+    return (min_range &lt; threshold) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>6. tick() 구현 시 주의 사항</h2>
+<h3>6.1 RUNNING 반환 금지</h3>
+<p><code>tick()</code> 메서드에서 <code>BT::NodeStatus::RUNNING</code>을 반환하면 안 된다. BehaviorTree.CPP는 조건 노드의 RUNNING 반환을 논리 오류로 처리한다.</p>
+<pre><code class="language-cpp">// 잘못된 구현
+BT::NodeStatus BadCondition::tick()
+{
+    return BT::NodeStatus::RUNNING;  // 런타임 오류 발생
+}
+</code></pre>
+<h3>6.2 차단적 연산 금지</h3>
+<p><code>tick()</code> 내에서 <code>std::this_thread::sleep_for()</code>, <code>future.get()</code>, 동기적 서비스 호출 등 현재 스레드를 차단하는 연산을 수행하면 안 된다.</p>
+<h3>6.3 예외 처리</h3>
+<p><code>tick()</code> 내에서 발생한 예외(exception)는 트리 실행 엔진으로 전파되어 전체 트리의 실행을 중단시킬 수 있다. 예외가 발생할 가능성이 있는 연산은 try-catch로 처리하고, 예외 발생 시 <code>FAILURE</code>를 반환한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus SafeCondition::tick()
+{
+    try
+    {
+        double value;
+        getInput("value", value);
+        return (value &gt; 0.0) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+    }
+    catch (const std::exception&amp; e)
+    {
+        RCLCPP_ERROR(logger_, "Exception in condition: %s", e.what());
+        return BT::NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

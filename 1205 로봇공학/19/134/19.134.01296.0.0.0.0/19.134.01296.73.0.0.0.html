@@ -115,6 +115,368 @@
             </header>
             <article>
                 <h1>1296.73 ProcessPointCloud 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>ProcessPointCloud 액션 노드는 라이다(LiDAR) 또는 깊이 카메라(depth camera)로부터 획득한 3차원 포인트 클라우드(point cloud) 데이터를 처리하여 후속 노드에서 활용할 수 있는 형태로 변환하는 리프 노드이다. 포인트 클라우드 처리는 환경 인식, 장애물 탐지, 3차원 매핑, 지형 분석 등 로봇의 자율 의사 결정에 필수적인 기반 작업이다.</p>
+<p>포인트 클라우드 처리는 수만에서 수백만 개의 3차원 점으로 구성된 대용량 데이터를 다루므로, 연산 시간이 수십 밀리초에서 수 초까지 소요될 수 있다. 따라서 <code>BT::StatefulActionNode</code>를 상속하여 비동기 방식으로 구현한다.</p>
+<h2>2. 포인트 클라우드 데이터 구조</h2>
+<h3>2.1 ROS2 PointCloud2 메시지</h3>
+<p>ROS2에서 포인트 클라우드 데이터는 <code>sensor_msgs/msg/PointCloud2</code> 메시지 타입으로 전달된다. 이 메시지는 필드(field) 기반의 유연한 데이터 구조를 가지며, 각 점의 좌표(x, y, z)와 추가 속성(반사 강도, 색상, 법선 벡터 등)을 포함할 수 있다.</p>
+<p>주요 필드 구조는 다음과 같다.</p>
+<table><thead><tr><th style="text-align: center">필드명</th><th style="text-align: center">데이터 타입</th><th style="text-align: left">설명</th></tr></thead><tbody>
+<tr><td style="text-align: center">x, y, z</td><td style="text-align: center">FLOAT32</td><td style="text-align: left">3차원 좌표 (미터)</td></tr>
+<tr><td style="text-align: center">intensity</td><td style="text-align: center">FLOAT32</td><td style="text-align: left">반사 강도</td></tr>
+<tr><td style="text-align: center">ring</td><td style="text-align: center">UINT16</td><td style="text-align: left">라이다 채널 번호</td></tr>
+<tr><td style="text-align: center">timestamp</td><td style="text-align: center">FLOAT64</td><td style="text-align: left">각 점의 획득 시각</td></tr>
+<tr><td style="text-align: center">rgb</td><td style="text-align: center">FLOAT32</td><td style="text-align: left">색상 정보 (packed)</td></tr>
+</tbody></table>
+<h3>2.2 PCL 라이브러리와의 연동</h3>
+<p>Point Cloud Library(PCL)는 포인트 클라우드 처리를 위한 표준 C++ 라이브러리이다. ROS2에서는 <code>pcl_conversions</code> 패키지를 통해 <code>sensor_msgs/msg/PointCloud2</code>와 <code>pcl::PointCloud&lt;T&gt;</code> 간의 변환을 수행한다.</p>
+<pre><code class="language-cpp">#include &lt;pcl_conversions/pcl_conversions.h&gt;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+
+// ROS2 메시지를 PCL로 변환
+pcl::PointCloud&lt;pcl::PointXYZI&gt;::Ptr cloud(
+    new pcl::PointCloud&lt;pcl::PointXYZI&gt;);
+pcl::fromROSMsg(*ros_cloud_msg, *cloud);
+</code></pre>
+<h2>3. 클래스 구조 설계</h2>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;sensor_msgs/msg/point_cloud2.hpp&gt;
+#include &lt;pcl/point_cloud.h&gt;
+#include &lt;pcl/point_types.h&gt;
+#include &lt;pcl_conversions/pcl_conversions.h&gt;
+
+class ProcessPointCloudAction : public BT::StatefulActionNode
+{
+public:
+    using PointT = pcl::PointXYZI;
+    using CloudT = pcl::PointCloud&lt;PointT&gt;;
+
+    ProcessPointCloudAction(
+        const std::string&amp; name,
+        const BT::NodeConfiguration&amp; config,
+        rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config),
+          node_(node)
+    {
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("lidar_topic",
+                "/lidar/points",
+                "라이다 포인트 클라우드 토픽"),
+            BT::InputPort&lt;double&gt;("voxel_size", 0.1,
+                "복셀 다운샘플링 크기 (미터)"),
+            BT::InputPort&lt;double&gt;("range_min", 0.5,
+                "최소 거리 필터 (미터)"),
+            BT::InputPort&lt;double&gt;("range_max", 100.0,
+                "최대 거리 필터 (미터)"),
+            BT::InputPort&lt;bool&gt;("remove_ground", true,
+                "지면 제거 수행 여부"),
+            BT::InputPort&lt;double&gt;("timeout", 5.0,
+                "데이터 수신 타임아웃 (초)"),
+            BT::OutputPort&lt;std::shared_ptr&lt;
+                sensor_msgs::msg::PointCloud2&gt;&gt;(
+                "processed_cloud", "처리된 포인트 클라우드"),
+            BT::OutputPort&lt;int&gt;("point_count",
+                "처리 후 점 개수")
+        };
+    }
+
+    BT::NodeStatus onStart() override;
+    BT::NodeStatus onRunning() override;
+    void onHalted() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Subscription&lt;
+        sensor_msgs::msg::PointCloud2&gt;::SharedPtr
+        subscription_;
+    sensor_msgs::msg::PointCloud2::SharedPtr raw_cloud_;
+    std::atomic&lt;bool&gt; data_received_{false};
+    std::atomic&lt;bool&gt; processing_done_{false};
+    sensor_msgs::msg::PointCloud2::SharedPtr processed_cloud_;
+    int processed_point_count_{0};
+    rclcpp::Time start_time_;
+
+    void processCloud();
+};
+</code></pre>
+<h2>4. 콜백 메서드 구현</h2>
+<h3>4.1 onStart() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus ProcessPointCloudAction::onStart()
+{
+    std::string lidar_topic;
+    getInput("lidar_topic", lidar_topic);
+
+    data_received_ = false;
+    processing_done_ = false;
+    raw_cloud_.reset();
+
+    subscription_ =
+        node_-&gt;create_subscription&lt;
+            sensor_msgs::msg::PointCloud2&gt;(
+            lidar_topic,
+            rclcpp::SensorDataQoS(),
+            [this](const%20sensor_msgs::msg::PointCloud2::SharedPtr%20msg)
+            {
+                if (!data_received_)
+                {
+                    raw_cloud_ = msg;
+                    data_received_ = true;
+                }
+            });
+
+    start_time_ = node_-&gt;now();
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>4.2 onRunning() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus ProcessPointCloudAction::onRunning()
+{
+    double timeout;
+    getInput("timeout", timeout);
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+
+    if (elapsed &gt; timeout)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "포인트 클라우드 수신 타임아웃");
+        subscription_.reset();
+        return BT::NodeStatus::FAILURE;
+    }
+
+    if (data_received_ &amp;&amp; !processing_done_)
+    {
+        subscription_.reset();
+        processCloud();
+        processing_done_ = true;
+    }
+
+    if (processing_done_)
+    {
+        setOutput("processed_cloud", processed_cloud_);
+        setOutput("point_count", processed_point_count_);
+
+        RCLCPP_DEBUG(node_-&gt;get_logger(),
+            "포인트 클라우드 처리 완료: %d점",
+            processed_point_count_);
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>4.3 onHalted() 콜백</h3>
+<pre><code class="language-cpp">void ProcessPointCloudAction::onHalted()
+{
+    subscription_.reset();
+    data_received_ = false;
+    processing_done_ = false;
+    raw_cloud_.reset();
+}
+</code></pre>
+<h2>5. 포인트 클라우드 처리 파이프라인</h2>
+<h3>5.1 processCloud() 구현</h3>
+<p>포인트 클라우드 처리는 다음 단계를 순차적으로 수행한다.</p>
+<pre><code class="language-cpp">void ProcessPointCloudAction::processCloud()
+{
+    // 1. ROS2 메시지를 PCL로 변환
+    CloudT::Ptr cloud(new CloudT);
+    pcl::fromROSMsg(*raw_cloud_, *cloud);
+
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+                 "원본 포인트 수: %zu", cloud-&gt;size());
+
+    // 2. 거리 필터링
+    double range_min, range_max;
+    getInput("range_min", range_min);
+    getInput("range_max", range_max);
+    cloud = applyRangeFilter(cloud, range_min, range_max);
+
+    // 3. 복셀 다운샘플링
+    double voxel_size;
+    getInput("voxel_size", voxel_size);
+    cloud = applyVoxelDownsampling(cloud, voxel_size);
+
+    // 4. 지면 제거 (선택적)
+    bool remove_ground;
+    getInput("remove_ground", remove_ground);
+    if (remove_ground)
+    {
+        cloud = removeGroundPlane(cloud);
+    }
+
+    // 5. 결과를 ROS2 메시지로 변환
+    processed_cloud_ =
+        std::make_shared&lt;sensor_msgs::msg::PointCloud2&gt;();
+    pcl::toROSMsg(*cloud, *processed_cloud_);
+    processed_cloud_-&gt;header = raw_cloud_-&gt;header;
+    processed_point_count_ =
+        static_cast&lt;int&gt;(cloud-&gt;size());
+}
+</code></pre>
+<h3>5.2 거리 필터링</h3>
+<p>센서 근접 영역의 잡음과 최대 측정 범위를 초과하는 무효 측정값을 제거한다.</p>
+<pre><code class="language-cpp">CloudT::Ptr applyRangeFilter(
+    const CloudT::Ptr&amp; input,
+    double range_min,
+    double range_max)
+{
+    CloudT::Ptr filtered(new CloudT);
+    for (const auto&amp; pt : input-&gt;points)
+    {
+        double range = std::sqrt(
+            pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+        if (range &gt;= range_min &amp;&amp; range &lt;= range_max &amp;&amp;
+            std::isfinite(pt.x) &amp;&amp;
+            std::isfinite(pt.y) &amp;&amp;
+            std::isfinite(pt.z))
+        {
+            filtered-&gt;points.push_back(pt);
+        }
+    }
+    filtered-&gt;width = filtered-&gt;points.size();
+    filtered-&gt;height = 1;
+    filtered-&gt;is_dense = true;
+    return filtered;
+}
+</code></pre>
+<p><code>std::isfinite()</code> 검사를 포함하여 NaN 및 무한대 값을 가진 무효 측정점을 제거한다. 라이다 센서는 반사 표면이 없는 방향에서 NaN 값을 반환할 수 있다.</p>
+<h3>5.3 복셀 다운샘플링</h3>
+<p>복셀 그리드 필터(voxel grid filter)는 3차원 공간을 균등한 복셀(voxel)로 분할하고, 각 복셀 내의 점들을 대표점(중심점)으로 대체하여 데이터를 축소한다.</p>
+<pre><code class="language-cpp">#include &lt;pcl/filters/voxel_grid.h&gt;
+
+CloudT::Ptr applyVoxelDownsampling(
+    const CloudT::Ptr&amp; input,
+    double voxel_size)
+{
+    CloudT::Ptr downsampled(new CloudT);
+    pcl::VoxelGrid&lt;PointT&gt; voxel_filter;
+    voxel_filter.setInputCloud(input);
+    voxel_filter.setLeafSize(
+        voxel_size, voxel_size, voxel_size);
+    voxel_filter.filter(*downsampled);
+    return downsampled;
+}
+</code></pre>
+<p>복셀 크기는 처리 정밀도와 연산 시간 사이의 트레이드오프를 결정한다. 복셀 크기가 작을수록 공간 해상도가 높아지지만 연산 비용이 증가하고, 클수록 처리 속도가 향상되지만 세밀한 구조 정보가 손실된다.</p>
+<h3>5.4 지면 제거</h3>
+<p>RANSAC(Random Sample Consensus) 알고리즘을 이용한 평면 추정으로 지면을 제거한다.</p>
+<pre><code class="language-cpp">#include &lt;pcl/segmentation/sac_segmentation.h&gt;
+#include &lt;pcl/filters/extract_indices.h&gt;
+
+CloudT::Ptr removeGroundPlane(const CloudT::Ptr&amp; input)
+{
+    // RANSAC 기반 평면 추정
+    pcl::SACSegmentation&lt;PointT&gt; seg;
+    seg.setOptimizeCoefficients(true);
+    seg.setModelType(pcl::SACMODEL_PLANE);
+    seg.setMethodType(pcl::SAC_RANSAC);
+    seg.setDistanceThreshold(0.15);
+    seg.setInputCloud(input);
+
+    pcl::ModelCoefficients::Ptr coefficients(
+        new pcl::ModelCoefficients);
+    pcl::PointIndices::Ptr inliers(
+        new pcl::PointIndices);
+    seg.segment(*inliers, *coefficients);
+
+    if (inliers-&gt;indices.empty())
+    {
+        return input;
+    }
+
+    // 지면 점 제거
+    CloudT::Ptr non_ground(new CloudT);
+    pcl::ExtractIndices&lt;PointT&gt; extract;
+    extract.setInputCloud(input);
+    extract.setIndices(inliers);
+    extract.setNegative(true);  // 인라이어 제외
+    extract.filter(*non_ground);
+
+    return non_ground;
+}
+</code></pre>
+<p><code>setDistanceThreshold(0.15)</code>는 추정된 평면으로부터 0.15미터 이내의 점을 지면으로 판정한다. 이 값은 지면의 거칠기(roughness)와 센서의 측정 잡음에 따라 조정해야 한다.</p>
+<h2>6. 좌표 변환</h2>
+<p>포인트 클라우드 데이터를 로봇의 기준 좌표계(base_link)로 변환하기 위해 TF2를 활용한다.</p>
+<pre><code class="language-cpp">#include &lt;tf2_ros/buffer.h&gt;
+#include &lt;tf2_ros/transform_listener.h&gt;
+#include &lt;tf2_sensor_msgs/tf2_sensor_msgs.hpp&gt;
+
+// TF2를 이용한 좌표 변환
+geometry_msgs::msg::TransformStamped transform;
+try
+{
+    transform = tf_buffer_-&gt;lookupTransform(
+        "base_link",
+        cloud_msg-&gt;header.frame_id,
+        cloud_msg-&gt;header.stamp,
+        rclcpp::Duration::from_seconds(0.1));
+
+    sensor_msgs::msg::PointCloud2 transformed_cloud;
+    tf2::doTransform(*cloud_msg, transformed_cloud,
+                     transform);
+}
+catch (const tf2::TransformException&amp; ex)
+{
+    RCLCPP_WARN(node_-&gt;get_logger(),
+                "좌표 변환 실패: %s", ex.what());
+}
+</code></pre>
+<h2>7. XML 행동 트리에서의 활용</h2>
+<h3>7.1 노드 등록</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;ProcessPointCloudAction&gt;(
+    "ProcessPointCloud",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;ProcessPointCloudAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>7.2 장애물 탐지 파이프라인</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;ProcessPointCloud lidar_topic="/lidar/points"
+                       voxel_size="0.05"
+                       range_min="0.3"
+                       range_max="50.0"
+                       remove_ground="true"
+                       processed_cloud="{obstacle_cloud}"
+                       point_count="{num_points}" /&gt;
+    &lt;DetectObject cloud="{obstacle_cloud}"
+                  detections="{obstacles}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>7.3 파라미터 조정을 통한 용도별 처리</h3>
+<p>정밀 매핑 용도에서는 복셀 크기를 작게, 실시간 장애물 탐지에서는 크게 설정한다.</p>
+<pre><code class="language-xml">&lt;!-- 정밀 매핑 --&gt;
+&lt;ProcessPointCloud voxel_size="0.02"
+                   range_max="30.0"
+                   remove_ground="false"
+                   processed_cloud="{mapping_cloud}" /&gt;
+
+&lt;!-- 실시간 장애물 탐지 --&gt;
+&lt;ProcessPointCloud voxel_size="0.2"
+                   range_max="20.0"
+                   remove_ground="true"
+                   processed_cloud="{obstacle_cloud}" /&gt;
+</code></pre>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Rusu, R. B. and Cousins, S., “3D is here: Point Cloud Library (PCL),” IEEE International Conference on Robotics and Automation (ICRA), 2011.</li>
+<li>Fischler, M. A. and Bolles, R. C., “Random Sample Consensus: A Paradigm for Model Fitting with Applications to Image Analysis and Automated Cartography,” Communications of the ACM, vol. 24, no. 6, pp. 381-395, 1981.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

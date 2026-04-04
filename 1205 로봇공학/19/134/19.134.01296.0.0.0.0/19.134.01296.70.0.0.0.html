@@ -115,6 +115,314 @@
             </header>
             <article>
                 <h1>1296.70 ReturnToHome 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>ReturnToHome(RTH) 액션 노드는 드론(UAV)이 현재 위치에서 사전 기록된 홈 위치(home position)로 자율 귀환하는 동작을 행동 트리 내에서 수행하는 리프 노드이다. 홈 위치는 일반적으로 이륙 지점 또는 운용자가 지정한 귀환 지점으로, GPS 좌표(위도, 경도, 고도)로 기록된다.</p>
+<p>RTH 동작은 드론 임무의 정상적 종료, 배터리 부족, 통신 두절, 지오펜스 위반 등 다양한 상황에서 수행된다. 귀환 비행은 수 초에서 수 분 이상 소요될 수 있으므로, <code>BT::StatefulActionNode</code>를 상속하여 비동기 방식으로 구현한다.</p>
+<h2>2. 귀환 절차의 구성</h2>
+<h3>2.1 표준 귀환 절차</h3>
+<p>PX4 자동 비행 소프트웨어의 Return 모드는 다음 단계로 구성된다.</p>
+<ol>
+<li><strong>고도 상승</strong>: 현재 고도가 귀환 고도(return altitude)보다 낮으면 귀환 고도까지 상승한다. 이는 귀환 경로 상의 장애물과의 충돌을 방지하기 위함이다.</li>
+<li><strong>수평 비행</strong>: 홈 위치의 수직 상공까지 직선 또는 계획된 경로를 따라 비행한다.</li>
+<li><strong>하강 및 착륙</strong>: 홈 위치 상공에 도달하면 하강하여 착륙한다.</li>
+</ol>
+<p>이 세 단계를 단일 RTH 액션 서버에서 통합 처리하거나, 각 단계를 별도의 액션 노드로 분리하여 행동 트리에서 명시적으로 제어할 수 있다. 단일 노드로 통합하는 방식은 구현이 간결하지만, 단계별 세밀한 제어가 어렵다. 분리 방식은 유연성이 높지만 행동 트리의 복잡도가 증가한다.</p>
+<h3>2.2 귀환 고도 결정</h3>
+<p>귀환 고도는 다음 기준 중 하나 또는 조합에 의해 결정된다.</p>
+<table><thead><tr><th style="text-align: center">귀환 고도 정책</th><th style="text-align: left">설명</th></tr></thead><tbody>
+<tr><td style="text-align: center">고정 고도</td><td style="text-align: left">사전 설정된 고정 귀환 고도(예: 50미터)로 상승 후 비행</td></tr>
+<tr><td style="text-align: center">현재 고도 유지</td><td style="text-align: left">현재 비행 고도를 그대로 유지하며 귀환</td></tr>
+<tr><td style="text-align: center">최고 고도 사용</td><td style="text-align: left">임무 중 기록된 최고 비행 고도로 상승 후 귀환</td></tr>
+<tr><td style="text-align: center">지형 추종</td><td style="text-align: left">지형 데이터를 참조하여 지상 고도를 일정하게 유지하며 귀환</td></tr>
+</tbody></table>
+<p>PX4의 <code>RTL_RETURN_ALT</code> 파라미터는 고정 귀환 고도를 설정하며, <code>RTL_CONE_ANG</code> 파라미터는 홈 위치와의 거리에 따라 귀환 고도를 점진적으로 조정하는 원뿔형(cone) 귀환 경로를 정의한다.</p>
+<h2>3. ROS2 액션 인터페이스 정의</h2>
+<pre><code># ReturnToHome.action
+# Goal
+float64 return_altitude     # 귀환 고도 (미터, 0: 자동)
+float64 return_speed        # 귀환 비행 속도 (m/s, 0: 기본)
+bool auto_land              # 귀환 후 자동 착륙 여부
+float64 acceptance_radius   # 홈 위치 수용 반경 (미터)
+---
+# Result
+bool success                # 귀환 성공 여부
+float64 final_distance      # 홈 위치까지 최종 거리 (미터)
+bool landed                 # 착륙 완료 여부
+uint8 error_code            # 오류 코드
+---
+# Feedback
+float64 distance_to_home    # 홈까지 잔여 거리 (미터)
+float64 current_altitude    # 현재 고도 (미터)
+float64 eta                 # 도착 예상 시간 (초)
+uint8 phase                 # 현재 단계 (0: 상승, 1: 비행, 2: 하강)
+</code></pre>
+<p>피드백의 <code>phase</code> 필드는 귀환 동작의 현재 단계를 나타내며, 이를 통해 행동 트리의 상위 노드 또는 감시 시스템이 귀환 진행 상황을 파악할 수 있다.</p>
+<h2>4. 클래스 구조 설계</h2>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rclcpp_action/rclcpp_action.hpp&gt;
+#include "drone_interfaces/action/return_to_home.hpp"
+
+class ReturnToHomeAction : public BT::StatefulActionNode
+{
+public:
+    using RTH = drone_interfaces::action::ReturnToHome;
+    using GoalHandleRTH =
+        rclcpp_action::ClientGoalHandle&lt;RTH&gt;;
+
+    ReturnToHomeAction(const std::string&amp; name,
+                       const BT::NodeConfiguration&amp; config,
+                       rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config),
+          node_(node)
+    {
+        action_client_ =
+            rclcpp_action::create_client&lt;RTH&gt;(
+                node_, "return_to_home");
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("return_altitude", 0.0,
+                "귀환 고도 (미터, 0: 자동)"),
+            BT::InputPort&lt;double&gt;("return_speed", 0.0,
+                "귀환 속도 (m/s, 0: 기본)"),
+            BT::InputPort&lt;bool&gt;("auto_land", true,
+                "귀환 후 자동 착륙 여부"),
+            BT::InputPort&lt;double&gt;("acceptance_radius", 5.0,
+                "홈 위치 수용 반경 (미터)"),
+            BT::InputPort&lt;double&gt;("timeout", 300.0,
+                "타임아웃 (초)"),
+            BT::OutputPort&lt;double&gt;("final_distance",
+                "홈까지 최종 거리"),
+            BT::OutputPort&lt;bool&gt;("landed",
+                "착륙 완료 여부")
+        };
+    }
+
+    BT::NodeStatus onStart() override;
+    BT::NodeStatus onRunning() override;
+    void onHalted() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp_action::Client&lt;RTH&gt;::SharedPtr action_client_;
+    GoalHandleRTH::SharedPtr goal_handle_;
+    std::atomic&lt;bool&gt; goal_completed_{false};
+    std::atomic&lt;bool&gt; goal_succeeded_{false};
+    double final_distance_{0.0};
+    bool landed_{false};
+    rclcpp::Time start_time_;
+};
+</code></pre>
+<p>타임아웃 기본값을 300초(5분)로 설정한 것은, 귀환 비행이 원거리에서 수행될 경우를 고려한 것이다. 실제 운용에서는 홈 위치까지의 거리와 비행 속도를 기반으로 적절한 타임아웃을 산정해야 한다.</p>
+<h2>5. 콜백 메서드 구현</h2>
+<h3>5.1 onStart() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus ReturnToHomeAction::onStart()
+{
+    if (!action_client_-&gt;wait_for_action_server(
+            std::chrono::seconds(5)))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "RTH 액션 서버 연결 실패");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double return_altitude, return_speed, acceptance_radius;
+    bool auto_land;
+    getInput("return_altitude", return_altitude);
+    getInput("return_speed", return_speed);
+    getInput("auto_land", auto_land);
+    getInput("acceptance_radius", acceptance_radius);
+
+    auto goal_msg = RTH::Goal();
+    goal_msg.return_altitude = return_altitude;
+    goal_msg.return_speed = return_speed;
+    goal_msg.auto_land = auto_land;
+    goal_msg.acceptance_radius = acceptance_radius;
+
+    auto send_goal_options =
+        rclcpp_action::Client&lt;RTH&gt;::SendGoalOptions();
+
+    send_goal_options.goal_response_callback =
+        [this](const%20GoalHandleRTH::SharedPtr&amp;%20goal_handle)
+        {
+            goal_handle_ = goal_handle;
+        };
+
+    send_goal_options.result_callback =
+        [this](const%20GoalHandleRTH::WrappedResult&amp;%20result)
+        {
+            goal_completed_ = true;
+            goal_succeeded_ =
+                (result.code ==
+                 rclcpp_action::ResultCode::SUCCEEDED);
+            if (goal_succeeded_)
+            {
+                final_distance_ =
+                    result.result-&gt;final_distance;
+                landed_ = result.result-&gt;landed;
+            }
+        };
+
+    send_goal_options.feedback_callback =
+        [this](GoalHandleRTH::SharedPtr,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20std::shared_ptr&lt;
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20RTH::Feedback&gt;%20feedback)
+        {
+            const char* phase_names[] =
+                {"상승", "비행", "하강"};
+            uint8_t phase = feedback-&gt;phase;
+            RCLCPP_DEBUG(node_-&gt;get_logger(),
+                "RTH [%s] 잔여: %.1f m, ETA: %.1f s",
+                (phase &lt; 3) ? phase_names[phase] : "알 수 없음",
+                feedback-&gt;distance_to_home,
+                feedback-&gt;eta);
+        };
+
+    action_client_-&gt;async_send_goal(goal_msg,
+                                     send_goal_options);
+    start_time_ = node_-&gt;now();
+
+    RCLCPP_INFO(node_-&gt;get_logger(),
+                "귀환 비행 시작 (고도: %.1f m, 자동착륙: %s)",
+                return_altitude,
+                auto_land ? "활성" : "비활성");
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>5.2 onRunning() 콜백</h3>
+<pre><code class="language-cpp">BT::NodeStatus ReturnToHomeAction::onRunning()
+{
+    double timeout;
+    getInput("timeout", timeout);
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+
+    if (elapsed &gt; timeout)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "RTH 타임아웃 (%.1f초 경과)", elapsed);
+        if (goal_handle_)
+        {
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+    if (goal_completed_)
+    {
+        if (goal_succeeded_)
+        {
+            setOutput("final_distance", final_distance_);
+            setOutput("landed", landed_);
+            RCLCPP_INFO(node_-&gt;get_logger(),
+                "귀환 완료: 최종 거리 %.2f m, 착륙: %s",
+                final_distance_,
+                landed_ ? "완료" : "미완료");
+            return BT::NodeStatus::SUCCESS;
+        }
+        else
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>5.3 onHalted() 콜백</h3>
+<pre><code class="language-cpp">void ReturnToHomeAction::onHalted()
+{
+    if (goal_handle_)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "RTH 액션 중단 요청");
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+    goal_handle_.reset();
+}
+</code></pre>
+<p>RTH 동작의 중단은 신중하게 결정해야 한다. 귀환 중 중단은 드론이 홈 위치에 도달하지 못한 채 임의의 위치에 머무르는 결과를 초래하므로, 더 높은 우선순위의 명령(예: 비상 착륙)이 있는 경우에만 수행해야 한다.</p>
+<h2>6. 홈 위치 관리</h2>
+<h3>6.1 홈 위치 기록 시점</h3>
+<p>홈 위치는 다음 시점에 기록될 수 있다.</p>
+<ul>
+<li><strong>이륙 시 자동 기록</strong>: 드론이 시동(arming) 시 현재 GPS 좌표를 홈 위치로 자동 저장한다. PX4에서는 이 방식을 기본으로 사용한다.</li>
+<li><strong>운용자 수동 지정</strong>: 지상 관제 소프트웨어(GCS)를 통해 운용자가 특정 좌표를 홈 위치로 지정한다.</li>
+<li><strong>임무 중 동적 갱신</strong>: 이동 중인 기지(mobile base)에서 운용하는 경우, 기지의 현재 위치로 홈 좌표를 주기적으로 갱신한다.</li>
+</ul>
+<h3>6.2 홈 위치의 블랙보드 공유</h3>
+<p>홈 위치를 블랙보드에 기록하면 행동 트리 내의 다른 노드에서도 참조할 수 있다.</p>
+<pre><code class="language-xml">&lt;SetBlackboard output_key="home_lat" value="37.5665" /&gt;
+&lt;SetBlackboard output_key="home_lon" value="126.9780" /&gt;
+&lt;SetBlackboard output_key="home_alt" value="0.0" /&gt;
+</code></pre>
+<p>그러나 RTH 노드는 일반적으로 비행 제어 시스템에 내장된 홈 위치를 사용하므로, 블랙보드를 통한 좌표 전달은 선택적이다.</p>
+<h2>7. 안전 기반 귀환 트리거</h2>
+<h3>7.1 배터리 기반 귀환</h3>
+<p>배터리 잔량이 임계값 이하로 감소하면 자동으로 귀환을 수행하는 행동 트리 구조는 다음과 같이 구성할 수 있다.</p>
+<pre><code class="language-xml">&lt;root BTCPP_format="4"&gt;
+    &lt;BehaviorTree ID="SafetyMonitoredMission"&gt;
+        &lt;ReactiveFallback&gt;
+            &lt;Inverter&gt;
+                &lt;CheckBatteryLow threshold="0.25" /&gt;
+            &lt;/Inverter&gt;
+            &lt;Sequence&gt;
+                &lt;!-- 정상 임무 수행 --&gt;
+                &lt;FlyToWaypoint latitude="{wp_lat}"
+                               longitude="{wp_lon}"
+                               altitude="30.0" /&gt;
+                &lt;Hover duration="30.0" /&gt;
+            &lt;/Sequence&gt;
+            &lt;Sequence name="EmergencyReturn"&gt;
+                &lt;ReturnToHome return_altitude="50.0"
+                              auto_land="true" /&gt;
+            &lt;/Sequence&gt;
+        &lt;/ReactiveFallback&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<p>이 구조에서 <code>ReactiveFallback</code>은 매 tick마다 배터리 상태를 먼저 확인하므로, 임무 수행 중이라도 배터리가 부족해지면 즉시 귀환 절차를 개시한다.</p>
+<h3>7.2 통신 두절 시 귀환</h3>
+<p>드론과 지상 관제 사이의 통신이 두절되면 사전 설정된 시간 경과 후 자동 귀환을 수행해야 한다. PX4에서는 <code>COM_DL_LOSS_T</code> 파라미터로 통신 두절 허용 시간을 설정하며, 이 시간이 초과되면 자동으로 RTL(Return To Launch) 모드로 전환한다.</p>
+<h2>8. XML 행동 트리에서의 활용</h2>
+<h3>8.1 노드 등록</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;ReturnToHomeAction&gt;(
+    "ReturnToHome",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;ReturnToHomeAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>8.2 임무 종료 후 귀환-착륙 시퀀스</h3>
+<pre><code class="language-xml">&lt;Sequence name="MissionEnd"&gt;
+    &lt;ReturnToHome return_altitude="40.0"
+                  return_speed="8.0"
+                  auto_land="false"
+                  acceptance_radius="3.0"
+                  timeout="180.0"
+                  landed="{rth_landed}" /&gt;
+    &lt;Land descent_rate="1.0"
+          timeout="45.0" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p><code>auto_land</code>를 <code>false</code>로 설정하면 RTH 노드는 홈 위치 상공까지만 비행하고, 착륙은 후속 Land 노드에서 별도로 수행한다. 이 방식은 착륙 전 추가적인 조건 확인(예: 착륙 지점 장애물 검사)을 삽입할 수 있는 유연성을 제공한다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Meier, L. et al., “PX4: A Node-Based Multithreaded Open Source Robotics Framework for Deeply Embedded Platforms,” IEEE International Conference on Robotics and Automation (ICRA), 2015.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>PX4 Development Team, “Return Mode (Return to Launch),” PX4 User Guide, https://docs.px4.io/main/en/flight_modes/return.html.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

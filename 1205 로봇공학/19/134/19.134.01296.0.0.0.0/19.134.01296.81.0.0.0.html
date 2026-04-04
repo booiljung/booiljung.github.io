@@ -115,6 +115,201 @@
             </header>
             <article>
                 <h1>1296.81 액션 노드의 오류 처리 전략</h1>
+<h2>1. 개요</h2>
+<p>액션 노드의 오류 처리는 로봇 시스템의 신뢰성과 안전성을 결정하는 핵심 설계 요소이다. 행동 트리 기반 시스템에서 액션 노드는 물리적 동작, 통신, 센서 처리 등 실패 가능성이 있는 작업을 수행하며, 이러한 작업에서 발생하는 오류를 적절히 처리하지 않으면 로봇의 비정상 동작, 임무 실패, 또는 안전 사고로 이어질 수 있다.</p>
+<p>행동 트리의 구조적 특성은 오류 처리에 유리한 프레임워크를 제공한다. <code>Fallback</code> 제어 노드는 자식 노드의 실패 시 대체 행동을 실행하며, <code>RetryNode</code> 데코레이터는 실패한 작업의 재시도를 자동화한다. 그러나 이러한 구조적 오류 처리가 효과적으로 작동하려면, 개별 액션 노드 수준에서 오류를 정확히 감지하고 올바른 반환 상태를 결정하는 전략이 선행되어야 한다.</p>
+<h2>2. 오류의 분류</h2>
+<h3>2.1 발생 원인에 따른 분류</h3>
+<table><thead><tr><th style="text-align: center">분류</th><th style="text-align: left">원인</th><th style="text-align: left">예시</th></tr></thead><tbody>
+<tr><td style="text-align: center">하드웨어 오류</td><td style="text-align: left">센서, 액추에이터, 통신 장비의 물리적 고장</td><td style="text-align: left">GPS 수신기 고장, 모터 과열</td></tr>
+<tr><td style="text-align: center">소프트웨어 오류</td><td style="text-align: left">프로그래밍 결함, 라이브러리 버그</td><td style="text-align: left">널 포인터 역참조, 메모리 부족</td></tr>
+<tr><td style="text-align: center">통신 오류</td><td style="text-align: left">네트워크 장애, 프로토콜 불일치</td><td style="text-align: left">액션 서버 연결 실패, 토픽 미수신</td></tr>
+<tr><td style="text-align: center">환경 오류</td><td style="text-align: left">예측 불가능한 외부 환경 변화</td><td style="text-align: left">GPS 다중 경로 간섭, 강풍</td></tr>
+<tr><td style="text-align: center">논리 오류</td><td style="text-align: left">잘못된 입력, 불가능한 요청</td><td style="text-align: left">블랙보드 키 부재, 유효하지 않은 좌표</td></tr>
+</tbody></table>
+<h3>2.2 심각도에 따른 분류</h3>
+<table><thead><tr><th style="text-align: center">심각도</th><th style="text-align: left">영향</th><th style="text-align: left">대응 방식</th></tr></thead><tbody>
+<tr><td style="text-align: center">경미</td><td style="text-align: left">기능 저하 없음</td><td style="text-align: left">로깅 후 계속 수행</td></tr>
+<tr><td style="text-align: center">보통</td><td style="text-align: left">현재 작업 실패</td><td style="text-align: left"><code>FAILURE</code> 반환, 대체 경로 탐색</td></tr>
+<tr><td style="text-align: center">심각</td><td style="text-align: left">다수 기능 영향</td><td style="text-align: left">임무 중단, 안전 절차 실행</td></tr>
+<tr><td style="text-align: center">치명적</td><td style="text-align: left">시스템 안전 위협</td><td style="text-align: left">즉시 비상 정지</td></tr>
+</tbody></table>
+<h3>2.3 복구 가능성에 따른 분류</h3>
+<ul>
+<li><strong>일시적 오류(transient error)</strong>: 재시도를 통해 해결될 수 있는 오류. 네트워크 일시 단절, 센서 데이터 일시 손실 등이 해당한다.</li>
+<li><strong>영구적 오류(permanent error)</strong>: 재시도로 해결되지 않는 오류. 하드웨어 고장, 물리적 경로 차단 등이 해당한다.</li>
+</ul>
+<p>이 구분은 재시도 전략의 수립에 직접적인 영향을 미친다. 일시적 오류에 대해서는 재시도가 효과적이지만, 영구적 오류에 대한 무한 재시도는 시간과 자원의 낭비를 초래한다.</p>
+<h2>3. 액션 노드 내부의 오류 처리 원칙</h2>
+<h3>3.1 실패 조기 반환 원칙</h3>
+<p>오류를 감지한 시점에서 즉시 <code>FAILURE</code>를 반환하여, 행동 트리의 제어 흐름이 대체 경로를 탐색하도록 한다. 오류를 은폐하거나 내부적으로 무한 재시도하는 것은 행동 트리의 모듈성을 훼손한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    // 1단계: 전제 조건 검증
+    if (!action_client_-&gt;wait_for_action_server(
+            std::chrono::seconds(3)))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "액션 서버 연결 실패");
+        return BT::NodeStatus::FAILURE;  // 조기 반환
+    }
+
+    // 2단계: 입력 유효성 검증
+    double target;
+    if (!getInput("target", target))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "입력 포트 읽기 실패");
+        return BT::NodeStatus::FAILURE;  // 조기 반환
+    }
+
+    // 3단계: 정상 실행
+    // ...
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>3.2 오류 정보 전달</h3>
+<p>액션 노드가 <code>FAILURE</code>를 반환할 때, 실패 원인에 대한 정보를 블랙보드의 출력 포트에 기록하여 상위 노드에서 활용할 수 있도록 한다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        // ... 기존 포트
+        BT::OutputPort&lt;std::string&gt;("error_message",
+            "오류 메시지"),
+        BT::OutputPort&lt;int&gt;("error_code",
+            "오류 코드")
+    };
+}
+
+BT::NodeStatus onRunning() override
+{
+    if (goal_failed_)
+    {
+        setOutput("error_message",
+                  "액션 서버에서 목표 거부");
+        setOutput("error_code", 1001);
+        return BT::NodeStatus::FAILURE;
+    }
+    // ...
+}
+</code></pre>
+<h3>3.3 자원 해제 보장</h3>
+<p>오류 발생 시에도 할당된 자원(구독, 타이머, 파일 핸들 등)이 올바르게 해제되어야 한다. C++의 RAII(Resource Acquisition Is Initialization) 패턴과 스마트 포인터를 활용하여 자원 해제를 보장한다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    // 모든 자원 해제
+    subscription_.reset();
+    goal_handle_.reset();
+    timer_.reset();
+
+    // 상태 초기화
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+}
+</code></pre>
+<h2>4. 행동 트리 수준의 오류 처리 구조</h2>
+<h3>4.1 Fallback을 이용한 대체 행동</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;NavigateToPose goal="{target_pose}" /&gt;
+    &lt;Sequence&gt;
+        &lt;ComputeAlternativePath
+            original="{target_pose}"
+            alternative="{alt_pose}" /&gt;
+        &lt;NavigateToPose goal="{alt_pose}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;LogMessage level="ERROR"
+                message="모든 경로 실패" /&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h3>4.2 RetryNode를 이용한 재시도</h3>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="3"&gt;
+    &lt;Sequence&gt;
+        &lt;CaptureImage image="{image}" /&gt;
+        &lt;DetectObject image="{image}"
+                      detections="{objects}" /&gt;
+    &lt;/Sequence&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<p><code>RetryNode</code>는 자식 노드가 <code>FAILURE</code>를 반환하면 지정된 횟수만큼 재실행한다. 일시적 오류에 대한 간단하고 효과적인 복구 전략이지만, 영구적 오류에 대해서는 모든 시도가 소진될 때까지 시간이 낭비될 수 있다.</p>
+<h3>4.3 재시도 간격 조절</h3>
+<p>연속적인 재시도 사이에 대기 시간을 삽입하여, 일시적 오류의 해소를 위한 시간을 확보한다.</p>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="3"&gt;
+    &lt;Sequence&gt;
+        &lt;ConnectToServer server="{server_addr}" /&gt;
+        &lt;Wait duration="2.0" /&gt;
+    &lt;/Sequence&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<h3>4.4 점진적 후퇴 전략</h3>
+<p>여러 수준의 대체 행동을 계층적으로 구성하여, 단계적으로 더 보수적인 행동으로 전환한다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;!-- 1차: 정상 경로로 비행 --&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}"
+                   altitude="30.0" /&gt;
+    &lt;!-- 2차: 고도를 높여 재시도 --&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}"
+                   altitude="50.0" /&gt;
+    &lt;!-- 3차: 귀환 --&gt;
+    &lt;Sequence&gt;
+        &lt;LogMessage level="WARN"
+                    message="경유점 도달 불가, 귀환" /&gt;
+        &lt;ReturnToHome /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>5. 안전 임계 오류 처리</h2>
+<h3>5.1 비상 정지 트리거</h3>
+<p>로봇의 안전에 직접적인 위협이 되는 오류가 발생하면, 행동 트리의 정상 흐름과 무관하게 비상 정지를 수행해야 한다. 이를 위해 <code>ReactiveFallback</code>을 활용한 안전 감시 구조를 최상위에 배치한다.</p>
+<pre><code class="language-xml">&lt;root BTCPP_format="4"&gt;
+    &lt;BehaviorTree ID="SafetyWrapper"&gt;
+        &lt;ReactiveFallback&gt;
+            &lt;!-- 안전 조건: 매 tick마다 검사 --&gt;
+            &lt;Inverter&gt;
+                &lt;Fallback&gt;
+                    &lt;CheckBatteryDead /&gt;
+                    &lt;CheckSensorFailure /&gt;
+                    &lt;CheckGPSLost /&gt;
+                &lt;/Fallback&gt;
+            &lt;/Inverter&gt;
+            &lt;!-- 정상 임무 수행 --&gt;
+            &lt;SubTree ID="MainMission" /&gt;
+            &lt;!-- 비상 절차 --&gt;
+            &lt;EmergencyLand /&gt;
+        &lt;/ReactiveFallback&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<h3>5.2 오류 전파 방지</h3>
+<p>안전에 무관한 부수적 기능(로깅, 상태 보고 등)의 오류가 주 임무에 전파되지 않도록 <code>ForceSuccess</code> 데코레이터를 활용한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}" /&gt;
+    &lt;ForceSuccess&gt;
+        &lt;PublishStatus status="WAYPOINT_REACHED" /&gt;
+    &lt;/ForceSuccess&gt;
+    &lt;CaptureImage image="{image}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>6. 오류 코드 체계 설계</h2>
+<p>시스템 전체에서 일관된 오류 코드 체계를 사용하면 오류 진단이 용이해진다.</p>
+<table><thead><tr><th style="text-align: center">범위</th><th style="text-align: center">분류</th><th style="text-align: left">설명</th></tr></thead><tbody>
+<tr><td style="text-align: center">1000~1099</td><td style="text-align: center">통신 오류</td><td style="text-align: left">서버 연결 실패, 타임아웃</td></tr>
+<tr><td style="text-align: center">1100~1199</td><td style="text-align: center">입력 오류</td><td style="text-align: left">포트 읽기 실패, 잘못된 값</td></tr>
+<tr><td style="text-align: center">1200~1299</td><td style="text-align: center">실행 오류</td><td style="text-align: left">동작 실패, 목표 거부</td></tr>
+<tr><td style="text-align: center">1300~1399</td><td style="text-align: center">하드웨어 오류</td><td style="text-align: left">센서 장애, 액추에이터 고장</td></tr>
+<tr><td style="text-align: center">1400~1499</td><td style="text-align: center">환경 오류</td><td style="text-align: left">장애물, 기상 조건</td></tr>
+</tbody></table>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Macenski, S. et al., “The Marathon 2: A Navigation System,” arXiv preprint arXiv:2003.00368, 2020.</li>
+<li>Gamma, E. et al., “Design Patterns: Elements of Reusable Object-Oriented Software,” Addison-Wesley, 1994.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

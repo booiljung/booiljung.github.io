@@ -115,6 +115,165 @@
             </header>
             <article>
                 <h1>1296.78 로깅 관련 액션 노드 설계</h1>
+<h2>1. 개요</h2>
+<p>로깅 관련 액션 노드는 로봇의 운용 과정에서 발생하는 이벤트, 상태 변화, 센서 데이터, 의사 결정 과정 등을 기록하는 동작을 행동 트리 내에서 수행하는 리프 노드 군(群)이다. 로깅은 임무 수행 후 분석(post-mission analysis), 디버깅, 성능 평가, 법적 기록 보존 등의 목적으로 수행되며, 행동 트리를 통해 로깅의 시점과 내용을 체계적으로 제어할 수 있다.</p>
+<p>본 절에서는 로깅 관련 액션 노드의 일반적인 설계 원칙, 로깅 수준 체계, 저장 매체 선택, 그리고 ROS2 로깅 인프라와의 연동 방안을 기술한다.</p>
+<h2>2. 로깅 액션 노드의 분류</h2>
+<h3>2.1 기능에 따른 분류</h3>
+<table><thead><tr><th style="text-align: center">노드 유형</th><th style="text-align: left">기능</th><th style="text-align: left">데이터 형태</th><th style="text-align: center">기반 클래스</th></tr></thead><tbody>
+<tr><td style="text-align: center">LogMessage</td><td style="text-align: left">텍스트 로그 메시지 기록</td><td style="text-align: left">문자열</td><td style="text-align: center">SyncActionNode</td></tr>
+<tr><td style="text-align: center">RecordData</td><td style="text-align: left">구조화된 데이터 기록</td><td style="text-align: left">수치, 시계열</td><td style="text-align: center">StatefulActionNode</td></tr>
+<tr><td style="text-align: center">RecordBag</td><td style="text-align: left">ROS2 bag 파일 녹화</td><td style="text-align: left">토픽 스트림</td><td style="text-align: center">StatefulActionNode</td></tr>
+<tr><td style="text-align: center">SnapshotState</td><td style="text-align: left">시스템 상태 스냅샷 저장</td><td style="text-align: left">복합 데이터</td><td style="text-align: center">SyncActionNode</td></tr>
+</tbody></table>
+<p>LogMessage와 SnapshotState는 단일 시점의 데이터를 즉시 기록하므로 동기 방식으로 구현하고, RecordData와 RecordBag는 일정 기간 동안 지속적으로 데이터를 수집하므로 비동기 방식으로 구현한다.</p>
+<h3>2.2 로그 수준 체계</h3>
+<p>ROS2의 로깅 시스템은 다음의 표준 로그 수준 체계를 따른다.</p>
+<table><thead><tr><th style="text-align: center">수준</th><th style="text-align: left">용도</th><th style="text-align: left">예시</th></tr></thead><tbody>
+<tr><td style="text-align: center">DEBUG</td><td style="text-align: left">상세 디버깅 정보</td><td style="text-align: left">블랙보드 값 변화, tick 실행 경과</td></tr>
+<tr><td style="text-align: center">INFO</td><td style="text-align: left">정상 운용 이벤트</td><td style="text-align: left">임무 시작, 경유점 도달</td></tr>
+<tr><td style="text-align: center">WARN</td><td style="text-align: left">잠재적 문제 상황</td><td style="text-align: left">배터리 잔량 부족, 통신 지연</td></tr>
+<tr><td style="text-align: center">ERROR</td><td style="text-align: left">오류 발생</td><td style="text-align: left">센서 데이터 미수신, 액션 서버 연결 실패</td></tr>
+<tr><td style="text-align: center">FATAL</td><td style="text-align: left">치명적 오류</td><td style="text-align: left">비행 제어기 응답 없음, 시스템 장애</td></tr>
+</tbody></table>
+<p>행동 트리의 LogMessage 노드는 이 수준 체계를 입력 포트로 지정받아, 적절한 수준의 로그를 출력한다.</p>
+<h2>3. 설계 원칙</h2>
+<h3>3.1 로깅의 비침투성</h3>
+<p>로깅 액션 노드는 로봇의 주 동작에 부작용을 미치지 않아야 한다. 로깅 노드의 실패가 임무 전체의 실패로 이어지지 않도록, <code>ForceSuccess</code> 데코레이터로 감싸거나 <code>Fallback</code> 구조 내에서 로깅 실패를 무시하는 설계가 필요하다.</p>
+<pre><code class="language-xml">&lt;!-- 로깅 실패가 임무에 영향을 미치지 않는 구조 --&gt;
+&lt;Sequence&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}" /&gt;
+    &lt;ForceSuccess&gt;
+        &lt;LogMessage level="INFO"
+                    message="경유점 도달 완료" /&gt;
+    &lt;/ForceSuccess&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>3.2 로깅 성능 영향 최소화</h3>
+<p>로깅 동작은 행동 트리의 tick 주기에 미치는 영향을 최소화해야 한다. 특히 파일 입출력이나 네트워크 전송이 포함되는 경우, 비동기 큐(asynchronous queue)를 통해 로깅 데이터를 버퍼링하고 별도 스레드에서 저장을 수행하는 것이 권장된다.</p>
+<pre><code>[행동 트리 tick 스레드] → [로그 큐(lock-free)] → [로그 기록 스레드]
+                                                      ↓
+                                              [파일/네트워크/DB]
+</code></pre>
+<h3>3.3 구조화된 로깅</h3>
+<p>자유 형식의 텍스트 로그보다 구조화된(structured) 로그가 사후 분석에 유리하다. JSON, CSV, 또는 ROS2 bag 형식으로 로그를 기록하면 자동화된 분석 도구와의 호환성이 향상된다.</p>
+<pre><code class="language-json">{
+    "timestamp": "2026-04-04T14:30:00.123Z",
+    "level": "INFO",
+    "node": "TakeoffAction",
+    "event": "takeoff_complete",
+    "data": {
+        "target_altitude": 20.0,
+        "reached_altitude": 19.85,
+        "duration_sec": 12.3
+    }
+}
+</code></pre>
+<h2>4. ROS2 로깅 인프라 활용</h2>
+<h3>4.1 rclcpp 로깅 매크로</h3>
+<p>ROS2는 <code>rclcpp</code> 라이브러리를 통해 표준 로깅 매크로를 제공한다.</p>
+<pre><code class="language-cpp">RCLCPP_DEBUG(node_-&gt;get_logger(), "디버그 메시지: %s", msg);
+RCLCPP_INFO(node_-&gt;get_logger(), "정보 메시지: %s", msg);
+RCLCPP_WARN(node_-&gt;get_logger(), "경고 메시지: %s", msg);
+RCLCPP_ERROR(node_-&gt;get_logger(), "오류 메시지: %s", msg);
+RCLCPP_FATAL(node_-&gt;get_logger(), "치명적 메시지: %s", msg);
+</code></pre>
+<p>이 매크로를 통해 출력된 로그는 ROS2 로깅 시스템에 의해 콘솔 출력, 파일 저장, 외부 로깅 서비스 전송 등으로 라우팅된다.</p>
+<h3>4.2 ROS2 Bag 녹화</h3>
+<p>ROS2 bag는 토픽 메시지를 시간 순서대로 파일에 기록하는 표준 도구이다. <code>rosbag2</code> 라이브러리를 프로그래밍 방식으로 활용하면, 행동 트리 노드 내에서 특정 시점에 녹화를 시작하고 종료할 수 있다.</p>
+<pre><code class="language-cpp">#include &lt;rosbag2_cpp/writer.hpp&gt;
+
+// Bag 녹화 시작
+auto writer = std::make_unique&lt;rosbag2_cpp::Writer&gt;();
+rosbag2_cpp::StorageOptions storage_options;
+storage_options.uri = bag_file_path;
+storage_options.storage_id = "sqlite3";
+writer-&gt;open(storage_options);
+</code></pre>
+<h3>4.3 rosout 토픽</h3>
+<p>ROS2의 <code>/rosout</code> 토픽은 모든 노드의 로그 메시지를 집약하여 발행한다. 이 토픽을 구독하면 전체 시스템의 로그를 중앙에서 수집할 수 있다.</p>
+<h2>5. 블랙보드 포트 설계</h2>
+<p>로깅 액션 노드의 공통적인 포트 설계는 다음과 같다.</p>
+<p><strong>LogMessage 포트:</strong></p>
+<ul>
+<li>입력: 로그 수준(level), 메시지 내용(message), 태그(tag)</li>
+<li>출력: 없음</li>
+</ul>
+<p><strong>RecordData 포트:</strong></p>
+<ul>
+<li>입력: 기록 대상 토픽(topics), 저장 경로(save_path), 기록 시간(duration)</li>
+<li>출력: 기록된 데이터 수(record_count), 파일 경로(file_path)</li>
+</ul>
+<h2>6. 저장 매체 선택</h2>
+<h3>6.1 로컬 파일 시스템</h3>
+<p>임무 중 수집된 로그를 로봇 탑재 저장 장치에 기록하는 방식이다. SSD 또는 고속 SD 카드를 사용하며, 쓰기 속도와 용량을 고려하여 저장 형식을 선택한다.</p>
+<table><thead><tr><th style="text-align: center">형식</th><th style="text-align: left">장점</th><th style="text-align: left">단점</th></tr></thead><tbody>
+<tr><td style="text-align: center">ROS2 Bag (SQLite3)</td><td style="text-align: left">ROS2 도구 호환, 토픽 재생 가능</td><td style="text-align: left">저장 용량 큼</td></tr>
+<tr><td style="text-align: center">CSV</td><td style="text-align: left">분석 도구 호환, 가독성</td><td style="text-align: left">비정형 데이터 부적합</td></tr>
+<tr><td style="text-align: center">JSON Lines</td><td style="text-align: left">구조화, 유연성</td><td style="text-align: left">파싱 비용</td></tr>
+<tr><td style="text-align: center">바이너리</td><td style="text-align: left">최소 용량, 최고 속도</td><td style="text-align: left">전용 파서 필요</td></tr>
+</tbody></table>
+<h3>6.2 원격 서버 전송</h3>
+<p>네트워크 연결이 가능한 환경에서는 로그를 실시간으로 원격 서버에 전송할 수 있다. 다만 네트워크 지연과 대역폭 제한을 고려하여, 중요도가 높은 로그만 실시간 전송하고 상세 로그는 로컬에 저장한 후 임무 종료 시 일괄 전송하는 방식이 효율적이다.</p>
+<h2>7. XML 행동 트리에서의 활용 패턴</h2>
+<h3>7.1 임무 단계별 로깅</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;LogMessage level="INFO"
+                message="임무 개시" /&gt;
+    &lt;Takeoff target_altitude="15.0" /&gt;
+    &lt;LogMessage level="INFO"
+                message="이륙 완료" /&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}" /&gt;
+    &lt;LogMessage level="INFO"
+                message="경유점 도달" /&gt;
+    &lt;Land /&gt;
+    &lt;LogMessage level="INFO"
+                message="착륙 완료, 임무 종료" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>7.2 오류 발생 시 상세 로깅</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;DetectObject image="{image}"
+                      detections="{objects}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;LogMessage level="ERROR"
+                    message="물체 탐지 실패" /&gt;
+        &lt;RecordData topics="/camera/image_raw"
+                    duration="5.0"
+                    save_path="/logs/error_capture" /&gt;
+        &lt;ForceFailure /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조에서 물체 탐지가 실패하면 오류 로그를 기록하고, 해당 시점의 카메라 데이터를 5초간 녹화하여 사후 분석에 활용한다.</p>
+<h3>7.3 주기적 데이터 기록</h3>
+<p>특정 구간에서 센서 데이터를 지속적으로 기록하는 구조이다.</p>
+<pre><code class="language-xml">&lt;Parallel success_count="2" failure_count="1"&gt;
+    &lt;Sequence&gt;
+        &lt;FlyToWaypoint latitude="{wp_lat}"
+                       longitude="{wp_lon}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;RecordData topics="/lidar/points,/camera/image_raw"
+                duration="0"
+                save_path="/data/flight_record" /&gt;
+&lt;/Parallel&gt;
+</code></pre>
+<p><code>duration</code>을 0으로 설정하면 <code>onHalted()</code> 호출 시까지 지속적으로 기록하며, <code>Parallel</code> 노드의 다른 자식이 완료되면 기록이 종료된다.</p>
+<h2>8. 법적 및 규제 고려 사항</h2>
+<p>드론 운용에서의 비행 기록(flight log)은 항공 규제 기관의 요구 사항을 충족해야 하는 경우가 있다. 대한민국 항공안전법에 따르면 무인비행장치 운용 기록에는 비행 일시, 비행 경로, 조종자 정보 등이 포함되어야 한다. 로깅 액션 노드는 이러한 법적 요구 사항에 부합하는 기록을 자동으로 생성하도록 설계할 수 있다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Macenski, S. et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” Science Robotics, vol. 7, no. 66, 2022.</li>
+<li>Open Robotics, “rosbag2 — ROS 2 Documentation,” https://docs.ros.org/en/rolling/p/rosbag2/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

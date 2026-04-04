@@ -115,6 +115,252 @@
             </header>
             <article>
                 <h1>1297.27 문자열 비교 조건 노드의 구현</h1>
+<h2>1. 문자열 비교 조건의 필요성</h2>
+<p>로봇 시스템에서 상태, 모드, 명령 등은 문자열(string)로 표현되는 경우가 빈번하다. 비행 모드(“OFFBOARD”, “MANUAL”, “STABILIZED”), 로봇 상태(“IDLE”, “ACTIVE”, “ERROR”), 임무 단계(“APPROACH”, “EXECUTE”, “RETREAT”) 등이 대표적이다. 문자열 비교 조건 노드는 블랙보드에 저장된 문자열 값이 기대값과 일치하는지를 판정하여 행동 트리(Behavior Tree)의 분기 결정에 활용된다(Faconti &amp; Colledanchise, 2022).</p>
+<h2>2. 기본 문자열 일치 비교</h2>
+<p>가장 단순한 형태의 문자열 비교는 두 문자열의 정확한 일치(exact match)를 판정하는 것이다.</p>
+<pre><code class="language-cpp">class IsStringEqual : public BT::ConditionNode
+{
+public:
+    IsStringEqual(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        std::string value;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        std::string expected;
+        getInput("expected", expected);
+
+        return (value == expected)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("value", "비교 대상 문자열"),
+            BT::InputPort&lt;std::string&gt;("expected", "기대 문자열")
+        };
+    }
+};
+</code></pre>
+<pre><code class="language-xml">&lt;!-- 비행 모드 확인 --&gt;
+&lt;Condition ID="IsStringEqual" value="{flight_mode}" expected="OFFBOARD"/&gt;
+
+&lt;!-- 임무 상태 확인 --&gt;
+&lt;Condition ID="IsStringEqual" value="{mission_phase}" expected="EXECUTE"/&gt;
+</code></pre>
+<h2>3. 대소문자 무시 비교</h2>
+<p>외부 시스템에서 수신하는 문자열의 대소문자가 일관되지 않을 수 있다. 대소문자 무시(case-insensitive) 비교를 통해 이러한 불일치를 처리한다.</p>
+<pre><code class="language-cpp">class IsStringEqualIgnoreCase : public BT::ConditionNode
+{
+public:
+    IsStringEqualIgnoreCase(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        std::string value, expected;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+        getInput("expected", expected);
+
+        // 양쪽 문자열을 소문자로 변환
+        std::string lower_value = value;
+        std::string lower_expected = expected;
+        std::transform(lower_value.begin(), lower_value.end(),
+                       lower_value.begin(), ::tolower);
+        std::transform(lower_expected.begin(), lower_expected.end(),
+                       lower_expected.begin(), ::tolower);
+
+        return (lower_value == lower_expected)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("value", "비교 대상 문자열"),
+            BT::InputPort&lt;std::string&gt;("expected", "기대 문자열 (대소문자 무시)")
+        };
+    }
+};
+</code></pre>
+<h2>4. 문자열 부등 비교</h2>
+<p>문자열이 특정 값과 일치하지 않는지를 판정하는 부등 비교(inequality comparison)이다.</p>
+<pre><code class="language-cpp">class IsStringNotEqual : public BT::ConditionNode
+{
+public:
+    IsStringNotEqual(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        std::string value, expected;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+        getInput("expected", expected);
+
+        return (value != expected)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("value", "비교 대상 문자열"),
+            BT::InputPort&lt;std::string&gt;("expected", "불일치 확인 대상 문자열")
+        };
+    }
+};
+</code></pre>
+<pre><code class="language-xml">&lt;!-- 오류 상태가 아닌지 확인 --&gt;
+&lt;Condition ID="IsStringNotEqual" value="{system_state}" expected="ERROR"/&gt;
+</code></pre>
+<h2>5. 문자열 포함 검사</h2>
+<p>특정 부분 문자열(substring)의 포함 여부를 판정하는 조건 노드이다. 오류 메시지의 분류, 토픽 이름의 패턴 매칭 등에 활용된다.</p>
+<pre><code class="language-cpp">class IsStringContains : public BT::ConditionNode
+{
+public:
+    IsStringContains(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        std::string value, substring;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+        getInput("substring", substring);
+
+        return (value.find(substring) != std::string::npos)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("value", "검색 대상 문자열"),
+            BT::InputPort&lt;std::string&gt;("substring", "포함 확인 부분 문자열")
+        };
+    }
+};
+</code></pre>
+<h2>6. 접두사 및 접미사 검사</h2>
+<p>문자열의 시작 또는 끝 부분이 특정 패턴과 일치하는지를 판정하는 조건 노드이다.</p>
+<pre><code class="language-cpp">class IsStringStartsWith : public BT::ConditionNode
+{
+public:
+    IsStringStartsWith(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        std::string value, prefix;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+        getInput("prefix", prefix);
+
+        if (prefix.size() &gt; value.size())
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        return (value.compare(0, prefix.size(), prefix) == 0)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("value", "검사 대상 문자열"),
+            BT::InputPort&lt;std::string&gt;("prefix", "접두사 문자열")
+        };
+    }
+};
+</code></pre>
+<h2>7. 빈 문자열 검사</h2>
+<p>블랙보드에 저장된 문자열이 비어 있는지를 판정하는 조건 노드이다.</p>
+<pre><code class="language-cpp">class IsStringEmpty : public BT::ConditionNode
+{
+public:
+    IsStringEmpty(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        std::string value;
+        auto result = getInput("value", value);
+        if (!result)
+        {
+            return BT::NodeStatus::SUCCESS;  // 값 부재 = 비어 있음
+        }
+
+        return value.empty()
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("value", "검사 대상 문자열")
+        };
+    }
+};
+</code></pre>
+<h2>8. XML에서의 종합 활용</h2>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsStringEqual" value="{mode}" expected="AUTO"/&gt;
+        &lt;Action ID="ExecuteAutonomous"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsStringEqual" value="{mode}" expected="MANUAL"/&gt;
+        &lt;Action ID="ExecuteManual"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsStringEqual" value="{mode}" expected="EMERGENCY"/&gt;
+        &lt;Action ID="ExecuteEmergency"/&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>이 구조에서 현재 모드에 따라 적절한 행동이 선택된다. Fallback 노드는 첫 번째 성공하는 분기를 실행하므로, 모드별 행동이 우선순위에 따라 평가된다.</p>
+<h2>9. 문자열 비교 시 주의 사항</h2>
+<ol>
+<li><strong>공백 처리</strong>: 문자열의 앞뒤에 포함된 공백(whitespace)이 비교 결과에 영향을 미칠 수 있다. 필요시 비교 전에 공백을 제거(trim)한다.</li>
+<li><strong>인코딩</strong>: UTF-8 등 멀티바이트 문자 인코딩에서 대소문자 변환이 올바르게 동작하는지 확인해야 한다. ASCII 범위를 벗어나는 문자에 대해서는 <code>std::tolower</code>가 올바르게 동작하지 않을 수 있다.</li>
+<li><strong>성능</strong>: 문자열 비교는 문자열 길이에 비례하는 시간이 소요된다. 매우 긴 문자열에 대한 반복적 비교는 빠른 평가 원칙에 위배될 수 있으므로, 필요시 해시(hash) 기반 비교를 고려한다.</li>
+</ol>
+<h2>10. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

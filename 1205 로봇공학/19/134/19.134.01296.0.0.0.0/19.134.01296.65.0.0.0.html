@@ -115,6 +115,282 @@
             </header>
             <article>
                 <h1>1296.65 드론 비행 관련 액션 노드 설계</h1>
+<h2>1. 드론 비행 액션 노드의 개요</h2>
+<p>드론 비행 관련 액션 노드는 무인 항공기(UAV, Unmanned Aerial Vehicle)의 비행 동작을 행동 트리에서 제어하기 위한 리프 노드 집합이다. 이 노드들은 이륙, 착륙, 경유점 비행, 호버링, 귀환 등 드론 비행의 핵심 기능을 행동 트리 인터페이스로 캡슐화한다.</p>
+<p>ROS2 환경에서 드론 비행 제어는 PX4-ROS2 인터페이스 또는 ArduPilot-ROS2 연동을 통해 구현되며, 비행 제어기(flight controller)가 제공하는 명령 인터페이스를 행동 트리 노드에서 호출하는 구조를 채택한다(Meier et al., 2015).</p>
+<h2>2. 드론 비행 스택과 행동 트리의 관계</h2>
+<p>드론의 비행 제어 스택은 다음과 같은 계층 구조를 가진다.</p>
+<pre><code>[행동 트리 엔진] (임무 수준)
+    ├── Takeoff 노드 ──→ [비행 제어 인터페이스]
+    ├── FlyToWaypoint 노드 ──→ [비행 제어 인터페이스]
+    ├── Hover 노드 ──→ [비행 제어 인터페이스]
+    ├── Land 노드 ──→ [비행 제어 인터페이스]
+    └── ReturnToHome 노드 ──→ [비행 제어 인터페이스]
+              │
+    [비행 제어기] (제어 수준)
+              │
+    [모터 제어] (액추에이터 수준)
+</code></pre>
+<p>행동 트리는 임무 수준에서 비행 명령의 실행 순서와 조건 분기를 제어하며, 비행 제어기는 제어 수준에서 자세 안정화, 위치 추종, 속도 제어 등의 저수준 제어를 수행한다.</p>
+<h2>3. 드론 비행 액션 노드의 분류 체계</h2>
+<p>드론 비행 관련 액션 노드는 기능적 역할에 따라 다음과 같이 분류된다.</p>
+<h3>3.1 상태 전환 노드</h3>
+<p>드론의 비행 상태를 전환하는 노드이다.</p>
+<ul>
+<li><strong>Takeoff</strong>: 지상에서 지정된 고도로 이륙</li>
+<li><strong>Land</strong>: 현재 위치에서 안전하게 착륙</li>
+</ul>
+<h3>3.2 이동 노드</h3>
+<p>드론을 지정된 위치로 이동시키는 노드이다.</p>
+<ul>
+<li><strong>FlyToWaypoint</strong>: 지정된 3차원 경유점으로 비행</li>
+<li><strong>ReturnToHome</strong>: 이륙 지점 또는 사전 정의된 홈 위치로 귀환</li>
+</ul>
+<h3>3.3 유지 노드</h3>
+<p>드론을 특정 상태로 유지하는 노드이다.</p>
+<ul>
+<li><strong>Hover</strong>: 현재 위치에서 지정된 시간 동안 제자리 비행(hovering)</li>
+</ul>
+<h2>4. 비행 제어 인터페이스 설계</h2>
+<p>드론 비행 액션 노드가 사용하는 ROS2 인터페이스는 비행 제어 스택에 따라 상이하다. 본 절에서는 일반적인 ROS2 액션 인터페이스를 기반으로 설계한다.</p>
+<h3>4.1 이륙 액션 인터페이스</h3>
+<pre><code># drone_msgs/action/Takeoff (사용자 정의)
+
+# Goal
+float64 target_altitude    # 목표 고도 [m]
+float64 ascend_speed       # 상승 속도 [m/s]
+---
+# Result
+bool success
+float64 final_altitude     # 최종 도달 고도 [m]
+---
+# Feedback
+float64 current_altitude   # 현재 고도 [m]
+</code></pre>
+<h3>4.2 경유점 비행 액션 인터페이스</h3>
+<pre><code># drone_msgs/action/FlyToWaypoint (사용자 정의)
+
+# Goal
+geometry_msgs/PoseStamped target_pose  # 3D 목표 자세
+float64 cruise_speed                    # 순항 속도 [m/s]
+float64 acceptance_radius              # 도착 판정 반경 [m]
+---
+# Result
+bool success
+float64 distance_error     # 최종 위치 오차 [m]
+---
+# Feedback
+geometry_msgs/PoseStamped current_pose
+float64 distance_remaining
+float64 current_speed
+</code></pre>
+<h3>4.3 착륙 액션 인터페이스</h3>
+<pre><code># drone_msgs/action/Land (사용자 정의)
+
+# Goal
+float64 descend_speed      # 하강 속도 [m/s]
+---
+# Result
+bool success
+---
+# Feedback
+float64 current_altitude
+</code></pre>
+<h2>5. 공통 기반 클래스 설계</h2>
+<p>드론 비행 액션 노드의 공통 로직을 캡슐화하는 기반 클래스를 설계한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/action_node.h"
+#include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
+
+template&lt;class ActionT&gt;
+class DroneActionNode : public BT::StatefulActionNode
+{
+public:
+  DroneActionNode(
+    const std::string &amp; xml_tag_name,
+    const std::string &amp; action_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::StatefulActionNode(xml_tag_name, conf),
+    action_name_(action_name)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    action_client_ = rclcpp_action::create_client&lt;ActionT&gt;(
+      node_, action_name_);
+  }
+
+  BT::NodeStatus onStart() override
+  {
+    if (!action_client_-&gt;wait_for_action_server(
+      std::chrono::seconds(5)))
+    {
+      RCLCPP_ERROR(node_-&gt;get_logger(),
+        "Action server '%s' not available", action_name_.c_str());
+      return BT::NodeStatus::FAILURE;
+    }
+
+    auto goal = createGoal();
+    
+    auto options = typename rclcpp_action::Client&lt;ActionT&gt;::SendGoalOptions();
+    options.result_callback =
+      [this](auto%20result) {
+        result_ = result.result;
+        result_received_ = true;
+      };
+
+    result_received_ = false;
+    action_client_-&gt;async_send_goal(goal, options);
+    return BT::NodeStatus::RUNNING;
+  }
+
+  BT::NodeStatus onRunning() override
+  {
+    if (!result_received_) {
+      return BT::NodeStatus::RUNNING;
+    }
+    return processResult(result_);
+  }
+
+  void onHalted() override
+  {
+    if (goal_handle_) {
+      action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+  }
+
+protected:
+  virtual typename ActionT::Goal createGoal() = 0;
+  virtual BT::NodeStatus processResult(
+    std::shared_ptr&lt;typename ActionT::Result&gt; result) = 0;
+
+  rclcpp::Node::SharedPtr node_;
+  typename rclcpp_action::Client&lt;ActionT&gt;::SharedPtr action_client_;
+  typename rclcpp_action::ClientGoalHandle&lt;ActionT&gt;::SharedPtr goal_handle_;
+  std::shared_ptr&lt;typename ActionT::Result&gt; result_;
+  bool result_received_{false};
+  std::string action_name_;
+};
+</code></pre>
+<h2>6. PX4-ROS2 연동 구조</h2>
+<p>PX4 비행 제어기와 ROS2의 연동은 <code>px4_msgs</code> 패키지의 토픽 인터페이스를 통해 이루어진다. 주요 토픽은 다음과 같다.</p>
+<table><thead><tr><th>토픽</th><th>타입</th><th>방향</th><th>용도</th></tr></thead><tbody>
+<tr><td><code>/fmu/in/offboard_control_mode</code></td><td><code>OffboardControlMode</code></td><td>ROS2 → PX4</td><td>오프보드 제어 모드 설정</td></tr>
+<tr><td><code>/fmu/in/trajectory_setpoint</code></td><td><code>TrajectorySetpoint</code></td><td>ROS2 → PX4</td><td>궤적 설정점</td></tr>
+<tr><td><code>/fmu/in/vehicle_command</code></td><td><code>VehicleCommand</code></td><td>ROS2 → PX4</td><td>비행 명령 (Arm, Takeoff 등)</td></tr>
+<tr><td><code>/fmu/out/vehicle_status</code></td><td><code>VehicleStatus</code></td><td>PX4 → ROS2</td><td>비행 상태</td></tr>
+<tr><td><code>/fmu/out/vehicle_local_position</code></td><td><code>VehicleLocalPosition</code></td><td>PX4 → ROS2</td><td>로컬 위치</td></tr>
+</tbody></table>
+<p>PX4 기반의 드론 비행 액션 노드는 이 토픽들을 사용하여 비행 명령을 전송하고 상태를 모니터링한다.</p>
+<h2>7. 비행 상태 관리</h2>
+<p>드론의 비행 상태는 유한 상태 머신(FSM)으로 모델링되며, 행동 트리는 이 상태 전환을 조율한다.</p>
+<pre><code>[비무장(Disarmed)] → [무장(Armed)] → [이륙(Takeoff)]
+    → [비행(In Flight)] → [착륙(Landing)] → [비무장(Disarmed)]
+                ↕
+         [호버링(Hovering)]
+                ↕
+         [귀환(Return to Home)]
+</code></pre>
+<p>각 드론 비행 액션 노드는 비행 상태의 전제 조건을 검증한 후 동작을 실행한다. 예를 들어, Takeoff 노드는 드론이 무장(armed) 상태이고 지상에 있는지 확인한 후 이륙을 개시한다.</p>
+<h2>8. 드론 비행 행동 트리 구성 패턴</h2>
+<h3>8.1 기본 비행 임무</h3>
+<p>이륙 → 경유점 비행 → 착륙의 기본 비행 임무를 구성한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;Takeoff target_altitude="10.0"
+             ascend_speed="2.0"/&gt;
+    
+    &lt;FlyToWaypoint target_pose="{waypoint_1}"
+                   cruise_speed="5.0"/&gt;
+    
+    &lt;FlyToWaypoint target_pose="{waypoint_2}"
+                   cruise_speed="5.0"/&gt;
+    
+    &lt;Land descend_speed="1.0"/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>8.2 순찰 비행 임무</h3>
+<p>다수의 경유점을 순환하며 순찰하는 임무를 구성한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;Takeoff target_altitude="20.0"/&gt;
+    
+    &lt;KeepRunningUntilFailure&gt;
+      &lt;Sequence&gt;
+        &lt;FlyToWaypoint target_pose="{patrol_wp_1}"
+                       cruise_speed="8.0"/&gt;
+        &lt;Hover duration="5.0"/&gt;
+        
+        &lt;FlyToWaypoint target_pose="{patrol_wp_2}"
+                       cruise_speed="8.0"/&gt;
+        &lt;Hover duration="5.0"/&gt;
+        
+        &lt;FlyToWaypoint target_pose="{patrol_wp_3}"
+                       cruise_speed="8.0"/&gt;
+        &lt;Hover duration="5.0"/&gt;
+      &lt;/Sequence&gt;
+    &lt;/KeepRunningUntilFailure&gt;
+    
+    &lt;ReturnToHome/&gt;
+    &lt;Land/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>8.3 비상 상황 대응</h3>
+<p>배터리 잔량이 부족하거나 통신이 두절된 경우의 비상 대응을 포함하는 구성이다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;ReactiveFallback&gt;
+    &lt;!-- 비상 상황 감지 --&gt;
+    &lt;ReactiveSequence&gt;
+      &lt;Condition ID="IsBatteryLow"
+                 threshold="0.2"/&gt;
+      &lt;ReturnToHome cruise_speed="10.0"/&gt;
+      &lt;Land descend_speed="1.0"/&gt;
+    &lt;/ReactiveSequence&gt;
+    
+    &lt;!-- 정상 임무 수행 --&gt;
+    &lt;Sequence&gt;
+      &lt;Takeoff target_altitude="15.0"/&gt;
+      &lt;FlyToWaypoint target_pose="{mission_target}"/&gt;
+      &lt;Hover duration="30.0"/&gt;
+      &lt;ReturnToHome/&gt;
+      &lt;Land/&gt;
+    &lt;/Sequence&gt;
+  &lt;/ReactiveFallback&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>ReactiveFallback</code>을 사용하여 비상 조건을 지속적으로 모니터링한다. 배터리 잔량이 임계값 이하로 감소하면 현재 임무를 중단하고 즉시 귀환 및 착륙을 실행한다.</p>
+<h2>9. 차원 좌표계 처리</h2>
+<p>드론 비행에서 사용되는 좌표계는 지상 로봇과 차이가 있다.</p>
+<h3>9.1 NED(North-East-Down) 좌표계</h3>
+<p>PX4 비행 제어기의 내부 좌표계이다. x축이 북쪽, y축이 동쪽, z축이 아래쪽을 향한다. 고도 증가는 z축의 음수 방향에 해당한다.</p>
+<h3>9.2 ENU(East-North-Up) 좌표계</h3>
+<p>ROS2의 표준 좌표계이다. x축이 동쪽, y축이 북쪽, z축이 위쪽을 향한다. 고도 증가는 z축의 양수 방향에 해당한다.</p>
+<p>드론 비행 액션 노드는 ROS2의 ENU 좌표계를 사용하며, PX4와의 좌표계 변환은 <code>px4_ros_com</code> 패키지의 변환 모듈에서 수행한다. 행동 트리 노드에서는 ENU 좌표계의 <code>geometry_msgs::msg::PoseStamped</code>를 사용하여 목표를 지정한다.</p>
+<h2>10. 지오펜스(Geofence) 제약</h2>
+<p>드론 비행에서는 비행 허용 영역(geofence)을 설정하여 드론이 허용 영역을 벗어나지 않도록 제약한다. 지오펜스 위반 시의 대응은 비행 제어기 수준에서 처리되지만, 행동 트리 수준에서도 조건 노드를 사용하여 목표 경유점이 지오펜스 내에 있는지 사전에 검증할 수 있다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+  &lt;Condition ID="IsWithinGeofence"
+             pose="{next_waypoint}"/&gt;
+  &lt;FlyToWaypoint target_pose="{next_waypoint}"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>11. 설계 시 고려 사항</h2>
+<h3>11.1 통신 지연과 타임아웃</h3>
+<p>드론 비행에서 통신 지연은 안전에 직접적인 영향을 미친다. 행동 트리 노드와 비행 제어기 간의 통신 타임아웃을 적절히 설정하고, 통신 두절 시의 안전 대응(자동 귀환, 자동 착륙 등)을 비행 제어기 수준에서 보장하여야 한다.</p>
+<h3>11.2 기상 조건 모니터링</h3>
+<p>풍속, 풍향 등의 기상 조건은 드론 비행에 직접적인 영향을 미친다. 행동 트리에서 기상 데이터를 조건 노드로 모니터링하여, 기상 악화 시 임무를 중단하고 안전한 위치로 귀환하는 전략을 구현한다.</p>
+<h3>11.3 비행 규제 준수</h3>
+<p>드론 비행은 각국의 항공법에 의해 규제된다. 최대 비행 고도, 비행 금지 구역, 시각적 가시 범위(VLOS, Visual Line of Sight) 등의 규제 요건을 행동 트리의 제약 조건으로 반영하여야 한다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Meier, L., Honegger, D., &amp; Pollefeys, M. (2015). “PX4: A Node-Based Multithreaded Open Source Robotics Framework for Deeply Embedded Platforms.” <em>2015 IEEE International Conference on Robotics and Automation (ICRA)</em>, pp. 6235-6240.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>PX4 공식 문서 — ROS2 Interface: https://docs.px4.io/main/en/ros/ros2_comm.html</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: PX4 v1.14, ROS2 Humble Hawksbill 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

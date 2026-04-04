@@ -115,6 +115,345 @@
             </header>
             <article>
                 <h1>1296.77 PublishStatus 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>PublishStatus 액션 노드는 로봇의 현재 상태 정보를 ROS2 토픽으로 발행하는 리프 노드이다. 상태 발행은 지상 관제 소프트웨어(GCS), 감시 시스템, 다른 로봇, 또는 로깅 시스템이 로봇의 운용 상태를 실시간으로 파악할 수 있도록 하는 핵심 기능이다.</p>
+<p>상태 발행은 ROS2 토픽의 발행 동작으로 수행되며, 이는 비블로킹(non-blocking) 연산이므로 <code>BT::SyncActionNode</code>를 상속하여 단일 tick 내에서 완료하는 것이 적합하다. 행동 트리 내의 주요 단계 사이에 PublishStatus 노드를 배치하여, 임무 진행 상황을 체계적으로 보고할 수 있다.</p>
+<h2>2. 상태 메시지 설계</h2>
+<h3>2.1 사용자 정의 상태 메시지</h3>
+<p>로봇의 상태 정보를 포괄적으로 전달하기 위한 사용자 정의 메시지를 다음과 같이 정의한다.</p>
+<pre><code># RobotStatus.msg
+builtin_interfaces/Time timestamp
+string robot_id
+uint8 mission_state         # 0: IDLE, 1: ACTIVE, 2: PAUSED,
+                            # 3: COMPLETED, 4: FAILED, 5: EMERGENCY
+string mission_description  # 현재 임무 설명
+float64 battery_percentage  # 배터리 잔량 (0.0 ~ 1.0)
+geometry_msgs/Pose pose     # 현재 위치 및 자세
+geometry_msgs/Twist velocity # 현재 속도
+uint8 health_status         # 0: OK, 1: WARNING, 2: ERROR, 3: CRITICAL
+string[] active_warnings    # 활성 경고 목록
+float64 mission_progress    # 임무 진행률 (0.0 ~ 1.0)
+</code></pre>
+<h3>2.2 임무 상태 코드 체계</h3>
+<p>임무 상태를 정수 코드로 표현하여 파싱과 비교를 용이하게 한다.</p>
+<table><thead><tr><th style="text-align: center">상태 코드</th><th style="text-align: center">상수명</th><th style="text-align: left">설명</th></tr></thead><tbody>
+<tr><td style="text-align: center">0</td><td style="text-align: center">IDLE</td><td style="text-align: left">대기 상태, 임무 미할당</td></tr>
+<tr><td style="text-align: center">1</td><td style="text-align: center">ACTIVE</td><td style="text-align: left">임무 수행 중</td></tr>
+<tr><td style="text-align: center">2</td><td style="text-align: center">PAUSED</td><td style="text-align: left">임무 일시 정지</td></tr>
+<tr><td style="text-align: center">3</td><td style="text-align: center">COMPLETED</td><td style="text-align: left">임무 정상 완료</td></tr>
+<tr><td style="text-align: center">4</td><td style="text-align: center">FAILED</td><td style="text-align: left">임무 실패</td></tr>
+<tr><td style="text-align: center">5</td><td style="text-align: center">EMERGENCY</td><td style="text-align: left">비상 상태</td></tr>
+</tbody></table>
+<h2>3. 클래스 구조 설계</h2>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include "robot_interfaces/msg/robot_status.hpp"
+#include &lt;geometry_msgs/msg/pose_stamped.hpp&gt;
+#include &lt;sensor_msgs/msg/battery_state.hpp&gt;
+
+class PublishStatusAction : public BT::SyncActionNode
+{
+public:
+    PublishStatusAction(
+        const std::string&amp; name,
+        const BT::NodeConfiguration&amp; config,
+        rclcpp::Node::SharedPtr node)
+        : BT::SyncActionNode(name, config),
+          node_(node)
+    {
+        status_pub_ =
+            node_-&gt;create_publisher&lt;
+                robot_interfaces::msg::RobotStatus&gt;(
+                "robot/status",
+                rclcpp::QoS(10).reliable()
+                    .transient_local());
+
+        // 위치 및 배터리 정보 구독
+        pose_sub_ =
+            node_-&gt;create_subscription&lt;
+                geometry_msgs::msg::PoseStamped&gt;(
+                "robot/pose", rclcpp::SensorDataQoS(),
+                [this](const%20geometry_msgs::msg::PoseStamped
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20::SharedPtr%20msg)
+                {
+                    current_pose_ = msg-&gt;pose;
+                });
+
+        battery_sub_ =
+            node_-&gt;create_subscription&lt;
+                sensor_msgs::msg::BatteryState&gt;(
+                "robot/battery", rclcpp::SensorDataQoS(),
+                [this](const%20sensor_msgs::msg::BatteryState
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20::SharedPtr%20msg)
+                {
+                    battery_percentage_ = msg-&gt;percentage;
+                });
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("status",
+                "ACTIVE", "임무 상태 문자열"),
+            BT::InputPort&lt;std::string&gt;("description", "",
+                "임무 설명"),
+            BT::InputPort&lt;double&gt;("progress", -1.0,
+                "임무 진행률 (0.0~1.0, -1: 미지정)"),
+            BT::InputPort&lt;std::string&gt;("robot_id",
+                "robot_01", "로봇 식별자")
+        };
+    }
+
+    BT::NodeStatus tick() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Publisher&lt;
+        robot_interfaces::msg::RobotStatus&gt;::SharedPtr
+        status_pub_;
+    rclcpp::Subscription&lt;
+        geometry_msgs::msg::PoseStamped&gt;::SharedPtr
+        pose_sub_;
+    rclcpp::Subscription&lt;
+        sensor_msgs::msg::BatteryState&gt;::SharedPtr
+        battery_sub_;
+    geometry_msgs::msg::Pose current_pose_;
+    double battery_percentage_{-1.0};
+
+    uint8_t parseState(const std::string&amp; state_str);
+};
+</code></pre>
+<p>QoS 정책에 <code>transient_local()</code> 내구성을 적용하여, 구독자가 나중에 연결되더라도 가장 최근의 상태 메시지를 수신할 수 있도록 한다.</p>
+<h2>4. tick() 메서드 구현</h2>
+<pre><code class="language-cpp">BT::NodeStatus PublishStatusAction::tick()
+{
+    std::string status_str, description, robot_id;
+    double progress;
+
+    getInput("status", status_str);
+    getInput("description", description);
+    getInput("progress", progress);
+    getInput("robot_id", robot_id);
+
+    auto status_msg =
+        robot_interfaces::msg::RobotStatus();
+    status_msg.timestamp = node_-&gt;now();
+    status_msg.robot_id = robot_id;
+    status_msg.mission_state = parseState(status_str);
+    status_msg.mission_description = description;
+    status_msg.battery_percentage = battery_percentage_;
+    status_msg.pose = current_pose_;
+
+    if (progress &gt;= 0.0)
+    {
+        status_msg.mission_progress = progress;
+    }
+
+    // 건강 상태 판정
+    if (battery_percentage_ &lt; 0.1 &amp;&amp;
+        battery_percentage_ &gt;= 0.0)
+    {
+        status_msg.health_status = 3;  // CRITICAL
+        status_msg.active_warnings.push_back(
+            "배터리 잔량 위험");
+    }
+    else if (battery_percentage_ &lt; 0.25 &amp;&amp;
+             battery_percentage_ &gt;= 0.0)
+    {
+        status_msg.health_status = 1;  // WARNING
+        status_msg.active_warnings.push_back(
+            "배터리 잔량 부족");
+    }
+    else
+    {
+        status_msg.health_status = 0;  // OK
+    }
+
+    status_pub_-&gt;publish(status_msg);
+
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+        "상태 발행: [%s] %s (배터리: %.0f%%)",
+        status_str.c_str(),
+        description.c_str(),
+        battery_percentage_ * 100.0);
+
+    return BT::NodeStatus::SUCCESS;
+}
+
+uint8_t PublishStatusAction::parseState(
+    const std::string&amp; state_str)
+{
+    if (state_str == "IDLE") return 0;
+    if (state_str == "ACTIVE") return 1;
+    if (state_str == "PAUSED") return 2;
+    if (state_str == "COMPLETED") return 3;
+    if (state_str == "FAILED") return 4;
+    if (state_str == "EMERGENCY") return 5;
+
+    RCLCPP_WARN(node_-&gt;get_logger(),
+        "알 수 없는 상태 문자열: %s, IDLE로 설정",
+        state_str.c_str());
+    return 0;
+}
+</code></pre>
+<h2>5. 간소화된 문자열 기반 구현</h2>
+<p>사용자 정의 메시지를 정의하지 않고 <code>std_msgs/msg/String</code>을 사용하는 간소화된 구현도 가능하다. 이 방식은 프로토타이핑이나 소규모 시스템에서 유용하다.</p>
+<pre><code class="language-cpp">class SimplePublishStatusAction : public BT::SyncActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("topic",
+                "/robot/status", "상태 발행 토픽"),
+            BT::InputPort&lt;std::string&gt;("status",
+                "상태 문자열")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string topic, status;
+        getInput("topic", topic);
+        getInput("status", status);
+
+        auto publisher =
+            node_-&gt;create_publisher&lt;std_msgs::msg::String&gt;(
+                topic, rclcpp::QoS(1).reliable()
+                    .transient_local());
+
+        auto msg = std_msgs::msg::String();
+        msg.data = status;
+        publisher-&gt;publish(msg);
+
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h2>6. 진단 정보 통합</h2>
+<h3>6.1 ROS2 Diagnostics 연동</h3>
+<p>ROS2의 <code>diagnostic_msgs/msg/DiagnosticArray</code> 메시지를 활용하면, 표준화된 진단 정보를 <code>rqt_robot_monitor</code> 등의 기존 도구로 시각화할 수 있다. PublishStatus 노드에서 진단 메시지를 함께 발행하여 시스템 건강 상태를 모니터링한다.</p>
+<pre><code class="language-cpp">#include &lt;diagnostic_msgs/msg/diagnostic_array.hpp&gt;
+
+void publishDiagnostics(
+    const std::string&amp; status,
+    double battery)
+{
+    auto diag_msg =
+        diagnostic_msgs::msg::DiagnosticArray();
+    diag_msg.header.stamp = node_-&gt;now();
+
+    diagnostic_msgs::msg::DiagnosticStatus ds;
+    ds.name = "Mission Controller";
+    ds.hardware_id = robot_id_;
+
+    if (status == "EMERGENCY")
+    {
+        ds.level =
+            diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+    }
+    else if (battery &lt; 0.25)
+    {
+        ds.level =
+            diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    }
+    else
+    {
+        ds.level =
+            diagnostic_msgs::msg::DiagnosticStatus::OK;
+    }
+
+    ds.message = status;
+
+    diagnostic_msgs::msg::KeyValue kv;
+    kv.key = "battery";
+    kv.value = std::to_string(battery);
+    ds.values.push_back(kv);
+
+    diag_msg.status.push_back(ds);
+    diag_pub_-&gt;publish(diag_msg);
+}
+</code></pre>
+<h2>7. XML 행동 트리에서의 활용</h2>
+<h3>7.1 노드 등록</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;PublishStatusAction&gt;(
+    "PublishStatus",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;PublishStatusAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>7.2 임무 전체 흐름의 상태 보고</h3>
+<pre><code class="language-xml">&lt;root BTCPP_format="4"&gt;
+    &lt;BehaviorTree ID="MonitoredMission"&gt;
+        &lt;Sequence&gt;
+            &lt;PublishStatus status="ACTIVE"
+                           description="이륙 준비"
+                           progress="0.0" /&gt;
+            &lt;Takeoff target_altitude="20.0" /&gt;
+
+            &lt;PublishStatus status="ACTIVE"
+                           description="경유점 1 이동"
+                           progress="0.25" /&gt;
+            &lt;FlyToWaypoint latitude="{wp1_lat}"
+                           longitude="{wp1_lon}"
+                           altitude="20.0" /&gt;
+
+            &lt;PublishStatus status="ACTIVE"
+                           description="데이터 수집"
+                           progress="0.5" /&gt;
+            &lt;CaptureImage image="{image}" /&gt;
+
+            &lt;PublishStatus status="ACTIVE"
+                           description="귀환 중"
+                           progress="0.75" /&gt;
+            &lt;ReturnToHome auto_land="true" /&gt;
+
+            &lt;PublishStatus status="COMPLETED"
+                           description="임무 완료"
+                           progress="1.0" /&gt;
+        &lt;/Sequence&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<h3>7.3 실패 시 상태 보고</h3>
+<p>임무 실패 시 실패 상태를 보고하는 구조이다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;FlyToWaypoint latitude="{wp_lat}"
+                       longitude="{wp_lon}" /&gt;
+        &lt;PublishStatus status="COMPLETED"
+                       description="경유점 도달" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;PublishStatus status="FAILED"
+                       description="경유점 도달 실패" /&gt;
+        &lt;ReturnToHome /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>8. 발행 주기와 대역폭</h2>
+<p>상태 발행 빈도는 행동 트리의 tick 주기에 의해 결정된다. 행동 트리의 tick 주기가 10Hz이고 매 tick마다 PublishStatus가 실행되면, 초당 10회의 상태 메시지가 발행된다. 대역폭이 제한된 무선 통신 환경에서는 발행 빈도를 제한하거나, 상태 변화가 있을 때만 발행하는 조건부 발행 방식을 고려해야 한다.</p>
+<pre><code class="language-xml">&lt;!-- 상태 변화 시에만 발행 --&gt;
+&lt;Sequence&gt;
+    &lt;CheckStateChanged previous="{prev_state}"
+                       current="{curr_state}" /&gt;
+    &lt;PublishStatus status="{curr_state}" /&gt;
+    &lt;SetBlackboard output_key="prev_state"
+                   value="{curr_state}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Macenski, S. et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” Science Robotics, vol. 7, no. 66, 2022.</li>
+<li>Open Robotics, “ROS 2 Diagnostics,” ROS 2 Documentation, https://docs.ros.org/en/rolling/p/diagnostic_msgs/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

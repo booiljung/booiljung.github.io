@@ -115,6 +115,146 @@
             </header>
             <article>
                 <h1>1297.5 조건 노드의 Success/Failure 즉시 반환 원칙</h1>
+<h2>1. 즉시 반환 원칙의 정의</h2>
+<p>즉시 반환 원칙(immediate return principle)은 조건 노드가 tick을 수신한 시점에서 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 지연 없이 반환해야 한다는 행동 트리(Behavior Tree)의 핵심 설계 규칙이다. 조건 노드의 <code>tick()</code> 메서드는 단일 호출 내에서 조건 평가를 완료하고, 비동기적 대기나 차단적(blocking) 연산 없이 결과를 반환해야 한다(Colledanchise &amp; Ogren, 2018).</p>
+<p>이 원칙을 형식적으로 표현하면, 조건 노드 <span class="math math-inline">c</span>의 실행 시간 <span class="math math-inline">t_c</span>는 행동 트리의 tick 주기 <span class="math math-inline">T_{tick}</span>보다 충분히 작아야 한다:</p>
+<p><span class="math math-display">
+t_c \ll T_{tick}
+</span></p>
+<p>여기서 <span class="math math-inline">T_{tick}</span>은 일반적으로 수 밀리초에서 수십 밀리초 범위이며, 조건 노드의 실행 시간은 마이크로초 수준에서 완료되는 것이 이상적이다.</p>
+<h2>2. 즉시 반환이 필요한 이유</h2>
+<h3>2.1 Tick 주기의 보장</h3>
+<p>행동 트리는 주기적으로 tick을 수행하여 환경 변화에 반응한다. 조건 노드가 평가에 오래 걸리면 해당 tick 전체가 지연되며, 이는 트리의 반응 주기(response period)를 직접적으로 증가시킨다. 로봇 시스템에서 반응 주기의 증가는 장애물 회피, 비상 정지 등 안전 관련 조건의 평가가 지연됨을 의미하므로, 시스템의 안전성에 직접적인 영향을 미친다.</p>
+<h3>2.2 반응적 제어 노드와의 호환성</h3>
+<p>ReactiveSequence와 ReactiveFallback은 매 tick마다 모든 자식 노드를 처음부터 재평가한다. 이 구조에서 조건 노드는 tick마다 반복적으로 호출되므로, 조건 평가 시간이 누적되어 전체 tick 주기에 미치는 영향이 증폭된다.</p>
+<p>예를 들어, ReactiveSequence 하위에 3개의 조건 노드가 있고 각 조건 평가에 10ms가 소요된다면, 조건 평가에만 30ms가 소비된다. tick 주기가 50ms인 시스템에서 이는 전체 주기의 60%를 조건 평가에 할애하는 결과를 초래한다.</p>
+<pre><code>ReactiveSequence
+├── ConditionNode_1: 10ms  ← 매 tick마다 재평가
+├── ConditionNode_2: 10ms  ← 매 tick마다 재평가
+├── ConditionNode_3: 10ms  ← 매 tick마다 재평가
+└── ActionNode: RUNNING
+</code></pre>
+<h3>2.3 제어 노드의 결정론적 실행</h3>
+<p>제어 노드(Sequence, Fallback 등)는 자식 노드의 반환 상태에 기반하여 다음 자식의 실행 여부를 결정한다. 이 결정 과정은 단일 tick 내에서 완료되어야 하며, 조건 노드가 결과를 즉시 반환해야 제어 노드의 분기 결정이 지연 없이 이루어진다. 조건 노드의 결과가 지연되면 제어 노드의 실행 흐름이 차단(block)되어 전체 트리의 진행이 정지한다.</p>
+<h2>3. 즉시 반환을 위한 설계 기법</h2>
+<h3>3.1 사전 수신 데이터의 활용</h3>
+<p>ROS2 토픽 메시지를 기반으로 조건을 평가하는 경우, <code>tick()</code> 메서드 내에서 메시지 수신을 대기하지 않아야 한다. 대신, 구독자(subscriber)를 통해 비동기적으로 수신된 최신 메시지를 콜백(callback)에서 내부 변수에 저장하고, <code>tick()</code> 메서드에서는 해당 변수의 값만을 참조한다.</p>
+<pre><code class="language-cpp">class IsObstacleNear : public BT::ConditionNode
+{
+public:
+    IsObstacleNear(const std::string&amp; name, const BT::NodeConfig&amp; config,
+                   rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config)
+    {
+        sub_ = node-&gt;create_subscription&lt;sensor_msgs::msg::LaserScan&gt;(
+            "/scan", 10,
+            [this](const%20sensor_msgs::msg::LaserScan::SharedPtr%20msg) {
+                latest_min_range_ = *std::min_element(
+                    msg-&gt;ranges.begin(), msg-&gt;ranges.end());
+            });
+    }
+
+    BT::NodeStatus tick() override
+    {
+        // 차단 없이 최신 값을 즉시 확인
+        double threshold;
+        getInput("threshold", threshold);
+
+        return (latest_min_range_ &lt; threshold)
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Subscription&lt;sensor_msgs::msg::LaserScan&gt;::SharedPtr sub_;
+    std::atomic&lt;double&gt; latest_min_range_{std::numeric_limits&lt;double&gt;::max()};
+};
+</code></pre>
+<p>이 패턴에서 <code>tick()</code> 메서드는 네트워크 통신을 수행하지 않으며, 원자적 변수(atomic variable)의 읽기 연산만을 수행하므로 나노초 수준에서 완료된다.</p>
+<h3>3.2 블랙보드를 통한 간접 참조</h3>
+<p>센서 데이터나 계산 결과를 블랙보드에 미리 저장해 두고, 조건 노드는 블랙보드의 값만을 읽어 평가하는 패턴을 사용한다. 데이터의 갱신은 별도의 액션 노드나 외부 프로세스가 담당하며, 조건 노드는 읽기 전용 접근만을 수행한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsGoalReached::tick()
+{
+    double distance_to_goal;
+    auto result = getInput("distance_to_goal", distance_to_goal);
+
+    if (!result)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double tolerance;
+    getInput("tolerance", tolerance);
+
+    return (distance_to_goal &lt;= tolerance)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.3 계산 결과의 캐싱</h3>
+<p>복잡한 계산이 필요한 조건 평가에서는 계산 결과를 캐싱하여 반복 평가 시의 비용을 줄일 수 있다. 캐시의 유효 기간을 설정하여 데이터의 신선도(freshness)와 계산 비용 사이의 균형을 조절한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsPathValid::tick()
+{
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast&lt;std::chrono::milliseconds&gt;(
+        now - last_evaluation_time_);
+
+    if (elapsed.count() &lt; cache_duration_ms_)
+    {
+        return cached_result_;
+    }
+
+    // 캐시 만료 시 재계산
+    bool valid = evaluatePathValidity();
+    cached_result_ = valid ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+    last_evaluation_time_ = now;
+
+    return cached_result_;
+}
+</code></pre>
+<h2>4. 즉시 반환 원칙의 위반 사례</h2>
+<p>다음은 즉시 반환 원칙을 위반하는 대표적인 사례이다.</p>
+<h3>4.1 동기적 서비스 호출</h3>
+<pre><code class="language-cpp">// 잘못된 구현: 서비스 응답 대기로 인한 차단
+BT::NodeStatus BadCondition::tick()
+{
+    auto request = std::make_shared&lt;std_srvs::srv::Trigger::Request&gt;();
+    auto future = client_-&gt;async_send_request(request);
+
+    // 서비스 응답을 동기적으로 대기 — 원칙 위반
+    auto result = future.get();
+    return result-&gt;success ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>이 구현에서 <code>future.get()</code>은 서비스 응답이 수신될 때까지 현재 스레드를 차단한다. 서비스 서버의 응답 지연이 발생하면 전체 행동 트리의 tick이 정지된다.</p>
+<h3>4.2 파일 입출력</h3>
+<pre><code class="language-cpp">// 잘못된 구현: 파일 읽기로 인한 지연
+BT::NodeStatus BadCondition::tick()
+{
+    std::ifstream file("/path/to/config.yaml");
+    // 디스크 I/O로 인한 지연 발생 가능
+    YAML::Node config = YAML::Load(file);
+    return config["enabled"].as&lt;bool&gt;()
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>파일 입출력은 디스크 접근 지연, 파일 시스템 잠금(lock) 등으로 인해 예측 불가능한 지연을 초래할 수 있다.</p>
+<h2>5. 즉시 반환 원칙의 정량적 기준</h2>
+<p>조건 노드의 실행 시간에 대한 절대적인 정량 기준은 시스템에 따라 상이하나, 일반적으로 다음의 지침을 따른다:</p>
+<table><thead><tr><th>tick 주기</th><th>조건 노드 허용 실행 시간</th><th>비고</th></tr></thead><tbody>
+<tr><td>10ms</td><td><span class="math math-inline">&lt; 100\mu s</span></td><td>고주파 제어 루프</td></tr>
+<tr><td>50ms</td><td><span class="math math-inline">&lt; 500\mu s</span></td><td>일반적인 내비게이션</td></tr>
+<tr><td>100ms</td><td><span class="math math-inline">&lt; 1ms</span></td><td>저주파 감시 트리</td></tr>
+</tbody></table>
+<p>조건 노드의 실행 시간은 tick 주기의 1% 이하를 목표로 설계하는 것이 바람직하며, 하나의 tick 내에서 복수의 조건 노드가 평가될 수 있음을 고려해야 한다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

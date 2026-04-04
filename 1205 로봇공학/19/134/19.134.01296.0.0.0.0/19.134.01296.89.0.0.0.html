@@ -115,6 +115,200 @@
             </header>
             <article>
                 <h1>1296.89 ThreadedAction의 Halt 시 스레드 종료 처리</h1>
+<h2>1. 개요</h2>
+<p><code>ThreadedAction</code> 노드는 <code>tick()</code> 메서드를 별도의 스레드에서 실행하여, 블로킹 연산이 행동 트리의 메인 tick 루프를 차단하지 않도록 한다. Halt 시에는 실행 중인 스레드를 안전하게 종료해야 하며, 이 과정에서 스레드 안전성, 자원 정리, 교착 상태 방지 등의 복잡한 동시성 문제를 처리해야 한다.</p>
+<h2>2. ThreadedAction의 스레드 생명주기</h2>
+<h3>2.1 스레드 시작</h3>
+<p><code>ThreadedAction</code>이 처음 tick되면 프레임워크가 별도의 스레드를 생성하여 <code>tick()</code> 메서드를 실행한다. 메인 스레드에는 <code>RUNNING</code>이 반환된다.</p>
+<pre><code>[메인 스레드]                     [작업 스레드]
+     │                                │
+     ├── executeTick() 호출            │
+     │   ├── 스레드 생성 ──────────────┤
+     │   └── RUNNING 반환              ├── tick() 실행
+     │                                 │
+     ├── 다음 tick                      │   (블로킹 작업)
+     │   └── 스레드 상태 확인            │
+     │       └── RUNNING 반환           │
+     │                                 ├── tick() 완료
+     ├── 다음 tick                      │   (결과 저장)
+     │   └── 스레드 완료 확인            │
+     │       └── SUCCESS/FAILURE       │
+</code></pre>
+<h3>2.2 스레드 종료</h3>
+<p><code>tick()</code> 메서드가 반환되면 스레드는 자연스럽게 종료된다. 그러나 halt가 호출되면 아직 실행 중인 스레드를 강제로 종료해야 하는 상황이 발생한다.</p>
+<h2>3. Halt 시 스레드 종료 메커니즘</h2>
+<h3>3.1 BehaviorTree.CPP의 기본 halt 동작</h3>
+<p>BehaviorTree.CPP의 <code>ThreadedAction</code> 기본 구현에서, halt는 내부 중단 플래그를 설정하고 스레드의 완료를 대기한다.</p>
+<pre><code class="language-cpp">// BehaviorTree.CPP 내부 (간략화)
+void ThreadedAction::halt()
+{
+    halt_requested_.store(true);
+
+    if (thread_.joinable())
+    {
+        thread_.join();
+    }
+
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<p><code>thread_.join()</code>은 스레드가 종료될 때까지 블로킹하므로, <code>tick()</code> 내부에서 중단 플래그를 주기적으로 확인하지 않으면 halt가 무기한 블로킹될 수 있다.</p>
+<h3>3.2 중단 플래그 확인 패턴</h3>
+<p><code>tick()</code> 메서드 내부에서 <code>isHaltRequested()</code>를 주기적으로 확인하여, halt 요청 시 조기에 반환한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 장시간 루프
+    while (!isComplete())
+    {
+        // 중단 플래그 확인
+        if (isHaltRequested())
+        {
+            RCLCPP_INFO(node_-&gt;get_logger(),
+                "Halt 요청 감지, 스레드 종료");
+            cleanup();
+            return BT::NodeStatus::FAILURE;
+        }
+
+        // 작업 수행
+        performStep();
+
+        // 짧은 대기 (CPU 부하 방지)
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(10));
+    }
+
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>3.3 블로킹 호출의 중단 가능성</h3>
+<p>외부 라이브러리의 블로킹 함수(소켓 읽기, 파일 입출력, 동기 서비스 호출 등)를 사용하는 경우, 해당 함수가 반환되기 전에는 중단 플래그를 확인할 수 없다. 이 문제를 해결하는 방법은 다음과 같다.</p>
+<p><strong>타임아웃 기반 블로킹:</strong></p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    while (!isComplete())
+    {
+        if (isHaltRequested())
+            return BT::NodeStatus::FAILURE;
+
+        // 짧은 타임아웃으로 블로킹 호출
+        auto result = waitForData(
+            std::chrono::milliseconds(100));
+
+        if (result.has_value())
+        {
+            processData(result.value());
+        }
+        // 타임아웃 시 루프 반복 → 중단 플래그 재확인
+    }
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p><strong>조건 변수 활용:</strong></p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    std::unique_lock&lt;std::mutex&gt; lock(mutex_);
+
+    while (!data_ready_ &amp;&amp; !isHaltRequested())
+    {
+        // 100ms 간격으로 조건 재확인
+        cv_.wait_for(lock,
+            std::chrono::milliseconds(100));
+    }
+
+    if (isHaltRequested())
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    return processData()
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>4. 교착 상태 방지</h2>
+<h3>4.1 Halt와 tick()의 교착</h3>
+<p>halt가 <code>thread_.join()</code>으로 스레드 완료를 대기하고, <code>tick()</code> 내부에서 메인 스레드가 보유한 뮤텍스를 요청하면 교착 상태가 발생한다.</p>
+<pre><code>[메인 스레드]                [작업 스레드]
+     │                           │
+     ├── halt() 호출              │
+     │   ├── mutex_ 보유           │
+     │   ├── thread_.join() 대기   │
+     │   │   (블로킹)              ├── tick() 실행
+     │   │                        │   ├── mutex_ 요청
+     │   │                        │   │   (블로킹)
+     │   │                        │   │   ← 교착 상태
+</code></pre>
+<p>이를 방지하려면, halt에서 뮤텍스를 보유한 채로 <code>thread_.join()</code>을 호출하지 않도록 해야 한다.</p>
+<pre><code class="language-cpp">void halt() override
+{
+    halt_requested_.store(true);
+
+    // 뮤텍스 없이 스레드 완료 대기
+    if (thread_.joinable())
+    {
+        thread_.join();
+    }
+
+    // 스레드 종료 후 정리
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+        resetState();
+    }
+}
+</code></pre>
+<h2>5. 스레드 풀 활용</h2>
+<p>매 실행마다 스레드를 생성하고 소멸하는 것은 오버헤드가 크다. 스레드 풀(thread pool)을 활용하면 스레드 생성 비용을 줄이고 자원 관리를 단순화할 수 있다.</p>
+<pre><code class="language-cpp">// 스레드 풀에 작업 제출
+auto future = thread_pool_.submit(
+    [this]() -&gt; BT::NodeStatus
+    {
+        return tick();
+    });
+</code></pre>
+<p>BehaviorTree.CPP 4.x 버전에서는 내장 스레드 풀을 지원하며, <code>TreeExecutionServer</code>를 통해 스레드 관리를 자동화한다.</p>
+<h2>6. 스레드 안전 자원 접근</h2>
+<h3>6.1 atomic 변수</h3>
+<p>작업 스레드와 메인 스레드 간에 공유되는 플래그 변수는 <code>std::atomic</code>을 사용하여 원자적 접근을 보장한다.</p>
+<pre><code class="language-cpp">std::atomic&lt;bool&gt; halt_requested_{false};
+std::atomic&lt;bool&gt; task_completed_{false};
+std::atomic&lt;bool&gt; task_succeeded_{false};
+</code></pre>
+<h3>6.2 공유 데이터 보호</h3>
+<p>결과 데이터 등 복합 자료 구조의 공유는 뮤텍스를 통해 보호한다.</p>
+<pre><code class="language-cpp">std::mutex result_mutex_;
+ResultData result_data_;
+
+// 작업 스레드에서 결과 저장
+{
+    std::lock_guard&lt;std::mutex&gt; lock(result_mutex_);
+    result_data_ = computeResult();
+}
+task_completed_.store(true);
+
+// 메인 스레드에서 결과 읽기
+if (task_completed_.load())
+{
+    std::lock_guard&lt;std::mutex&gt; lock(result_mutex_);
+    setOutput("result", result_data_);
+}
+</code></pre>
+<h2>7. 설계 지침</h2>
+<ol>
+<li><code>tick()</code> 내부에서 <code>isHaltRequested()</code>를 최소 100ms 간격으로 확인한다.</li>
+<li>블로킹 호출은 짧은 타임아웃과 함께 사용하여 중단 가능성을 확보한다.</li>
+<li>halt에서 뮤텍스를 보유한 채로 <code>join()</code>을 호출하지 않는다.</li>
+<li>공유 데이터 접근에 <code>std::atomic</code> 또는 <code>std::mutex</code>를 사용한다.</li>
+<li>장시간 블로킹이 불가피한 경우, <code>StatefulActionNode</code>로의 전환을 고려한다.</li>
+</ol>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Williams, A., “C++ Concurrency in Action,” 2nd ed., Manning Publications, 2019.</li>
+<li>Stroustrup, B., “The C++ Programming Language,” 4th ed., Addison-Wesley, 2013.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

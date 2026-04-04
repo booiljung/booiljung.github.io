@@ -115,6 +115,178 @@
             </header>
             <article>
                 <h1>1296.88 비동기 액션 노드의 Halt 처리</h1>
+<h2>1. 개요</h2>
+<p>비동기 액션 노드(<code>StatefulActionNode</code>)는 <code>RUNNING</code> 상태를 반환하여 다중 tick에 걸쳐 실행되므로, 실행 도중에 halt가 호출될 가능성이 상존한다. <code>onHalted()</code> 콜백의 올바른 구현은 비동기 액션 노드 설계에서 가장 중요한 안전 요소이며, 진행 중인 작업의 취소, 자원 해제, 상태 초기화를 정확히 수행해야 한다.</p>
+<h2>2. onHalted() 콜백의 호출 시점</h2>
+<p><code>onHalted()</code>는 노드가 <code>RUNNING</code> 상태에 있을 때만 호출된다. BehaviorTree.CPP 프레임워크는 다음 순서로 halt를 처리한다.</p>
+<ol>
+<li>상위 제어 노드가 자식의 halt를 요청한다.</li>
+<li>프레임워크가 <code>StatefulActionNode::halt()</code>를 호출한다.</li>
+<li><code>halt()</code> 내부에서 <code>onHalted()</code>를 호출한다.</li>
+<li>노드의 상태가 <code>IDLE</code>로 설정된다.</li>
+</ol>
+<pre><code class="language-cpp">// BehaviorTree.CPP 내부 (간략화)
+void StatefulActionNode::halt()
+{
+    if (status() == NodeStatus::RUNNING)
+    {
+        onHalted();
+    }
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<h2>3. 표준 구현 패턴</h2>
+<h3>3.1 ROS2 액션 기반 노드</h3>
+<p>ROS2 액션 클라이언트를 사용하는 비동기 노드에서의 halt 처리이다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    // 1. 진행 중인 액션 취소
+    if (goal_handle_)
+    {
+        RCLCPP_INFO(node_-&gt;get_logger(),
+            "[%s] Halt: 액션 취소 요청", name().c_str());
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+
+    // 2. 자원 해제
+    goal_handle_.reset();
+    feedback_subscription_.reset();
+
+    // 3. 상태 초기화
+    goal_accepted_ = false;
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+}
+</code></pre>
+<p><code>async_cancel_goal()</code>은 비동기 취소 요청을 전송하고 즉시 반환한다. 실제 취소 완료는 서버 측에서 비동기적으로 처리되며, halt 호출자는 취소 완료를 대기하지 않는다.</p>
+<h3>3.2 ROS2 서비스 기반 노드</h3>
+<p>비동기 서비스 호출의 응답을 대기 중인 노드에서의 halt 처리이다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    // Future의 결과를 무시하도록 플래그 설정
+    response_valid_ = false;
+    pending_future_ = {};
+
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+        "[%s] Halt: 서비스 응답 대기 취소", name().c_str());
+}
+</code></pre>
+<p>ROS2 서비스는 액션과 달리 취소 메커니즘이 없으므로, 클라이언트 측에서 응답을 무시하는 방식으로 halt를 처리한다. 서버 측은 요청 처리를 계속 수행하지만, 결과를 활용하지 않는다.</p>
+<h3>3.3 토픽 구독 기반 노드</h3>
+<p>센서 데이터 수신을 대기 중인 노드에서의 halt 처리이다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    subscription_.reset();
+    timer_.reset();
+    data_received_ = false;
+    captured_data_.reset();
+}
+</code></pre>
+<p>구독 객체를 해제하면 콜백이 더 이상 호출되지 않으므로, 불필요한 데이터 수신과 처리가 방지된다.</p>
+<h2>4. Halt 시 물리적 동작의 안전 전환</h2>
+<h3>4.1 비행 동작</h3>
+<p>드론의 비행 동작(이륙, 경유점 비행, 착륙 등)에서 halt가 호출되면, 드론은 현재 위치에서 안전하게 체공해야 한다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    // 진행 중인 비행 액션 취소
+    if (goal_handle_)
+    {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+        goal_handle_.reset();
+    }
+
+    // 위치 유지 명령 발행
+    auto hold_msg =
+        std_msgs::msg::String();
+    hold_msg.data = "HOLD_POSITION";
+    flight_mode_pub_-&gt;publish(hold_msg);
+
+    RCLCPP_WARN(node_-&gt;get_logger(),
+        "[%s] 비행 중단: 위치 유지 모드",
+        name().c_str());
+
+    // 상태 초기화
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+}
+</code></pre>
+<h3>4.2 매니퓰레이션 동작</h3>
+<p>로봇 팔의 이동 동작에서 halt가 호출되면, 현재 위치에서 정지해야 한다. 갑작스러운 정지는 관성에 의한 진동을 유발할 수 있으므로, 제어기의 정지 모드를 활용하는 것이 바람직하다.</p>
+<h3>4.3 이동 동작</h3>
+<p>지상 로봇의 이동 동작에서 halt가 호출되면, 속도를 0으로 설정하여 즉시 정지한다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    if (goal_handle_)
+    {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+        goal_handle_.reset();
+    }
+
+    // 정지 명령 발행
+    auto cmd_vel = geometry_msgs::msg::Twist();
+    // 모든 속도 성분을 0으로 설정
+    cmd_vel_pub_-&gt;publish(cmd_vel);
+}
+</code></pre>
+<h2>5. Halt 후 재시작 보장</h2>
+<p><code>onHalted()</code>에서 모든 내부 상태를 완전히 초기화해야, 동일 노드가 다시 <code>onStart()</code>에서 시작될 때 이전 실행의 잔여 상태가 영향을 미치지 않는다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    // 자원 해제
+    subscription_.reset();
+    goal_handle_.reset();
+
+    // 원자적 플래그 초기화
+    goal_accepted_.store(false);
+    goal_completed_.store(false);
+    goal_succeeded_.store(false);
+    data_received_.store(false);
+
+    // 데이터 초기화
+    result_data_ = {};
+    feedback_data_ = {};
+}
+</code></pre>
+<p>검증 테스트로, halt 후 재시작이 올바르게 동작하는지를 확인한다.</p>
+<pre><code class="language-cpp">TEST(HaltRestart, WorksCorrectly)
+{
+    auto node = createTestNode();
+
+    // 첫 번째 실행
+    EXPECT_EQ(node-&gt;executeTick(), NodeStatus::RUNNING);
+    node-&gt;halt();
+
+    // 재시작
+    EXPECT_EQ(node-&gt;executeTick(), NodeStatus::RUNNING);
+
+    // 다시 halt
+    node-&gt;halt();
+
+    // 세 번째 실행
+    EXPECT_EQ(node-&gt;executeTick(), NodeStatus::RUNNING);
+}
+</code></pre>
+<h2>6. 비동기 콜백과 Halt의 경합 조건</h2>
+<p><code>onHalted()</code>가 호출되는 시점에 비동기 콜백(액션 결과 콜백, 토픽 콜백 등)이 동시에 실행될 수 있다. 이러한 경합 조건(race condition)을 방지하기 위해, 상태 플래그에 <code>std::atomic</code>을 사용하고 공유 자원 접근을 최소화해야 한다.</p>
+<pre><code class="language-cpp">// 안전한 결과 콜백
+send_goal_options.result_callback =
+    [this](const%20GoalHandle::WrappedResult&amp;%20result)
+    {
+        // atomic 플래그로 경합 조건 방지
+        goal_completed_.store(true);
+        goal_succeeded_.store(
+            result.code ==
+            rclcpp_action::ResultCode::SUCCEEDED);
+    };
+</code></pre>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Williams, A., “C++ Concurrency in Action,” 2nd ed., Manning Publications, 2019.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

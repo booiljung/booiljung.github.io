@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.97 조건 입력 값 추적</title>
+    <title>BIJUNG:조건 입력 값 추적 (Condition Input Value Tracing)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,118 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.97 조건 입력 값 추적</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.97 조건 입력 값 추적</span></nav>
+                    <h1>조건 입력 값 추적 (Condition Input Value Tracing)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="조건 입력 값 추적 (Condition Input Value Tracing)">조건 입력 값 추적 (Condition Input...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.97 조건 입력 값 추적</h1>
+                <h1>조건 입력 값 추적 (Condition Input Value Tracing)</h1>
+<h2>1. 개요</h2>
+<p>조건 입력 값 추적은 조건 노드가 평가에 사용하는 입력 데이터(토픽 메시지 필드, 블랙보드 값, 파라미터 등)의 값을 시계열로 기록하여, 조건 평가 결과의 원인을 정밀하게 분석하는 디버깅 기법이다. 조건 평가 결과만으로는 왜 특정 시점에서 결과가 변경되었는지를 파악하기 어려우므로, 입력 값의 변화 이력을 함께 추적하여 원인 분석의 정확도를 높인다.</p>
+<h2>2. 입력 값 추적의 구현</h2>
+<h3>2.1 토픽 메시지 필드 추적</h3>
+<p>조건 노드 내부에서 평가에 사용하는 메시지 필드 값을 ROS2 토픽으로 재발행하여 외부에서 모니터링한다.</p>
+<pre><code class="language-cpp">class TracedCondition
+    : public BT::RosTopicSubNode&lt;sensor_msgs::msg::LaserScan&gt;
+{
+public:
+    TracedCondition(const std::string&amp; name,
+                    const BT::NodeConfiguration&amp; config,
+                    const BT::RosNodeParams&amp; params)
+        : RosTopicSubNode(name, config, params),
+          node_(params.nh)
+    {
+        trace_pub_ = node_-&gt;create_publisher&lt;
+            std_msgs::msg::Float64&gt;("/bt_trace/" + name, 10);
+    }
+
+    BT::NodeStatus onTick(
+        const sensor_msgs::msg::LaserScan::SharedPtr&amp; msg) override
+    {
+        if (!msg || msg-&gt;ranges.empty())
+        {
+            publishTrace(std::numeric_limits&lt;double&gt;::quiet_NaN());
+            return BT::NodeStatus::FAILURE;
+        }
+
+        // 최소 거리 추출
+        double min_range = *std::min_element(
+            msg-&gt;ranges.begin(), msg-&gt;ranges.end(),
+            [](float%20a,%20float%20b) {
+                return std::isfinite(a) &amp;&amp;
+                       (!std::isfinite(b) || a &lt; b);
+            });
+
+        publishTrace(min_range);
+
+        double threshold;
+        getInput("threshold", threshold);
+
+        return (min_range &gt; threshold) ? BT::NodeStatus::SUCCESS
+                                       : BT::NodeStatus::FAILURE;
+    }
+
+private:
+    void publishTrace(double value)
+    {
+        std_msgs::msg::Float64 trace_msg;
+        trace_msg.data = value;
+        trace_pub_-&gt;publish(trace_msg);
+    }
+
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Publisher&lt;std_msgs::msg::Float64&gt;::SharedPtr trace_pub_;
+};
+</code></pre>
+<p>추적 토픽 <code>/bt_trace/&lt;노드이름&gt;</code>을 <code>rqt_plot</code>이나 <code>PlotJuggler</code>에서 실시간으로 시각화하여, 입력 값의 변화와 조건 결과의 관계를 분석한다.</p>
+<h3>2.2 블랙보드 값 추적</h3>
+<p>블랙보드에서 읽은 값을 로깅한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    double value, threshold;
+    getInput("value", value);
+    getInput("threshold", threshold);
+
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+        "[%s] Inputs: value=%.4f, threshold=%.4f",
+        name().c_str(), value, threshold);
+
+    return (value &gt; threshold) ? BT::NodeStatus::SUCCESS
+                               : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>3. 시각화 도구 연동</h2>
+<h3>3.1 PlotJuggler를 활용한 시계열 분석</h3>
+<p>추적 토픽을 PlotJuggler에서 구독하면, 입력 값과 조건 결과를 동일 시간 축에서 시각적으로 비교할 수 있다. 조건 결과가 변경된 시점에서 입력 값이 어떻게 변화하였는지를 직관적으로 파악할 수 있다.</p>
+<h3>3.2 rqt_plot을 활용한 실시간 모니터링</h3>
+<pre><code class="language-bash">ros2 run rqt_plot rqt_plot /bt_trace/IsObstacleDetected/data
+</code></pre>
+<h2>4. 조건부 추적 활성화</h2>
+<p>추적 오버헤드를 줄이기 위해, 파라미터로 추적을 활성화/비활성화한다.</p>
+<pre><code class="language-cpp">bool enable_tracing;
+node_-&gt;get_parameter_or("enable_bt_tracing", enable_tracing, false);
+
+if (enable_tracing)
+{
+    publishTrace(value);
+}
+</code></pre>
+<h2>5. 설계 시 고려 사항</h2>
+<h3>5.1 추적에 의한 성능 영향</h3>
+<p>추적 토픽의 발행은 직렬화, DDS 전송 등의 오버헤드를 수반한다. 프로덕션 환경에서는 추적을 비활성화하거나, 발행 빈도를 제한하여야 한다.</p>
+<h3>5.2 추적 데이터의 동기화</h3>
+<p>입력 값 추적과 조건 결과 로깅의 타임스탬프를 일치시켜, 두 데이터를 정확히 대응시킬 수 있도록 한다.</p>
+<h3>5.3 다중 입력의 추적</h3>
+<p>복수의 입력 값을 가진 조건 노드에서는 모든 입력을 추적하여야 어떤 입력이 결과 변경의 원인인지를 식별할 수 있다. 구조화된 메시지 타입(예: <code>diagnostic_msgs::msg::KeyValue</code> 배열)을 사용하여 다중 입력을 단일 토픽으로 발행하면 관리가 용이하다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

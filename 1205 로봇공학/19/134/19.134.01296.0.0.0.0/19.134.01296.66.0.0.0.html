@@ -115,6 +115,270 @@
             </header>
             <article>
                 <h1>1296.66 Takeoff 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>Takeoff 액션 노드는 드론(무인 항공기, UAV)이 지상에서 지정된 고도까지 수직 상승하는 이륙 동작을 행동 트리 내에서 수행하는 리프 노드이다. 이륙은 드론 자율 임무 수행의 최초 단계로서, 모터 시동(arming), 비행 모드 전환, 고도 도달 확인 등 복수의 하위 절차를 포함하며, 이를 단일 액션 노드로 캡슐화하여 행동 트리의 재사용성과 모듈성을 확보한다.</p>
+<p>BehaviorTree.CPP 프레임워크와 ROS2 환경에서 Takeoff 액션 노드는 일반적으로 <code>BT::StatefulActionNode</code>를 상속하여 비동기 방식으로 구현한다. 이는 이륙 동작이 수 초에서 수십 초에 걸쳐 진행되므로, 단일 tick 내에서 완료되지 않고 <code>RUNNING</code> 상태를 반복적으로 반환해야 하기 때문이다.</p>
+<h2>2. ROS2 인터페이스 설계</h2>
+<h3>2.1 액션 인터페이스 선택</h3>
+<p>Takeoff 액션 노드는 ROS2 액션(action) 인터페이스를 통해 비행 제어 시스템과 통신한다. ROS2 액션은 목표(goal) 전송, 피드백(feedback) 수신, 결과(result) 획득의 세 단계를 지원하므로, 이륙과 같이 장시간 소요되는 동작의 비동기 제어에 적합하다.</p>
+<p>PX4 자동 비행 소프트웨어 스택에서는 MAVLink 프로토콜 기반의 이륙 명령을 사용하며, ROS2 래퍼(wrapper)를 통해 이를 액션 서버로 제공한다. MAVROS(MAVLink ROS) 패키지는 <code>mavros_msgs/CommandTOL</code> 서비스를 제공하지만, 행동 트리와의 연동에서는 이를 액션 인터페이스로 래핑하거나 사용자 정의 액션 타입을 정의하는 것이 일반적이다.</p>
+<h3>2.2 사용자 정의 액션 타입 정의</h3>
+<p>Takeoff 동작에 대한 ROS2 액션 타입은 다음과 같이 정의할 수 있다.</p>
+<pre><code># Takeoff.action
+# Goal
+float64 target_altitude    # 목표 고도 (미터, 지면 기준)
+float64 climb_rate          # 상승 속도 (m/s, 선택적)
+---
+# Result
+bool success                # 이륙 성공 여부
+float64 reached_altitude    # 실제 도달 고도 (미터)
+uint8 error_code            # 오류 코드 (0: 정상)
+---
+# Feedback
+float64 current_altitude    # 현재 고도 (미터)
+float64 progress            # 진행률 (0.0 ~ 1.0)
+</code></pre>
+<p>이 정의에서 목표 메시지는 목표 고도와 상승 속도를 포함하고, 피드백 메시지는 현재 고도와 진행률을 주기적으로 전달하며, 결과 메시지는 이륙 완료 후 최종 상태를 보고한다.</p>
+<h2>3. 클래스 구조 설계</h2>
+<h3>3.1 StatefulActionNode 기반 구현</h3>
+<p>Takeoff 액션 노드는 <code>BT::StatefulActionNode</code>를 상속하여 <code>onStart()</code>, <code>onRunning()</code>, <code>onHalted()</code> 세 콜백 메서드를 재정의한다. 이 구조는 비동기 액션 노드의 상태 기계적 생명주기를 따르며, 각 콜백은 이륙 동작의 서로 다른 단계를 담당한다.</p>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rclcpp_action/rclcpp_action.hpp&gt;
+#include "drone_interfaces/action/takeoff.hpp"
+
+class TakeoffAction : public BT::StatefulActionNode
+{
+public:
+    using Takeoff = drone_interfaces::action::Takeoff;
+    using GoalHandleTakeoff = rclcpp_action::ClientGoalHandle&lt;Takeoff&gt;;
+
+    TakeoffAction(const std::string&amp; name,
+                  const BT::NodeConfiguration&amp; config,
+                  rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config),
+          node_(node)
+    {
+        action_client_ = rclcpp_action::create_client&lt;Takeoff&gt;(
+            node_, "takeoff");
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("target_altitude",
+                                  10.0,
+                                  "목표 고도 (미터)"),
+            BT::InputPort&lt;double&gt;("climb_rate",
+                                  2.0,
+                                  "상승 속도 (m/s)"),
+            BT::InputPort&lt;double&gt;("timeout",
+                                  30.0,
+                                  "타임아웃 (초)"),
+            BT::OutputPort&lt;double&gt;("reached_altitude",
+                                   "실제 도달 고도")
+        };
+    }
+
+    BT::NodeStatus onStart() override;
+    BT::NodeStatus onRunning() override;
+    void onHalted() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp_action::Client&lt;Takeoff&gt;::SharedPtr action_client_;
+    GoalHandleTakeoff::SharedPtr goal_handle_;
+    std::atomic&lt;bool&gt; goal_accepted_{false};
+    std::atomic&lt;bool&gt; goal_completed_{false};
+    std::atomic&lt;bool&gt; goal_succeeded_{false};
+    double reached_altitude_{0.0};
+    rclcpp::Time start_time_;
+};
+</code></pre>
+<p>위 구조에서 <code>providedPorts()</code> 정적 메서드는 블랙보드를 통해 외부로부터 수신하는 입력 포트와 결과를 기록하는 출력 포트를 정의한다. 목표 고도와 상승 속도는 입력 포트를 통해 파라미터화되어 있으므로, XML 행동 트리 정의에서 임무별로 상이한 이륙 고도를 지정할 수 있다.</p>
+<h2>4. 콜백 메서드 구현</h2>
+<h3>4.1 onStart() 콜백</h3>
+<p><code>onStart()</code>는 행동 트리의 tick이 최초로 도달했을 때 호출된다. 이 콜백에서는 ROS2 액션 서버의 가용성을 확인하고, 입력 포트로부터 파라미터를 읽어 액션 골을 구성한 뒤 전송한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus TakeoffAction::onStart()
+{
+    // 액션 서버 가용성 확인
+    if (!action_client_-&gt;wait_for_action_server(
+            std::chrono::seconds(5)))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "Takeoff 액션 서버에 연결할 수 없음");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 입력 포트에서 파라미터 읽기
+    double target_altitude;
+    double climb_rate;
+    if (!getInput("target_altitude", target_altitude) ||
+        !getInput("climb_rate", climb_rate))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "필수 입력 포트 읽기 실패");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 액션 골 구성
+    auto goal_msg = Takeoff::Goal();
+    goal_msg.target_altitude = target_altitude;
+    goal_msg.climb_rate = climb_rate;
+
+    // 콜백 설정 및 골 전송
+    auto send_goal_options =
+        rclcpp_action::Client&lt;Takeoff&gt;::SendGoalOptions();
+
+    send_goal_options.goal_response_callback =
+        [this](const%20GoalHandleTakeoff::SharedPtr&amp;%20goal_handle)
+        {
+            if (goal_handle)
+            {
+                goal_accepted_ = true;
+                goal_handle_ = goal_handle;
+            }
+        };
+
+    send_goal_options.result_callback =
+        [this](const%20GoalHandleTakeoff::WrappedResult&amp;%20result)
+        {
+            goal_completed_ = true;
+            goal_succeeded_ =
+                (result.code ==
+                 rclcpp_action::ResultCode::SUCCEEDED);
+            if (goal_succeeded_)
+            {
+                reached_altitude_ =
+                    result.result-&gt;reached_altitude;
+            }
+        };
+
+    action_client_-&gt;async_send_goal(goal_msg,
+                                     send_goal_options);
+    start_time_ = node_-&gt;now();
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p><code>onStart()</code>는 골 전송 후 즉시 <code>RUNNING</code>을 반환하여, 이후의 tick에서 <code>onRunning()</code>이 호출되도록 한다. 액션 서버가 존재하지 않거나 입력 포트 읽기에 실패한 경우에는 <code>FAILURE</code>를 반환하여 행동 트리의 부모 제어 노드가 대체 경로를 탐색하도록 한다.</p>
+<h3>4.2 onRunning() 콜백</h3>
+<p><code>onRunning()</code>은 노드가 <code>RUNNING</code> 상태에 있는 동안 매 tick마다 호출된다. 이 콜백에서는 골 수락 여부, 타임아웃, 액션 완료 여부를 순차적으로 검사하여 적절한 상태를 반환한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus TakeoffAction::onRunning()
+{
+    // 타임아웃 검사
+    double timeout;
+    getInput("timeout", timeout);
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+    if (elapsed &gt; timeout)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "Takeoff 타임아웃 (%.1f초 경과)", elapsed);
+        if (goal_handle_)
+        {
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 골 완료 확인
+    if (goal_completed_)
+    {
+        if (goal_succeeded_)
+        {
+            setOutput("reached_altitude", reached_altitude_);
+            return BT::NodeStatus::SUCCESS;
+        }
+        else
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>타임아웃이 초과되면 진행 중인 액션 골을 취소하고 <code>FAILURE</code>를 반환한다. 이는 비행 안전의 관점에서 이륙 동작이 비정상적으로 지연될 경우 상위 행동 트리에서 비상 착륙 등의 복구 절차를 수행할 수 있도록 하기 위함이다.</p>
+<h3>4.3 onHalted() 콜백</h3>
+<p><code>onHalted()</code>는 부모 제어 노드가 해당 액션 노드의 실행을 강제로 중단할 때 호출된다. 이 콜백에서는 진행 중인 ROS2 액션 골을 취소하여 비행 제어 시스템이 안전한 상태로 전환하도록 한다.</p>
+<pre><code class="language-cpp">void TakeoffAction::onHalted()
+{
+    if (goal_handle_)
+    {
+        RCLCPP_INFO(node_-&gt;get_logger(),
+                    "Takeoff 액션 중단 요청");
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+
+    goal_accepted_ = false;
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+    goal_handle_.reset();
+}
+</code></pre>
+<p><code>onHalted()</code>에서 내부 상태 변수를 모두 초기화하는 것은, 동일 노드가 행동 트리의 반복 실행 과정에서 재진입될 수 있기 때문이다. 초기화가 누락되면 이전 실행의 잔여 상태가 다음 실행에 영향을 미쳐 예측 불가능한 동작을 유발할 수 있다.</p>
+<h2>5. XML 행동 트리에서의 활용</h2>
+<h3>5.1 노드 등록</h3>
+<p>Takeoff 액션 노드를 행동 트리 팩토리에 등록하려면 ROS2 노드 인스턴스를 생성자에 전달하는 빌더(builder) 패턴을 사용한다.</p>
+<pre><code class="language-cpp">BT::BehaviorTreeFactory factory;
+auto ros_node = rclcpp::Node::make_shared("bt_takeoff_node");
+
+factory.registerBuilder&lt;TakeoffAction&gt;(
+    "Takeoff",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;TakeoffAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>5.2 XML 정의 예시</h3>
+<p>등록된 Takeoff 노드는 XML 행동 트리 정의에서 다음과 같이 사용할 수 있다.</p>
+<pre><code class="language-xml">&lt;root BTCPP_format="4"&gt;
+    &lt;BehaviorTree ID="DroneMainMission"&gt;
+        &lt;Sequence&gt;
+            &lt;Takeoff target_altitude="15.0"
+                     climb_rate="3.0"
+                     timeout="45.0"
+                     reached_altitude="{takeoff_alt}" /&gt;
+            &lt;FlyToWaypoint waypoint="{first_waypoint}" /&gt;
+        &lt;/Sequence&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<p>위 예시에서 <code>target_altitude</code>는 15미터로 지정되어 있으며, 이륙 완료 후 실제 도달 고도는 블랙보드 키 <code>takeoff_alt</code>에 기록되어 후속 노드에서 참조할 수 있다.</p>
+<h2>6. 안전성 고려 사항</h2>
+<h3>6.1 사전 조건 검증</h3>
+<p>실제 운용 환경에서 Takeoff 액션 노드는 이륙 전 사전 조건(precondition)을 검증해야 한다. 이러한 검증은 행동 트리 구조 내에서 조건 노드를 Takeoff 노드 앞에 배치하여 수행하는 것이 모듈화 원칙에 부합하지만, 노드 내부에서도 최소한의 안전 검사를 수행하는 것이 방어적 프로그래밍(defensive programming) 관점에서 권장된다.</p>
+<p>대표적인 사전 조건으로는 다음 항목이 있다.</p>
+<ul>
+<li>비행 제어기(FCU)의 연결 상태 확인</li>
+<li>배터리 잔량이 이륙 및 착륙에 충분한지 검사</li>
+<li>GPS 수신 품질(fix type)이 3D fix 이상인지 확인</li>
+<li>모터 시동(arming) 허가 여부 확인</li>
+<li>지오펜스(geofence) 범위 내 위치 확인</li>
+</ul>
+<h3>6.2 실패 시 복구 전략</h3>
+<p>Takeoff 액션 노드가 <code>FAILURE</code>를 반환하는 경우, 상위 행동 트리에서의 대응 전략은 실패 원인에 따라 달라진다. 일반적으로 <code>Fallback</code> 제어 노드를 활용하여, 이륙 실패 시 재시도하거나 비상 정지(emergency stop) 절차를 수행하는 대체 경로를 구성한다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;RetryNode num_attempts="3"&gt;
+        &lt;Takeoff target_altitude="10.0"
+                 timeout="30.0" /&gt;
+    &lt;/RetryNode&gt;
+    &lt;EmergencyStop /&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>위 구조에서는 이륙을 최대 3회 재시도하고, 모든 시도가 실패하면 비상 정지 노드를 실행한다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Macenski, S. et al., “The Marathon 2: A Navigation System,” arXiv preprint arXiv:2003.00368, 2020.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Botta, M. et al., “PX4 Autopilot: An Open-Source Autopilot for Autonomous Vehicles,” IEEE International Conference on Unmanned Aircraft Systems (ICUAS), 2020.</li>
+<li>Open Robotics, “ROS 2 Design: Actions,” ROS 2 Documentation, https://design.ros2.org/articles/actions.html.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

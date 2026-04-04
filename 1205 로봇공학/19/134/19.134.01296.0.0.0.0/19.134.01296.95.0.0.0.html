@@ -115,6 +115,222 @@
             </header>
             <article>
                 <h1>1296.95 액션 노드의 디버깅 기법</h1>
+<h2>1. 개요</h2>
+<p>액션 노드의 디버깅은 행동 트리 실행 과정에서 발생하는 논리 오류, 상태 전이 이상, 통신 장애, 타이밍 문제 등을 발견하고 수정하는 체계적인 과정이다. 행동 트리 기반 시스템에서는 복수의 노드가 동적으로 상호작용하며, ROS2 통신 인터페이스를 통해 외부 시스템과 연동되므로, 디버깅의 복잡도가 높다.</p>
+<p>본 절에서는 BehaviorTree.CPP 프레임워크와 ROS2 환경에서 활용할 수 있는 주요 디버깅 기법을 기술한다.</p>
+<h2>2. 로그 기반 디버깅</h2>
+<h3>2.1 ROS2 로깅 활용</h3>
+<p>액션 노드의 주요 실행 지점에 로그 출력을 삽입하여 실행 흐름을 추적한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+        "[%s] onStart 진입: target=%f",
+        name().c_str(), target_value_);
+
+    // ... 실행 로직
+
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+        "[%s] onStart 완료: 골 전송됨",
+        name().c_str());
+    return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus onRunning() override
+{
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+        "[%s] onRunning: elapsed=%.2f, completed=%d",
+        name().c_str(),
+        (node_-&gt;now() - start_time_).seconds(),
+        goal_completed_.load());
+
+    // ...
+}
+</code></pre>
+<h3>2.2 로그 수준 동적 변경</h3>
+<p>런타임에 로그 수준을 변경하여 디버깅 정보의 상세도를 조절한다.</p>
+<pre><code class="language-bash">ros2 service call /bt_node/set_logger_level \
+    rcl_interfaces/srv/SetLoggerLevel \
+    "{logger_name: 'bt_node', level: 10}"
+</code></pre>
+<p><code>level: 10</code>은 DEBUG 수준으로, 모든 디버깅 메시지가 출력된다. 디버깅 완료 후 <code>level: 20</code>(INFO)으로 복원한다.</p>
+<h2>3. BehaviorTree.CPP 내장 로거</h2>
+<h3>3.1 TreeObserver</h3>
+<p>BehaviorTree.CPP 4.x는 <code>TreeObserver</code> 인터페이스를 제공하여, 노드의 상태 변화를 실시간으로 감시할 수 있다.</p>
+<pre><code class="language-cpp">class DebugObserver : public BT::TreeObserver
+{
+public:
+    void onNodeStatusChanged(
+        const BT::TreeNode&amp; node,
+        BT::NodeStatus prev_status,
+        BT::NodeStatus new_status) override
+    {
+        std::cout &lt;&lt; "[" &lt;&lt; node.name() &lt;&lt; "] "
+                  &lt;&lt; toStr(prev_status) &lt;&lt; " → "
+                  &lt;&lt; toStr(new_status) &lt;&lt; std::endl;
+    }
+};
+
+// 옵저버 등록
+auto observer = std::make_shared&lt;DebugObserver&gt;();
+tree.addObserver(observer);
+</code></pre>
+<h3>3.2 FileLogger</h3>
+<p>행동 트리의 실행 이력을 파일에 기록하는 내장 로거이다.</p>
+<pre><code class="language-cpp">BT::FileLogger2 file_logger(tree, "bt_trace.btlog");
+</code></pre>
+<p>기록된 파일은 Groot2 시각화 도구에서 재생(replay)하여, 각 tick 시점의 노드 상태를 시간 순서로 분석할 수 있다.</p>
+<h3>3.3 StdCoutLogger</h3>
+<p>콘솔에 모든 상태 변화를 출력하는 간단한 로거이다.</p>
+<pre><code class="language-cpp">BT::StdCoutLogger logger(tree);
+</code></pre>
+<p>개발 초기 단계에서 빠른 디버깅에 유용하지만, 출력량이 많으므로 대규모 트리에서는 <code>FileLogger</code>를 사용하는 것이 적절하다.</p>
+<h2>4. Groot2 시각화 도구</h2>
+<h3>4.1 실시간 모니터링</h3>
+<p>Groot2는 행동 트리의 실행 상태를 실시간으로 시각화하는 그래픽 도구이다. BehaviorTree.CPP의 <code>PublisherZMQ</code>를 통해 행동 트리의 상태를 ZeroMQ 소켓으로 스트리밍하면, Groot2가 이를 수신하여 각 노드의 상태를 색상으로 표시한다.</p>
+<pre><code class="language-cpp">BT::PublisherZMQ publisher(tree);
+</code></pre>
+<table><thead><tr><th style="text-align: center">색상</th><th style="text-align: center">노드 상태</th></tr></thead><tbody>
+<tr><td style="text-align: center">회색</td><td style="text-align: center">IDLE</td></tr>
+<tr><td style="text-align: center">노랑</td><td style="text-align: center">RUNNING</td></tr>
+<tr><td style="text-align: center">초록</td><td style="text-align: center">SUCCESS</td></tr>
+<tr><td style="text-align: center">빨강</td><td style="text-align: center">FAILURE</td></tr>
+</tbody></table>
+<h3>4.2 로그 재생</h3>
+<p><code>FileLogger</code>로 기록된 <code>.btlog</code> 파일을 Groot2에서 로드하면, 임무 수행 과정을 단계별로 재생하며 분석할 수 있다. 이는 현장에서 발생한 문제를 사후에 분석하는 데 유용하다.</p>
+<h2>5. ROS2 도구를 활용한 디버깅</h2>
+<h3>5.1 ros2 topic 도구</h3>
+<p>액션 노드가 발행하거나 구독하는 토픽의 데이터를 확인한다.</p>
+<pre><code class="language-bash"># 토픽 목록 확인
+ros2 topic list
+
+# 특정 토픽의 메시지 확인
+ros2 topic echo /robot/status
+
+# 토픽 발행 주기 확인
+ros2 topic hz /camera/image_raw
+</code></pre>
+<h3>5.2 ros2 action 도구</h3>
+<p>액션 서버의 상태와 목표를 확인한다.</p>
+<pre><code class="language-bash"># 액션 목록 확인
+ros2 action list
+
+# 액션 정보 확인
+ros2 action info /navigate_to_pose
+
+# 골 전송 테스트
+ros2 action send_goal /takeoff \
+    drone_interfaces/action/Takeoff \
+    "{target_altitude: 10.0}"
+</code></pre>
+<h3>5.3 ros2 node 도구</h3>
+<p>ROS2 노드의 상태를 확인한다.</p>
+<pre><code class="language-bash"># 노드 목록
+ros2 node list
+
+# 노드의 토픽, 서비스, 액션 확인
+ros2 node info /bt_navigator
+</code></pre>
+<h2>6. 블랙보드 디버깅</h2>
+<h3>6.1 블랙보드 내용 출력</h3>
+<p>행동 트리의 블랙보드에 저장된 모든 키-값 쌍을 출력하는 디버깅 노드를 구현한다.</p>
+<pre><code class="language-cpp">class PrintBlackboard : public BT::SyncActionNode
+{
+public:
+    BT::NodeStatus tick() override
+    {
+        auto blackboard = config().blackboard;
+        auto keys = blackboard-&gt;getKeys();
+
+        std::cout &lt;&lt; "=== Blackboard ===" &lt;&lt; std::endl;
+        for (const auto&amp; key : keys)
+        {
+            auto entry = blackboard-&gt;getEntry(key);
+            if (entry)
+            {
+                std::cout &lt;&lt; "  " &lt;&lt; key &lt;&lt; " = "
+                          &lt;&lt; entry-&gt;value.toStr()
+                          &lt;&lt; std::endl;
+            }
+        }
+        std::cout &lt;&lt; "==================" &lt;&lt; std::endl;
+
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h3>6.2 XML에서의 활용</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;PrintBlackboard /&gt;
+    &lt;NavigateToPose goal="{target}" /&gt;
+    &lt;PrintBlackboard /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>7. 타이밍 분석</h2>
+<h3>7.1 tick 실행 시간 측정</h3>
+<p>각 tick의 실행 시간을 측정하여 성능 병목을 식별한다.</p>
+<pre><code class="language-cpp">class TimingObserver : public BT::TreeObserver
+{
+public:
+    void onTickBegin(const BT::TreeNode&amp; node) override
+    {
+        start_times_[node.UID()] =
+            std::chrono::steady_clock::now();
+    }
+
+    void onTickEnd(const BT::TreeNode&amp; node,
+                   BT::NodeStatus) override
+    {
+        auto elapsed =
+            std::chrono::steady_clock::now() -
+            start_times_[node.UID()];
+        auto ms = std::chrono::duration_cast&lt;
+            std::chrono::microseconds&gt;(elapsed).count();
+
+        if (ms &gt; 1000)  // 1ms 초과 시 경고
+        {
+            std::cout &lt;&lt; "[SLOW] " &lt;&lt; node.name()
+                      &lt;&lt; ": " &lt;&lt; ms &lt;&lt; " μs"
+                      &lt;&lt; std::endl;
+        }
+    }
+
+private:
+    std::unordered_map&lt;uint16_t,
+        std::chrono::steady_clock::time_point&gt;
+        start_times_;
+};
+</code></pre>
+<h2>8. 일반적인 디버깅 시나리오</h2>
+<h3>8.1 노드가 항상 FAILURE를 반환</h3>
+<ol>
+<li>입력 포트의 값이 올바르게 설정되었는지 블랙보드를 확인한다.</li>
+<li>ROS2 서버/토픽의 존재와 가용성을 확인한다.</li>
+<li>QoS 호환성을 확인한다.</li>
+<li>타임아웃이 충분한지 확인한다.</li>
+<li>로그 수준을 DEBUG로 변경하여 상세 정보를 확인한다.</li>
+</ol>
+<h3>8.2 노드가 RUNNING에서 벗어나지 않음</h3>
+<ol>
+<li>외부 서비스/액션 서버가 응답하는지 확인한다.</li>
+<li>콜백이 올바르게 호출되는지 로그로 확인한다.</li>
+<li><code>rclcpp::spin_some()</code>이 적절히 호출되는지 확인한다.</li>
+<li>타임아웃이 설정되어 있는지 확인한다.</li>
+</ol>
+<h3>8.3 Halt 후 재시작 시 비정상 동작</h3>
+<ol>
+<li><code>onHalted()</code>에서 모든 상태 변수가 초기화되는지 확인한다.</li>
+<li>구독, 타이머 등의 자원이 해제되는지 확인한다.</li>
+<li>이전 실행의 콜백이 다음 실행에 영향을 미치지 않는지 확인한다.</li>
+</ol>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Faconti, D., “Groot2: A GUI for BehaviorTree.CPP,” https://www.behaviortree.dev/groot/.</li>
+<li>Macenski, S. et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” Science Robotics, vol. 7, no. 66, 2022.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

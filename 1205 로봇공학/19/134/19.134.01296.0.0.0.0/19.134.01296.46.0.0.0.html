@@ -115,6 +115,195 @@
             </header>
             <article>
                 <h1>1296.46 ROS2 서비스 호출 기반 액션 노드 구현</h1>
+<h2>1. 서비스 호출과 행동 트리 액션 노드의 관계</h2>
+<p>ROS2 서비스(Service)는 요청-응답(request-response) 패턴에 기반한 동기적 통신 메커니즘이다. 행동 트리에서 서비스 호출을 수행하는 액션 노드를 구현하면, 맵 초기화, 경로 계산, 파라미터 질의 등 단발성 요청에 대한 응답을 행동 트리의 제어 흐름 내에서 처리할 수 있다.</p>
+<p>서비스 호출 기반 액션 노드는 ROS2 액션(Action)과 달리 피드백이나 진행 상태 보고가 존재하지 않으므로, 요청 전송과 응답 수신이라는 두 단계로 구성된다. 이 특성으로 인하여 서비스 호출 기반 액션 노드는 비교적 단순한 구조를 가지지만, 비동기 호출 시의 타이밍 관리와 서버 가용성 확인 등의 고려 사항이 존재한다.</p>
+<h2>2. 동기 방식 서비스 호출 액션 노드</h2>
+<p>가장 단순한 구현 방식은 <code>BT::SyncActionNode</code>를 상속하여 <code>tick()</code> 메서드 내부에서 서비스를 동기적으로 호출하는 것이다. 이 방식은 서비스 응답이 신속하게 반환되는 경우에 적합하다.</p>
+<pre><code class="language-cpp">class ClearCostmapService : public BT::SyncActionNode
+{
+public:
+    ClearCostmapService(const std::string&amp; name,
+                        const BT::NodeConfiguration&amp; config,
+                        rclcpp::Node::SharedPtr node)
+        : BT::SyncActionNode(name, config), node_(node)
+    {
+        client_ = node_-&gt;create_client&lt;nav2_msgs::srv::ClearEntireCostmap&gt;(
+            "clear_entire_costmap");
+    }
+
+    BT::NodeStatus tick() override
+    {
+        if (!client_-&gt;wait_for_service(std::chrono::seconds(1))) {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto request =
+            std::make_shared&lt;nav2_msgs::srv::ClearEntireCostmap::Request&gt;();
+
+        auto future = client_-&gt;async_send_request(request);
+
+        if (rclcpp::spin_until_future_complete(node_, future,
+                std::chrono::seconds(5)) !=
+            rclcpp::FutureReturnCode::SUCCESS)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {};
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Client&lt;nav2_msgs::srv::ClearEntireCostmap&gt;::SharedPtr client_;
+};
+</code></pre>
+<p>이 구현에서 <code>rclcpp::spin_until_future_complete()</code>는 응답이 수신되거나 타임아웃이 발생할 때까지 현재 스레드를 차단한다. 따라서 서비스 응답 시간이 긴 경우 행동 트리의 Tick 주기를 지연시킬 수 있다.</p>
+<h2>3. 비동기 방식 서비스 호출 액션 노드</h2>
+<p>서비스 응답 시간이 불확실하거나 장시간 소요될 수 있는 경우, <code>BT::StatefulActionNode</code>를 상속하여 비동기 방식으로 구현하는 것이 적절하다. 이 방식에서는 <code>onStart()</code>에서 비동기 요청을 전송하고, <code>onRunning()</code>에서 응답 수신 여부를 확인한다.</p>
+<pre><code class="language-cpp">class AsyncServiceCallNode : public BT::StatefulActionNode
+{
+public:
+    AsyncServiceCallNode(const std::string&amp; name,
+                         const BT::NodeConfiguration&amp; config,
+                         rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config), node_(node)
+    {
+        client_ = node_-&gt;create_client&lt;ServiceT&gt;("service_name");
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        if (!client_-&gt;service_is_ready()) {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto request = std::make_shared&lt;typename ServiceT::Request&gt;();
+        // 요청 메시지 필드 설정
+
+        future_result_ = client_-&gt;async_send_request(request);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        auto status = future_result_.wait_for(std::chrono::milliseconds(0));
+        if (status == std::future_status::ready) {
+            auto response = future_result_.get();
+            if (response-&gt;success) {
+                return BT::NodeStatus::SUCCESS;
+            }
+            return BT::NodeStatus::FAILURE;
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override
+    {
+        // 서비스 호출은 취소가 불가능하므로
+        // 내부 상태만 초기화한다.
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    typename rclcpp::Client&lt;ServiceT&gt;::SharedPtr client_;
+    typename rclcpp::Client&lt;ServiceT&gt;::SharedFuture future_result_;
+};
+</code></pre>
+<p>비동기 방식의 핵심은 <code>onRunning()</code>에서 <code>wait_for(std::chrono::milliseconds(0))</code>를 사용하여 비차단적으로 응답 수신 여부를 확인하는 것이다. 이를 통하여 행동 트리의 Tick 루프가 차단되지 않고 정상적으로 동작한다.</p>
+<h2>4. 서비스 서버 가용성 확인</h2>
+<p>서비스 호출을 수행하기 전에 서비스 서버의 가용성을 확인하는 것은 필수적이다. <code>rclcpp::Client</code>는 두 가지 확인 방법을 제공한다.</p>
+<pre><code class="language-cpp">// 방법 1: 지정된 시간 동안 서비스 가용성 대기
+bool available = client_-&gt;wait_for_service(std::chrono::seconds(1));
+
+// 방법 2: 즉시 가용성 확인 (비차단)
+bool ready = client_-&gt;service_is_ready();
+</code></pre>
+<p>동기 액션 노드에서는 <code>wait_for_service()</code>를 사용하여 짧은 시간 동안 대기할 수 있으나, 비동기 액션 노드의 <code>onStart()</code>에서는 <code>service_is_ready()</code>를 사용하여 즉시 가용성을 판단하고, 서비스가 준비되지 않은 경우 <code>FAILURE</code>를 반환하는 것이 적절하다.</p>
+<h2>5. 서비스 호출 타임아웃 처리</h2>
+<p>비동기 서비스 호출에서 서버가 응답하지 않는 상황에 대비하여 타임아웃 메커니즘을 구현하여야 한다. 요청 전송 시점의 타임스탬프를 기록하고, <code>onRunning()</code>에서 경과 시간을 확인하는 방식으로 구현한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    if (!client_-&gt;service_is_ready()) {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto request = std::make_shared&lt;typename ServiceT::Request&gt;();
+    future_result_ = client_-&gt;async_send_request(request);
+    request_time_ = node_-&gt;now();
+
+    double timeout_sec;
+    getInput("service_timeout", timeout_sec);
+    timeout_duration_ = std::chrono::duration&lt;double&gt;(timeout_sec);
+
+    return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus onRunning() override
+{
+    auto elapsed = node_-&gt;now() - request_time_;
+    if (elapsed.seconds() &gt; timeout_duration_.count()) {
+        RCLCPP_WARN(node_-&gt;get_logger(), "서비스 호출 타임아웃이 발생하였다.");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto status = future_result_.wait_for(std::chrono::milliseconds(0));
+    if (status == std::future_status::ready) {
+        return processResponse(future_result_.get());
+    }
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>6. 서비스 호출과 블랙보드 연동</h2>
+<p>서비스 요청의 매개변수는 블랙보드의 입력 포트로부터 읽어오고, 응답 결과는 출력 포트를 통하여 블랙보드에 기록하는 것이 일반적인 패턴이다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;std::string&gt;("service_name", "서비스 서버 이름"),
+        BT::InputPort&lt;double&gt;("service_timeout", 5.0, "타임아웃(초)"),
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;("start",
+            "시작 자세"),
+        BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;("goal",
+            "목표 자세"),
+        BT::OutputPort&lt;nav_msgs::msg::Path&gt;("path", "계산된 경로")
+    };
+}
+</code></pre>
+<p><code>on_tick()</code> 또는 <code>onStart()</code> 콜백에서 입력 포트를 읽어 요청 메시지를 구성하고, 응답 수신 후 출력 포트에 결과를 기록한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    auto request = std::make_shared&lt;ServiceT::Request&gt;();
+    getInput("start", request-&gt;start);
+    getInput("goal", request-&gt;goal);
+
+    future_result_ = client_-&gt;async_send_request(request);
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>7. 서비스 호출의 제약 사항</h2>
+<p>ROS2 서비스는 액션과 달리 취소 메커니즘을 제공하지 않는다. 따라서 <code>onHalted()</code> 콜백에서 진행 중인 서비스 호출을 중단시킬 수 없으며, 단지 응답을 무시하고 내부 상태를 초기화하는 것만 가능하다. 이러한 제약으로 인하여 장시간 실행되는 작업에는 서비스가 아닌 액션을 사용하는 것이 권장된다.</p>
+<p>또한, 단일 스레드 실행자(SingleThreadedExecutor) 환경에서 동기 서비스 호출을 수행할 경우, 동일 노드 내에서 서비스 서버와 클라이언트가 공존하면 교착 상태(deadlock)가 발생할 수 있다. 이를 방지하기 위하여 서비스 클라이언트 전용의 콜백 그룹(callback group)을 분리하거나, 다중 스레드 실행자(MultiThreadedExecutor)를 사용하여야 한다.</p>
+<pre><code class="language-cpp">callback_group_ = node_-&gt;create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive);
+client_ = node_-&gt;create_client&lt;ServiceT&gt;(
+    "service_name",
+    rmw_qos_profile_services_default,
+    callback_group_);
+</code></pre>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction.</em> CRC Press.</li>
+<li>ROS 2 Documentation. <em>Understanding Services.</em> Open Robotics. https://docs.ros.org/en/rolling/Tutorials/Beginner-CLI-Tools/Understanding-ROS2-Services.html</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><em>본 문서는 ROS 2 Humble Hawksbill 및 BehaviorTree.CPP v4.x 기준으로 작성되었다.</em></p>
 
             </article>
             <footer>

@@ -115,6 +115,156 @@
             </header>
             <article>
                 <h1>1297.11 빠른 평가 (Fast Evaluation) 원칙</h1>
+<h2>1. 원칙의 정의</h2>
+<p>빠른 평가 원칙(Fast Evaluation Principle)은 조건 노드의 <code>tick()</code> 메서드가 행동 트리(Behavior Tree)의 tick 주기에 비하여 무시할 수 있을 정도로 짧은 시간 내에 완료되어야 한다는 설계 원칙이다. 조건 노드의 평가 시간 <span class="math math-inline">t_c</span>는 tick 주기 <span class="math math-inline">T_{tick}</span>에 대하여 다음 관계를 만족해야 한다(Colledanchise &amp; Ogren, 2018):</p>
+<p><span class="math math-display">
+t_c \ll T_{tick}
+</span></p>
+<p>이 원칙은 조건 노드가 차단적(blocking) 연산을 수행하지 않으며, 계산 복잡도가 낮은 연산만으로 구성되어야 함을 의미한다.</p>
+<h2>2. 빠른 평가의 필요성</h2>
+<h3>2.1 Tick 예산의 제약</h3>
+<p>행동 트리의 단일 tick 내에서 수행되어야 하는 작업은 조건 노드의 평가만이 아니다. 제어 노드의 분기 결정, 액션 노드의 상태 확인, 블랙보드 접근, 트리 상태의 갱신 등이 동일한 tick 내에서 처리된다. 조건 노드의 평가 시간이 증가하면 다른 작업에 할당 가능한 시간이 감소하며, tick 주기를 초과하면 전체 시스템의 실시간성(real-time property)이 훼손된다.</p>
+<p>tick 예산(tick budget)을 다음과 같이 모델링할 수 있다:</p>
+<p><span class="math math-display">
+T_{tick} \geq \sum_{i=1}^{n} t_{c_i} + \sum_{j=1}^{m} t_{a_j} + t_{control} + t_{overhead}
+</span></p>
+<p>여기서 <span class="math math-inline">t_{c_i}</span>는 <span class="math math-inline">i</span>번째 조건 노드의 평가 시간, <span class="math math-inline">t_{a_j}</span>는 <span class="math math-inline">j</span>번째 액션 노드의 tick 시간, <span class="math math-inline">t_{control}</span>은 제어 노드의 처리 시간, <span class="math math-inline">t_{overhead}</span>는 프레임워크의 오버헤드이다.</p>
+<h3>2.2 반응적 노드에서의 영향 증폭</h3>
+<p>ReactiveSequence와 ReactiveFallback 하위에 배치된 조건 노드는 매 tick마다 재평가된다. 액션 노드가 <code>RUNNING</code> 상태를 유지하는 동안 조건 노드는 매 tick마다 호출되므로, 조건 평가 시간이 tick 수에 비례하여 누적된다.</p>
+<p>예를 들어, tick 주기가 20ms이고 내비게이션 액션이 30초 동안 <code>RUNNING</code> 상태를 유지하면, ReactiveSequence 하위의 조건 노드는 약 1,500회 호출된다. 조건 평가에 1ms가 소요되면, 총 1.5초의 CPU 시간이 조건 평가에 소비된다. 이 시간은 다른 작업에 할당될 수 있었던 자원이다.</p>
+<h3>2.3 다중 조건 노드의 누적 효과</h3>
+<p>하나의 행동 트리에는 복수의 조건 노드가 포함되는 것이 일반적이다. 내비게이션 트리에서 배터리 확인, 장애물 감지, 위치 추정 품질 확인, 경로 유효성 검증 등의 조건이 동시에 평가될 수 있다. 각 조건 노드의 평가 시간이 개별적으로는 허용 범위 내이더라도, 누적되면 tick 예산을 초과할 수 있다.</p>
+<table><thead><tr><th>조건 노드 수</th><th>개별 평가 시간</th><th>누적 평가 시간</th><th>tick 주기 대비 비율 (20ms 기준)</th></tr></thead><tbody>
+<tr><td>3</td><td><span class="math math-inline">100\mu s</span></td><td><span class="math math-inline">300\mu s</span></td><td>1.5%</td></tr>
+<tr><td>3</td><td><span class="math math-inline">1ms</span></td><td><span class="math math-inline">3ms</span></td><td>15%</td></tr>
+<tr><td>5</td><td><span class="math math-inline">1ms</span></td><td><span class="math math-inline">5ms</span></td><td>25%</td></tr>
+<tr><td>5</td><td><span class="math math-inline">5ms</span></td><td><span class="math math-inline">25ms</span></td><td>125% (초과)</td></tr>
+</tbody></table>
+<h2>3. 빠른 평가를 저해하는 요인</h2>
+<h3>3.1 차단적 입출력 연산</h3>
+<p>파일 읽기, 네트워크 소켓 통신, 데이터베이스 쿼리 등의 입출력(I/O) 연산은 예측 불가능한 지연을 초래한다. 디스크 접근 지연, 네트워크 지연(latency), 서버 응답 시간 등에 의해 수 밀리초에서 수 초까지 대기할 수 있다.</p>
+<pre><code class="language-cpp">// 빠른 평가 원칙 위반: 파일 I/O
+BT::NodeStatus BadCondition::tick()
+{
+    std::ifstream file("/sys/class/thermal/thermal_zone0/temp");
+    int temp;
+    file &gt;&gt; temp;  // 디스크 I/O 지연
+    return (temp &lt; max_temp_) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.2 동기적 서비스 호출</h3>
+<p>ROS2 서비스의 동기적 호출은 서비스 서버의 처리 시간과 네트워크 왕복 시간(round-trip time)만큼 현재 스레드를 차단한다.</p>
+<h3>3.3 고비용 계산</h3>
+<p>대규모 행렬 연산, 경로 탐색 알고리즘, 이미지 처리 등 계산 복잡도가 높은 연산은 조건 노드에서 직접 수행하지 않아야 한다.</p>
+<h2>4. 빠른 평가를 위한 설계 기법</h2>
+<h3>4.1 비동기 데이터 수신과 즉시 참조</h3>
+<p>센서 데이터와 토픽 메시지를 구독자(subscriber)의 콜백에서 비동기적으로 수신하여 내부 변수에 저장하고, <code>tick()</code> 메서드에서는 저장된 값의 비교 연산만을 수행한다.</p>
+<pre><code class="language-cpp">class IsTemperatureSafe : public BT::ConditionNode
+{
+public:
+    IsTemperatureSafe(const std::string&amp; name, const BT::NodeConfig&amp; config,
+                      rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config)
+    {
+        sub_ = node-&gt;create_subscription&lt;sensor_msgs::msg::Temperature&gt;(
+            "/temperature", 10,
+            [this](const%20sensor_msgs::msg::Temperature::SharedPtr%20msg) {
+                latest_temperature_.store(msg-&gt;temperature);
+            });
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double max_temp;
+        getInput("max_temperature", max_temp);
+
+        // 원자적 읽기: 나노초 수준의 실행 시간
+        double temp = latest_temperature_.load();
+        return (temp &lt; max_temp) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Subscription&lt;sensor_msgs::msg::Temperature&gt;::SharedPtr sub_;
+    std::atomic&lt;double&gt; latest_temperature_{0.0};
+};
+</code></pre>
+<h3>4.2 블랙보드 기반 사전 계산</h3>
+<p>복잡한 계산이 필요한 경우, 계산을 별도의 액션 노드나 외부 프로세스에서 수행하여 결과를 블랙보드에 저장하고, 조건 노드는 블랙보드의 값만을 비교한다.</p>
+<pre><code>Sequence
+├── ActionNode: "경로 유효성 계산" → 결과를 블랙보드에 저장
+├── ConditionNode: "경로가 유효한가?" → 블랙보드 값만 확인
+└── ActionNode: "경로 추종"
+</code></pre>
+<h3>4.3 시간 기반 캐싱</h3>
+<p>동일한 조건의 반복 평가에서 이전 결과를 캐싱하여 재사용한다. 캐시의 유효 기간을 설정하여 데이터의 신선도(freshness)를 보장하면서 계산 비용을 절감한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus CachedCondition::tick()
+{
+    auto now = std::chrono::steady_clock::now();
+    if ((now - last_eval_time_) &lt; cache_duration_)
+    {
+        return cached_result_;  // 캐시 유효: 즉시 반환
+    }
+
+    cached_result_ = evaluateCondition();
+    last_eval_time_ = now;
+    return cached_result_;
+}
+</code></pre>
+<h3>4.4 조기 반환</h3>
+<p>조건 평가 과정에서 결과가 확정되는 즉시 반환하여 불필요한 후속 연산을 회피한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus IsAllSensorsOk::tick()
+{
+    auto result = getInput&lt;double&gt;("sensor_1");
+    if (!result)
+    {
+        return BT::NodeStatus::FAILURE;  // 조기 반환
+    }
+
+    if (result.value() &lt; min_threshold_)
+    {
+        return BT::NodeStatus::FAILURE;  // 조기 반환
+    }
+
+    // 추가 검사 계속
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h2>5. 성능 측정과 모니터링</h2>
+<p>조건 노드의 평가 시간을 정량적으로 측정하여 빠른 평가 원칙의 준수 여부를 확인해야 한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus MeasuredCondition::tick()
+{
+    auto start = std::chrono::high_resolution_clock::now();
+
+    BT::NodeStatus result = evaluateCondition();
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast&lt;std::chrono::microseconds&gt;(end - start);
+
+    if (duration.count() &gt; warning_threshold_us_)
+    {
+        RCLCPP_WARN(logger_,
+            "Condition '%s' evaluation took %ld us (threshold: %ld us)",
+            name().c_str(), duration.count(), warning_threshold_us_);
+    }
+
+    return result;
+}
+</code></pre>
+<h2>6. 정량적 지침</h2>
+<p>조건 노드의 평가 시간에 대한 정량적 지침은 시스템의 요구사항에 따라 결정되며, 다음의 일반적 기준을 참고할 수 있다:</p>
+<ul>
+<li><strong>이상적</strong>: <span class="math math-inline">t_c &lt; 10\mu s</span> — 단순 비교, 원자적 변수 읽기</li>
+<li><strong>양호</strong>: <span class="math math-inline">10\mu s \leq t_c &lt; 100\mu s</span> — 블랙보드 접근, 간단한 산술 연산</li>
+<li><strong>허용</strong>: <span class="math math-inline">100\mu s \leq t_c &lt; 1ms</span> — 복수 블랙보드 접근, 거리 계산</li>
+<li><strong>주의</strong>: <span class="math math-inline">1ms \leq t_c</span> — 캐싱 또는 설계 변경 검토 필요</li>
+</ul>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

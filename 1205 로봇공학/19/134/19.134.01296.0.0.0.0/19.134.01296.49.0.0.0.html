@@ -115,6 +115,288 @@
             </header>
             <article>
                 <h1>1296.49 BtServiceNode 기반 클래스의 활용</h1>
+<h2>1. BtServiceNode의 정의와 목적</h2>
+<p>BtServiceNode는 Nav2(Navigation2) 프레임워크에서 제공하는 행동 트리 기반 클래스로, ROS2 서비스 클라이언트 호출을 행동 트리 액션 노드로 캡슐화하기 위한 템플릿 클래스이다. 이 클래스는 <code>nav2_behavior_tree</code> 패키지에 정의되어 있으며, <code>BehaviorTree.CPP</code> 라이브러리의 <code>BT::ActionNodeBase</code>를 상속하여 ROS2 서비스 통신 패턴을 행동 트리의 실행 모델에 통합한다.</p>
+<p>BtServiceNode의 핵심 목적은 ROS2 서비스 호출에 수반되는 반복적인 보일러플레이트 코드를 제거하고, 서비스 요청 생성, 응답 처리, 타임아웃 관리, 오류 처리 등의 공통 로직을 기반 클래스 내부에서 일괄적으로 처리하는 데 있다. 이를 통해 개발자는 서비스별 고유 로직에만 집중할 수 있다.</p>
+<pre><code class="language-cpp">namespace nav2_behavior_tree
+{
+
+template&lt;class ServiceT&gt;
+class BtServiceNode : public BT::ActionNodeBase
+{
+public:
+  BtServiceNode(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf);
+
+  // 파생 클래스에서 재정의할 가상 메서드
+  virtual void on_tick();
+  virtual BT::NodeStatus on_completion(
+    std::shared_ptr&lt;typename ServiceT::Response&gt; response);
+
+  // 정적 포트 제공 메서드
+  static BT::PortsList providedPorts();
+
+  // BT::ActionNodeBase 인터페이스 구현
+  BT::NodeStatus tick() override;
+  void halt() override;
+
+protected:
+  typename rclcpp::Client&lt;ServiceT&gt;::SharedPtr service_client_;
+  std::shared_ptr&lt;typename ServiceT::Request&gt; request_;
+  std::string service_name_;
+  std::chrono::milliseconds server_timeout_;
+};
+
+}  // namespace nav2_behavior_tree
+</code></pre>
+<h2>2. 템플릿 매개변수와 서비스 타입 바인딩</h2>
+<p>BtServiceNode는 C++ 템플릿 클래스로 설계되어 있으며, 템플릿 매개변수 <code>ServiceT</code>는 ROS2 서비스 인터페이스 타입을 지정한다. 이 서비스 타입은 ROS2 IDL(Interface Definition Language)로 정의된 <code>.srv</code> 파일로부터 자동 생성된 C++ 타입이어야 하며, 내부적으로 <code>ServiceT::Request</code>와 <code>ServiceT::Response</code> 타입을 포함하여야 한다.</p>
+<pre><code class="language-cpp">// 예: std_srvs::srv::SetBool 서비스를 사용하는 BtServiceNode 인스턴스화
+class SetBoolService : public nav2_behavior_tree::BtServiceNode&lt;std_srvs::srv::SetBool&gt;
+{
+public:
+  SetBoolService(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BtServiceNode&lt;std_srvs::srv::SetBool&gt;(xml_tag_name, conf)
+  {}
+};
+</code></pre>
+<p>템플릿 인스턴스화 시점에서 컴파일러는 해당 서비스 타입에 대한 클라이언트, 요청 객체, 응답 객체의 타입을 정적으로 결정한다. 이러한 정적 타입 바인딩은 런타임 타입 오류를 컴파일 시점에서 차단하며, 서비스 인터페이스의 변경이 발생할 경우 관련된 모든 노드에서 컴파일 오류가 발생하여 인터페이스 불일치를 조기에 감지할 수 있다.</p>
+<h2>3. 생성자와 초기화 과정</h2>
+<p>BtServiceNode의 생성자는 XML 태그 이름과 노드 구성 정보를 매개변수로 받으며, 초기화 과정에서 다음의 작업을 순차적으로 수행한다.</p>
+<p>첫째, 블랙보드로부터 공유 ROS2 노드 핸들을 획득한다. 이 노드 핸들은 행동 트리 전체에서 공유되며, <code>"node"</code> 키를 통해 블랙보드에 저장되어 있다.</p>
+<p>둘째, 입력 포트 <code>"service_name"</code>으로부터 대상 서비스의 이름을 읽어 들인다. 이 서비스 이름은 ROS2 네임스페이스 규칙을 따르며, XML 트리 정의에서 지정된다.</p>
+<p>셋째, 획득한 노드 핸들을 사용하여 <code>rclcpp::Client&lt;ServiceT&gt;</code>를 생성하고, 지정된 서비스 이름으로 클라이언트를 초기화한다.</p>
+<p>넷째, 블랙보드에서 서버 타임아웃 값을 읽어 들여 서비스 응답 대기 시간의 상한을 설정한다.</p>
+<pre><code class="language-cpp">template&lt;class ServiceT&gt;
+BtServiceNode&lt;ServiceT&gt;::BtServiceNode(
+  const std::string &amp; xml_tag_name,
+  const BT::NodeConfiguration &amp; conf)
+: BT::ActionNodeBase(xml_tag_name, conf)
+{
+  node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+  getInput("service_name", service_name_);
+  service_client_ = node_-&gt;create_client&lt;ServiceT&gt;(service_name_);
+  
+  auto bt_loop_duration =
+    config().blackboard-&gt;get&lt;std::chrono::milliseconds&gt;("bt_loop_duration");
+  server_timeout_ =
+    config().blackboard-&gt;get&lt;std::chrono::milliseconds&gt;("server_timeout");
+}
+</code></pre>
+<h2>4. 기본 제공 포트 구성</h2>
+<p>BtServiceNode는 <code>providedPorts()</code> 정적 메서드를 통해 기본 입력 포트를 제공한다. 가장 핵심적인 포트는 <code>"service_name"</code>으로, 이 포트는 호출 대상 ROS2 서비스의 완전한 이름(fully qualified name)을 지정한다.</p>
+<p>파생 클래스는 <code>providedPorts()</code>를 재정의하여 기반 클래스의 포트에 추가적인 입출력 포트를 병합할 수 있다. 이때 <code>BT::PortsList</code>의 병합 연산을 사용하여 기반 클래스 포트와 파생 클래스 포트를 결합한다.</p>
+<pre><code class="language-cpp">// 기반 클래스의 기본 포트
+template&lt;class ServiceT&gt;
+BT::PortsList BtServiceNode&lt;ServiceT&gt;::providedPorts()
+{
+  return {
+    BT::InputPort&lt;std::string&gt;("service_name", "name of the ROS2 service")
+  };
+}
+
+// 파생 클래스에서 포트 확장
+static BT::PortsList providedPorts()
+{
+  return providedBasicPorts({
+    BT::InputPort&lt;double&gt;("threshold", 0.5, "detection threshold"),
+    BT::OutputPort&lt;bool&gt;("result", "service call result")
+  });
+}
+</code></pre>
+<h2>5. tick() 메서드의 실행 흐름</h2>
+<p>BtServiceNode의 <code>tick()</code> 메서드는 행동 트리의 Tick 사이클마다 호출되며, 서비스 호출의 전체 생명주기를 관리하는 상태 기계적 실행 흐름을 구현한다.</p>
+<h3>5.1 최초 Tick: 서비스 요청 전송</h3>
+<p>최초 Tick에서 <code>tick()</code> 메서드는 다음의 단계를 수행한다.</p>
+<ol>
+<li>서비스 서버의 가용성을 확인한다. 서버가 지정된 타임아웃 내에 발견되지 않으면 <code>BT::NodeStatus::FAILURE</code>를 반환한다.</li>
+<li><code>on_tick()</code> 가상 메서드를 호출하여 파생 클래스에 서비스 요청 객체를 구성할 기회를 부여한다.</li>
+<li><code>async_send_request()</code>를 통해 비동기적으로 서비스 요청을 전송한다.</li>
+<li><code>BT::NodeStatus::RUNNING</code>을 반환하여 응답 대기 상태에 진입한다.</li>
+</ol>
+<h3>5.2 후속 Tick: 응답 대기 및 처리</h3>
+<p>후속 Tick에서는 이전에 전송한 서비스 요청에 대한 응답 수신 여부를 확인한다.</p>
+<ol>
+<li><code>future</code>의 상태를 검사하여 응답이 도착하였는지 판정한다.</li>
+<li>응답이 아직 도착하지 않은 경우 타임아웃 초과 여부를 확인한다. 타임아웃이 초과되면 <code>BT::NodeStatus::FAILURE</code>를 반환한다.</li>
+<li>응답이 도착한 경우 <code>on_completion()</code> 가상 메서드를 호출하여 파생 클래스에 응답 처리 로직을 위임한다.</li>
+<li><code>on_completion()</code>의 반환값을 <code>tick()</code>의 반환값으로 전달한다.</li>
+</ol>
+<pre><code class="language-cpp">template&lt;class ServiceT&gt;
+BT::NodeStatus BtServiceNode&lt;ServiceT&gt;::tick()
+{
+  if (status() == BT::NodeStatus::IDLE) {
+    // 서비스 서버 가용성 확인
+    if (!service_client_-&gt;wait_for_service(server_timeout_)) {
+      return BT::NodeStatus::FAILURE;
+    }
+    
+    // 요청 객체 초기화 및 파생 클래스 콜백 호출
+    request_ = std::make_shared&lt;typename ServiceT::Request&gt;();
+    on_tick();
+    
+    // 비동기 서비스 요청 전송
+    future_result_ = service_client_-&gt;async_send_request(request_);
+    return BT::NodeStatus::RUNNING;
+  }
+
+  // 응답 수신 여부 확인
+  if (future_result_.wait_for(std::chrono::milliseconds(0)) ==
+    std::future_status::ready)
+  {
+    auto response = future_result_.get();
+    return on_completion(response);
+  }
+
+  // 타임아웃 확인
+  if (elapsed_ &gt; server_timeout_) {
+    return BT::NodeStatus::FAILURE;
+  }
+
+  return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>6. on_tick() 가상 메서드</h2>
+<p><code>on_tick()</code> 가상 메서드는 서비스 요청이 전송되기 직전에 호출되는 콜백으로, 파생 클래스에서 재정의하여 서비스 요청 객체의 필드를 설정하는 데 사용한다. 이 시점에서 <code>request_</code> 멤버 변수는 이미 기본 생성된 상태이므로, 파생 클래스는 블랙보드 입력 포트로부터 값을 읽어 요청 필드에 매핑하는 로직만 구현하면 된다.</p>
+<pre><code class="language-cpp">void on_tick() override
+{
+  double x, y, theta;
+  getInput("x", x);
+  getInput("y", y);
+  getInput("theta", theta);
+  
+  request_-&gt;pose.position.x = x;
+  request_-&gt;pose.position.y = y;
+  request_-&gt;pose.orientation = tf2::toMsg(
+    tf2::Quaternion(tf2::Vector3(0, 0, 1), theta));
+}
+</code></pre>
+<p>기반 클래스의 <code>on_tick()</code> 기본 구현은 아무런 동작도 수행하지 않는 빈 함수이다. 따라서 파생 클래스에서 별도의 요청 필드 설정이 필요하지 않은 경우에는 재정의를 생략할 수 있다.</p>
+<h2>7. on_completion() 가상 메서드</h2>
+<p><code>on_completion()</code> 가상 메서드는 서비스 응답이 수신된 후 호출되며, 응답 객체를 매개변수로 받아 처리 결과를 <code>BT::NodeStatus</code>로 반환한다. 파생 클래스는 이 메서드를 재정의하여 서비스 응답의 성공 여부를 판정하고, 필요한 데이터를 블랙보드 출력 포트에 기록한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus on_completion(
+  std::shared_ptr&lt;typename ServiceT::Response&gt; response) override
+{
+  if (response-&gt;success) {
+    setOutput("result_value", response-&gt;data);
+    return BT::NodeStatus::SUCCESS;
+  }
+  return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>기반 클래스의 기본 구현은 응답 내용과 무관하게 <code>BT::NodeStatus::SUCCESS</code>를 반환한다. 따라서 서비스 응답의 내용에 따라 성공 또는 실패를 결정하여야 하는 경우에는 반드시 이 메서드를 재정의하여야 한다.</p>
+<h2>8. halt() 메서드와 중단 처리</h2>
+<p><code>halt()</code> 메서드는 행동 트리의 제어 노드에 의해 노드 실행이 중단될 때 호출된다. BtServiceNode의 <code>halt()</code> 구현은 진행 중인 서비스 요청을 정리하고, 노드 상태를 <code>IDLE</code>로 복원한다.</p>
+<p>ROS2 서비스 호출은 ROS2 액션과 달리 취소(cancel) 메커니즘을 내장하고 있지 않다. 따라서 <code>halt()</code> 호출 시 서버 측에서 이미 실행 중인 서비스 처리를 중단시킬 수는 없으며, 클라이언트 측에서 응답 수신을 포기하는 방식으로만 중단이 처리된다. 이는 서비스 통신의 요청-응답(request-response) 패턴에 기인하는 구조적 제약이다.</p>
+<pre><code class="language-cpp">template&lt;class ServiceT&gt;
+void BtServiceNode&lt;ServiceT&gt;::halt()
+{
+  // 대기 중인 future를 폐기하고 상태를 초기화
+  request_.reset();
+  BT::ActionNodeBase::halt();
+}
+</code></pre>
+<h2>9. BtServiceNode 파생 클래스 구현 절차</h2>
+<p>BtServiceNode를 상속하여 사용자 정의 서비스 노드를 구현하는 절차는 다음과 같이 정형화된다.</p>
+<h3>9.1 단계: 파생 클래스 선언</h3>
+<p>ROS2 서비스 타입을 템플릿 인자로 지정하고, BtServiceNode를 상속하는 클래스를 선언한다.</p>
+<pre><code class="language-cpp">#include "nav2_behavior_tree/bt_service_node.hpp"
+#include "nav2_msgs/srv/clear_entire_costmap.hpp"
+
+class ClearEntireCostmapService
+  : public nav2_behavior_tree::BtServiceNode&lt;nav2_msgs::srv::ClearEntireCostmap&gt;
+{
+public:
+  ClearEntireCostmapService(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BtServiceNode&lt;nav2_msgs::srv::ClearEntireCostmap&gt;(xml_tag_name, conf)
+  {}
+
+  void on_tick() override;
+  BT::NodeStatus on_completion(
+    std::shared_ptr&lt;nav2_msgs::srv::ClearEntireCostmap::Response&gt; response) override;
+
+  static BT::PortsList providedPorts()
+  {
+    return providedBasicPorts({});
+  }
+};
+</code></pre>
+<h3>9.2 단계: 콜백 메서드 구현</h3>
+<p><code>on_tick()</code>에서 요청 필드를 설정하고, <code>on_completion()</code>에서 응답을 처리한다.</p>
+<pre><code class="language-cpp">void ClearEntireCostmapService::on_tick()
+{
+  // ClearEntireCostmap 서비스는 요청 필드가 없으므로 추가 설정이 불필요하다
+}
+
+BT::NodeStatus ClearEntireCostmapService::on_completion(
+  std::shared_ptr&lt;nav2_msgs::srv::ClearEntireCostmap::Response&gt; /*response*/)
+{
+  return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>9.3 단계: 플러그인 등록</h3>
+<p>BehaviorTree.CPP의 플러그인 시스템에 노드를 등록하여 XML 트리 정의에서 참조할 수 있도록 한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+BT_REGISTER_NODES(factory)
+{
+  BT::NodeBuilder builder =
+    [](const%20std::string%20&amp;%20name,%20const%20BT::NodeConfiguration%20&amp;%20config)
+    {
+      return std::make_unique&lt;ClearEntireCostmapService&gt;(name, config);
+    };
+  factory.registerBuilder&lt;ClearEntireCostmapService&gt;(
+    "ClearEntireCostmap", builder);
+}
+</code></pre>
+<h3>9.4 단계: XML 트리 정의에서 사용</h3>
+<p>등록된 노드를 XML 행동 트리 정의에서 참조한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;ClearEntireCostmap service_name="/global_costmap/clear_entirely_global_costmap"/&gt;
+    &lt;NavigateToPose goal="{target_pose}"/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>10. BtActionNode와 BtServiceNode의 비교</h2>
+<p>BtServiceNode와 BtActionNode는 동일한 설계 철학을 공유하지만, 기반이 되는 ROS2 통신 메커니즘의 차이에서 비롯되는 구조적 차이가 존재한다.</p>
+<table><thead><tr><th>구분</th><th>BtActionNode</th><th>BtServiceNode</th></tr></thead><tbody>
+<tr><td>ROS2 통신 패턴</td><td>액션 (Action)</td><td>서비스 (Service)</td></tr>
+<tr><td>피드백 지원</td><td>지원 (on_feedback 콜백)</td><td>미지원</td></tr>
+<tr><td>취소 지원</td><td>지원 (cancel_goal)</td><td>미지원</td></tr>
+<tr><td>적합한 작업</td><td>장시간 비동기 작업</td><td>단시간 동기적 요청-응답</td></tr>
+<tr><td>실행 지속 시간</td><td>수 초~수 분</td><td>수 밀리초~수 초</td></tr>
+<tr><td>상태 보고</td><td>피드백을 통한 실시간 보고</td><td>최종 응답만 수신</td></tr>
+</tbody></table>
+<p>서비스 통신은 단일 요청에 대하여 단일 응답을 반환하는 동기적 패턴이므로, 장시간 실행되는 작업에는 부적합하다. BtServiceNode는 코스트맵 초기화, 파라미터 조회, 맵 저장, 상태 전환 명령 등 신속하게 완료되는 작업에 적합하며, 장시간 실행이 필요한 내비게이션, 매니퓰레이션 등의 작업에는 BtActionNode를 사용하여야 한다.</p>
+<h2>11. Nav2에서의 BtServiceNode 활용 사례</h2>
+<p>Nav2 프레임워크는 BtServiceNode를 기반으로 다수의 서비스 호출 노드를 제공한다. 대표적인 사례는 다음과 같다.</p>
+<p><strong>ClearEntireCostmapService</strong>: <code>nav2_msgs::srv::ClearEntireCostmap</code> 서비스를 호출하여 전역 또는 지역 코스트맵의 전체 영역을 초기화한다. 장애물 정보가 누적되어 경로 계획이 실패하는 상황에서 복구 행동(recovery behavior)으로 사용된다.</p>
+<p><strong>ClearCostmapExceptRegion</strong>: 로봇 주변의 지정된 반경 이내 영역을 제외한 코스트맵 영역을 초기화한다. 로봇 인근의 최신 장애물 정보는 유지하면서 원거리의 오래된 장애물 데이터를 제거하는 데 활용된다.</p>
+<p><strong>ClearCostmapAroundRobot</strong>: 로봇 주변의 지정된 반경 이내 영역만 선택적으로 초기화한다. 로봇 근접 영역에 잘못 축적된 장애물 데이터를 제거하는 데 사용된다.</p>
+<p>이들 노드는 모두 BtServiceNode의 파생 클래스로 구현되어 있으며, <code>on_tick()</code>과 <code>on_completion()</code> 두 가상 메서드만을 재정의함으로써 서비스별 고유 로직을 구현하고 있다.</p>
+<h2>12. 동기 서비스 호출 시의 고려 사항</h2>
+<p>ROS2 서비스 호출은 기본적으로 동기적 요청-응답 패턴이지만, BtServiceNode 내부에서는 <code>async_send_request()</code>를 통한 비동기 호출을 사용한다. 이는 행동 트리의 Tick 루프를 블로킹하지 않기 위한 설계적 선택이다.</p>
+<p>서비스 서버가 응답을 반환하기까지의 시간이 행동 트리의 Tick 주기보다 긴 경우, BtServiceNode는 다수의 Tick에 걸쳐 <code>RUNNING</code> 상태를 유지하며 응답을 대기한다. 이 과정에서 행동 트리의 다른 분기(branch)는 정상적으로 Tick을 수신하여 동작하므로, 반응적 행동(reactive behavior)이 보장된다.</p>
+<p>다만, 서비스 서버의 응답이 지나치게 지연될 경우 타임아웃 메커니즘에 의해 <code>FAILURE</code>가 반환된다. 타임아웃 값은 블랙보드의 <code>"server_timeout"</code> 항목을 통해 구성되며, 서비스의 예상 응답 시간에 적합하게 설정하여야 한다.</p>
+<h2>13. 서비스 서버 가용성 검사</h2>
+<p>BtServiceNode는 서비스 요청 전송 전에 <code>wait_for_service()</code> 메서드를 통해 서비스 서버의 가용성을 검사한다. 서버가 아직 활성화되지 않았거나 네트워크 장애로 인해 접근이 불가능한 경우, 지정된 타임아웃 이후 <code>FAILURE</code>를 반환한다.</p>
+<p>이 가용성 검사는 최초 Tick에서만 수행되며, 이후 응답 대기 중에는 반복하지 않는다. 서비스 서버가 요청 전송 이후에 비정상 종료될 경우에는 응답 타임아웃에 의해 실패가 감지된다. 서비스 서버의 동적 생명주기를 고려하여, 중요한 서비스에 대해서는 행동 트리의 상위 레벨에서 재시도 데코레이터를 배치하는 것이 권장된다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Nav2 공식 문서: https://docs.nav2.org/</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: Nav2 Humble Hawksbill (ROS2 Humble) 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

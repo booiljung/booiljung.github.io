@@ -115,6 +115,248 @@
             </header>
             <article>
                 <h1>1296.82 액션 노드 내부 예외 처리</h1>
+<h2>1. 개요</h2>
+<p>액션 노드 내부의 예외 처리는 C++ 예외(exception) 메커니즘을 활용하여 런타임 오류를 안전하게 포착하고, 행동 트리의 실행 흐름을 보호하는 방어적 프로그래밍 기법이다. BehaviorTree.CPP 프레임워크에서 액션 노드의 콜백 메서드(<code>tick()</code>, <code>onStart()</code>, <code>onRunning()</code>) 내부에서 처리되지 않은 예외가 발생하면, 행동 트리 전체의 실행이 비정상 종료될 수 있다. 따라서 모든 외부 호출과 자원 접근에 대해 적절한 예외 처리를 구현해야 한다.</p>
+<h2>2. C++ 예외의 발생 원인</h2>
+<p>액션 노드 내부에서 예외가 발생하는 주요 원인은 다음과 같다.</p>
+<table><thead><tr><th style="text-align: center">예외 유형</th><th style="text-align: left">발생 원인</th><th style="text-align: left">예시</th></tr></thead><tbody>
+<tr><td style="text-align: center"><code>std::runtime_error</code></td><td style="text-align: left">런타임 논리 오류</td><td style="text-align: left">잘못된 상태 전환</td></tr>
+<tr><td style="text-align: center"><code>std::invalid_argument</code></td><td style="text-align: left">잘못된 인자 전달</td><td style="text-align: left">포트 값 파싱 실패</td></tr>
+<tr><td style="text-align: center"><code>std::out_of_range</code></td><td style="text-align: left">범위 초과 접근</td><td style="text-align: left">배열 인덱스 초과</td></tr>
+<tr><td style="text-align: center"><code>std::bad_alloc</code></td><td style="text-align: left">메모리 할당 실패</td><td style="text-align: left">대용량 데이터 처리 시</td></tr>
+<tr><td style="text-align: center"><code>rclcpp::exceptions::RCLError</code></td><td style="text-align: left">ROS2 내부 오류</td><td style="text-align: left">노드 초기화 실패</td></tr>
+<tr><td style="text-align: center"><code>tf2::TransformException</code></td><td style="text-align: left">좌표 변환 실패</td><td style="text-align: left">TF 프레임 미존재</td></tr>
+<tr><td style="text-align: center"><code>cv_bridge::Exception</code></td><td style="text-align: left">이미지 변환 오류</td><td style="text-align: left">인코딩 불일치</td></tr>
+</tbody></table>
+<h2>3. BehaviorTree.CPP의 예외 처리 메커니즘</h2>
+<h3>3.1 프레임워크 수준의 예외 포착</h3>
+<p>BehaviorTree.CPP 프레임워크는 <code>TreeNode::executeTick()</code> 내부에서 기본적인 예외 포착을 수행한다. 노드의 <code>tick()</code> 메서드에서 처리되지 않은 예외가 발생하면, 프레임워크는 해당 예외를 포착하고 노드의 상태를 <code>FAILURE</code>로 설정한다.</p>
+<pre><code class="language-cpp">// BehaviorTree.CPP 내부 (간략화)
+NodeStatus TreeNode::executeTick()
+{
+    try
+    {
+        NodeStatus status = tick();
+        return status;
+    }
+    catch (const std::exception&amp; e)
+    {
+        // 예외를 FAILURE로 변환
+        return NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<p>그러나 이 기본 메커니즘에만 의존하는 것은 권장되지 않는다. 프레임워크 수준의 포착은 오류 정보를 상세히 기록하지 못하며, 자원 해제가 보장되지 않을 수 있다. 따라서 액션 노드 구현자가 직접 예외를 처리하는 것이 바람직하다.</p>
+<h3>3.2 노드 수준의 예외 처리 패턴</h3>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    try
+    {
+        // ROS2 서비스 호출
+        auto response = callService(request);
+        processResponse(response);
+        return BT::NodeStatus::RUNNING;
+    }
+    catch (const rclcpp::exceptions::RCLError&amp; e)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "ROS2 통신 오류: %s", e.what());
+        setOutput("error_message", e.what());
+        return BT::NodeStatus::FAILURE;
+    }
+    catch (const std::invalid_argument&amp; e)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "입력 인자 오류: %s", e.what());
+        return BT::NodeStatus::FAILURE;
+    }
+    catch (const std::exception&amp; e)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "예상치 못한 오류: %s", e.what());
+        return BT::NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<p>예외를 구체적인 타입 순서로 포착하는 것이 중요하다. <code>std::exception</code>을 먼저 포착하면 하위 타입의 예외가 구분되지 않으므로, 구체적인 예외 타입을 먼저 배치해야 한다.</p>
+<h2>4. 예외 안전 보장 수준</h2>
+<p>C++ 프로그래밍에서 예외 안전(exception safety)은 다음 세 수준으로 분류된다.</p>
+<table><thead><tr><th style="text-align: center">수준</th><th style="text-align: center">명칭</th><th style="text-align: left">보장 사항</th></tr></thead><tbody>
+<tr><td style="text-align: center">기본</td><td style="text-align: center">Basic guarantee</td><td style="text-align: left">예외 발생 시 자원 누수 없음, 객체는 유효한 상태</td></tr>
+<tr><td style="text-align: center">강력</td><td style="text-align: center">Strong guarantee</td><td style="text-align: left">예외 발생 시 작업 전 상태로 완전 복원</td></tr>
+<tr><td style="text-align: center">무예외</td><td style="text-align: center">No-throw guarantee</td><td style="text-align: left">예외가 절대 발생하지 않음</td></tr>
+</tbody></table>
+<p>액션 노드의 콜백 메서드는 최소한 기본 보장(basic guarantee)을 충족해야 한다. 스마트 포인터와 RAII 패턴을 활용하면 기본 보장을 자연스럽게 달성할 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    // RAII로 자원 관리 — 예외 발생 시 자동 해제
+    auto subscription =
+        std::make_shared&lt;rclcpp::Subscription&lt;...&gt;&gt;(...);
+
+    try
+    {
+        // 예외 발생 가능 코드
+        auto result = riskyOperation();
+        subscription_ = subscription;  // 성공 시에만 보존
+        return BT::NodeStatus::RUNNING;
+    }
+    catch (...)
+    {
+        // subscription은 스코프 종료 시 자동 해제
+        return BT::NodeStatus::FAILURE;
+    }
+}
+</code></pre>
+<h2>5. 포트 접근 시 예외 처리</h2>
+<h3>5.1 getInput() 실패 처리</h3>
+<p>블랙보드 포트에서 값을 읽을 때, 키가 존재하지 않거나 타입 변환에 실패하면 <code>getInput()</code>이 <code>false</code>를 반환한다. 이는 예외를 발생시키지 않으므로 반환값을 명시적으로 검사해야 한다.</p>
+<pre><code class="language-cpp">double target;
+if (!getInput("target", target))
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "입력 포트 'target' 읽기 실패");
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.2 타입 변환 예외</h3>
+<p>블랙보드에 저장된 값의 타입이 예상과 다른 경우, BehaviorTree.CPP의 내부 변환 로직에서 예외가 발생할 수 있다. 특히 사용자 정의 타입을 블랙보드에 저장할 때 이 문제가 발생하기 쉽다.</p>
+<pre><code class="language-cpp">try
+{
+    auto pose = getInput&lt;geometry_msgs::msg::Pose&gt;("target_pose");
+    if (!pose)
+    {
+        throw BT::RuntimeError("target_pose 변환 실패");
+    }
+}
+catch (const BT::RuntimeError&amp; e)
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "포트 타입 변환 오류: %s", e.what());
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>6. ROS2 통신 예외 처리</h2>
+<h3>6.1 액션 클라이언트 예외</h3>
+<pre><code class="language-cpp">try
+{
+    auto future =
+        action_client_-&gt;async_send_goal(goal_msg, options);
+}
+catch (const rclcpp::exceptions::RCLError&amp; e)
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "골 전송 실패: %s", e.what());
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>6.2 서비스 클라이언트 예외</h3>
+<p>서비스 호출의 결과를 <code>future.get()</code>으로 획득할 때, 서비스 서버가 비정상 종료되면 예외가 발생할 수 있다.</p>
+<pre><code class="language-cpp">try
+{
+    auto response = future.get();
+    if (!response)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "서비스 응답이 null");
+        return BT::NodeStatus::FAILURE;
+    }
+}
+catch (const std::exception&amp; e)
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "서비스 호출 예외: %s", e.what());
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>6.3 TF2 좌표 변환 예외</h3>
+<pre><code class="language-cpp">try
+{
+    auto transform = tf_buffer_-&gt;lookupTransform(
+        target_frame, source_frame,
+        tf2::TimePointZero,
+        tf2::durationFromSec(0.1));
+}
+catch (const tf2::TransformException&amp; e)
+{
+    RCLCPP_WARN(node_-&gt;get_logger(),
+        "좌표 변환 실패: %s", e.what());
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>TF2 예외는 <code>tf2::LookupException</code>, <code>tf2::ConnectivityException</code>, <code>tf2::ExtrapolationException</code> 등의 하위 타입으로 세분화된다. 각 예외 타입에 따라 다른 대응 전략을 적용할 수 있다.</p>
+<h2>7. 예외 처리 래퍼 패턴</h2>
+<p>반복되는 예외 처리 코드를 줄이기 위해, 예외 안전 래퍼(exception-safe wrapper) 함수를 활용할 수 있다.</p>
+<pre><code class="language-cpp">template &lt;typename Func&gt;
+BT::NodeStatus safeExecute(
+    rclcpp::Logger logger,
+    const std::string&amp; context,
+    Func&amp;&amp; func)
+{
+    try
+    {
+        return func();
+    }
+    catch (const rclcpp::exceptions::RCLError&amp; e)
+    {
+        RCLCPP_ERROR(logger,
+            "[%s] ROS2 오류: %s",
+            context.c_str(), e.what());
+    }
+    catch (const std::exception&amp; e)
+    {
+        RCLCPP_ERROR(logger,
+            "[%s] 예외 발생: %s",
+            context.c_str(), e.what());
+    }
+    catch (...)
+    {
+        RCLCPP_FATAL(logger,
+            "[%s] 알 수 없는 예외 발생",
+            context.c_str());
+    }
+    return BT::NodeStatus::FAILURE;
+}
+
+// 사용 예시
+BT::NodeStatus onStart() override
+{
+    return safeExecute(
+        node_-&gt;get_logger(), "TakeoffAction::onStart",
+        [this]() -&gt; BT::NodeStatus
+        {
+            // 예외 발생 가능한 코드
+            auto response = sendGoal();
+            return BT::NodeStatus::RUNNING;
+        });
+}
+</code></pre>
+<h2>8. 콜백 내 예외 전파 방지</h2>
+<p>ROS2의 비동기 콜백(토픽 콜백, 타이머 콜백, 서비스 콜백) 내에서 발생한 예외는 ROS2 실행기(executor)를 비정상 종료시킬 수 있다. 따라서 모든 콜백 내부에서 예외를 포착하고 로깅해야 한다.</p>
+<pre><code class="language-cpp">send_goal_options.result_callback =
+    [this](const%20GoalHandle::WrappedResult&amp;%20result)
+    {
+        try
+        {
+            processResult(result);
+        }
+        catch (const std::exception&amp; e)
+        {
+            RCLCPP_ERROR(node_-&gt;get_logger(),
+                "결과 처리 중 예외: %s", e.what());
+            goal_completed_ = true;
+            goal_succeeded_ = false;
+        }
+    };
+</code></pre>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Sutter, H. and Alexandrescu, A., “C++ Coding Standards: 101 Rules, Guidelines, and Best Practices,” Addison-Wesley, 2004.</li>
+<li>Stroustrup, B., “The C++ Programming Language,” 4th ed., Addison-Wesley, 2013.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

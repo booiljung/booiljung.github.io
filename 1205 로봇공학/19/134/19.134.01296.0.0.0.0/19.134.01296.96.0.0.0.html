@@ -115,6 +115,352 @@
             </header>
             <article>
                 <h1>1296.96 액션 노드 상태 변화 추적</h1>
+<h2>1. 개요</h2>
+<p>액션 노드 상태 변화 추적은 행동 트리 실행 과정에서 개별 액션 노드의 상태 전이(<code>IDLE</code> → <code>RUNNING</code> → <code>SUCCESS</code>/<code>FAILURE</code>)를 시간 순서대로 기록하고 분석하는 디버깅 및 감시 기법이다. 상태 변화 추적을 통해 행동 트리의 실행 흐름을 정확히 파악하고, 비정상적인 상태 전이, 예기치 않은 halt, 과도한 RUNNING 지속 등의 문제를 진단할 수 있다.</p>
+<p>BehaviorTree.CPP 프레임워크는 <code>TreeObserver</code> 인터페이스와 내장 로거를 통해 상태 변화 추적 기능을 제공하며, 이를 확장하여 ROS2 토픽 발행, 파일 기록, 시각화 도구 연동 등의 사용자 정의 추적 시스템을 구축할 수 있다.</p>
+<h2>2. 상태 전이 모델</h2>
+<h3>2.1 액션 노드의 상태 공간</h3>
+<p>BehaviorTree.CPP에서 노드의 상태는 다음 네 가지로 정의된다.</p>
+<table><thead><tr><th style="text-align: center">상태</th><th style="text-align: left">의미</th><th style="text-align: left">전이 조건</th></tr></thead><tbody>
+<tr><td style="text-align: center">IDLE</td><td style="text-align: left">초기 상태, 미실행</td><td style="text-align: left">halt 호출 또는 초기화 시</td></tr>
+<tr><td style="text-align: center">RUNNING</td><td style="text-align: left">실행 중, 미완료</td><td style="text-align: left">onStart() 또는 onRunning()에서 반환</td></tr>
+<tr><td style="text-align: center">SUCCESS</td><td style="text-align: left">실행 완료, 성공</td><td style="text-align: left">tick() 또는 onRunning()에서 반환</td></tr>
+<tr><td style="text-align: center">FAILURE</td><td style="text-align: left">실행 완료, 실패</td><td style="text-align: left">tick() 또는 onRunning()에서 반환</td></tr>
+</tbody></table>
+<h3>2.2 동기 노드의 상태 전이</h3>
+<p>동기 액션 노드(<code>SyncActionNode</code>)의 상태 전이는 단순하다.</p>
+<pre><code>IDLE → SUCCESS
+IDLE → FAILURE
+</code></pre>
+<p>단일 tick 내에서 즉시 최종 상태로 전이하며, <code>RUNNING</code> 상태를 거치지 않는다.</p>
+<h3>2.3 비동기 노드의 상태 전이</h3>
+<p>비동기 액션 노드(<code>StatefulActionNode</code>)의 상태 전이는 다중 tick에 걸쳐 진행된다.</p>
+<pre><code>IDLE → RUNNING → RUNNING → ... → SUCCESS
+IDLE → RUNNING → RUNNING → ... → FAILURE
+IDLE → RUNNING → ... → IDLE (halt에 의한 중단)
+IDLE → FAILURE (onStart() 실패)
+</code></pre>
+<p><code>RUNNING</code> 상태가 복수 tick 동안 유지될 수 있으며, halt에 의해 <code>IDLE</code>로 강제 전환될 수 있다.</p>
+<h2>3. TreeObserver를 이용한 추적</h2>
+<h3>3.1 TreeObserver 인터페이스</h3>
+<p>BehaviorTree.CPP 4.x는 <code>BT::TreeObserver</code> 인터페이스를 제공하여, 노드의 상태 변화를 콜백 방식으로 감시한다.</p>
+<pre><code class="language-cpp">class StatusTracker : public BT::TreeObserver
+{
+public:
+    void onNodeStatusChanged(
+        const BT::TreeNode&amp; node,
+        BT::NodeStatus prev_status,
+        BT::NodeStatus new_status) override
+    {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed =
+            std::chrono::duration_cast&lt;
+                std::chrono::microseconds&gt;(
+                    now - start_time_).count();
+
+        StateTransition record;
+        record.timestamp_us = elapsed;
+        record.node_name = node.name();
+        record.node_uid = node.UID();
+        record.prev_status = prev_status;
+        record.new_status = new_status;
+
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+        history_.push_back(record);
+    }
+
+    std::vector&lt;StateTransition&gt; getHistory() const
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+        return history_;
+    }
+
+private:
+    struct StateTransition
+    {
+        int64_t timestamp_us;
+        std::string node_name;
+        uint16_t node_uid;
+        BT::NodeStatus prev_status;
+        BT::NodeStatus new_status;
+    };
+
+    std::chrono::steady_clock::time_point start_time_ =
+        std::chrono::steady_clock::now();
+    mutable std::mutex mutex_;
+    std::vector&lt;StateTransition&gt; history_;
+};
+</code></pre>
+<h3>3.2 옵저버 등록</h3>
+<pre><code class="language-cpp">auto tree = factory.createTreeFromFile("mission.xml");
+auto tracker = std::make_shared&lt;StatusTracker&gt;();
+tree.addObserver(tracker);
+
+// 행동 트리 실행
+while (tree.tickWhileRunning() == BT::NodeStatus::RUNNING)
+{
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(10));
+}
+
+// 추적 결과 출력
+for (const auto&amp; record : tracker-&gt;getHistory())
+{
+    std::cout &lt;&lt; record.timestamp_us &lt;&lt; " μs | "
+              &lt;&lt; record.node_name &lt;&lt; ": "
+              &lt;&lt; BT::toStr(record.prev_status) &lt;&lt; " → "
+              &lt;&lt; BT::toStr(record.new_status)
+              &lt;&lt; std::endl;
+}
+</code></pre>
+<h2>4. ROS2 토픽 기반 상태 추적</h2>
+<h3>4.1 상태 변화 토픽 발행</h3>
+<p>상태 변화를 ROS2 토픽으로 발행하면, <code>rqt</code>, <code>rviz2</code>, 또는 사용자 정의 감시 도구에서 실시간으로 모니터링할 수 있다.</p>
+<pre><code class="language-cpp">class RosStatusTracker : public BT::TreeObserver
+{
+public:
+    RosStatusTracker(rclcpp::Node::SharedPtr node)
+        : node_(node)
+    {
+        publisher_ =
+            node_-&gt;create_publisher&lt;
+                diagnostic_msgs::msg::DiagnosticArray&gt;(
+                "/bt/state_transitions",
+                rclcpp::QoS(100).reliable());
+    }
+
+    void onNodeStatusChanged(
+        const BT::TreeNode&amp; node,
+        BT::NodeStatus prev_status,
+        BT::NodeStatus new_status) override
+    {
+        diagnostic_msgs::msg::DiagnosticArray msg;
+        msg.header.stamp = node_-&gt;now();
+
+        diagnostic_msgs::msg::DiagnosticStatus status;
+        status.name = node.name();
+        status.message =
+            BT::toStr(prev_status) + " → " +
+            BT::toStr(new_status);
+
+        // 상태에 따른 수준 설정
+        if (new_status == BT::NodeStatus::FAILURE)
+        {
+            status.level =
+                diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+        }
+        else if (new_status == BT::NodeStatus::RUNNING)
+        {
+            status.level =
+                diagnostic_msgs::msg::DiagnosticStatus::OK;
+        }
+        else
+        {
+            status.level =
+                diagnostic_msgs::msg::DiagnosticStatus::OK;
+        }
+
+        diagnostic_msgs::msg::KeyValue kv_prev;
+        kv_prev.key = "previous_status";
+        kv_prev.value = BT::toStr(prev_status);
+        status.values.push_back(kv_prev);
+
+        diagnostic_msgs::msg::KeyValue kv_new;
+        kv_new.key = "new_status";
+        kv_new.value = BT::toStr(new_status);
+        status.values.push_back(kv_new);
+
+        msg.status.push_back(status);
+        publisher_-&gt;publish(msg);
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Publisher&lt;
+        diagnostic_msgs::msg::DiagnosticArray&gt;::SharedPtr
+        publisher_;
+};
+</code></pre>
+<h2>5. 내장 로거를 이용한 추적</h2>
+<h3>5.1 FileLogger2</h3>
+<p>BehaviorTree.CPP의 <code>FileLogger2</code>는 모든 상태 변화를 바이너리 형식의 <code>.btlog</code> 파일에 기록한다.</p>
+<pre><code class="language-cpp">BT::FileLogger2 file_logger(tree, "mission_trace.btlog");
+
+// 행동 트리 실행
+tree.tickWhileRunning();
+</code></pre>
+<p>기록된 파일은 Groot2 시각화 도구에서 시간 순서대로 재생할 수 있어, 임무 수행 후 상태 전이를 단계별로 분석하는 데 유용하다.</p>
+<h3>5.2 StdCoutLogger</h3>
+<p>콘솔에 모든 상태 변화를 즉시 출력한다.</p>
+<pre><code class="language-cpp">BT::StdCoutLogger console_logger(tree);
+</code></pre>
+<p>출력 형식은 다음과 같다.</p>
+<pre><code>[NavigateToPose] IDLE -&gt; RUNNING
+[CheckBattery] IDLE -&gt; SUCCESS
+[NavigateToPose] RUNNING -&gt; RUNNING
+[NavigateToPose] RUNNING -&gt; SUCCESS
+</code></pre>
+<h3>5.3 PublisherZMQ</h3>
+<p>ZeroMQ 소켓을 통해 상태 변화를 스트리밍하여, Groot2의 실시간 모니터링 기능과 연동한다.</p>
+<pre><code class="language-cpp">BT::PublisherZMQ zmq_publisher(tree);
+</code></pre>
+<p>Groot2는 이 스트림을 수신하여 행동 트리의 시각적 표현 위에 각 노드의 현재 상태를 색상으로 표시한다.</p>
+<h2>6. 상태 전이 분석</h2>
+<h3>6.1 비정상 전이 감지</h3>
+<p>정상적이지 않은 상태 전이 패턴을 감지하여 경고를 발행한다.</p>
+<pre><code class="language-cpp">void onNodeStatusChanged(
+    const BT::TreeNode&amp; node,
+    BT::NodeStatus prev_status,
+    BT::NodeStatus new_status) override
+{
+    // 비정상 전이 감지
+    if (prev_status == BT::NodeStatus::IDLE &amp;&amp;
+        new_status == BT::NodeStatus::IDLE)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+            "[%s] IDLE → IDLE 전이 감지 (이중 halt)",
+            node.name().c_str());
+    }
+
+    if (prev_status == BT::NodeStatus::SUCCESS &amp;&amp;
+        new_status == BT::NodeStatus::RUNNING)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+            "[%s] SUCCESS → RUNNING 전이 감지 (재시작 없는 재진입)",
+            node.name().c_str());
+    }
+}
+</code></pre>
+<h3>6.2 RUNNING 지속 시간 감시</h3>
+<p>특정 노드가 <code>RUNNING</code> 상태에 과도하게 오래 머무는지를 감시한다.</p>
+<pre><code class="language-cpp">class RunningDurationTracker : public BT::TreeObserver
+{
+public:
+    void onNodeStatusChanged(
+        const BT::TreeNode&amp; node,
+        BT::NodeStatus prev_status,
+        BT::NodeStatus new_status) override
+    {
+        auto uid = node.UID();
+
+        if (new_status == BT::NodeStatus::RUNNING &amp;&amp;
+            prev_status != BT::NodeStatus::RUNNING)
+        {
+            // RUNNING 진입 시각 기록
+            running_start_[uid] =
+                std::chrono::steady_clock::now();
+        }
+        else if (prev_status == BT::NodeStatus::RUNNING &amp;&amp;
+                 new_status != BT::NodeStatus::RUNNING)
+        {
+            // RUNNING 종료: 지속 시간 계산
+            auto it = running_start_.find(uid);
+            if (it != running_start_.end())
+            {
+                auto duration =
+                    std::chrono::steady_clock::now() -
+                    it-&gt;second;
+                auto ms =
+                    std::chrono::duration_cast&lt;
+                        std::chrono::milliseconds&gt;(
+                            duration).count();
+
+                if (ms &gt; warning_threshold_ms_)
+                {
+                    RCLCPP_WARN(logger_,
+                        "[%s] RUNNING 지속: %ld ms",
+                        node.name().c_str(), ms);
+                }
+
+                running_start_.erase(it);
+            }
+        }
+    }
+
+private:
+    std::unordered_map&lt;uint16_t,
+        std::chrono::steady_clock::time_point&gt;
+        running_start_;
+    int64_t warning_threshold_ms_{10000};
+    rclcpp::Logger logger_{
+        rclcpp::get_logger("running_tracker")};
+};
+</code></pre>
+<h3>6.3 상태 전이 통계</h3>
+<p>임무 수행 후 각 노드의 상태 전이 통계를 산출하여 성능을 평가한다.</p>
+<pre><code class="language-cpp">struct NodeStatistics
+{
+    int success_count{0};
+    int failure_count{0};
+    int running_count{0};
+    int halt_count{0};
+    double total_running_ms{0.0};
+    double max_running_ms{0.0};
+};
+
+// 통계 출력 예시
+// NavigateToPose: SUCCESS=5, FAILURE=1, 평균 RUNNING=3200ms
+// CaptureImage: SUCCESS=12, FAILURE=0, 평균 RUNNING=150ms
+// DetectObject: SUCCESS=10, FAILURE=2, 평균 RUNNING=450ms
+</code></pre>
+<h2>7. 조건부 추적</h2>
+<h3>7.1 특정 노드만 추적</h3>
+<p>대규모 행동 트리에서 모든 노드의 상태 변화를 추적하면 로그 량이 과도해진다. 특정 노드만 선택적으로 추적하는 필터를 적용할 수 있다.</p>
+<pre><code class="language-cpp">void onNodeStatusChanged(
+    const BT::TreeNode&amp; node,
+    BT::NodeStatus prev_status,
+    BT::NodeStatus new_status) override
+{
+    // 관심 노드만 추적
+    if (tracked_nodes_.count(node.name()) == 0)
+    {
+        return;
+    }
+
+    logTransition(node, prev_status, new_status);
+}
+
+void addTrackedNode(const std::string&amp; name)
+{
+    tracked_nodes_.insert(name);
+}
+</code></pre>
+<h3>7.2 특정 전이만 추적</h3>
+<p><code>FAILURE</code> 전이만 추적하여 오류 발생 시점을 즉시 포착한다.</p>
+<pre><code class="language-cpp">void onNodeStatusChanged(
+    const BT::TreeNode&amp; node,
+    BT::NodeStatus prev_status,
+    BT::NodeStatus new_status) override
+{
+    if (new_status == BT::NodeStatus::FAILURE)
+    {
+        RCLCPP_ERROR(logger_,
+            "[%s] FAILURE 발생 (이전: %s)",
+            node.name().c_str(),
+            BT::toStr(prev_status).c_str());
+    }
+}
+</code></pre>
+<h2>8. 시각화 연동</h2>
+<h3>8.1 Groot2 실시간 모니터링</h3>
+<p>Groot2와 연동하면 행동 트리의 구조와 각 노드의 상태를 실시간으로 시각화할 수 있다. 각 노드는 현재 상태에 따라 다음과 같은 색상으로 표시된다.</p>
+<table><thead><tr><th style="text-align: center">상태</th><th style="text-align: center">색상</th><th style="text-align: left">의미</th></tr></thead><tbody>
+<tr><td style="text-align: center">IDLE</td><td style="text-align: center">회색</td><td style="text-align: left">대기 상태</td></tr>
+<tr><td style="text-align: center">RUNNING</td><td style="text-align: center">노랑</td><td style="text-align: left">실행 중</td></tr>
+<tr><td style="text-align: center">SUCCESS</td><td style="text-align: center">초록</td><td style="text-align: left">성공</td></tr>
+<tr><td style="text-align: center">FAILURE</td><td style="text-align: center">빨강</td><td style="text-align: left">실패</td></tr>
+</tbody></table>
+<h3>8.2 시계열 그래프</h3>
+<p>상태 변화 이력을 시계열 그래프로 표현하면, 각 노드의 실행 시점과 지속 시간을 시각적으로 파악할 수 있다. 이는 행동 트리의 실행 흐름을 시간축 위에 매핑하여, 병렬 실행되는 노드의 시간적 관계를 분석하는 데 유용하다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Faconti, D., “Groot2: A GUI for BehaviorTree.CPP,” https://www.behaviortree.dev/groot/.</li>
+<li>Macenski, S. et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” Science Robotics, vol. 7, no. 66, 2022.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

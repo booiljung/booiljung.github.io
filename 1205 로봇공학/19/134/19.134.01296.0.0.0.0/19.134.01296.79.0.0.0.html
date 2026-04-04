@@ -115,6 +115,238 @@
             </header>
             <article>
                 <h1>1296.79 LogMessage 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>LogMessage 액션 노드는 행동 트리 실행 과정에서 텍스트 로그 메시지를 ROS2 로깅 시스템에 출력하는 리프 노드이다. 이 노드는 임무 진행 상황, 의사 결정 경과, 오류 발생 등의 이벤트를 기록하여 디버깅과 사후 분석을 지원한다.</p>
+<p>텍스트 로그 출력은 <code>rclcpp</code> 로깅 매크로를 통해 즉시 수행되므로, <code>BT::SyncActionNode</code>를 상속하여 단일 tick 내에서 완료한다. LogMessage 노드는 항상 <code>SUCCESS</code>를 반환하여 로깅 동작이 행동 트리의 실행 흐름에 영향을 미치지 않도록 한다.</p>
+<h2>2. 클래스 구조 설계</h2>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rcl_interfaces/msg/log.hpp&gt;
+
+class LogMessageAction : public BT::SyncActionNode
+{
+public:
+    LogMessageAction(const std::string&amp; name,
+                     const BT::NodeConfiguration&amp; config,
+                     rclcpp::Node::SharedPtr node)
+        : BT::SyncActionNode(name, config),
+          node_(node)
+    {
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("message",
+                "로그 메시지 내용"),
+            BT::InputPort&lt;std::string&gt;("level", "INFO",
+                "로그 수준 (DEBUG, INFO, WARN, ERROR, FATAL)"),
+            BT::InputPort&lt;std::string&gt;("tag", "",
+                "로그 분류 태그")
+        };
+    }
+
+    BT::NodeStatus tick() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<p>포트 설계에서 <code>level</code>의 기본값을 <code>INFO</code>로 설정하여, 로그 수준을 명시하지 않은 경우 정보 수준으로 기록되도록 한다. <code>tag</code> 포트는 로그 메시지의 분류를 위한 선택적 필드이다.</p>
+<h2>3. tick() 메서드 구현</h2>
+<pre><code class="language-cpp">BT::NodeStatus LogMessageAction::tick()
+{
+    std::string message, level, tag;
+
+    if (!getInput("message", message))
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "LogMessage: 메시지 포트가 비어 있음");
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    getInput("level", level);
+    getInput("tag", tag);
+
+    // 태그가 있으면 메시지 앞에 추가
+    std::string formatted_message;
+    if (!tag.empty())
+    {
+        formatted_message = "[" + tag + "] " + message;
+    }
+    else
+    {
+        formatted_message = message;
+    }
+
+    // 로그 수준에 따른 출력
+    if (level == "DEBUG")
+    {
+        RCLCPP_DEBUG(node_-&gt;get_logger(), "%s",
+                     formatted_message.c_str());
+    }
+    else if (level == "INFO")
+    {
+        RCLCPP_INFO(node_-&gt;get_logger(), "%s",
+                    formatted_message.c_str());
+    }
+    else if (level == "WARN")
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(), "%s",
+                    formatted_message.c_str());
+    }
+    else if (level == "ERROR")
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(), "%s",
+                     formatted_message.c_str());
+    }
+    else if (level == "FATAL")
+    {
+        RCLCPP_FATAL(node_-&gt;get_logger(), "%s",
+                     formatted_message.c_str());
+    }
+    else
+    {
+        RCLCPP_INFO(node_-&gt;get_logger(), "%s",
+                    formatted_message.c_str());
+    }
+
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>메시지 포트가 비어 있는 경우에도 <code>SUCCESS</code>를 반환한다. 이는 LogMessage 노드의 실패가 행동 트리의 주 실행 흐름에 영향을 미치지 않아야 한다는 비침투성(non-intrusiveness) 원칙을 따른 것이다.</p>
+<h2>4. 블랙보드 값 포함 로깅</h2>
+<p>블랙보드에 저장된 변수 값을 로그 메시지에 포함하려면, BehaviorTree.CPP의 포트 바인딩 기능을 활용한다.</p>
+<pre><code class="language-xml">&lt;LogMessage level="INFO"
+            message="현재 배터리: {battery_level}%"
+            tag="BATTERY" /&gt;
+</code></pre>
+<p>위 XML에서 <code>{battery_level}</code>은 블랙보드 키에 대한 참조이며, tick 시점에 해당 키의 값으로 치환된다. 이를 통해 동적 데이터를 로그 메시지에 포함할 수 있다.</p>
+<p>다만 BehaviorTree.CPP의 기본 포트 메커니즘은 단일 타입 바인딩만 지원하므로, 복수의 변수를 포함하는 형식화된 메시지를 구성하려면 별도의 포맷팅 로직이 필요하다.</p>
+<pre><code class="language-cpp">// 복수 블랙보드 값을 포함하는 로그 메시지 구성
+static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;std::string&gt;("message",
+            "로그 메시지 템플릿"),
+        BT::InputPort&lt;std::string&gt;("level", "INFO",
+            "로그 수준"),
+        BT::InputPort&lt;std::string&gt;("tag", "",
+            "로그 분류 태그"),
+        BT::InputPort&lt;std::string&gt;("arg1", "",
+            "추가 인자 1"),
+        BT::InputPort&lt;std::string&gt;("arg2", "",
+            "추가 인자 2")
+    };
+}
+</code></pre>
+<h2>5. 조건부 로깅</h2>
+<h3>5.1 로그 수준 필터링</h3>
+<p>ROS2의 로깅 시스템은 노드별 로그 수준 필터를 지원한다. 런타임에서 로그 수준을 변경하려면 <code>ros2 service call</code> 명령을 통해 로거의 수준을 조정할 수 있다.</p>
+<pre><code class="language-bash">ros2 service call /bt_node/set_logger_level \
+    rcl_interfaces/srv/SetLoggerLevel \
+    "{logger_name: 'bt_node', level: 10}"
+</code></pre>
+<p>ROS2 로그 수준 상수는 다음과 같다.</p>
+<table><thead><tr><th style="text-align: center">상수</th><th style="text-align: center">값</th><th style="text-align: center">수준</th></tr></thead><tbody>
+<tr><td style="text-align: center">RCUTILS_LOG_SEVERITY_DEBUG</td><td style="text-align: center">10</td><td style="text-align: center">DEBUG</td></tr>
+<tr><td style="text-align: center">RCUTILS_LOG_SEVERITY_INFO</td><td style="text-align: center">20</td><td style="text-align: center">INFO</td></tr>
+<tr><td style="text-align: center">RCUTILS_LOG_SEVERITY_WARN</td><td style="text-align: center">30</td><td style="text-align: center">WARN</td></tr>
+<tr><td style="text-align: center">RCUTILS_LOG_SEVERITY_ERROR</td><td style="text-align: center">40</td><td style="text-align: center">ERROR</td></tr>
+<tr><td style="text-align: center">RCUTILS_LOG_SEVERITY_FATAL</td><td style="text-align: center">50</td><td style="text-align: center">FATAL</td></tr>
+</tbody></table>
+<h3>5.2 빈도 제한 로깅</h3>
+<p>반복 실행되는 행동 트리에서 매 tick마다 동일한 로그가 출력되는 것을 방지하기 위해, 빈도 제한(throttle) 로깅을 활용한다.</p>
+<pre><code class="language-cpp">// 일정 주기로만 로그 출력
+RCLCPP_INFO_THROTTLE(node_-&gt;get_logger(),
+                     *node_-&gt;get_clock(),
+                     5000,  // 5초 간격
+                     "%s",
+                     formatted_message.c_str());
+</code></pre>
+<p><code>RCLCPP_INFO_THROTTLE</code> 매크로는 지정된 밀리초 간격으로만 로그를 출력하여, 고빈도 tick 환경에서 로그 폭주를 방지한다.</p>
+<h3>5.3 최초 1회 로깅</h3>
+<p>특정 이벤트가 최초로 발생했을 때만 로그를 출력하는 매크로도 제공된다.</p>
+<pre><code class="language-cpp">RCLCPP_INFO_ONCE(node_-&gt;get_logger(),
+                 "초기화 완료: %s",
+                 formatted_message.c_str());
+</code></pre>
+<h2>6. rosout 토픽 연동</h2>
+<p>ROS2의 모든 로그 메시지는 <code>/rosout</code> 토픽으로 자동 발행된다. 이 토픽의 메시지 타입은 <code>rcl_interfaces/msg/Log</code>이며, 다음 필드를 포함한다.</p>
+<table><thead><tr><th style="text-align: center">필드</th><th style="text-align: center">타입</th><th style="text-align: left">설명</th></tr></thead><tbody>
+<tr><td style="text-align: center">stamp</td><td style="text-align: center">builtin_interfaces/Time</td><td style="text-align: left">로그 발생 시각</td></tr>
+<tr><td style="text-align: center">level</td><td style="text-align: center">uint8</td><td style="text-align: left">로그 수준</td></tr>
+<tr><td style="text-align: center">name</td><td style="text-align: center">string</td><td style="text-align: left">노드 이름</td></tr>
+<tr><td style="text-align: center">msg</td><td style="text-align: center">string</td><td style="text-align: left">로그 메시지</td></tr>
+<tr><td style="text-align: center">file</td><td style="text-align: center">string</td><td style="text-align: left">소스 파일명</td></tr>
+<tr><td style="text-align: center">function</td><td style="text-align: center">string</td><td style="text-align: left">함수명</td></tr>
+<tr><td style="text-align: center">line</td><td style="text-align: center">uint32</td><td style="text-align: left">소스 라인 번호</td></tr>
+</tbody></table>
+<p><code>/rosout</code> 토픽을 구독하면 전체 시스템의 로그를 중앙에서 수집하고 분석할 수 있다. 이를 통해 행동 트리 노드에서 출력한 로그를 다른 ROS2 노드의 로그와 시간순으로 통합하여 분석할 수 있다.</p>
+<h2>7. XML 행동 트리에서의 활용</h2>
+<h3>7.1 노드 등록</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;LogMessageAction&gt;(
+    "LogMessage",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;LogMessageAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>7.2 임무 흐름 기록</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;LogMessage level="INFO"
+                message="임무 시작"
+                tag="MISSION" /&gt;
+    &lt;Takeoff target_altitude="20.0" /&gt;
+    &lt;LogMessage level="INFO"
+                message="이륙 완료"
+                tag="FLIGHT" /&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}" /&gt;
+    &lt;LogMessage level="INFO"
+                message="경유점 도달"
+                tag="NAVIGATION" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>7.3 오류 진단 로깅</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;CaptureImage image="{image}" /&gt;
+        &lt;DetectObject image="{image}"
+                      detections="{objects}" /&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;LogMessage level="ERROR"
+                    message="센서 처리 파이프라인 실패"
+                    tag="PERCEPTION" /&gt;
+        &lt;ForceFailure /&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h3>7.4 디버그 수준 상세 로깅</h3>
+<p>개발 및 테스트 단계에서 상세한 실행 정보를 기록하는 구조이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;LogMessage level="DEBUG"
+                message="경유점 이동 시작: ({wp_lat}, {wp_lon})"
+                tag="NAV_DEBUG" /&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}" /&gt;
+    &lt;LogMessage level="DEBUG"
+                message="최종 거리: {final_distance} m"
+                tag="NAV_DEBUG" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>배포 환경에서는 로그 수준을 INFO 이상으로 설정하면 DEBUG 로그가 자동으로 필터링되므로, 코드 변경 없이 로그 상세도를 조절할 수 있다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Open Robotics, “Logging — ROS 2 Documentation,” https://docs.ros.org/en/rolling/Concepts/About-Logging.html.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

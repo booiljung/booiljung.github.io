@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.51 지도 업데이트 확인 조건 노드</title>
+    <title>BIJUNG:지도 업데이트 확인 조건 노드 (Map Update Check Condition Node)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,160 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.51 지도 업데이트 확인 조건 노드</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.51 지도 업데이트 확인 조건 노드</span></nav>
+                    <h1>지도 업데이트 확인 조건 노드 (Map Update Check Condition Node)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="지도 업데이트 확인 조건 노드 (Map Update Check Condition Node)">지도 업데이트 확인 조건 노드 (Map Updat...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.51 지도 업데이트 확인 조건 노드</h1>
+                <h1>지도 업데이트 확인 조건 노드 (Map Update Check Condition Node)</h1>
+<h2>1. 개요</h2>
+<p>지도 업데이트 확인 조건 노드는 로봇이 사용하는 환경 지도(코스트맵 또는 점유 격자 지도)가 최근에 갱신되었는지를 판정하는 조건 노드이다. 동적 환경에서 지도 데이터가 오래되면 현재 환경을 정확히 반영하지 못하여, 장애물 회피 실패나 경로 계획 오류가 발생할 수 있다. 본 조건 노드는 지도의 신선도(freshness)를 확인하여, 최신 환경 정보에 기반한 내비게이션을 보장한다.</p>
+<h2>2. 코스트맵 갱신 확인의 원리</h2>
+<h3>2.1 Nav2의 코스트맵 구조</h3>
+<p>Nav2에서는 글로벌 코스트맵과 로컬 코스트맵을 별도로 관리한다.</p>
+<table><thead><tr><th>코스트맵 유형</th><th>갱신 빈도</th><th>범위</th><th>용도</th></tr></thead><tbody>
+<tr><td>글로벌 코스트맵</td><td>1~5 Hz</td><td>전체 지도</td><td>전역 경로 계획</td></tr>
+<tr><td>로컬 코스트맵</td><td>5~20 Hz</td><td>로봇 주변</td><td>지역 장애물 회피</td></tr>
+</tbody></table>
+<h3>2.2 갱신 감지 방법</h3>
+<p>지도 갱신을 감지하는 방법은 다음과 같다.</p>
+<ol>
+<li><strong>타임스탬프 비교</strong>: 코스트맵 메시지의 <code>header.stamp</code>를 현재 시각과 비교하여 경과 시간을 판정한다.</li>
+<li><strong>메시지 수신 시점 비교</strong>: 마지막 메시지 수신 시점으로부터의 경과 시간을 측정한다.</li>
+<li><strong>갱신 카운터</strong>: 수신된 메시지 수를 추적하여 지정된 주기 내에 갱신이 발생하였는지를 판정한다.</li>
+</ol>
+<h2>3. 구현</h2>
+<h3>3.1 타임스탬프 기반 갱신 확인</h3>
+<pre><code class="language-cpp">class IsMapUpdatedRecently
+    : public BT::RosTopicSubNode&lt;nav_msgs::msg::OccupancyGrid&gt;
+{
+public:
+    IsMapUpdatedRecently(const std::string&amp; name,
+                         const BT::NodeConfiguration&amp; config,
+                         const BT::RosNodeParams&amp; params)
+        : RosTopicSubNode(name, config, params),
+          node_(params.nh)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        return providedBasicPorts({
+            BT::InputPort&lt;double&gt;("max_age_sec", 5.0,
+                "최대 허용 지도 경과 시간 (초)")
+        });
+    }
+
+    BT::NodeStatus onTick(
+        const nav_msgs::msg::OccupancyGrid::SharedPtr&amp; msg) override
+    {
+        if (!msg)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        double max_age;
+        getInput("max_age_sec", max_age);
+
+        rclcpp::Time now = node_-&gt;get_clock()-&gt;now();
+        rclcpp::Time map_time(msg-&gt;header.stamp);
+        double age = (now - map_time).seconds();
+
+        if (age &gt;= 0.0 &amp;&amp; age &lt;= max_age)
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<h3>3.2 변경 감지 기반 갱신 확인</h3>
+<p>지도 데이터의 내용이 실제로 변경되었는지를 확인하는 조건 노드이다. 단순히 새 메시지가 발행되었다는 것이 아니라, 지도 내용이 이전과 다른지를 판정한다.</p>
+<pre><code class="language-cpp">class HasMapChanged
+    : public BT::RosTopicSubNode&lt;nav_msgs::msg::OccupancyGrid&gt;
+{
+public:
+    HasMapChanged(const std::string&amp; name,
+                  const BT::NodeConfiguration&amp; config,
+                  const BT::RosNodeParams&amp; params)
+        : RosTopicSubNode(name, config, params),
+          has_previous_(false),
+          changed_(false)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        return providedBasicPorts({});
+    }
+
+    BT::NodeStatus onTick(
+        const nav_msgs::msg::OccupancyGrid::SharedPtr&amp; msg) override
+    {
+        if (!msg)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        if (!has_previous_)
+        {
+            previous_stamp_ = msg-&gt;header.stamp;
+            has_previous_ = true;
+            return BT::NodeStatus::FAILURE;
+        }
+
+        rclcpp::Time current_stamp(msg-&gt;header.stamp);
+        rclcpp::Time prev_stamp(previous_stamp_);
+
+        if (current_stamp &gt; prev_stamp)
+        {
+            previous_stamp_ = msg-&gt;header.stamp;
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+private:
+    bool has_previous_;
+    builtin_interfaces::msg::Time previous_stamp_;
+    bool changed_;
+};
+</code></pre>
+<h2>4. XML 행동 트리에서의 활용</h2>
+<h3>4.1 지도 갱신 후 경로 재계획</h3>
+<pre><code class="language-xml">&lt;BehaviorTree ID="MapAwareNavigation"&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsMapUpdatedRecently"
+                   topic_name="/global_costmap/costmap"
+                   max_age_sec="10.0"/&gt;
+        &lt;Fallback&gt;
+            &lt;Sequence&gt;
+                &lt;Condition ID="HasMapChanged"
+                           topic_name="/global_costmap/costmap"/&gt;
+                &lt;Action ID="RecomputeGlobalPath"/&gt;
+            &lt;/Sequence&gt;
+            &lt;Action ID="FollowCurrentPath"/&gt;
+        &lt;/Fallback&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p>지도가 갱신되면 글로벌 경로를 재계획하고, 갱신이 없으면 현재 경로를 계속 추종한다. 지도가 일정 시간 이상 갱신되지 않으면 전체 내비게이션이 중단된다.</p>
+<h2>5. 설계 시 고려 사항</h2>
+<h3>5.1 글로벌 지도와 로컬 지도의 갱신 주기 차이</h3>
+<p>글로벌 코스트맵은 갱신 주기가 길므로, 허용 경과 시간을 넉넉히 설정하여야 한다. 반면, 로컬 코스트맵은 빈번히 갱신되므로 짧은 경과 시간을 설정할 수 있다.</p>
+<h3>5.2 대역폭 고려</h3>
+<p>대규모 코스트맵 메시지를 빈번히 구독하면 통신 대역폭을 소모한다. <code>OccupancyGrid</code> 메시지의 크기는 지도 해상도와 범위에 비례하며, 고해상도 대규모 지도에서는 메시지당 수 MB에 달할 수 있다. 구독 큐 깊이를 1로 설정하여 최신 메시지만 유지하는 것이 바람직하다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Macenski, S., et al. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>Nav2 공식 문서. https://docs.nav2.org/</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1298.37 Timeout의 시간 초과 시 자식 Halt</title>
+    <title>BIJUNG:Timeout의 시간 초과 시 자식 Halt (Timeout's Child Halt on Time Expiration)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,106 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1298.37 Timeout의 시간 초과 시 자식 Halt</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span title="1298.37 Timeout의 시간 초과 시 자식 Halt">1298.37 Timeout의 시간 초과 시 자식...</span></nav>
+                    <h1>Timeout의 시간 초과 시 자식 Halt (Timeout's Child Halt on Time Expiration)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span title="Timeout의 시간 초과 시 자식 Halt (Timeout's Child Halt on Time Expiration)">Timeout의 시간 초과 시 자식 Halt (T...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1298.37 Timeout의 시간 초과 시 자식 Halt</h1>
+                <h1>Timeout의 시간 초과 시 자식 Halt (Timeout’s Child Halt on Time Expiration)</h1>
+<h2>1. 개요</h2>
+<p>Timeout 데코레이터가 시간 초과를 감지하면, 자식 노드의 <code>halt()</code> 메서드를 호출하여 실행 중인 행동을 강제로 중단시킨다. 이 halt 메커니즘은 자식이 보유한 리소스를 안전하게 해제하고, 비동기 작업을 취소하며, 물리적 동작(모터, 그리퍼 등)을 안전한 상태로 전환하는 데 필수적이다.</p>
+<h2>2. Halt 호출 과정</h2>
+<h3>2.1 시간적 흐름</h3>
+<pre><code>Tick N:   시간 초과 감지
+          → child_node_-&gt;haltChild() 호출
+          → 자식의 halt() 실행 (리소스 해제, 상태 초기화)
+          → 자식 상태가 IDLE로 전환
+          → Timeout이 FAILURE 반환
+          → 타이머 리셋
+</code></pre>
+<h3>2.2 코드 수준의 동작</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    if (status() == BT::NodeStatus::IDLE)
+    {
+        start_time_ = clock_.now();
+        setStatus(BT::NodeStatus::RUNNING);
+    }
+
+    // 시간 초과 확인
+    auto elapsed = clock_.now() - start_time_;
+    if (elapsed &gt;= timeout_duration_)
+    {
+        // 자식이 RUNNING 상태이면 halt 호출
+        haltChild();
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 시간 내: 자식 tick
+    auto child_status = child_node_-&gt;executeTick();
+
+    if (child_status != BT::NodeStatus::RUNNING)
+    {
+        // 자식이 완료됨: 타이머 리셋
+        resetTimer();
+    }
+
+    return child_status;
+}
+</code></pre>
+<h2>3. 자식 halt()의 책임</h2>
+<h3>3.1 비동기 작업 취소</h3>
+<p>ROS2 액션 서버를 사용하는 자식의 경우, halt()에서 진행 중인 목표(goal)를 취소하여야 한다.</p>
+<pre><code class="language-cpp">void NavigateAction::halt()
+{
+    if (action_client_ &amp;&amp; goal_handle_)
+    {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+    CoroActionNode::halt();
+}
+</code></pre>
+<h3>3.2 물리적 동작 정지</h3>
+<p>모터 제어 행동의 경우, halt()에서 속도 명령을 0으로 설정하여 로봇을 정지시켜야 한다.</p>
+<pre><code class="language-cpp">void DriveAction::halt()
+{
+    auto cmd = geometry_msgs::msg::Twist();
+    cmd_vel_pub_-&gt;publish(cmd);  // 정지 명령
+    ActionNodeBase::halt();
+}
+</code></pre>
+<h3>3.3 그리퍼 상태 유지</h3>
+<p>매니퓰레이션 행동에서는 halt 시 그리퍼의 현재 상태를 유지하여야 한다. 물체를 잡고 있는 도중 halt가 호출되면, 그리퍼를 열지 않고 현재 파지 상태를 유지하는 것이 안전하다.</p>
+<h2>4. haltChild()와 halt()의 관계</h2>
+<p><code>haltChild()</code>는 BehaviorTree.CPP의 <code>DecoratorNode</code>가 제공하는 메서드로, 자식이 <code>RUNNING</code> 상태인 경우에만 자식의 <code>halt()</code>를 호출한다.</p>
+<pre><code class="language-cpp">void DecoratorNode::haltChild()
+{
+    if (child_node_-&gt;status() == NodeStatus::RUNNING)
+    {
+        child_node_-&gt;halt();
+    }
+    child_node_-&gt;setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<p>자식이 이미 <code>SUCCESS</code> 또는 <code>FAILURE</code> 상태이면 halt를 호출하지 않는다.</p>
+<h2>5. halt의 비차단 실행</h2>
+<p>halt() 메서드는 가능한 한 신속하게 완료되어야 한다. halt() 내부에서 장시간 소요되는 동기 호출(예: 서비스 응답 대기)을 수행하면 전체 tick이 차단된다.</p>
+<h2>6. 설계 시 고려 사항</h2>
+<h3>6.1 halt 미구현의 위험</h3>
+<p>자식 노드가 halt()를 올바르게 구현하지 않으면, Timeout에 의한 강제 중단 후에도 자식의 비동기 작업이 계속 실행될 수 있다. 모든 비동기 액션 노드는 halt()에서 진행 중인 작업을 취소하는 로직을 반드시 포함하여야 한다.</p>
+<h3>6.2 중첩 Timeout에서의 halt 전파</h3>
+<p>Timeout이 중첩된 경우(Timeout 내부에 다른 Timeout이 있는 경우), 외부 Timeout의 halt가 내부 Timeout으로 전파되고, 내부 Timeout은 다시 자식으로 halt를 전파한다. 이 연쇄적 halt 전파가 올바르게 이루어지는지를 검증하여야 한다.</p>
+<h3>6.3 halt와 상태 보존</h3>
+<p>halt 후 동일한 행동을 재시작하는 경우, 이전 실행의 상태가 정리되어 깨끗한 상태에서 시작하여야 한다. 자식의 halt()에서 내부 상태를 완전히 초기화하여야 한다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

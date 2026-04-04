@@ -115,6 +115,260 @@
             </header>
             <article>
                 <h1>1296.93 StatefulActionNode의 테스트 패턴</h1>
+<h2>1. 개요</h2>
+<p><code>StatefulActionNode</code>는 <code>onStart()</code>, <code>onRunning()</code>, <code>onHalted()</code> 세 콜백 메서드를 통해 다중 tick에 걸쳐 실행되는 비동기 액션 노드이다. 비동기 노드의 테스트는 동기 노드에 비해 복잡하며, <code>RUNNING</code> 상태의 유지와 전이, halt 처리, 비동기 콜백의 시뮬레이션 등을 포함한다.</p>
+<h2>2. 테스트 구조</h2>
+<h3>2.1 기본 테스트 설정</h3>
+<pre><code class="language-cpp">#include &lt;gtest/gtest.h&gt;
+#include &lt;behaviortree_cpp/bt_factory.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+
+class StatefulActionTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        rclcpp::init(0, nullptr);
+        test_node_ =
+            rclcpp::Node::make_shared("test_node");
+        factory_ =
+            std::make_shared&lt;BT::BehaviorTreeFactory&gt;();
+        blackboard_ = BT::Blackboard::create();
+        registerNodes();
+    }
+
+    void TearDown() override
+    {
+        test_node_.reset();
+        factory_.reset();
+        rclcpp::shutdown();
+    }
+
+    void spinFor(std::chrono::milliseconds duration)
+    {
+        auto end = std::chrono::steady_clock::now() +
+                   duration;
+        while (std::chrono::steady_clock::now() &lt; end)
+        {
+            rclcpp::spin_some(test_node_);
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(10));
+        }
+    }
+
+    rclcpp::Node::SharedPtr test_node_;
+    std::shared_ptr&lt;BT::BehaviorTreeFactory&gt; factory_;
+    BT::Blackboard::Ptr blackboard_;
+};
+</code></pre>
+<h2>3. 테스트 패턴</h2>
+<h3>3.1 패턴 1: 상태 전이 검증</h3>
+<p><code>RUNNING</code> → <code>SUCCESS</code> 전이를 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(StatefulActionTest, RunningToSuccess)
+{
+    auto tree = createTree("&lt;MockAsyncAction "
+        "duration_ms=\"200\" result=\"SUCCESS\" /&gt;");
+
+    // 첫 번째 tick: RUNNING 반환
+    auto status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+
+    // 작업 완료 대기
+    spinFor(std::chrono::milliseconds(300));
+
+    // 다음 tick: SUCCESS 반환
+    status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>3.2 패턴 2: RUNNING 유지 검증</h3>
+<p>작업 완료 전에 <code>RUNNING</code>이 유지되는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(StatefulActionTest, MaintainsRunning)
+{
+    auto tree = createTree("&lt;MockAsyncAction "
+        "duration_ms=\"1000\" /&gt;");
+
+    // 여러 tick 동안 RUNNING 유지
+    for (int i = 0; i &lt; 5; ++i)
+    {
+        auto status = tree.tickOnce();
+        EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+        spinFor(std::chrono::milliseconds(50));
+    }
+}
+</code></pre>
+<h3>3.3 패턴 3: Halt 후 재시작</h3>
+<p>halt 호출 후 노드가 깨끗한 상태에서 재시작되는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(StatefulActionTest, HaltAndRestart)
+{
+    auto tree = createTree("&lt;MockAsyncAction "
+        "duration_ms=\"500\" /&gt;");
+
+    // 시작
+    auto status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+
+    // Halt
+    tree.haltTree();
+
+    // 재시작
+    status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+
+    // 완료 대기
+    spinFor(std::chrono::milliseconds(600));
+    status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h3>3.4 패턴 4: 타임아웃 검증</h3>
+<pre><code class="language-cpp">TEST_F(StatefulActionTest, TimeoutCausesFailure)
+{
+    auto tree = createTree(
+        "&lt;MockAsyncAction duration_ms=\"5000\" "
+        "timeout_ms=\"500\" /&gt;");
+
+    auto status = tree.tickWhileRunning(
+        std::chrono::milliseconds(2000));
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h3>3.5 패턴 5: 출력 포트 검증</h3>
+<p>비동기 작업 완료 후 출력 포트에 결과가 기록되는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(StatefulActionTest, OutputAfterCompletion)
+{
+    blackboard_-&gt;set("target_alt", 15.0);
+
+    auto tree = createTree(
+        "&lt;MockTakeoff target_altitude=\"{target_alt}\" "
+        "reached_altitude=\"{result_alt}\" /&gt;");
+
+    auto status = tree.tickWhileRunning();
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+
+    double reached;
+    EXPECT_TRUE(blackboard_-&gt;get("result_alt", reached));
+    EXPECT_NEAR(reached, 15.0, 1.0);
+}
+</code></pre>
+<h3>3.6 패턴 6: 실패 후 오류 정보 검증</h3>
+<pre><code class="language-cpp">TEST_F(StatefulActionTest, ErrorInfoOnFailure)
+{
+    auto tree = createTree(
+        "&lt;MockAsyncAction force_failure=\"true\" "
+        "error_code=\"{err_code}\" "
+        "error_message=\"{err_msg}\" /&gt;");
+
+    auto status = tree.tickWhileRunning();
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+
+    int code;
+    std::string message;
+    EXPECT_TRUE(blackboard_-&gt;get("err_code", code));
+    EXPECT_TRUE(blackboard_-&gt;get("err_msg", message));
+    EXPECT_GT(code, 0);
+    EXPECT_FALSE(message.empty());
+}
+</code></pre>
+<h2>4. 모의 비동기 액션 노드</h2>
+<p>테스트 전용 모의 비동기 노드를 구현하여, 실제 외부 의존성 없이 다양한 시나리오를 시뮬레이션한다.</p>
+<pre><code class="language-cpp">class MockAsyncAction : public BT::StatefulActionNode
+{
+public:
+    MockAsyncAction(const std::string&amp; name,
+                    const BT::NodeConfiguration&amp; config)
+        : BT::StatefulActionNode(name, config)
+    {
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;int&gt;("duration_ms", 100,
+                "모의 작업 시간 (ms)"),
+            BT::InputPort&lt;std::string&gt;("result",
+                "SUCCESS", "반환 결과"),
+            BT::InputPort&lt;bool&gt;("force_failure", false,
+                "강제 실패"),
+            BT::OutputPort&lt;int&gt;("error_code", "오류 코드"),
+            BT::OutputPort&lt;std::string&gt;("error_message",
+                "오류 메시지")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        int duration_ms;
+        getInput("duration_ms", duration_ms);
+        end_time_ = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(duration_ms);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        bool force_failure;
+        getInput("force_failure", force_failure);
+
+        if (force_failure)
+        {
+            setOutput("error_code", 9999);
+            setOutput("error_message", "강제 실패");
+            return BT::NodeStatus::FAILURE;
+        }
+
+        if (std::chrono::steady_clock::now() &gt;= end_time_)
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override
+    {
+        // 상태 초기화
+    }
+
+private:
+    std::chrono::steady_clock::time_point end_time_;
+};
+</code></pre>
+<h2>5. 테스트 실행 도우미</h2>
+<p><code>tickWhileRunning</code>의 사용자 정의 구현으로, 최대 대기 시간과 tick 간격을 제어한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tickUntilComplete(
+    BT::Tree&amp; tree,
+    std::chrono::milliseconds max_wait =
+        std::chrono::milliseconds(5000),
+    std::chrono::milliseconds tick_interval =
+        std::chrono::milliseconds(50))
+{
+    auto deadline =
+        std::chrono::steady_clock::now() + max_wait;
+    BT::NodeStatus status = BT::NodeStatus::IDLE;
+
+    while (std::chrono::steady_clock::now() &lt; deadline)
+    {
+        status = tree.tickOnce();
+        if (status != BT::NodeStatus::RUNNING)
+        {
+            return status;
+        }
+        rclcpp::spin_some(test_node_);
+        std::this_thread::sleep_for(tick_interval);
+    }
+
+    tree.haltTree();
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Google, “Google Test User’s Guide,” https://google.github.io/googletest/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

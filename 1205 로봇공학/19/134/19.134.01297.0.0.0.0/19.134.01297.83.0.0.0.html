@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.83 이벤트 기반 캐싱의 구현</title>
+    <title>BIJUNG:이벤트 기반 캐싱의 구현 (Event-Based Caching Implementation)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,235 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.83 이벤트 기반 캐싱의 구현</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.83 이벤트 기반 캐싱의 구현</span></nav>
+                    <h1>이벤트 기반 캐싱의 구현 (Event-Based Caching Implementation)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="이벤트 기반 캐싱의 구현 (Event-Based Caching Implementation)">이벤트 기반 캐싱의 구현 (Event-Based ...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.83 이벤트 기반 캐싱의 구현</h1>
+                <h1>이벤트 기반 캐싱의 구현 (Event-Based Caching Implementation)</h1>
+<h2>1. 개요</h2>
+<p>이벤트 기반 캐싱은 외부 이벤트(토픽 메시지 수신, 파라미터 변경, 서비스 응답 수신 등)가 발생할 때에만 조건을 재평가하고, 이벤트가 발생하지 않는 동안에는 이전에 캐싱된 결과를 반환하는 캐싱 전략이다. 시간 기반 캐싱이 주기적으로 재평가하는 것과 달리, 이벤트 기반 캐싱은 데이터가 실제로 변경된 시점에서만 평가를 수행하므로 가장 효율적인 캐싱 전략이다.</p>
+<h2>2. 이벤트 기반 캐싱의 동작 원리</h2>
+<h3>2.1 상태 전이</h3>
+<pre><code>[초기] --이벤트--&gt; [평가 수행, 캐시 갱신] --tick--&gt; [캐시 반환]
+                          ^                         |
+                          |--- 이벤트 발생 시 ------+
+</code></pre>
+<ol>
+<li>구독 콜백에서 이벤트(새 메시지 수신)를 감지하면 조건을 재평가하고 캐시를 갱신한다.</li>
+<li><code>tick()</code> 메서드는 캐시된 결과를 즉시 반환한다.</li>
+<li>이벤트가 발생하지 않는 동안 <code>tick()</code>은 이전 결과를 계속 반환한다.</li>
+</ol>
+<h3>2.2 시간 기반 캐싱과의 비교</h3>
+<table><thead><tr><th>특성</th><th>시간 기반 캐싱</th><th>이벤트 기반 캐싱</th></tr></thead><tbody>
+<tr><td>재평가 시점</td><td>유효 기간 만료 시</td><td>이벤트 발생 시</td></tr>
+<tr><td>불필요한 재평가</td><td>발생 가능</td><td>없음</td></tr>
+<tr><td>반응 지연</td><td>최대 유효 기간</td><td>없음 (이벤트 즉시 반영)</td></tr>
+<tr><td>구현 복잡도</td><td>낮음</td><td>중간~높음</td></tr>
+<tr><td>적합한 데이터 소스</td><td>주기적 데이터</td><td>비주기적/이벤트형 데이터</td></tr>
+</tbody></table>
+<h2>3. 구현</h2>
+<h3>3.1 토픽 메시지 이벤트 기반 캐싱</h3>
+<pre><code class="language-cpp">template &lt;typename MessageT&gt;
+class EventCachedCondition : public BT::ConditionNode
+{
+public:
+    EventCachedCondition(const std::string&amp; name,
+                         const BT::NodeConfiguration&amp; config,
+                         rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          has_cache_(false),
+          new_data_available_(false)
+    {
+        std::string topic_name;
+        getInput("topic_name", topic_name);
+
+        subscription_ = node_-&gt;create_subscription&lt;MessageT&gt;(
+            topic_name,
+            rclcpp::QoS(1),
+            [this](const%20typename%20MessageT::SharedPtr%20msg) {
+                std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                latest_message_ = msg;
+                new_data_available_ = true;
+            });
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("topic_name", "토픽 이름")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+
+        if (new_data_available_)
+        {
+            cached_result_ = evaluateCondition(latest_message_);
+            has_cache_ = true;
+            new_data_available_ = false;
+        }
+
+        if (has_cache_)
+        {
+            return cached_result_;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+protected:
+    virtual BT::NodeStatus evaluateCondition(
+        const typename MessageT::SharedPtr&amp; msg) = 0;
+
+    rclcpp::Node::SharedPtr node_;
+
+private:
+    typename rclcpp::Subscription&lt;MessageT&gt;::SharedPtr subscription_;
+    typename MessageT::SharedPtr latest_message_;
+    std::mutex mutex_;
+    bool has_cache_;
+    bool new_data_available_;
+    BT::NodeStatus cached_result_;
+};
+</code></pre>
+<p>이 구현의 핵심 특성은 다음과 같다.</p>
+<ol>
+<li>구독 콜백은 새 메시지를 저장하고 <code>new_data_available_</code> 플래그를 설정한다.</li>
+<li><code>tick()</code> 메서드는 새 데이터가 있을 때만 <code>evaluateCondition()</code>을 호출한다.</li>
+<li>새 데이터가 없으면 이전 캐시 결과를 즉시 반환한다.</li>
+<li>콜백과 tick 사이의 스레드 안전성은 뮤텍스로 보장한다.</li>
+</ol>
+<h3>3.2 파라미터 이벤트 기반 캐싱</h3>
+<p>ROS2 파라미터 변경 이벤트를 감지하여 캐시를 갱신하는 패턴이다.</p>
+<pre><code class="language-cpp">class EventCachedParameterCondition : public BT::ConditionNode
+{
+public:
+    EventCachedParameterCondition(const std::string&amp; name,
+                                  const BT::NodeConfiguration&amp; config,
+                                  rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          cached_result_(BT::NodeStatus::FAILURE),
+          needs_update_(true)
+    {
+        std::string param_name;
+        getInput("param_name", param_name);
+
+        // 초기값 평가
+        if (node_-&gt;has_parameter(param_name))
+        {
+            cached_result_ = evaluateParameter(
+                node_-&gt;get_parameter(param_name));
+            needs_update_ = false;
+        }
+
+        // 파라미터 변경 이벤트 구독
+        param_handler_ =
+            std::make_shared&lt;rclcpp::ParameterEventHandler&gt;(node_);
+        cb_handle_ = param_handler_-&gt;add_parameter_callback(
+            param_name,
+            [this](const%20rclcpp::Parameter&amp;%20param) {
+                std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                cached_result_ = evaluateParameter(param);
+                needs_update_ = false;
+            });
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("param_name", "파라미터 이름"),
+            BT::InputPort&lt;std::string&gt;("expected_value", "기대 값")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+        return cached_result_;
+    }
+
+private:
+    BT::NodeStatus evaluateParameter(
+        const rclcpp::Parameter&amp; param)
+    {
+        std::string expected;
+        getInput("expected_value", expected);
+        return (param.value_to_string() == expected)
+                   ? BT::NodeStatus::SUCCESS
+                   : BT::NodeStatus::FAILURE;
+    }
+
+    rclcpp::Node::SharedPtr node_;
+    std::shared_ptr&lt;rclcpp::ParameterEventHandler&gt; param_handler_;
+    std::shared_ptr&lt;rclcpp::ParameterCallbackHandle&gt; cb_handle_;
+    std::mutex mutex_;
+    BT::NodeStatus cached_result_;
+    bool needs_update_;
+};
+</code></pre>
+<p>이 구현에서 <code>tick()</code> 메서드는 단순히 캐시된 결과를 반환할 뿐이며, 조건 평가는 오직 파라미터 변경 콜백에서만 수행된다. 따라서 tick의 계산 비용은 뮤텍스 잠금과 변수 반환에 해당하는 최소 수준이다.</p>
+<h2>4. XML 행동 트리에서의 활용</h2>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsBatteryOk_EventCached"
+               topic_name="/battery_state"/&gt;
+    &lt;Condition ID="IsParamMode_EventCached"
+               param_name="operation_mode"
+               expected_value="autonomous"/&gt;
+    &lt;Action ID="AutonomousMission"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<h2>5. 이벤트 기반 캐싱과 타임아웃의 결합</h2>
+<p>이벤트 기반 캐싱에 타임아웃을 추가하여, 이벤트가 장시간 발생하지 않는 경우(데이터 소스 장애)를 감지한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+
+    if (new_data_available_)
+    {
+        cached_result_ = evaluateCondition(latest_message_);
+        cache_time_ = node_-&gt;get_clock()-&gt;now();
+        has_cache_ = true;
+        new_data_available_ = false;
+    }
+
+    if (!has_cache_)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double timeout;
+    getInput("stale_timeout_sec", timeout);
+    double elapsed =
+        (node_-&gt;get_clock()-&gt;now() - cache_time_).seconds();
+
+    if (elapsed &gt; timeout)
+    {
+        return BT::NodeStatus::FAILURE;  // 캐시가 오래됨
+    }
+
+    return cached_result_;
+}
+</code></pre>
+<h2>6. 설계 시 고려 사항</h2>
+<h3>6.1 초기 상태 처리</h3>
+<p>이벤트 기반 캐싱에서 노드가 생성된 직후 아직 이벤트가 발생하지 않은 경우, 캐시가 비어 있으므로 <code>FAILURE</code>를 반환한다. 이는 시스템 초기화 단계에서 일시적으로 모든 조건이 <code>FAILURE</code>를 반환하는 상황을 초래할 수 있다.</p>
+<h3>6.2 콜백 실행 스레드</h3>
+<p>ROS2의 콜백은 실행기(executor)에 의해 별도의 스레드에서 실행될 수 있다. 콜백에서의 조건 평가와 tick 스레드에서의 캐시 접근이 동시에 발생하지 않도록 뮤텍스를 통한 동기화가 필수적이다.</p>
+<h3>6.3 콜백 내 평가의 부하</h3>
+<p>콜백 함수 내에서 복잡한 조건 평가를 수행하면 콜백 큐의 처리 지연을 유발할 수 있다. 평가 로직이 복잡한 경우, 콜백에서는 메시지만 저장하고 <code>tick()</code>에서 평가를 수행하는 것이 적절하다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

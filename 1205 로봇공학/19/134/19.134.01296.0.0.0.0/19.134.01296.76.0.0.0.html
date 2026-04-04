@@ -115,6 +115,342 @@
             </header>
             <article>
                 <h1>1296.76 SendMessage 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>SendMessage 액션 노드는 로봇이 외부 시스템이나 다른 로봇에게 메시지를 전송하는 동작을 행동 트리 내에서 수행하는 리프 노드이다. 메시지 전송은 임무 상태 보고, 이벤트 알림, 다중 로봇 간 정보 공유, 지상 관제와의 통신 등 다양한 목적으로 활용된다.</p>
+<p>메시지 전송은 ROS2 토픽 발행(publish)을 통해 수행되며, 발행 동작 자체는 비블로킹(non-blocking)으로 즉시 완료되므로 <code>BT::SyncActionNode</code>로 구현하는 것이 적합하다. 다만 메시지 전달의 확인(acknowledgment)이 필요한 경우에는 <code>BT::StatefulActionNode</code>를 사용하여 응답을 대기해야 한다.</p>
+<h2>2. 클래스 구조 설계</h2>
+<h3>2.1 동기 방식 구현</h3>
+<p>단방향 메시지 전송은 <code>SyncActionNode</code>를 상속하여 단일 tick 내에서 완료한다.</p>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;std_msgs/msg/string.hpp&gt;
+
+class SendMessageAction : public BT::SyncActionNode
+{
+public:
+    SendMessageAction(const std::string&amp; name,
+                      const BT::NodeConfiguration&amp; config,
+                      rclcpp::Node::SharedPtr node)
+        : BT::SyncActionNode(name, config),
+          node_(node)
+    {
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("topic",
+                "/robot/messages",
+                "발행 토픽 이름"),
+            BT::InputPort&lt;std::string&gt;("message",
+                "전송할 메시지 내용"),
+            BT::InputPort&lt;std::string&gt;("message_type",
+                "text",
+                "메시지 유형 (text, json, status)"),
+            BT::InputPort&lt;int&gt;("qos_depth", 10,
+                "QoS 이력 깊이"),
+            BT::InputPort&lt;bool&gt;("reliable", true,
+                "RELIABLE QoS 사용 여부")
+        };
+    }
+
+    BT::NodeStatus tick() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    std::unordered_map&lt;std::string,
+        rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr&gt;
+        publishers_;
+
+    rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr
+        getOrCreatePublisher(const std::string&amp; topic,
+                             int qos_depth,
+                             bool reliable);
+};
+</code></pre>
+<p><code>publishers_</code> 맵을 통해 토픽별 발행자를 캐싱하여, 동일 토픽에 대한 반복 전송 시 발행자 재생성의 오버헤드를 방지한다.</p>
+<h2>3. tick() 메서드 구현</h2>
+<pre><code class="language-cpp">BT::NodeStatus SendMessageAction::tick()
+{
+    std::string topic, message, message_type;
+    int qos_depth;
+    bool reliable;
+
+    if (!getInput("topic", topic) ||
+        !getInput("message", message))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "필수 입력 포트 읽기 실패");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    getInput("message_type", message_type);
+    getInput("qos_depth", qos_depth);
+    getInput("reliable", reliable);
+
+    auto publisher =
+        getOrCreatePublisher(topic, qos_depth, reliable);
+
+    auto msg = std_msgs::msg::String();
+    msg.data = message;
+
+    try
+    {
+        publisher-&gt;publish(msg);
+        RCLCPP_DEBUG(node_-&gt;get_logger(),
+            "메시지 전송: [%s] → %s",
+            topic.c_str(), message.c_str());
+        return BT::NodeStatus::SUCCESS;
+    }
+    catch (const rclcpp::exceptions::RCLError&amp; e)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "메시지 전송 오류: %s", e.what());
+        return BT::NodeStatus::FAILURE;
+    }
+}
+
+rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr
+SendMessageAction::getOrCreatePublisher(
+    const std::string&amp; topic,
+    int qos_depth,
+    bool reliable)
+{
+    auto it = publishers_.find(topic);
+    if (it != publishers_.end())
+    {
+        return it-&gt;second;
+    }
+
+    auto qos = reliable
+        ? rclcpp::QoS(qos_depth).reliable()
+        : rclcpp::QoS(qos_depth).best_effort();
+
+    auto publisher =
+        node_-&gt;create_publisher&lt;std_msgs::msg::String&gt;(
+            topic, qos);
+    publishers_[topic] = publisher;
+    return publisher;
+}
+</code></pre>
+<h2>4. 구조화된 메시지 전송</h2>
+<h3>4.1 JSON 형식 메시지</h3>
+<p>임무 상태, 센서 데이터 요약, 이벤트 정보 등 복잡한 데이터를 전송할 때는 JSON 형식을 활용한다.</p>
+<pre><code class="language-cpp">#include &lt;nlohmann/json.hpp&gt;
+
+// JSON 메시지 구성 예시
+nlohmann::json status_json;
+status_json["robot_id"] = robot_id;
+status_json["timestamp"] = node_-&gt;now().seconds();
+status_json["battery"] = battery_level;
+status_json["position"]["latitude"] = latitude;
+status_json["position"]["longitude"] = longitude;
+status_json["position"]["altitude"] = altitude;
+status_json["mission_state"] = "IN_PROGRESS";
+
+auto msg = std_msgs::msg::String();
+msg.data = status_json.dump();
+publisher-&gt;publish(msg);
+</code></pre>
+<h3>4.2 사용자 정의 메시지 타입</h3>
+<p>복잡한 데이터 구조를 반복적으로 전송하는 경우, 사용자 정의 ROS2 메시지 타입을 정의하는 것이 타입 안전성과 직렬화 효율 측면에서 유리하다.</p>
+<pre><code># RobotMessage.msg
+builtin_interfaces/Time timestamp
+string robot_id
+string message_type      # "status", "alert", "data", "command"
+string payload            # JSON 또는 직렬화된 데이터
+uint8 priority            # 0: 낮음, 1: 보통, 2: 높음, 3: 긴급
+</code></pre>
+<p>사용자 정의 메시지 타입을 사용하는 SendMessage 노드는 제네릭 타입 파라미터를 통해 다양한 메시지 타입을 지원하도록 설계할 수 있다.</p>
+<pre><code class="language-cpp">template &lt;typename MsgT&gt;
+class TypedSendMessageAction : public BT::SyncActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("topic",
+                "발행 토픽 이름"),
+            BT::InputPort&lt;std::shared_ptr&lt;MsgT&gt;&gt;(
+                "message", "전송할 메시지 객체")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string topic;
+        std::shared_ptr&lt;MsgT&gt; message;
+        getInput("topic", topic);
+        getInput("message", message);
+
+        if (!message)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto publisher =
+            node_-&gt;create_publisher&lt;MsgT&gt;(
+                topic, rclcpp::QoS(10).reliable());
+        publisher-&gt;publish(*message);
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h2>5. 확인 응답 기반 메시지 전송</h2>
+<p>메시지 전달의 확인이 필요한 경우, 비동기 방식으로 구현하여 응답을 대기한다.</p>
+<pre><code class="language-cpp">class SendMessageWithAckAction
+    : public BT::StatefulActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("topic",
+                "발행 토픽 이름"),
+            BT::InputPort&lt;std::string&gt;("ack_topic",
+                "확인 응답 수신 토픽"),
+            BT::InputPort&lt;std::string&gt;("message",
+                "전송할 메시지"),
+            BT::InputPort&lt;double&gt;("ack_timeout", 5.0,
+                "확인 응답 대기 시간 (초)")
+        };
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        // 메시지 발행 및 확인 응답 토픽 구독
+        std::string topic, ack_topic, message;
+        getInput("topic", topic);
+        getInput("ack_topic", ack_topic);
+        getInput("message", message);
+
+        // 확인 응답 구독
+        ack_received_ = false;
+        ack_sub_ = node_-&gt;create_subscription&lt;
+            std_msgs::msg::String&gt;(
+            ack_topic, rclcpp::QoS(1).reliable(),
+            [this](const%20std_msgs::msg::String::SharedPtr)
+            {
+                ack_received_ = true;
+            });
+
+        // 메시지 발행
+        auto publisher =
+            node_-&gt;create_publisher&lt;std_msgs::msg::String&gt;(
+                topic, rclcpp::QoS(10).reliable());
+        auto msg = std_msgs::msg::String();
+        msg.data = message;
+        publisher-&gt;publish(msg);
+
+        start_time_ = node_-&gt;now();
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        double ack_timeout;
+        getInput("ack_timeout", ack_timeout);
+
+        if (ack_received_)
+        {
+            ack_sub_.reset();
+            return BT::NodeStatus::SUCCESS;
+        }
+
+        auto elapsed =
+            (node_-&gt;now() - start_time_).seconds();
+        if (elapsed &gt; ack_timeout)
+        {
+            ack_sub_.reset();
+            RCLCPP_WARN(node_-&gt;get_logger(),
+                "확인 응답 타임아웃");
+            return BT::NodeStatus::FAILURE;
+        }
+
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override
+    {
+        ack_sub_.reset();
+        ack_received_ = false;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Subscription&lt;std_msgs::msg::String&gt;::SharedPtr
+        ack_sub_;
+    std::atomic&lt;bool&gt; ack_received_{false};
+    rclcpp::Time start_time_;
+};
+</code></pre>
+<h2>6. XML 행동 트리에서의 활용</h2>
+<h3>6.1 노드 등록</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;SendMessageAction&gt;(
+    "SendMessage",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;SendMessageAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<h3>6.2 임무 단계별 상태 보고</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;SendMessage topic="/gcs/report"
+                 message="이륙 시작" /&gt;
+    &lt;Takeoff target_altitude="20.0" /&gt;
+    &lt;SendMessage topic="/gcs/report"
+                 message="이륙 완료, 경유점 이동 시작" /&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}"
+                   altitude="20.0" /&gt;
+    &lt;SendMessage topic="/gcs/report"
+                 message="경유점 도달, 임무 수행 중" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>6.3 비상 알림</h3>
+<p>비상 상황 발생 시 긴급 메시지를 전송하는 구조이다.</p>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Inverter&gt;
+        &lt;CheckEmergency /&gt;
+    &lt;/Inverter&gt;
+    &lt;Sequence name="NormalOperation"&gt;
+        &lt;!-- 정상 임무 수행 --&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence name="EmergencyHandler"&gt;
+        &lt;SendMessage topic="/fleet/emergency"
+                     message="{emergency_details}"
+                     reliable="true" /&gt;
+        &lt;ReturnToHome auto_land="true" /&gt;
+    &lt;/Sequence&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<h3>6.4 다중 로봇 정보 공유</h3>
+<p>탐지된 물체 정보를 다른 로봇에게 공유하는 구조이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;DetectObject image="{image}"
+                  detections="{objects}"
+                  detection_count="{count}" /&gt;
+    &lt;Precondition if="{count} &gt; 0"
+                  else="SKIP"&gt;
+        &lt;SendMessage topic="/fleet/detections"
+                     message="{objects_json}" /&gt;
+    &lt;/Precondition&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>7. 메시지 직렬화 고려 사항</h2>
+<p>ROS2의 기본 직렬화 방식은 CDR(Common Data Representation)이며, DDS 미들웨어에 의해 자동으로 처리된다. 외부 시스템과의 통신 브리지를 경유하는 경우, JSON이나 Protocol Buffers 등의 직렬화 형식으로 변환이 필요할 수 있다.</p>
+<p>메시지 크기가 큰 경우(이미지, 포인트 클라우드 등), 직접 전송 대신 메시지의 메타데이터(저장 경로, 접근 키 등)만 전송하고, 수신 측에서 별도 채널을 통해 대용량 데이터를 가져오는 방식이 네트워크 대역폭 활용 측면에서 효율적이다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Macenski, S. et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” Science Robotics, vol. 7, no. 66, 2022.</li>
+<li>Object Management Group, “Data Distribution Service (DDS) Specification,” Version 1.4, 2015.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

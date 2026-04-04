@@ -115,6 +115,169 @@
             </header>
             <article>
                 <h1>1297.29 블랙보드 키 존재 확인 조건 노드</h1>
+<h2>1. 키 존재 확인의 필요성</h2>
+<p>행동 트리(Behavior Tree)의 실행 과정에서 블랙보드(blackboard)에 특정 키가 존재하는지 여부를 확인해야 하는 상황이 빈번하게 발생한다. 시스템 초기화 단계에서 아직 센서 데이터가 수신되지 않은 경우, 이전 액션 노드의 결과가 블랙보드에 저장되지 않은 경우, 선택적 데이터의 가용성을 확인해야 하는 경우 등이 이에 해당한다(Faconti &amp; Colledanchise, 2022).</p>
+<p>키 존재 확인 조건 노드는 블랙보드에 특정 키가 존재하고 값이 설정되어 있는지를 판정한다. 값의 내용을 평가하지 않고, 오직 키의 존재 여부만을 확인한다는 점에서 값 비교 조건 노드와 구별된다.</p>
+<h2>2. 기본 구현</h2>
+<pre><code class="language-cpp">class IsBlackboardKeySet : public BT::ConditionNode
+{
+public:
+    IsBlackboardKeySet(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        std::string key_name;
+        getInput("key", key_name);
+
+        auto entry = config().blackboard-&gt;getEntry(key_name);
+        if (!entry)
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        // 키가 존재하고 값이 설정되어 있는지 확인
+        auto any_value = entry-&gt;value;
+        return any_value.empty() ? BT::NodeStatus::FAILURE : BT::NodeStatus::SUCCESS;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("key", "존재 여부를 확인할 블랙보드 키 이름")
+        };
+    }
+};
+</code></pre>
+<pre><code class="language-xml">&lt;!-- 목표 위치가 설정되었는지 확인 --&gt;
+&lt;Condition ID="IsBlackboardKeySet" key="goal_position"/&gt;
+
+&lt;!-- 경로가 계산되었는지 확인 --&gt;
+&lt;Condition ID="IsBlackboardKeySet" key="planned_path"/&gt;
+</code></pre>
+<h2>3. getInput() 기반 간접 확인</h2>
+<p>블랙보드에 직접 접근하지 않고, <code>getInput()</code> 메서드의 반환값을 통해 간접적으로 키 존재를 확인하는 방법도 있다. 이 방식은 포트 매핑을 통해 키 이름을 간접적으로 참조한다.</p>
+<pre><code class="language-cpp">class HasValidInput : public BT::ConditionNode
+{
+public:
+    HasValidInput(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        // getInput의 성공 여부로 키 존재 확인
+        auto result = getInput&lt;double&gt;("value");
+        return result ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("value", "존재 확인할 값")
+        };
+    }
+};
+</code></pre>
+<pre><code class="language-xml">&lt;!-- 블랙보드 키 "{sensor_data}"에 값이 있는지 확인 --&gt;
+&lt;Condition ID="HasValidInput" value="{sensor_data}"/&gt;
+</code></pre>
+<p>이 방식은 타입 안전한 접근을 제공하지만, 확인 대상의 타입을 미리 지정해야 하는 제약이 있다.</p>
+<h2>4. 키 부재 확인</h2>
+<p>키가 존재하지 않는지를 판정하는 역조건 노드이다.</p>
+<pre><code class="language-cpp">class IsBlackboardKeyNotSet : public BT::ConditionNode
+{
+public:
+    IsBlackboardKeyNotSet(const std::string&amp; name, const BT::NodeConfig&amp; config)
+        : BT::ConditionNode(name, config) {}
+
+    BT::NodeStatus tick() override
+    {
+        std::string key_name;
+        getInput("key", key_name);
+
+        auto entry = config().blackboard-&gt;getEntry(key_name);
+        if (!entry || entry-&gt;value.empty())
+        {
+            return BT::NodeStatus::SUCCESS;  // 키 부재 = 조건 충족
+        }
+
+        return BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("key", "부재 확인할 블랙보드 키 이름")
+        };
+    }
+};
+</code></pre>
+<pre><code class="language-xml">&lt;!-- 오류가 아직 기록되지 않았는지 확인 --&gt;
+&lt;Condition ID="IsBlackboardKeyNotSet" key="last_error"/&gt;
+</code></pre>
+<h2>5. 활용 패턴</h2>
+<h3>5.1 데이터 가용성 확인 후 행동 실행</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 목표 위치가 설정되었는지 확인 --&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="goal_position"/&gt;
+    &lt;!-- 경로가 계산되었는지 확인 --&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="planned_path"/&gt;
+    &lt;!-- 데이터가 가용한 경우에만 내비게이션 실행 --&gt;
+    &lt;Action ID="FollowPath"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>5.2 초기화 완료 확인</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 센서 데이터 수신 여부 확인 --&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="lidar_scan"/&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="imu_data"/&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="gps_fix"/&gt;
+    &lt;!-- 모든 센서 데이터 수신 후 자율 주행 시작 --&gt;
+    &lt;Action ID="StartAutonomous"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>5.3 조건부 데이터 처리</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;!-- 사전 계산된 경로가 있으면 사용 --&gt;
+        &lt;Condition ID="IsBlackboardKeySet" key="cached_path"/&gt;
+        &lt;Action ID="UseCachedPath"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;!-- 없으면 새로 계산 --&gt;
+        &lt;Action ID="ComputePath"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>6. 복수 키 존재 확인</h2>
+<p>복수의 블랙보드 키가 모두 존재하는지를 확인하려면, 개별 키 존재 확인 노드를 Sequence로 결합한다.</p>
+<pre><code class="language-xml">&lt;Sequence name="AllDataAvailable"&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="position"/&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="velocity"/&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="orientation"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>Sequence의 단락 평가(short-circuit evaluation)에 의해, 첫 번째 누락된 키에서 즉시 <code>FAILURE</code>가 반환된다.</p>
+<h2>7. 키 존재 확인과 값 검증의 분리</h2>
+<p>키 존재 확인은 값의 유효성 검증과 구분된다. 키가 존재하더라도 저장된 값이 유효하지 않을 수 있다(예: NaN, 빈 문자열, 만료된 타임스탬프). 완전한 데이터 검증은 키 존재 확인 후 별도의 값 검증 조건 노드를 통해 수행한다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 1단계: 키 존재 확인 --&gt;
+    &lt;Condition ID="IsBlackboardKeySet" key="sensor_reading"/&gt;
+    &lt;!-- 2단계: 값 유효성 검증 --&gt;
+    &lt;Condition ID="IsValueInRange"
+        value="{sensor_reading}" min="0.0" max="100.0"/&gt;
+    &lt;!-- 3단계: 행동 실행 --&gt;
+    &lt;Action ID="ProcessData"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

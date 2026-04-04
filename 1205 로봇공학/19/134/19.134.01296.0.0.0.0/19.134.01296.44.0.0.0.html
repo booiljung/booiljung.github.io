@@ -115,6 +115,183 @@
             </header>
             <article>
                 <h1>1296.44 ROS2 액션 취소 처리 액션 노드</h1>
+<h2>1. 액션 취소의 필요성과 개념</h2>
+<p>행동 트리에서 액션 노드가 ROS2 액션 서버에 골(Goal)을 전송한 후, 행동 트리의 제어 흐름 변경이나 외부 조건 변화에 의하여 해당 골의 실행을 중단하여야 하는 상황이 빈번하게 발생한다. ROS2 액션 프로토콜은 이러한 요구를 충족하기 위하여 골 취소(Goal Cancellation) 메커니즘을 제공하며, 행동 트리의 액션 노드는 이 메커니즘을 적절히 활용하여 자원의 안전한 해제와 시스템의 일관된 상태 유지를 보장하여야 한다.</p>
+<p>ROS2 액션 취소 처리 액션 노드는 <code>rclcpp_action::Client</code>의 <code>async_cancel_goal()</code> 메서드를 통하여 액션 서버에 취소 요청을 전송하고, 서버로부터 반환되는 취소 응답(CancelResponse)을 처리하는 역할을 수행한다. 이 과정은 행동 트리의 Halt 메커니즘과 긴밀하게 연동되어, 제어 노드가 하위 액션 노드의 실행을 중단시킬 때 자동으로 호출되는 구조를 따른다.</p>
+<h2>2. 골 취소 요청의 전송</h2>
+<p>골 취소 요청은 <code>rclcpp_action::Client&lt;ActionT&gt;::async_cancel_goal()</code> 메서드를 통하여 비동기적으로 전송된다. 이 메서드는 활성 상태의 골 핸들(<code>GoalHandleFuture</code>)을 인자로 받아 해당 골에 대한 취소 요청을 액션 서버로 전달한다.</p>
+<pre><code class="language-cpp">auto cancel_result_future = action_client_-&gt;async_cancel_goal(goal_handle_);
+</code></pre>
+<p>취소 요청의 전송 시점은 행동 트리의 <code>onHalted()</code> 콜백 내부에서 이루어지는 것이 일반적이다. <code>StatefulActionNode</code>를 상속한 액션 노드에서는 다음과 같은 구조로 구현한다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    if (goal_handle_) {
+        auto cancel_future = action_client_-&gt;async_cancel_goal(goal_handle_);
+        // 취소 응답 대기 또는 콜백 등록
+    }
+}
+</code></pre>
+<p>골 핸들이 유효하지 않은 경우, 즉 골이 아직 수락되지 않았거나 이미 완료된 경우에는 취소 요청을 전송하지 않아야 한다. 이를 위하여 골 핸들의 유효성 검사가 선행되어야 한다.</p>
+<h2>3. 취소 응답의 처리</h2>
+<p>액션 서버는 취소 요청을 수신하면 <code>action_msgs::srv::CancelGoal::Response</code>를 반환한다. 이 응답에는 <code>return_code</code> 필드가 포함되며, 다음과 같은 값을 가질 수 있다.</p>
+<table><thead><tr><th>상수</th><th>값</th><th>의미</th></tr></thead><tbody>
+<tr><td><code>CancelGoal::Response::ERROR_NONE</code></td><td>0</td><td>취소 요청이 정상적으로 수락됨</td></tr>
+<tr><td><code>CancelGoal::Response::ERROR_REJECTED</code></td><td>1</td><td>취소 요청이 거부됨</td></tr>
+<tr><td><code>CancelGoal::Response::ERROR_UNKNOWN_GOAL_ID</code></td><td>2</td><td>알 수 없는 골 ID</td></tr>
+<tr><td><code>CancelGoal::Response::ERROR_GOAL_TERMINATED</code></td><td>3</td><td>골이 이미 종료 상태임</td></tr>
+</tbody></table>
+<p>취소 응답의 처리는 다음과 같이 구현한다.</p>
+<pre><code class="language-cpp">auto cancel_response = cancel_future.get();
+if (cancel_response-&gt;return_code == action_msgs::srv::CancelGoal::Response::ERROR_NONE) {
+    RCLCPP_INFO(node_-&gt;get_logger(), "골 취소가 수락되었다.");
+} else {
+    RCLCPP_WARN(node_-&gt;get_logger(), "골 취소 실패: return_code=%d",
+                cancel_response-&gt;return_code);
+}
+</code></pre>
+<h2>4. 취소 상태 전이와 골 상태 관리</h2>
+<p>골 취소 요청이 수락되면, 해당 골의 상태는 <code>CANCELING</code>으로 전이된다. 액션 서버는 취소 처리를 완료한 후 골의 최종 상태를 <code>CANCELED</code>로 설정하며, 이 상태 변화는 <code>result_callback</code>을 통하여 클라이언트에 통지된다.</p>
+<pre><code>ACCEPTED → CANCELING → CANCELED
+</code></pre>
+<p>골 상태 전이의 추적은 <code>GoalHandle</code>의 <code>get_status()</code> 메서드를 통하여 수행할 수 있다. 취소 처리 중 골 상태를 확인하는 패턴은 다음과 같다.</p>
+<pre><code class="language-cpp">auto status = goal_handle_-&gt;get_status();
+switch (status) {
+    case rclcpp_action::GoalStatus::STATUS_CANCELING:
+        // 취소 처리 진행 중
+        break;
+    case rclcpp_action::GoalStatus::STATUS_CANCELED:
+        // 취소 완료
+        break;
+    case rclcpp_action::GoalStatus::STATUS_SUCCEEDED:
+        // 취소 요청 전에 이미 성공 완료
+        break;
+    case rclcpp_action::GoalStatus::STATUS_ABORTED:
+        // 서버 측에서 중단됨
+        break;
+    default:
+        break;
+}
+</code></pre>
+<h2>5. Halt와 취소의 연동 구현</h2>
+<p>행동 트리의 Halt 메커니즘과 ROS2 액션 취소를 연동하는 완전한 구현 패턴은 다음과 같다. <code>StatefulActionNode</code>를 기반으로 하여, <code>onStart()</code>에서 골을 전송하고 <code>onRunning()</code>에서 진행 상태를 확인하며, <code>onHalted()</code>에서 취소를 수행한다.</p>
+<pre><code class="language-cpp">class CancelableActionNode : public BT::StatefulActionNode
+{
+public:
+    CancelableActionNode(const std::string&amp; name,
+                         const BT::NodeConfiguration&amp; config,
+                         rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config), node_(node)
+    {
+        action_client_ = rclcpp_action::create_client&lt;ActionT&gt;(node_, "action_name");
+    }
+
+    BT::NodeStatus onStart() override
+    {
+        auto goal_msg = ActionT::Goal();
+        // 골 메시지 구성
+
+        auto send_goal_options =
+            rclcpp_action::Client&lt;ActionT&gt;::SendGoalOptions();
+        send_goal_options.result_callback =
+            std::bind(&amp;CancelableActionNode::resultCallback, this,
+                      std::placeholders::_1);
+
+        auto goal_future = action_client_-&gt;async_send_goal(goal_msg,
+                                                            send_goal_options);
+        goal_handle_ = goal_future.get();
+
+        if (!goal_handle_) {
+            return BT::NodeStatus::FAILURE;
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+
+    BT::NodeStatus onRunning() override
+    {
+        if (result_received_) {
+            return result_success_ ? BT::NodeStatus::SUCCESS
+                                   : BT::NodeStatus::FAILURE;
+        }
+        return BT::NodeStatus::RUNNING;
+    }
+
+    void onHalted() override
+    {
+        if (goal_handle_) {
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+            goal_handle_.reset();
+        }
+        result_received_ = false;
+    }
+
+private:
+    void resultCallback(
+        const typename rclcpp_action::ClientGoalHandle&lt;ActionT&gt;::WrappedResult&amp; result)
+    {
+        result_received_ = true;
+        result_success_ =
+            (result.code == rclcpp_action::ResultCode::SUCCEEDED);
+    }
+
+    rclcpp::Node::SharedPtr node_;
+    typename rclcpp_action::Client&lt;ActionT&gt;::SharedPtr action_client_;
+    typename rclcpp_action::ClientGoalHandle&lt;ActionT&gt;::SharedPtr goal_handle_;
+    std::atomic&lt;bool&gt; result_received_{false};
+    std::atomic&lt;bool&gt; result_success_{false};
+};
+</code></pre>
+<h2>6. 취소 타임아웃 처리</h2>
+<p>액션 서버가 취소 요청에 대하여 적시에 응답하지 못하는 경우를 대비하여, 취소 타임아웃 메커니즘을 구현하여야 한다. <code>onHalted()</code> 내부에서 취소 응답을 무한히 대기하는 것은 행동 트리의 전체 실행을 차단할 수 있으므로, 제한된 시간 내에 취소가 완료되지 않으면 강제로 골 핸들을 해제하는 전략을 적용한다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    if (goal_handle_) {
+        auto cancel_future = action_client_-&gt;async_cancel_goal(goal_handle_);
+
+        auto timeout = std::chrono::milliseconds(500);
+        auto status = cancel_future.wait_for(timeout);
+
+        if (status == std::future_status::timeout) {
+            RCLCPP_WARN(node_-&gt;get_logger(),
+                        "취소 응답 타임아웃: 골 핸들을 강제 해제한다.");
+        }
+        goal_handle_.reset();
+    }
+}
+</code></pre>
+<p>타임아웃 값은 액션 서버의 특성과 시스템의 실시간 요구 사항에 따라 적절히 설정하여야 한다. 일반적으로 내비게이션이나 매니퓰레이션과 같은 물리적 동작을 수반하는 액션의 경우, 안전한 정지 시간을 고려하여 타임아웃을 설정한다.</p>
+<h2>7. 다중 골 취소 처리</h2>
+<p>단일 액션 노드가 여러 개의 골을 관리하는 경우, <code>async_cancel_all_goals()</code> 메서드를 사용하여 해당 액션 서버에 전송된 모든 활성 골을 일괄 취소할 수 있다.</p>
+<pre><code class="language-cpp">auto cancel_all_future = action_client_-&gt;async_cancel_all_goals();
+</code></pre>
+<p>특정 시점 이전에 전송된 골만을 선별적으로 취소하려면 <code>async_cancel_goals_before()</code> 메서드를 활용한다.</p>
+<pre><code class="language-cpp">auto stamp = node_-&gt;now();
+auto cancel_before_future = action_client_-&gt;async_cancel_goals_before(stamp);
+</code></pre>
+<p>이 메서드들은 <code>action_msgs::srv::CancelGoal</code> 서비스를 내부적으로 호출하며, 반환되는 응답에는 취소된 골의 목록이 포함된다.</p>
+<h2>8. 취소 처리 시 자원 정리</h2>
+<p>골 취소 이후에는 액션 노드 내부에서 사용하던 자원을 적절히 정리하여야 한다. 자원 정리 항목에는 골 핸들의 해제, 피드백 수신 상태의 초기화, 내부 플래그 변수의 복원 등이 포함된다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    if (goal_handle_) {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+    // 자원 정리
+    goal_handle_.reset();
+    result_received_ = false;
+    result_success_ = false;
+    feedback_data_.reset();
+}
+</code></pre>
+<p>자원 정리가 불완전한 경우, 다음 Tick 주기에서 액션 노드가 재실행될 때 이전 실행의 잔여 상태가 간섭하여 예기치 않은 동작을 유발할 수 있다. 따라서 <code>onHalted()</code> 콜백에서 모든 내부 상태를 초기 상태로 복원하는 것이 필수적이다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction.</em> CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+<li>ROS 2 Documentation. <em>Actions.</em> Open Robotics. https://docs.ros.org/en/rolling/Tutorials/Beginner-CLI-Tools/Understanding-ROS2-Actions.html</li>
+</ul>
+<hr />
+<p><em>본 문서는 ROS 2 Humble Hawksbill 및 BehaviorTree.CPP v4.x 기준으로 작성되었다.</em></p>
 
             </article>
             <footer>

@@ -115,6 +115,171 @@
             </header>
             <article>
                 <h1>1297.22 함수 포인터 기반 조건 노드 생성</h1>
+<h2>1. 함수 포인터 방식의 개요</h2>
+<p>함수 포인터(function pointer) 기반 조건 노드 생성은 일반 함수(free function)를 정의하고 해당 함수의 포인터를 <code>SimpleConditionNode</code>에 전달하여 조건 노드를 등록하는 방식이다. 람다 함수 기반 방식과 동일한 <code>registerSimpleCondition()</code> 메서드를 사용하나, 익명 함수 대신 명명된 함수를 사용한다는 점에서 구별된다(Faconti &amp; Colledanchise, 2022).</p>
+<h2>2. 함수 포인터 기반 등록</h2>
+<h3>2.1 함수 정의</h3>
+<p><code>SimpleConditionNode</code>에서 요구하는 시그니처에 맞추어 일반 함수를 정의한다:</p>
+<pre><code class="language-cpp">BT::NodeStatus checkBatteryLevel(BT::TreeNode&amp; self)
+{
+    double battery;
+    auto result = self.getInput("battery_level", battery);
+    if (!result)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double threshold;
+    self.getInput("threshold", threshold);
+
+    return (battery &gt;= threshold)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>2.2 팩토리 등록</h3>
+<p>정의된 함수를 팩토리에 등록한다:</p>
+<pre><code class="language-cpp">BT::BehaviorTreeFactory factory;
+
+factory.registerSimpleCondition(
+    "CheckBatteryLevel",
+    checkBatteryLevel,
+    {
+        BT::InputPort&lt;double&gt;("battery_level", "배터리 잔량 (%)"),
+        BT::InputPort&lt;double&gt;("threshold", 20.0, "최소 허용 잔량")
+    }
+);
+</code></pre>
+<p>함수 이름 <code>checkBatteryLevel</code>이 함수 포인터로 자동 변환되어 전달된다.</p>
+<h2>3. 복수의 함수 포인터 기반 조건 노드</h2>
+<p>프로젝트에서 필요한 조건 함수를 모아서 관리할 수 있다.</p>
+<pre><code class="language-cpp">// condition_functions.hpp
+#pragma once
+#include &lt;behaviortree_cpp/bt_factory.h&gt;
+
+BT::NodeStatus isDistanceSafe(BT::TreeNode&amp; self);
+BT::NodeStatus isLocalized(BT::TreeNode&amp; self);
+BT::NodeStatus isGoalReached(BT::TreeNode&amp; self);
+BT::NodeStatus isPathValid(BT::TreeNode&amp; self);
+</code></pre>
+<pre><code class="language-cpp">// condition_functions.cpp
+#include "condition_functions.hpp"
+
+BT::NodeStatus isDistanceSafe(BT::TreeNode&amp; self)
+{
+    double distance, threshold;
+    self.getInput("distance", distance);
+    self.getInput("threshold", threshold);
+    return (distance &gt; threshold) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus isLocalized(BT::TreeNode&amp; self)
+{
+    double quality;
+    self.getInput("quality", quality);
+    return (quality &gt; 0.7) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus isGoalReached(BT::TreeNode&amp; self)
+{
+    double distance_to_goal, tolerance;
+    self.getInput("distance_to_goal", distance_to_goal);
+    self.getInput("tolerance", tolerance);
+    return (distance_to_goal &lt;= tolerance) ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus isPathValid(BT::TreeNode&amp; self)
+{
+    bool valid;
+    auto result = self.getInput("path_valid", valid);
+    if (!result)
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+    return valid ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.1 일괄 등록</h3>
+<pre><code class="language-cpp">void registerConditionNodes(BT::BehaviorTreeFactory&amp; factory)
+{
+    factory.registerSimpleCondition(
+        "IsDistanceSafe", isDistanceSafe,
+        {
+            BT::InputPort&lt;double&gt;("distance", "장애물까지의 거리"),
+            BT::InputPort&lt;double&gt;("threshold", 1.0, "안전 거리")
+        });
+
+    factory.registerSimpleCondition(
+        "IsLocalized", isLocalized,
+        { BT::InputPort&lt;double&gt;("quality", "위치 추정 품질") });
+
+    factory.registerSimpleCondition(
+        "IsGoalReached", isGoalReached,
+        {
+            BT::InputPort&lt;double&gt;("distance_to_goal", "목표까지의 거리"),
+            BT::InputPort&lt;double&gt;("tolerance", 0.5, "도달 판정 오차")
+        });
+
+    factory.registerSimpleCondition(
+        "IsPathValid", isPathValid,
+        { BT::InputPort&lt;bool&gt;("path_valid", "경로 유효 여부") });
+}
+</code></pre>
+<h2>4. 함수 포인터 방식과 람다 방식의 비교</h2>
+<table><thead><tr><th>특성</th><th>함수 포인터</th><th>람다 함수</th></tr></thead><tbody>
+<tr><td>정의 위치</td><td>함수 별도 정의</td><td>등록 코드 내 인라인</td></tr>
+<tr><td>외부 변수 접근</td><td>불가 (전역 변수 제외)</td><td>캡처를 통해 가능</td></tr>
+<tr><td>재사용성</td><td>높음 (다른 곳에서 호출 가능)</td><td>낮음 (등록 코드에 결합)</td></tr>
+<tr><td>단위 테스트</td><td>함수 단독 테스트 가능</td><td>등록 맥락 내에서만 테스트</td></tr>
+<tr><td>코드 가독성</td><td>함수 이름으로 의도 표현</td><td>인라인 정의로 코드 밀집</td></tr>
+<tr><td>헤더 파일 관리</td><td>함수 선언 필요</td><td>불필요</td></tr>
+</tbody></table>
+<h2>5. 함수 포인터 방식의 장점</h2>
+<h3>5.1 단위 테스트 용이성</h3>
+<p>일반 함수는 <code>SimpleConditionNode</code>와 분리하여 독립적으로 테스트할 수 있다. 모의 <code>TreeNode</code>를 생성하고 블랙보드 값을 설정한 후, 함수를 직접 호출하여 반환값을 검증한다.</p>
+<pre><code class="language-cpp">TEST(ConditionFunctionTest, IsDistanceSafe_Success)
+{
+    auto config = BT::NodeConfig();
+    auto bb = BT::Blackboard::create();
+    config.blackboard = bb;
+    config.input_ports["distance"] = "{distance}";
+    config.input_ports["threshold"] = "1.0";
+
+    BT::TreeNode::Ptr node =
+        std::make_unique&lt;BT::SimpleConditionNode&gt;("test", isDistanceSafe, config);
+
+    bb-&gt;set("distance", 2.0);
+    EXPECT_EQ(node-&gt;executeTick(), BT::NodeStatus::SUCCESS);
+
+    bb-&gt;set("distance", 0.5);
+    EXPECT_EQ(node-&gt;executeTick(), BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h3>5.2 코드 구조화</h3>
+<p>함수 정의를 별도의 소스 파일로 분리하면, 조건 평가 로직과 트리 설정 코드가 분리되어 코드의 유지보수성이 향상된다.</p>
+<h3>5.3 함수 이름을 통한 문서화</h3>
+<p>함수 이름(<code>checkBatteryLevel</code>, <code>isDistanceSafe</code> 등)이 조건의 의미를 직접적으로 표현하여, 코드의 자기 문서화(self-documenting) 특성이 강화된다.</p>
+<h2>6. 함수 포인터 방식의 한계</h2>
+<p>함수 포인터 기반 방식은 다음의 한계를 갖는다:</p>
+<ol>
+<li>
+<p><strong>외부 상태 접근 제한</strong>: 일반 함수는 캡처 기능이 없으므로, 전역 변수나 정적 변수를 통하지 않고는 외부 상태에 접근할 수 없다. ROS2 노드의 참조 등이 필요한 경우 람다 캡처나 클래스 기반 구현을 사용해야 한다.</p>
+</li>
+<li>
+<p><strong>인스턴스별 상태 불가</strong>: 동일한 함수를 복수의 노드 인스턴스에서 사용할 때, 인스턴스별로 독립된 상태를 유지할 수 없다.</p>
+</li>
+<li>
+<p><strong>복잡한 초기화 불가</strong>: 구독자 설정, 서비스 클라이언트 생성 등 노드 생성 시점의 초기화 로직을 구현할 수 없다.</p>
+</li>
+</ol>
+<p>이러한 한계가 제약이 되는 경우에는 클래스 기반 <code>ConditionNode</code> 구현을 사용해야 한다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

@@ -115,6 +115,185 @@
             </header>
             <article>
                 <h1>1296.45 BtActionNode 기반 클래스의 활용</h1>
+<h2>1. BtActionNode의 개요와 설계 동기</h2>
+<p>Nav2(Navigation2) 프레임워크는 ROS2 액션 클라이언트와 BehaviorTree.CPP의 <code>StatefulActionNode</code>를 결합한 추상 기반 클래스인 <code>BtActionNode&lt;ActionT&gt;</code>를 제공한다. 이 기반 클래스는 ROS2 액션 서버와의 통신에 필요한 반복적인 보일러플레이트 코드를 캡슐화하여, 개발자가 행동 트리 액션 노드를 구현할 때 도메인 고유의 로직에만 집중할 수 있도록 설계되었다.</p>
+<p>ROS2 액션 클라이언트를 직접 사용하여 행동 트리 액션 노드를 구현하는 경우, 골 전송, 피드백 수신, 결과 처리, 취소 요청, 타임아웃 관리 등의 공통 로직을 매 노드마다 중복 구현하여야 한다. <code>BtActionNode</code>는 이러한 공통 패턴을 템플릿 기반 클래스로 추상화하여 코드 재사용성을 극대화하고 구현 오류를 최소화한다.</p>
+<h2>2. BtActionNode의 클래스 구조</h2>
+<p><code>BtActionNode&lt;ActionT&gt;</code>는 <code>BT::ActionNodeBase</code>를 상속하며, 템플릿 매개변수 <code>ActionT</code>는 ROS2 액션 타입을 지정한다. 클래스의 핵심 구조는 다음과 같다.</p>
+<pre><code class="language-cpp">template &lt;class ActionT&gt;
+class BtActionNode : public BT::ActionNodeBase
+{
+public:
+    BtActionNode(
+        const std::string&amp; xml_tag_name,
+        const std::string&amp; action_name,
+        const BT::NodeConfiguration&amp; conf);
+
+    // 파생 클래스에서 재정의하는 가상 메서드
+    virtual void on_tick();
+    virtual BT::NodeStatus on_success();
+    virtual BT::NodeStatus on_aborted();
+    virtual BT::NodeStatus on_cancelled();
+    virtual void on_wait_for_result(
+        std::shared_ptr&lt;const typename ActionT::Feedback&gt; feedback);
+
+    // BT::ActionNodeBase에서 상속된 메서드
+    BT::NodeStatus tick() override;
+    void halt() override;
+
+    // 정적 포트 정의
+    static BT::PortsList providedPorts();
+
+protected:
+    typename rclcpp_action::Client&lt;ActionT&gt;::SharedPtr action_client_;
+    typename ActionT::Goal goal_;
+    std::string action_name_;
+    rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<h2>3. 생명주기 콜백 메서드</h2>
+<h3>3.1 on_tick()</h3>
+<p><code>on_tick()</code> 메서드는 액션 노드가 처음 Tick을 수신할 때 호출되며, 골 메시지의 필드를 설정하는 역할을 수행한다. 파생 클래스에서 이 메서드를 재정의하여 블랙보드로부터 입력 데이터를 읽고 <code>goal_</code> 멤버 변수에 필요한 값을 할당한다.</p>
+<pre><code class="language-cpp">void on_tick() override
+{
+    getInput("target_pose", goal_.pose);
+    getInput("behavior_tree", goal_.behavior_tree);
+}
+</code></pre>
+<h3>3.2 on_success()</h3>
+<p><code>on_success()</code> 콜백은 액션 서버가 골을 성공적으로 완료하였을 때 호출된다. 기본 구현은 <code>BT::NodeStatus::SUCCESS</code>를 반환하며, 파생 클래스에서 재정의하여 결과 데이터를 블랙보드에 기록하거나 추가적인 후처리 로직을 수행할 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus on_success() override
+{
+    auto result = goal_handle_-&gt;get_result();
+    setOutput("result_path", result-&gt;path);
+    return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h3>3.3 on_aborted()</h3>
+<p><code>on_aborted()</code> 콜백은 액션 서버가 골 실행 중 내부 오류로 인하여 중단(abort)하였을 때 호출된다. 기본 구현은 <code>BT::NodeStatus::FAILURE</code>를 반환한다. 파생 클래스에서 오류 정보를 블랙보드에 기록하거나 로깅을 수행하도록 재정의할 수 있다.</p>
+<pre><code class="language-cpp">BT::NodeStatus on_aborted() override
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(), "액션 서버가 골 실행을 중단하였다.");
+    setOutput("error_code", result_.result-&gt;error_code);
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.4 on_cancelled()</h3>
+<p><code>on_cancelled()</code> 콜백은 골 취소 요청이 수락되어 골이 취소 상태로 전이되었을 때 호출된다. 기본 구현은 <code>BT::NodeStatus::SUCCESS</code>를 반환한다. 취소가 정상적인 제어 흐름의 일부인 경우 <code>SUCCESS</code>를, 예외적 상황인 경우 <code>FAILURE</code>를 반환하도록 재정의할 수 있다.</p>
+<h3>3.5 on_wait_for_result()</h3>
+<p><code>on_wait_for_result()</code> 콜백은 골이 실행 중이며 결과를 대기하는 동안 매 Tick마다 호출된다. 피드백 데이터를 매개변수로 수신하며, 이를 통하여 진행 상황을 블랙보드에 기록하거나 진행률 기반의 조건부 로직을 구현할 수 있다.</p>
+<pre><code class="language-cpp">void on_wait_for_result(
+    std::shared_ptr&lt;const ActionT::Feedback&gt; feedback) override
+{
+    if (feedback) {
+        setOutput("distance_remaining", feedback-&gt;distance_remaining);
+    }
+}
+</code></pre>
+<h2>4. tick() 메서드의 내부 동작</h2>
+<p><code>BtActionNode</code>의 <code>tick()</code> 메서드는 다음과 같은 순서로 실행된다.</p>
+<ol>
+<li>최초 Tick 수신 시, <code>on_tick()</code>을 호출하여 골 메시지를 구성한다.</li>
+<li><code>action_client_-&gt;async_send_goal()</code>을 호출하여 골을 전송한다.</li>
+<li>골 전송 결과를 확인하고, 거부된 경우 <code>FAILURE</code>를 반환한다.</li>
+<li>골이 수락되면 <code>RUNNING</code>을 반환한다.</li>
+<li>후속 Tick에서는 골의 현재 상태를 확인한다.</li>
+<li>결과가 수신되면 결과 코드에 따라 <code>on_success()</code>, <code>on_aborted()</code>, 또는 <code>on_cancelled()</code>를 호출한다.</li>
+<li>결과가 아직 수신되지 않았으면 <code>on_wait_for_result()</code>를 호출하고 <code>RUNNING</code>을 반환한다.</li>
+</ol>
+<p>이 과정에서 서버 응답 타임아웃은 <code>server_timeout</code> 입력 포트를 통하여 설정할 수 있다.</p>
+<h2>5. halt() 메서드의 내부 동작</h2>
+<p><code>halt()</code> 메서드가 호출되면, <code>BtActionNode</code>는 활성 상태의 골에 대하여 자동으로 취소 요청을 전송한다. 이 메커니즘은 행동 트리의 제어 노드가 하위 액션 노드의 실행을 중단시킬 때 ROS2 액션 서버에 적절한 취소 신호가 전달되도록 보장한다.</p>
+<pre><code class="language-cpp">void halt() override
+{
+    if (should_cancel_goal()) {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+    setStatus(BT::NodeStatus::IDLE);
+}
+</code></pre>
+<h2>6. BtActionNode를 상속한 액션 노드 구현</h2>
+<p><code>BtActionNode</code>를 상속하여 사용자 정의 액션 노드를 구현하는 전형적인 패턴은 다음과 같다.</p>
+<pre><code class="language-cpp">class NavigateToPoseAction
+    : public nav2_behavior_tree::BtActionNode&lt;nav2_msgs::action::NavigateToPose&gt;
+{
+public:
+    NavigateToPoseAction(
+        const std::string&amp; xml_tag_name,
+        const std::string&amp; action_name,
+        const BT::NodeConfiguration&amp; conf)
+        : BtActionNode&lt;nav2_msgs::action::NavigateToPose&gt;(
+              xml_tag_name, action_name, conf)
+    {}
+
+    void on_tick() override
+    {
+        getInput("goal", goal_.pose);
+    }
+
+    BT::NodeStatus on_success() override
+    {
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    BT::NodeStatus on_aborted() override
+    {
+        return BT::NodeStatus::FAILURE;
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return providedBasicPorts({
+            BT::InputPort&lt;geometry_msgs::msg::PoseStamped&gt;("goal",
+                "목표 자세")
+        });
+    }
+};
+</code></pre>
+<h2>7. 포트 정의와 providedBasicPorts</h2>
+<p><code>BtActionNode</code>는 <code>providedBasicPorts()</code> 정적 메서드를 제공하여, 기반 클래스가 요구하는 기본 포트(<code>server_name</code>, <code>server_timeout</code>)와 파생 클래스가 정의하는 추가 포트를 결합한다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return providedBasicPorts({
+        BT::InputPort&lt;std::string&gt;("goal_id", "목표 식별자"),
+        BT::OutputPort&lt;int&gt;("error_code", "오류 코드")
+    });
+}
+</code></pre>
+<p>기본 포트의 구성은 다음과 같다.</p>
+<table><thead><tr><th>포트 이름</th><th>방향</th><th>타입</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>server_name</code></td><td>입력</td><td><code>std::string</code></td><td>액션 서버의 이름</td></tr>
+<tr><td><code>server_timeout</code></td><td>입력</td><td><code>double</code></td><td>서버 응답 타임아웃(초)</td></tr>
+</tbody></table>
+<h2>8. XML 행동 트리에서의 등록과 사용</h2>
+<p><code>BtActionNode</code> 기반의 액션 노드를 XML 행동 트리에서 사용하려면, 먼저 <code>BehaviorTreeFactory</code>에 등록하여야 한다.</p>
+<pre><code class="language-cpp">factory.registerNodeType&lt;NavigateToPoseAction&gt;(
+    "NavigateToPose", "navigate_to_pose", config);
+</code></pre>
+<p>등록 후 XML에서 다음과 같이 사용할 수 있다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+    &lt;Sequence&gt;
+        &lt;NavigateToPose goal="{target_pose}"
+                        server_name="navigate_to_pose"
+                        server_timeout="10.0"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>9. BtActionNode 활용의 이점과 제약</h2>
+<p><code>BtActionNode</code>를 활용하면 다음과 같은 이점을 얻을 수 있다.</p>
+<p>첫째, 골 전송, 결과 수신, 취소 처리 등 ROS2 액션 클라이언트의 공통 로직이 기반 클래스에 캡슐화되어 코드 중복이 제거된다.</p>
+<p>둘째, 생명주기 콜백 메서드를 통하여 각 상태 전이에 대한 처리가 명확히 분리되므로, 노드의 동작을 예측하고 디버깅하기 용이하다.</p>
+<p>셋째, Nav2 프레임워크에서 이미 검증된 패턴을 따르므로, Nav2 생태계와의 호환성이 보장된다.</p>
+<p>반면, <code>BtActionNode</code>는 Nav2 프레임워크에 의존하므로 Nav2를 사용하지 않는 프로젝트에서는 별도의 의존성 관리가 필요하다. 또한, 기반 클래스의 <code>tick()</code> 내부 구현이 고정된 실행 순서를 따르므로, 이 순서를 변경하여야 하는 특수한 요구 사항이 있는 경우에는 직접 <code>StatefulActionNode</code>를 상속하여 구현하는 것이 적절하다.</p>
+<h2>10. 참고 문헌</h2>
+<ul>
+<li>Macenski, S., Martin, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>Proceedings of the IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS).</em></li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction.</em> CRC Press.</li>
+<li>Nav2 Documentation. <em>Writing a New Behavior Tree Plugin.</em> https://docs.nav2.org/plugin_tutorials/docs/writing_new_bt_plugin.html</li>
+</ul>
+<hr />
+<p><em>본 문서는 ROS 2 Humble Hawksbill, Nav2 1.1.x 및 BehaviorTree.CPP v4.x 기준으로 작성되었다.</em></p>
 
             </article>
             <footer>

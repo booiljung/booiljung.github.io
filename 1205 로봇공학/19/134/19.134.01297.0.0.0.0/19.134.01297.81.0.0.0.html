@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.81 Tick 단위 캐싱의 구현</title>
+    <title>BIJUNG:Tick 단위 캐싱의 구현 (Per-Tick Caching Implementation)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,177 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.81 Tick 단위 캐싱의 구현</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.81 Tick 단위 캐싱의 구현</span></nav>
+                    <h1>Tick 단위 캐싱의 구현 (Per-Tick Caching Implementation)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="Tick 단위 캐싱의 구현 (Per-Tick Caching Implementation)">Tick 단위 캐싱의 구현 (Per-Tick Ca...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.81 Tick 단위 캐싱의 구현</h1>
+                <h1>Tick 단위 캐싱의 구현 (Per-Tick Caching Implementation)</h1>
+<h2>1. 개요</h2>
+<p>Tick 단위 캐싱은 단일 tick 주기 내에서 동일한 조건 노드가 복수 회 평가되는 경우, 첫 번째 평가 결과를 해당 tick 동안 캐싱하여 재사용하는 최적화 전략이다. 행동 트리에서 동일한 조건이 서로 다른 분기에서 참조되거나, 서브트리의 재사용으로 인해 동일 조건이 중복 평가되는 상황에서 유용하다.</p>
+<h2>2. Tick 단위 캐싱이 필요한 상황</h2>
+<h3>2.1 동일 조건의 중복 참조</h3>
+<pre><code class="language-xml">&lt;Fallback&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsBatteryAbove" min_percentage="0.3"/&gt;
+        &lt;Action ID="FullSpeedNavigation"/&gt;
+    &lt;/Sequence&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsBatteryAbove" min_percentage="0.1"/&gt;
+        &lt;Action ID="EconomyNavigation"/&gt;
+    &lt;/Sequence&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<p>위 구조에서 <code>IsBatteryAbove</code>가 서로 다른 임계값으로 두 번 평가되므로, 동일한 배터리 메시지를 두 번 처리한다. 동일 tick 내에서 배터리 토픽의 값은 변화하지 않으므로, 메시지 수신은 한 번만 수행하면 충분하다.</p>
+<h3>2.2 서브트리 재사용</h3>
+<p>동일한 안전 점검 서브트리가 여러 분기에서 재사용되는 경우에도 중복 평가가 발생한다.</p>
+<h2>3. 구현</h2>
+<h3>3.1 Tick ID 기반 캐싱</h3>
+<p>BehaviorTree.CPP에서 각 tick은 고유한 시퀀스 번호를 가진다. 이를 활용하여 동일 tick 내의 중복 평가를 방지한다.</p>
+<pre><code class="language-cpp">class PerTickCachedCondition : public BT::ConditionNode
+{
+public:
+    PerTickCachedCondition(const std::string&amp; name,
+                           const BT::NodeConfiguration&amp; config)
+        : BT::ConditionNode(name, config),
+          last_tick_count_(0),
+          has_cache_(false)
+    {}
+
+    BT::NodeStatus tick() override
+    {
+        // 현재 tick 카운트 확인
+        auto tick_count = config().blackboard-&gt;get&lt;uint16_t&gt;(
+            "__tick_count");
+
+        if (has_cache_ &amp;&amp; tick_count == last_tick_count_)
+        {
+            return cached_result_;
+        }
+
+        cached_result_ = evaluateCondition();
+        last_tick_count_ = tick_count;
+        has_cache_ = true;
+
+        return cached_result_;
+    }
+
+protected:
+    virtual BT::NodeStatus evaluateCondition() = 0;
+
+private:
+    uint16_t last_tick_count_;
+    bool has_cache_;
+    BT::NodeStatus cached_result_;
+};
+</code></pre>
+<h3>3.2 시간 기반 Tick 캐싱</h3>
+<p>tick 카운트에 접근할 수 없는 경우, tick 주기보다 짧은 캐시 유효 기간을 설정하여 사실상의 tick 단위 캐싱을 구현한다.</p>
+<pre><code class="language-cpp">class QuasiPerTickCached : public BT::ConditionNode
+{
+public:
+    QuasiPerTickCached(const std::string&amp; name,
+                       const BT::NodeConfiguration&amp; config,
+                       rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          has_cache_(false)
+    {}
+
+    BT::NodeStatus tick() override
+    {
+        if (has_cache_)
+        {
+            double elapsed =
+                (node_-&gt;get_clock()-&gt;now() - cache_time_).seconds();
+            // tick 주기(예: 10ms)보다 짧은 유효 기간
+            if (elapsed &lt; 0.005)
+            {
+                return cached_result_;
+            }
+        }
+
+        cached_result_ = evaluateCondition();
+        cache_time_ = node_-&gt;get_clock()-&gt;now();
+        has_cache_ = true;
+
+        return cached_result_;
+    }
+
+protected:
+    virtual BT::NodeStatus evaluateCondition() = 0;
+
+    rclcpp::Node::SharedPtr node_;
+
+private:
+    bool has_cache_;
+    BT::NodeStatus cached_result_;
+    rclcpp::Time cache_time_;
+};
+</code></pre>
+<p>캐시 유효 기간을 tick 주기의 절반(예: 5ms)으로 설정하면, 동일 tick 내에서는 캐시가 유효하고 다음 tick에서는 만료된다.</p>
+<h3>3.3 공유 캐시 패턴</h3>
+<p>동일한 토픽 데이터를 참조하는 복수의 조건 노드가 있는 경우, 토픽 메시지의 캐싱을 공유 객체에서 수행한다.</p>
+<pre><code class="language-cpp">template &lt;typename MessageT&gt;
+class SharedMessageCache
+{
+public:
+    SharedMessageCache(rclcpp::Node::SharedPtr node,
+                       const std::string&amp; topic_name)
+    {
+        subscription_ = node-&gt;create_subscription&lt;MessageT&gt;(
+            topic_name,
+            rclcpp::QoS(1),
+            [this](const%20typename%20MessageT::SharedPtr%20msg) {
+                std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                cached_message_ = msg;
+            });
+    }
+
+    typename MessageT::SharedPtr getMessage() const
+    {
+        std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+        return cached_message_;
+    }
+
+private:
+    typename rclcpp::Subscription&lt;MessageT&gt;::SharedPtr subscription_;
+    typename MessageT::SharedPtr cached_message_;
+    mutable std::mutex mutex_;
+};
+</code></pre>
+<p>복수의 조건 노드가 동일한 <code>SharedMessageCache</code> 인스턴스를 참조하면, 토픽 구독은 한 번만 이루어지고 모든 조건 노드가 동일한 메시지를 공유한다.</p>
+<h2>4. XML 행동 트리에서의 활용</h2>
+<h3>4.1 중복 평가가 발생하는 구조</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;!-- 이 조건들이 매 tick마다 모두 재평가됨 --&gt;
+    &lt;Condition ID="IsBatteryOk_Cached"/&gt;
+    &lt;Condition ID="IsSensorOk_Cached"/&gt;
+    &lt;Fallback&gt;
+        &lt;Sequence&gt;
+            &lt;Condition ID="IsBatteryOk_Cached"/&gt;  &lt;!-- 중복 --&gt;
+            &lt;Action ID="HighPowerMode"/&gt;
+        &lt;/Sequence&gt;
+        &lt;Action ID="LowPowerMode"/&gt;
+    &lt;/Fallback&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<h2>5. 설계 시 고려 사항</h2>
+<h3>5.1 캐싱과 조건 변화의 일관성</h3>
+<p>Tick 단위 캐싱은 단일 tick 내에서 조건의 결과가 일관되도록 보장한다. 이는 동일 tick에서 동일 조건이 서로 다른 결과를 반환하여 행동 트리의 논리적 일관성이 깨지는 것을 방지한다.</p>
+<h3>5.2 캐싱 오버헤드</h3>
+<p>캐싱 자체에도 약간의 오버헤드(tick 카운트 비교, 시간 확인)가 존재한다. 조건 평가의 원래 비용이 캐싱 오버헤드보다 작은 경우에는 캐싱이 오히려 성능을 저하시킬 수 있다. 블랙보드 값 비교와 같이 매우 가벼운 조건에는 캐싱이 불필요하다.</p>
+<h3>5.3 BehaviorTree.CPP의 내장 캐싱</h3>
+<p>BehaviorTree.CPP 4.x에서는 <code>pre_condition</code>과 <code>post_condition</code> 스크립트를 통해 조건 평가의 일부 최적화가 가능하다. 라이브러리의 내장 기능을 먼저 검토하고, 부족한 부분에 대해서만 사용자 정의 캐싱을 구현하는 것이 바람직하다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

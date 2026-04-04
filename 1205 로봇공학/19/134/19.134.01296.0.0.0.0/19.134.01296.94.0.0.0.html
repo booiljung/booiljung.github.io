@@ -115,6 +115,353 @@
             </header>
             <article>
                 <h1>1296.94 모의 ROS2 인터페이스를 활용한 테스트</h1>
+<h2>1. 개요</h2>
+<p>모의 ROS2 인터페이스(mock ROS2 interface)는 실제 ROS2 서비스, 액션 서버, 토픽 발행자를 대체하는 테스트 전용 구현체이다. 행동 트리의 액션 노드가 ROS2 통신 인터페이스에 의존하는 경우, 모의 인터페이스를 사용하면 외부 시스템(로봇 하드웨어, 시뮬레이터, 원격 서버 등) 없이 단위 테스트를 수행할 수 있다.</p>
+<p>모의 인터페이스는 테스트의 결정론성(determinism)을 보장하고, 다양한 오류 시나리오를 인위적으로 재현할 수 있으며, 테스트 실행 속도를 대폭 향상시킨다.</p>
+<h2>2. 모의 액션 서버</h2>
+<h3>2.1 기본 구현</h3>
+<p>모의 액션 서버는 실제 액션 서버의 인터페이스를 따르되, 사전 설정된 결과를 반환한다.</p>
+<pre><code class="language-cpp">template &lt;typename ActionT&gt;
+class MockActionServer
+{
+public:
+    using GoalHandle =
+        rclcpp_action::ServerGoalHandle&lt;ActionT&gt;;
+
+    MockActionServer(
+        rclcpp::Node::SharedPtr node,
+        const std::string&amp; action_name)
+        : node_(node)
+    {
+        server_ =
+            rclcpp_action::create_server&lt;ActionT&gt;(
+                node_, action_name,
+                [this](const%20rclcpp_action::GoalUUID&amp;,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20std::shared_ptr&lt;
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20typename%20ActionT::Goal&gt;%20goal)
+                {
+                    last_goal_ = *goal;
+                    return accept_goals_
+                        ? rclcpp_action::GoalResponse::
+                              ACCEPT_AND_EXECUTE
+                        : rclcpp_action::GoalResponse::REJECT;
+                },
+                [this](const%20std::shared_ptr&lt;GoalHandle&gt;)
+                {
+                    return accept_cancel_
+                        ? rclcpp_action::CancelResponse::ACCEPT
+                        : rclcpp_action::CancelResponse::REJECT;
+                },
+                [this](const%20std::shared_ptr&lt;GoalHandle&gt;
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20goal_handle)
+                {
+                    executeGoal(goal_handle);
+                });
+    }
+
+    // 모의 동작 설정
+    void setAcceptGoals(bool accept) { accept_goals_ = accept; }
+    void setAcceptCancel(bool accept) { accept_cancel_ = accept; }
+    void setResult(typename ActionT::Result result)
+    {
+        mock_result_ = result;
+    }
+    void setDelay(std::chrono::milliseconds delay)
+    {
+        execution_delay_ = delay;
+    }
+    void setFailOnExecution(bool fail)
+    {
+        fail_on_execution_ = fail;
+    }
+
+    // 검증용 접근자
+    typename ActionT::Goal getLastGoal() const
+    {
+        return last_goal_;
+    }
+    int getGoalCount() const { return goal_count_; }
+    int getCancelCount() const { return cancel_count_; }
+
+private:
+    void executeGoal(
+        const std::shared_ptr&lt;GoalHandle&gt; goal_handle)
+    {
+        goal_count_++;
+
+        std::thread([this, goal_handle]()
+        {
+            // 피드백 발행
+            for (int i = 0; i &lt; 5; ++i)
+            {
+                if (goal_handle-&gt;is_canceling())
+                {
+                    cancel_count_++;
+                    auto result = std::make_shared&lt;
+                        typename ActionT::Result&gt;();
+                    goal_handle-&gt;canceled(result);
+                    return;
+                }
+
+                auto feedback = std::make_shared&lt;
+                    typename ActionT::Feedback&gt;();
+                goal_handle-&gt;publish_feedback(feedback);
+
+                std::this_thread::sleep_for(
+                    execution_delay_ / 5);
+            }
+
+            auto result = std::make_shared&lt;
+                typename ActionT::Result&gt;(mock_result_);
+
+            if (fail_on_execution_)
+            {
+                goal_handle-&gt;abort(result);
+            }
+            else
+            {
+                goal_handle-&gt;succeed(result);
+            }
+        }).detach();
+    }
+
+    rclcpp::Node::SharedPtr node_;
+    typename rclcpp_action::Server&lt;ActionT&gt;::SharedPtr server_;
+    typename ActionT::Goal last_goal_;
+    typename ActionT::Result mock_result_;
+    std::chrono::milliseconds execution_delay_{100};
+    bool accept_goals_{true};
+    bool accept_cancel_{true};
+    bool fail_on_execution_{false};
+    std::atomic&lt;int&gt; goal_count_{0};
+    std::atomic&lt;int&gt; cancel_count_{0};
+};
+</code></pre>
+<h3>2.2 사용 예시</h3>
+<pre><code class="language-cpp">TEST_F(ActionNodeTest, TakeoffSuccess)
+{
+    // 모의 서버 설정
+    MockActionServer&lt;Takeoff&gt; mock_server(
+        test_node_, "takeoff");
+    Takeoff::Result success_result;
+    success_result.success = true;
+    success_result.reached_altitude = 19.8;
+    mock_server.setResult(success_result);
+    mock_server.setDelay(std::chrono::milliseconds(200));
+
+    // 노드 실행
+    blackboard_-&gt;set("altitude", 20.0);
+    auto tree = createTree(
+        "&lt;TakeoffAction target_altitude=\"{altitude}\" "
+        "reached_altitude=\"{result}\" /&gt;");
+
+    auto status = tickUntilComplete(tree);
+
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(mock_server.getGoalCount(), 1);
+}
+
+TEST_F(ActionNodeTest, TakeoffServerRejectsGoal)
+{
+    MockActionServer&lt;Takeoff&gt; mock_server(
+        test_node_, "takeoff");
+    mock_server.setAcceptGoals(false);
+
+    auto tree = createTree(
+        "&lt;TakeoffAction target_altitude=\"20.0\" /&gt;");
+
+    auto status = tickUntilComplete(tree);
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h2>3. 모의 서비스 서버</h2>
+<pre><code class="language-cpp">template &lt;typename ServiceT&gt;
+class MockServiceServer
+{
+public:
+    MockServiceServer(
+        rclcpp::Node::SharedPtr node,
+        const std::string&amp; service_name)
+    {
+        server_ = node-&gt;create_service&lt;ServiceT&gt;(
+            service_name,
+            [this](const%20std::shared_ptr&lt;
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20typename%20ServiceT::Request&gt;%20request,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20std::shared_ptr&lt;
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20typename%20ServiceT::Response&gt;%20response)
+            {
+                last_request_ = *request;
+                request_count_++;
+                *response = mock_response_;
+            });
+    }
+
+    void setResponse(typename ServiceT::Response response)
+    {
+        mock_response_ = response;
+    }
+
+    typename ServiceT::Request getLastRequest() const
+    {
+        return last_request_;
+    }
+
+    int getRequestCount() const { return request_count_; }
+
+private:
+    typename rclcpp::Service&lt;ServiceT&gt;::SharedPtr server_;
+    typename ServiceT::Response mock_response_;
+    typename ServiceT::Request last_request_;
+    std::atomic&lt;int&gt; request_count_{0};
+};
+</code></pre>
+<h2>4. 모의 토픽 발행자</h2>
+<p>센서 데이터를 시뮬레이션하는 모의 발행자이다.</p>
+<pre><code class="language-cpp">template &lt;typename MsgT&gt;
+class MockPublisher
+{
+public:
+    MockPublisher(
+        rclcpp::Node::SharedPtr node,
+        const std::string&amp; topic,
+        std::chrono::milliseconds period =
+            std::chrono::milliseconds(100))
+    {
+        publisher_ = node-&gt;create_publisher&lt;MsgT&gt;(
+            topic, rclcpp::SensorDataQoS());
+
+        timer_ = node-&gt;create_wall_timer(
+            period,
+            [this]()
+            {
+                if (publishing_ &amp;&amp; message_generator_)
+                {
+                    publisher_-&gt;publish(
+                        message_generator_());
+                }
+            });
+    }
+
+    void setMessageGenerator(
+        std::function&lt;MsgT()&gt; generator)
+    {
+        message_generator_ = generator;
+    }
+
+    void start() { publishing_ = true; }
+    void stop() { publishing_ = false; }
+
+private:
+    typename rclcpp::Publisher&lt;MsgT&gt;::SharedPtr publisher_;
+    rclcpp::TimerBase::SharedPtr timer_;
+    std::function&lt;MsgT()&gt; message_generator_;
+    bool publishing_{false};
+};
+</code></pre>
+<h3>4.1 사용 예시: 이미지 센서 시뮬레이션</h3>
+<pre><code class="language-cpp">TEST_F(ActionNodeTest, CaptureImageFromMock)
+{
+    MockPublisher&lt;sensor_msgs::msg::Image&gt; mock_camera(
+        test_node_, "/camera/image_raw",
+        std::chrono::milliseconds(50));
+
+    mock_camera.setMessageGenerator([]()
+    {
+        sensor_msgs::msg::Image img;
+        img.header.stamp = rclcpp::Clock().now();
+        img.width = 640;
+        img.height = 480;
+        img.encoding = "bgr8";
+        img.data.resize(640 * 480 * 3, 128);
+        return img;
+    });
+    mock_camera.start();
+
+    auto tree = createTree(
+        "&lt;CaptureImage camera_topic=\"/camera/image_raw\""
+        " image=\"{img}\" timeout=\"2.0\" /&gt;");
+
+    auto status = tickUntilComplete(tree);
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+</code></pre>
+<h2>5. 오류 시나리오 시뮬레이션</h2>
+<p>모의 인터페이스를 통해 다양한 오류 시나리오를 재현한다.</p>
+<pre><code class="language-cpp">// 서버 지연에 의한 타임아웃
+TEST_F(ActionNodeTest, ServerSlowCausesTimeout)
+{
+    MockActionServer&lt;Navigate&gt; mock_server(
+        test_node_, "navigate");
+    mock_server.setDelay(
+        std::chrono::milliseconds(10000));  // 10초 지연
+
+    auto tree = createTree(
+        "&lt;NavigateAction goal=\"{goal}\" "
+        "timeout=\"1.0\" /&gt;");
+
+    auto status = tickUntilComplete(tree,
+        std::chrono::milliseconds(3000));
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+}
+
+// 서버 중단
+TEST_F(ActionNodeTest, ServerAborts)
+{
+    MockActionServer&lt;Navigate&gt; mock_server(
+        test_node_, "navigate");
+    mock_server.setFailOnExecution(true);
+
+    auto tree = createTree(
+        "&lt;NavigateAction goal=\"{goal}\" /&gt;");
+
+    auto status = tickUntilComplete(tree);
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+}
+
+// 센서 데이터 미수신
+TEST_F(ActionNodeTest, NoSensorData)
+{
+    // 모의 발행자를 시작하지 않음
+    auto tree = createTree(
+        "&lt;CaptureImage camera_topic=\"/camera/image_raw\""
+        " timeout=\"0.5\" /&gt;");
+
+    auto status = tickUntilComplete(tree);
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h2>6. 골 내용 검증</h2>
+<p>모의 서버에 전달된 골의 내용이 올바른지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ActionNodeTest, GoalParametersCorrect)
+{
+    MockActionServer&lt;Takeoff&gt; mock_server(
+        test_node_, "takeoff");
+    mock_server.setDelay(
+        std::chrono::milliseconds(50));
+
+    blackboard_-&gt;set("alt", 25.0);
+    blackboard_-&gt;set("rate", 3.0);
+
+    auto tree = createTree(
+        "&lt;TakeoffAction target_altitude=\"{alt}\" "
+        "climb_rate=\"{rate}\" /&gt;");
+
+    tickUntilComplete(tree);
+
+    auto goal = mock_server.getLastGoal();
+    EXPECT_DOUBLE_EQ(goal.target_altitude, 25.0);
+    EXPECT_DOUBLE_EQ(goal.climb_rate, 3.0);
+}
+</code></pre>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Meszaros, G., “xUnit Test Patterns: Refactoring Test Code,” Addison-Wesley, 2007.</li>
+<li>Google, “Google Test User’s Guide,” https://google.github.io/googletest/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

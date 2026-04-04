@@ -115,6 +115,133 @@
             </header>
             <article>
                 <h1>1297.8 조건 노드의 설계 원칙</h1>
+<h2>1. 설계 원칙의 개요</h2>
+<p>조건 노드(Condition Node)의 설계는 행동 트리(Behavior Tree)의 정확성, 반응성, 모듈성을 결정하는 핵심 요소이다. 잘 설계된 조건 노드는 트리의 실행 흐름을 명확하게 제어하고, 재사용성이 높으며, 단위 테스트가 용이하다. 반면, 설계 원칙을 위반한 조건 노드는 예측 불가능한 동작, 성능 저하, 유지보수 난이도 증가를 초래한다(Colledanchise &amp; Ogren, 2018).</p>
+<p>본 절에서는 조건 노드의 설계에 적용해야 하는 핵심 원칙을 종합적으로 제시한다.</p>
+<h2>2. 단일 책임 원칙</h2>
+<p>단일 책임 원칙(Single Responsibility Principle)은 하나의 조건 노드가 하나의 명확한 조건만을 평가해야 한다는 원칙이다. 복수의 조건을 하나의 노드에서 동시에 평가하면, 조건의 의미가 모호해지고 재사용성이 저하된다.</p>
+<pre><code class="language-cpp">// 잘못된 설계: 복수의 조건을 하나의 노드에서 평가
+BT::NodeStatus IsSafeToMove::tick()
+{
+    bool battery_ok = (battery_level_ &gt; 20.0);
+    bool path_clear = (obstacle_distance_ &gt; 1.0);
+    bool localized = (localization_quality_ &gt; 0.8);
+
+    return (battery_ok &amp;&amp; path_clear &amp;&amp; localized)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p>위 구현은 배터리, 경로, 위치 추정의 세 가지 조건을 동시에 평가한다. 이 경우 <code>FAILURE</code>가 반환되었을 때 어떤 조건이 미충족되었는지를 외부에서 판별할 수 없다. 올바른 설계는 각 조건을 독립적인 노드로 분리하고, Sequence 제어 노드를 통해 AND 논리를 구현하는 것이다.</p>
+<pre><code>Sequence
+├── IsBatteryOk
+├── IsPathClear
+└── IsLocalized
+</code></pre>
+<p>이 구조에서는 어떤 조건에서 실패하였는지가 트리 실행 로그를 통해 명확히 식별되며, 각 조건 노드를 독립적으로 재사용할 수 있다.</p>
+<h2>3. 순수 함수 원칙</h2>
+<p>조건 노드는 순수 함수(pure function)와 동등한 특성을 가져야 한다. 순수 함수는 다음 두 가지 성질을 만족하는 함수이다:</p>
+<ol>
+<li><strong>결정론적 출력</strong>: 동일한 입력에 대하여 항상 동일한 출력을 반환한다.</li>
+<li><strong>부작용 부재</strong>: 함수의 실행이 외부 상태를 변경하지 않는다.</li>
+</ol>
+<p>조건 노드의 <code>tick()</code> 메서드가 순수 함수로 구현되면, 호출 횟수, 호출 시점, 호출 순서에 관계없이 동일한 입력 상태에서 동일한 결과를 보장한다. 이는 조건 노드의 테스트 용이성, 캐싱 안전성, 반복 평가 안전성의 기반이 된다.</p>
+<pre><code class="language-cpp">// 순수 함수 원칙을 따르는 조건 노드
+BT::NodeStatus IsTemperatureInRange::tick()
+{
+    double temperature;
+    getInput("temperature", temperature);
+
+    double min_temp, max_temp;
+    getInput("min_temperature", min_temp);
+    getInput("max_temperature", max_temp);
+
+    return (temperature &gt;= min_temp &amp;&amp; temperature &lt;= max_temp)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>4. 빠른 평가 원칙</h2>
+<p>조건 노드의 평가는 tick 주기 내에서 무시할 수 있을 정도로 빠르게 완료되어야 한다. 조건 노드가 차단적(blocking) 연산, 복잡한 계산, 네트워크 통신 등을 수행하면 전체 행동 트리의 반응성이 저하된다.</p>
+<p>빠른 평가를 보장하기 위한 기법은 다음과 같다:</p>
+<ul>
+<li><strong>사전 수신 데이터 참조</strong>: 센서 데이터를 콜백에서 비동기적으로 수신하여 내부 변수에 저장하고, <code>tick()</code>에서는 저장된 값만을 참조한다.</li>
+<li><strong>블랙보드 활용</strong>: 복잡한 계산 결과를 별도의 액션 노드에서 블랙보드에 저장하고, 조건 노드는 블랙보드의 값만을 읽는다.</li>
+<li><strong>캐싱</strong>: 동일한 조건에 대한 반복 평가 시 이전 결과를 재사용하여 계산 비용을 절감한다.</li>
+</ul>
+<h2>5. 명확한 참/거짓 구분 원칙</h2>
+<p>조건 노드의 반환값은 <code>SUCCESS</code>(참) 또는 <code>FAILURE</code>(거짓)로 명확히 이분되어야 한다. 모호한 판정 기준, 경계값에서의 불확실한 동작, 불완전한 데이터에서의 임의적 결정은 행동 트리의 예측 가능성을 저해한다.</p>
+<h3>5.1 경계값 처리</h3>
+<p>임계값 비교에서 경계값(boundary value)의 처리를 명확히 정의해야 한다. “이상(≥)“과 “초과(&gt;)”, “이하(≤)“와 “미만(&lt;)“의 구분을 설계 시점에 확정하고 일관되게 적용한다.</p>
+<pre><code class="language-cpp">// 경계값 처리가 명확한 구현
+BT::NodeStatus IsBatteryAboveThreshold::tick()
+{
+    double battery_level;
+    getInput("battery_level", battery_level);
+
+    double threshold;
+    getInput("threshold", threshold);
+
+    // "이상"으로 명확히 정의
+    return (battery_level &gt;= threshold)
+        ? BT::NodeStatus::SUCCESS
+        : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>5.2 데이터 부재 시 처리</h3>
+<p>블랙보드에 필요한 키가 존재하지 않거나, 센서 데이터가 아직 수신되지 않은 경우의 처리 방식을 명확히 정의해야 한다. 일반적으로 실패 안전(fail-safe) 원칙에 따라 <code>FAILURE</code>를 반환한다.</p>
+<h2>6. 명명 규칙</h2>
+<p>조건 노드의 이름은 <code>SUCCESS</code> 반환 시의 의미를 명확히 나타내도록 명명한다. 접두사 “Is”, “Has”, “Can” 등을 사용하여 해당 노드가 조건 평가를 수행한다는 것을 직관적으로 표현한다.</p>
+<table><thead><tr><th>명명 패턴</th><th>예시</th><th>SUCCESS 의미</th></tr></thead><tbody>
+<tr><td><code>Is[상태]</code></td><td><code>IsBatteryOk</code></td><td>배터리가 정상이다</td></tr>
+<tr><td><code>Has[대상]</code></td><td><code>HasValidPath</code></td><td>유효한 경로가 있다</td></tr>
+<tr><td><code>Can[동작]</code></td><td><code>CanGrasp</code></td><td>파지가 가능하다</td></tr>
+<tr><td><code>Is[대상][상태]</code></td><td><code>IsGoalReached</code></td><td>목표에 도달하였다</td></tr>
+</tbody></table>
+<p>이름과 반환값의 의미가 일치하면, 트리 구조를 읽을 때 실행 흐름을 직관적으로 이해할 수 있다.</p>
+<h2>7. 입력 매개변수화</h2>
+<p>조건 노드의 임계값, 기준치, 참조 대상 등을 하드코딩(hard-coding)하지 않고, 블랙보드 입력 포트(input port)를 통해 외부에서 주입받도록 설계한다. 이를 통해 동일한 조건 노드 클래스를 다양한 설정으로 재사용할 수 있다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;double&gt;("value", "평가 대상 값"),
+        BT::InputPort&lt;double&gt;("threshold", 0.5, "임계값 (기본값: 0.5)")
+    };
+}
+</code></pre>
+<p>XML 트리 정의에서 동일한 조건 노드 클래스를 상이한 매개변수로 복수 회 사용할 수 있다:</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Condition ID="IsValueAbove" value="{battery}" threshold="20.0"/&gt;
+    &lt;Condition ID="IsValueAbove" value="{temperature}" threshold="10.0"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>8. 실패 안전 설계</h2>
+<p>조건 노드는 예외 상황에서 안전한 방향으로 결과를 반환해야 한다. 데이터가 불완전하거나, 센서가 비정상적이거나, 통신이 단절된 상황에서 조건을 참으로 판정하면 위험한 행동이 실행될 수 있다.</p>
+<p>실패 안전 원칙의 적용 기준:</p>
+<table><thead><tr><th>상황</th><th>안전한 반환값</th><th>근거</th></tr></thead><tbody>
+<tr><td>센서 데이터 미수신</td><td>FAILURE</td><td>확인되지 않은 상태에서의 행동 방지</td></tr>
+<tr><td>블랙보드 키 부재</td><td>FAILURE</td><td>데이터 부재 시 보수적 판정</td></tr>
+<tr><td>값이 NaN 또는 Inf</td><td>FAILURE</td><td>비정상 값에 기반한 판정 방지</td></tr>
+<tr><td>타임스탬프 만료</td><td>FAILURE</td><td>오래된 데이터에 기반한 판정 방지</td></tr>
+</tbody></table>
+<h2>9. 테스트 용이성</h2>
+<p>조건 노드는 독립적으로 단위 테스트가 가능하도록 설계해야 한다. 블랙보드를 통한 입력 주입과 반환 상태의 검증만으로 조건 노드의 정확성을 확인할 수 있어야 한다.</p>
+<p>테스트 용이성을 높이기 위한 설계 지침:</p>
+<ol>
+<li>외부 의존성을 블랙보드 포트로 추상화하여 테스트 시 모의 값(mock value)을 주입할 수 있도록 한다.</li>
+<li>전역 상태(global state)에 대한 의존을 배제한다.</li>
+<li>조건 평가 로직을 복잡한 외부 시스템과 분리하여, 순수한 논리 연산으로 구현한다.</li>
+</ol>
+<h2>10. 설계 원칙의 상호 관계</h2>
+<p>위에서 제시한 설계 원칙들은 상호 보완적이며, 하나의 원칙을 준수하면 다른 원칙의 달성이 용이해진다. 단일 책임 원칙을 따르면 명명이 명확해지고, 순수 함수 원칙을 따르면 테스트 용이성이 향상되며, 입력 매개변수화를 적용하면 재사용성이 증대된다. 이러한 원칙들의 일관된 적용이 행동 트리 전체의 품질을 결정한다.</p>
+<h2>11. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Colledanchise, M. (2022). BehaviorTree.CPP Documentation. https://www.behaviortree.dev/</li>
+<li>Martin, R. C. (2003). <em>Agile Software Development: Principles, Patterns, and Practices</em>. Prentice Hall.</li>
+</ul>
+<hr />
+<p>version: 0.1.0</p>
 
             </article>
             <footer>

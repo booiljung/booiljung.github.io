@@ -115,6 +115,273 @@
             </header>
             <article>
                 <h1>1296.91 액션 노드의 단위 테스트</h1>
+<h2>1. 개요</h2>
+<p>액션 노드의 단위 테스트(unit test)는 개별 액션 노드의 동작을 독립적으로 검증하는 소프트웨어 테스트 기법이다. 행동 트리를 구성하는 액션 노드가 정확한 반환 상태를 보고하고, 입출력 포트를 올바르게 처리하며, halt에 적절히 대응하는지를 자동화된 테스트를 통해 검증한다.</p>
+<p>단위 테스트는 통합 테스트(integration test)에 비해 실행 속도가 빠르고, 오류의 원인을 정확히 특정할 수 있으며, 외부 의존성(ROS2 노드, 액션 서버, 센서 등) 없이 실행할 수 있다는 장점이 있다.</p>
+<h2>2. 테스트 프레임워크</h2>
+<h3>2.1 Google Test (gtest)</h3>
+<p>ROS2 생태계에서 C++ 단위 테스트의 표준 프레임워크는 Google Test(gtest)이다. <code>ament_cmake</code>의 테스트 매크로를 통해 빌드 시스템과 통합된다.</p>
+<pre><code class="language-cmake"># CMakeLists.txt
+find_package(ament_cmake_gtest REQUIRED)
+
+ament_add_gtest(test_action_nodes
+    test/test_action_nodes.cpp)
+target_link_libraries(test_action_nodes
+    ${PROJECT_NAME}
+    ${behaviortree_cpp_LIBRARIES})
+</code></pre>
+<h3>2.2 테스트 구조</h3>
+<pre><code class="language-cpp">#include &lt;gtest/gtest.h&gt;
+#include &lt;behaviortree_cpp/bt_factory.h&gt;
+
+class ActionNodeTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        factory_ =
+            std::make_shared&lt;BT::BehaviorTreeFactory&gt;();
+        // 노드 등록
+        registerTestNodes();
+    }
+
+    void TearDown() override
+    {
+        factory_.reset();
+    }
+
+    std::shared_ptr&lt;BT::BehaviorTreeFactory&gt; factory_;
+    BT::Blackboard::Ptr blackboard_ =
+        BT::Blackboard::create();
+};
+</code></pre>
+<h2>3. 테스트 범주</h2>
+<h3>3.1 반환 상태 테스트</h3>
+<p>액션 노드가 주어진 입력에 대해 올바른 반환 상태(<code>SUCCESS</code>, <code>FAILURE</code>, <code>RUNNING</code>)를 보고하는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ActionNodeTest, SuccessOnValidInput)
+{
+    auto tree = factory_-&gt;createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree&gt;
+                &lt;TestAction input="valid_value"
+                            result="{output}" /&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )", blackboard_);
+
+    auto status = tree.tickWhileRunning();
+    EXPECT_EQ(status, BT::NodeStatus::SUCCESS);
+}
+
+TEST_F(ActionNodeTest, FailureOnInvalidInput)
+{
+    blackboard_-&gt;set("bad_input", -1.0);
+
+    auto tree = factory_-&gt;createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree&gt;
+                &lt;TestAction input="{bad_input}" /&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )", blackboard_);
+
+    auto status = tree.tickWhileRunning();
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h3>3.2 포트 입출력 테스트</h3>
+<p>입력 포트의 값이 올바르게 읽히고, 출력 포트에 결과가 올바르게 기록되는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ActionNodeTest, OutputPortWritten)
+{
+    blackboard_-&gt;set("altitude", 20.0);
+
+    auto tree = factory_-&gt;createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree&gt;
+                &lt;MockTakeoff target_altitude="{altitude}"
+                             reached_altitude="{result}" /&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )", blackboard_);
+
+    tree.tickWhileRunning();
+
+    double reached;
+    EXPECT_TRUE(blackboard_-&gt;get("result", reached));
+    EXPECT_NEAR(reached, 20.0, 0.5);
+}
+</code></pre>
+<h3>3.3 Halt 테스트</h3>
+<p><code>RUNNING</code> 상태에서 halt가 호출되었을 때, 노드가 자원을 올바르게 해제하고 재시작이 가능한지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ActionNodeTest, HaltAndRestart)
+{
+    auto tree = factory_-&gt;createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree&gt;
+                &lt;LongRunningAction duration="10.0" /&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )", blackboard_);
+
+    // 첫 번째 tick: RUNNING 반환
+    auto status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+
+    // Halt
+    tree.haltTree();
+
+    // 재시작: 다시 RUNNING 반환
+    status = tree.tickOnce();
+    EXPECT_EQ(status, BT::NodeStatus::RUNNING);
+}
+</code></pre>
+<h3>3.4 타임아웃 테스트</h3>
+<p>지정된 시간 내에 작업이 완료되지 않으면 <code>FAILURE</code>를 반환하는지 검증한다.</p>
+<pre><code class="language-cpp">TEST_F(ActionNodeTest, TimeoutFailure)
+{
+    auto tree = factory_-&gt;createTreeFromText(R"(
+        &lt;root BTCPP_format="4"&gt;
+            &lt;BehaviorTree&gt;
+                &lt;Timeout msec="1000"&gt;
+                    &lt;NeverCompletingAction /&gt;
+                &lt;/Timeout&gt;
+            &lt;/BehaviorTree&gt;
+        &lt;/root&gt;
+    )", blackboard_);
+
+    auto status = tree.tickWhileRunning();
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);
+}
+</code></pre>
+<h2>4. 모의 객체 (Mock Object)</h2>
+<h3>4.1 모의 액션 서버</h3>
+<p>실제 ROS2 액션 서버 없이 테스트하기 위해, 모의 액션 서버를 구현한다.</p>
+<pre><code class="language-cpp">template &lt;typename ActionT&gt;
+class MockActionServer
+{
+public:
+    MockActionServer(
+        rclcpp::Node::SharedPtr node,
+        const std::string&amp; action_name)
+    {
+        server_ =
+            rclcpp_action::create_server&lt;ActionT&gt;(
+                node, action_name,
+                std::bind(&amp;MockActionServer::handleGoal,
+                          this, std::placeholders::_1,
+                          std::placeholders::_2),
+                std::bind(&amp;MockActionServer::handleCancel,
+                          this, std::placeholders::_1),
+                std::bind(&amp;MockActionServer::handleAccepted,
+                          this, std::placeholders::_1));
+    }
+
+    void setResult(bool success)
+    {
+        mock_success_ = success;
+    }
+
+    void setDelay(std::chrono::milliseconds delay)
+    {
+        mock_delay_ = delay;
+    }
+
+private:
+    rclcpp_action::GoalResponse handleGoal(
+        const rclcpp_action::GoalUUID&amp;,
+        std::shared_ptr&lt;const typename ActionT::Goal&gt;)
+    {
+        return rclcpp_action::GoalResponse::
+            ACCEPT_AND_EXECUTE;
+    }
+
+    rclcpp_action::CancelResponse handleCancel(
+        const std::shared_ptr&lt;
+            rclcpp_action::ServerGoalHandle&lt;ActionT&gt;&gt;)
+    {
+        return rclcpp_action::CancelResponse::ACCEPT;
+    }
+
+    void handleAccepted(
+        const std::shared_ptr&lt;
+            rclcpp_action::ServerGoalHandle&lt;ActionT&gt;&gt;
+                goal_handle)
+    {
+        std::thread([this, goal_handle]()
+        {
+            std::this_thread::sleep_for(mock_delay_);
+            auto result =
+                std::make_shared&lt;typename ActionT::Result&gt;();
+            result-&gt;success = mock_success_;
+            goal_handle-&gt;succeed(result);
+        }).detach();
+    }
+
+    typename rclcpp_action::Server&lt;ActionT&gt;::SharedPtr
+        server_;
+    bool mock_success_{true};
+    std::chrono::milliseconds mock_delay_{100};
+};
+</code></pre>
+<h3>4.2 모의 센서 토픽</h3>
+<p>센서 데이터를 시뮬레이션하는 모의 발행자를 구현한다.</p>
+<pre><code class="language-cpp">class MockCamera
+{
+public:
+    MockCamera(rclcpp::Node::SharedPtr node,
+               const std::string&amp; topic)
+    {
+        publisher_ =
+            node-&gt;create_publisher&lt;sensor_msgs::msg::Image&gt;(
+                topic, rclcpp::SensorDataQoS());
+    }
+
+    void publishImage(int width, int height)
+    {
+        auto msg = sensor_msgs::msg::Image();
+        msg.header.stamp =
+            rclcpp::Clock().now();
+        msg.width = width;
+        msg.height = height;
+        msg.encoding = "bgr8";
+        msg.data.resize(width * height * 3, 128);
+        publisher_-&gt;publish(msg);
+    }
+
+private:
+    rclcpp::Publisher&lt;sensor_msgs::msg::Image&gt;::SharedPtr
+        publisher_;
+};
+</code></pre>
+<h2>5. 테스트 실행</h2>
+<h3>5.1 colcon을 통한 테스트 실행</h3>
+<pre><code class="language-bash">colcon test --packages-select my_bt_nodes
+colcon test-result --verbose
+</code></pre>
+<h3>5.2 특정 테스트만 실행</h3>
+<pre><code class="language-bash">colcon test --packages-select my_bt_nodes \
+    --ctest-args -R "ActionNodeTest"
+</code></pre>
+<h2>6. 테스트 커버리지</h2>
+<p>단위 테스트가 커버해야 하는 주요 시나리오는 다음과 같다.</p>
+<ul>
+<li>정상 입력에 대한 <code>SUCCESS</code> 반환</li>
+<li>잘못된 입력에 대한 <code>FAILURE</code> 반환</li>
+<li>서버 미응답 시 타임아웃 <code>FAILURE</code></li>
+<li><code>RUNNING</code> 중 halt 호출 후 재시작</li>
+<li>블랙보드 입출력 포트의 올바른 동작</li>
+<li>예외 발생 시 <code>FAILURE</code> 반환 및 자원 해제</li>
+<li>연속 실행의 독립성(이전 실행이 다음 실행에 영향 없음)</li>
+</ul>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Google, “Google Test User’s Guide,” https://google.github.io/googletest/.</li>
+<li>Open Robotics, “ament_cmake_gtest — ROS 2 Documentation,” https://docs.ros.org/en/rolling/p/ament_cmake_gtest/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

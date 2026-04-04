@@ -115,6 +115,291 @@
             </header>
             <article>
                 <h1>1296.67 Land 액션 노드 구현</h1>
+<h2>1. 개요</h2>
+<p>Land 액션 노드는 드론(UAV)이 현재 위치에서 안전하게 지면으로 하강하여 착륙하는 동작을 행동 트리 내에서 수행하는 리프 노드이다. 착륙은 드론 임무의 최종 단계이거나 비상 상황에서의 안전 절차로서 수행되며, 하강 속도 제어, 지면 감지, 모터 정지(disarming) 등의 하위 절차를 포함한다.</p>
+<p>착륙 동작은 이륙과 마찬가지로 수 초 이상 소요되므로, <code>BT::StatefulActionNode</code>를 상속하여 비동기 방식으로 구현한다. 노드는 착륙 명령 전송 후 <code>RUNNING</code> 상태를 유지하며, 지면 접촉이 확인되면 <code>SUCCESS</code>를 반환한다.</p>
+<h2>2. ROS2 액션 인터페이스 정의</h2>
+<h3>2.1 착륙 액션 타입</h3>
+<p>Land 동작에 대한 ROS2 액션 타입은 착륙 속도, 착륙 모드 등의 파라미터를 포함하도록 정의한다.</p>
+<pre><code># Land.action
+# Goal
+float64 descent_rate        # 하강 속도 (m/s, 양수)
+float64 landing_altitude    # 착륙 판정 고도 (미터, 지면 기준)
+---
+# Result
+bool success                # 착륙 성공 여부
+float64 final_altitude      # 최종 고도 (미터)
+uint8 error_code            # 오류 코드 (0: 정상)
+---
+# Feedback
+float64 current_altitude    # 현재 고도 (미터)
+float64 descent_progress    # 하강 진행률 (0.0 ~ 1.0)
+bool ground_detected        # 지면 감지 여부
+</code></pre>
+<p>피드백 메시지에 <code>ground_detected</code> 필드를 포함하여, 착륙 과정에서 지면 근접 센서 또는 고도 센서의 지면 감지 상태를 실시간으로 전달한다. 이는 거친 지형이나 경사면에서의 착륙 시 상위 시스템이 추가적인 판단을 수행할 수 있도록 하기 위함이다.</p>
+<h2>3. 클래스 구조 설계</h2>
+<h3>3.1 클래스 정의</h3>
+<pre><code class="language-cpp">#include &lt;behaviortree_cpp/action_node.h&gt;
+#include &lt;rclcpp/rclcpp.hpp&gt;
+#include &lt;rclcpp_action/rclcpp_action.hpp&gt;
+#include "drone_interfaces/action/land.hpp"
+
+class LandAction : public BT::StatefulActionNode
+{
+public:
+    using Land = drone_interfaces::action::Land;
+    using GoalHandleLand = rclcpp_action::ClientGoalHandle&lt;Land&gt;;
+
+    LandAction(const std::string&amp; name,
+               const BT::NodeConfiguration&amp; config,
+               rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config),
+          node_(node)
+    {
+        action_client_ = rclcpp_action::create_client&lt;Land&gt;(
+            node_, "land");
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("descent_rate",
+                                  1.5,
+                                  "하강 속도 (m/s)"),
+            BT::InputPort&lt;double&gt;("landing_altitude",
+                                  0.15,
+                                  "착륙 판정 고도 (미터)"),
+            BT::InputPort&lt;double&gt;("timeout",
+                                  60.0,
+                                  "타임아웃 (초)"),
+            BT::OutputPort&lt;double&gt;("final_altitude",
+                                   "최종 도달 고도")
+        };
+    }
+
+    BT::NodeStatus onStart() override;
+    BT::NodeStatus onRunning() override;
+    void onHalted() override;
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp_action::Client&lt;Land&gt;::SharedPtr action_client_;
+    GoalHandleLand::SharedPtr goal_handle_;
+    std::atomic&lt;bool&gt; goal_accepted_{false};
+    std::atomic&lt;bool&gt; goal_completed_{false};
+    std::atomic&lt;bool&gt; goal_succeeded_{false};
+    double final_altitude_{0.0};
+    rclcpp::Time start_time_;
+};
+</code></pre>
+<p><code>landing_altitude</code> 입력 포트는 착륙 완료를 판정하는 고도 임계값을 지정한다. 기본값 0.15미터는 일반적인 멀티로터 드론에서 지면 효과(ground effect) 영역 내의 안전 고도에 해당한다.</p>
+<h2>4. 콜백 메서드 구현</h2>
+<h3>4.1 onStart() 콜백</h3>
+<p><code>onStart()</code>에서는 ROS2 액션 서버와의 연결을 확인하고, 착륙 파라미터를 구성하여 골을 전송한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus LandAction::onStart()
+{
+    if (!action_client_-&gt;wait_for_action_server(
+            std::chrono::seconds(5)))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "Land 액션 서버에 연결할 수 없음");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    double descent_rate;
+    double landing_altitude;
+    if (!getInput("descent_rate", descent_rate) ||
+        !getInput("landing_altitude", landing_altitude))
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+                     "필수 입력 포트 읽기 실패");
+        return BT::NodeStatus::FAILURE;
+    }
+
+    auto goal_msg = Land::Goal();
+    goal_msg.descent_rate = descent_rate;
+    goal_msg.landing_altitude = landing_altitude;
+
+    auto send_goal_options =
+        rclcpp_action::Client&lt;Land&gt;::SendGoalOptions();
+
+    send_goal_options.goal_response_callback =
+        [this](const%20GoalHandleLand::SharedPtr&amp;%20goal_handle)
+        {
+            if (goal_handle)
+            {
+                goal_accepted_ = true;
+                goal_handle_ = goal_handle;
+            }
+        };
+
+    send_goal_options.result_callback =
+        [this](const%20GoalHandleLand::WrappedResult&amp;%20result)
+        {
+            goal_completed_ = true;
+            goal_succeeded_ =
+                (result.code ==
+                 rclcpp_action::ResultCode::SUCCEEDED);
+            if (goal_succeeded_)
+            {
+                final_altitude_ =
+                    result.result-&gt;final_altitude;
+            }
+        };
+
+    action_client_-&gt;async_send_goal(goal_msg,
+                                     send_goal_options);
+    start_time_ = node_-&gt;now();
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h3>4.2 onRunning() 콜백</h3>
+<p><code>onRunning()</code>은 착륙 동작의 진행 상태를 매 tick마다 확인한다. 착륙 동작은 이륙에 비해 상대적으로 더 긴 시간이 소요될 수 있으므로, 타임아웃 값을 충분히 설정해야 한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus LandAction::onRunning()
+{
+    double timeout;
+    getInput("timeout", timeout);
+    auto elapsed = (node_-&gt;now() - start_time_).seconds();
+
+    if (elapsed &gt; timeout)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "Land 타임아웃 (%.1f초 경과)", elapsed);
+        if (goal_handle_)
+        {
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+    if (goal_completed_)
+    {
+        if (goal_succeeded_)
+        {
+            setOutput("final_altitude", final_altitude_);
+            RCLCPP_INFO(node_-&gt;get_logger(),
+                        "착륙 완료: 최종 고도 %.3f m",
+                        final_altitude_);
+            return BT::NodeStatus::SUCCESS;
+        }
+        else
+        {
+            RCLCPP_ERROR(node_-&gt;get_logger(),
+                         "착륙 실패");
+            return BT::NodeStatus::FAILURE;
+        }
+    }
+
+    return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<p>착륙 타임아웃 시 <code>FAILURE</code>를 반환하는 것은 중대한 안전 결정이다. 착륙 동작이 타임아웃되었다는 것은 드론이 여전히 공중에 있을 가능성을 의미하므로, 상위 행동 트리에서는 이에 대한 적절한 복구 경로를 반드시 구성해야 한다.</p>
+<h3>4.3 onHalted() 콜백</h3>
+<pre><code class="language-cpp">void LandAction::onHalted()
+{
+    if (goal_handle_)
+    {
+        RCLCPP_WARN(node_-&gt;get_logger(),
+                    "Land 액션 중단 요청 - 착륙 취소");
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+
+    goal_accepted_ = false;
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+    goal_handle_.reset();
+}
+</code></pre>
+<p>착륙 동작의 중단은 드론이 다시 공중 체공 상태로 전환됨을 의미한다. 따라서 <code>onHalted()</code> 호출 후 드론의 비행 제어 시스템은 위치 유지(position hold) 모드 등의 안전한 비행 모드로 전환되어야 한다. 이러한 모드 전환의 책임은 액션 서버 측에 있으며, 행동 트리의 Land 노드는 취소 요청만을 전송한다.</p>
+<h2>5. 착륙 방식에 따른 구현 변형</h2>
+<h3>5.1 정밀 착륙 (Precision Landing)</h3>
+<p>정밀 착륙은 시각 마커(visual marker)나 적외선 비컨(IR beacon)을 이용하여 착륙 지점을 정밀하게 보정하는 착륙 방식이다. PX4 자동 비행 소프트웨어에서는 IRLock 센서 또는 ArUco 마커 기반의 정밀 착륙을 지원한다.</p>
+<p>정밀 착륙을 지원하는 Land 노드는 추가 입력 포트를 통해 착륙 목표 좌표를 수신할 수 있다.</p>
+<pre><code class="language-cpp">static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;double&gt;("descent_rate", 1.0,
+                              "하강 속도 (m/s)"),
+        BT::InputPort&lt;double&gt;("landing_altitude", 0.15,
+                              "착륙 판정 고도 (미터)"),
+        BT::InputPort&lt;double&gt;("target_x", "착륙 목표 X 좌표"),
+        BT::InputPort&lt;double&gt;("target_y", "착륙 목표 Y 좌표"),
+        BT::InputPort&lt;bool&gt;("use_precision_landing", false,
+                            "정밀 착륙 사용 여부"),
+        BT::InputPort&lt;double&gt;("timeout", 60.0,
+                              "타임아웃 (초)"),
+        BT::OutputPort&lt;double&gt;("final_altitude",
+                               "최종 도달 고도")
+    };
+}
+</code></pre>
+<h3>5.2 비상 착륙 (Emergency Landing)</h3>
+<p>비상 착륙은 배터리 부족, 통신 두절, 센서 이상 등의 비상 상황에서 수행되는 착륙이다. 비상 착륙 노드는 일반 착륙 노드와 별도로 구현하거나, 동일한 Land 노드에 비상 모드 파라미터를 추가하여 구현할 수 있다.</p>
+<p>비상 착륙에서는 하강 속도 제한을 완화하고, 정밀도보다 신속성을 우선시한다. PX4에서는 <code>commander/force_disarm</code> 파라미터를 통해 강제 모터 정지를 수행할 수 있으나, 이는 충돌 위험이 있으므로 최후의 수단으로만 사용해야 한다.</p>
+<h2>6. 착륙 판정 로직</h2>
+<h3>6.1 고도 기반 판정</h3>
+<p>가장 기본적인 착륙 판정 방식은 현재 고도가 지정된 임계값 이하로 감소하고, 수직 속도가 0에 수렴하는지를 확인하는 것이다. 기압 고도계(barometric altimeter)와 초음파 거리 센서(ultrasonic rangefinder) 또는 라이다(LiDAR) 거리 센서의 데이터를 융합하여 지면까지의 거리를 추정한다.</p>
+<h3>6.2 접촉 감지 기반 판정</h3>
+<p>일부 드론 플랫폼은 착륙 기어에 접촉 센서(contact sensor)를 장착하여 물리적 지면 접촉을 감지한다. 이 방식은 고도 센서의 오차에 영향을 받지 않으므로 불규칙 지형에서의 착륙 판정에 유리하다.</p>
+<h3>6.3 IMU 기반 판정</h3>
+<p>관성 측정 장치(IMU)의 가속도 데이터를 분석하여 착륙 충격(landing shock)을 감지하는 방식이다. 수직 가속도의 급격한 변화와 이후의 진동 패턴을 분석하여 지면 접촉 여부를 판정한다. PX4 자동 비행 소프트웨어의 <code>land_detector</code> 모듈은 IMU 데이터, 모터 추력, 고도 변화율을 종합하여 착륙 상태를 판정한다.</p>
+<h2>7. XML 행동 트리에서의 활용</h2>
+<h3>7.1 노드 등록 및 XML 정의</h3>
+<pre><code class="language-cpp">factory.registerBuilder&lt;LandAction&gt;(
+    "Land",
+    [ros_node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;LandAction&gt;(
+            name, config, ros_node);
+    });
+</code></pre>
+<p>임무 종료 시 착륙을 수행하는 행동 트리 구조는 다음과 같이 정의할 수 있다.</p>
+<pre><code class="language-xml">&lt;root BTCPP_format="4"&gt;
+    &lt;BehaviorTree ID="MissionComplete"&gt;
+        &lt;Sequence&gt;
+            &lt;ReturnToHome /&gt;
+            &lt;Fallback&gt;
+                &lt;Land descent_rate="1.5"
+                      landing_altitude="0.15"
+                      timeout="60.0"
+                      final_altitude="{land_alt}" /&gt;
+                &lt;ForceSetFlightMode mode="AUTO_LAND" /&gt;
+            &lt;/Fallback&gt;
+        &lt;/Sequence&gt;
+    &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<p>이 구조에서는 귀환(ReturnToHome) 후 착륙을 시도하며, Land 노드가 실패하면 자동 비행 제어기의 내장 자동 착륙 모드를 활성화하는 대체 경로를 수행한다. 이러한 이중화(redundancy) 구조는 착륙의 안전성을 보장하기 위한 방어적 설계이다.</p>
+<h3>7.2 이륙-임무-착륙 전체 흐름</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Takeoff target_altitude="15.0" /&gt;
+    &lt;FlyToWaypoint waypoint="{wp1}" /&gt;
+    &lt;FlyToWaypoint waypoint="{wp2}" /&gt;
+    &lt;ReturnToHome /&gt;
+    &lt;Land descent_rate="1.0" timeout="45.0" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>위 예시는 드론의 전형적인 임무 흐름을 표현한다. Sequence 제어 노드의 특성상 어느 단계에서든 <code>FAILURE</code>가 반환되면 전체 시퀀스가 중단되며, 상위 행동 트리에서 비상 착륙 등의 복구 절차를 실행할 수 있다.</p>
+<h2>8. 안전성 고려 사항</h2>
+<p>착륙 액션 노드 설계 시 다음 사항을 고려해야 한다.</p>
+<ul>
+<li><strong>하강 속도 제한</strong>: 과도한 하강 속도는 착륙 충격에 의한 기체 손상을 유발할 수 있다. 기체 중량과 착륙 기어의 충격 흡수 성능에 따라 최대 하강 속도를 제한해야 한다.</li>
+<li><strong>바람 영향 보상</strong>: 지면 근처에서의 돌풍(gust)은 착륙 안정성을 저해한다. 비행 제어기의 위치 제어 루프가 풍속 변화를 보상할 수 있는 여유를 확보해야 한다.</li>
+<li><strong>배터리 잔량 감시</strong>: 착륙 중 배터리가 소진되면 제어력을 상실할 수 있으므로, 착륙 완료까지 충분한 배터리 잔량이 확보되어야 한다.</li>
+<li><strong>착륙 지점 장애물 검사</strong>: 하향 카메라 또는 라이다를 이용하여 착륙 지점의 장애물 유무를 확인하는 사전 검사가 권장된다.</li>
+</ul>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Meier, L. et al., “PX4: A Node-Based Multithreaded Open Source Robotics Framework for Deeply Embedded Platforms,” IEEE International Conference on Robotics and Automation (ICRA), 2015.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Open Robotics, “ROS 2 Design: Actions,” ROS 2 Documentation, https://design.ros2.org/articles/actions.html.</li>
+<li>Quan, Q., “Introduction to Multicopter Design and Control,” Springer, 2017.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

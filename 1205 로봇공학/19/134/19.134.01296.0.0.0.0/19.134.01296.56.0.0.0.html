@@ -115,6 +115,260 @@
             </header>
             <article>
                 <h1>1296.56 FollowPath 액션 노드 구현</h1>
+<h2>1. FollowPath의 정의와 역할</h2>
+<p>FollowPath는 Nav2 프레임워크에서 제공하는 행동 트리 액션 노드로, 사전에 계획된 전역 경로(global path)를 따라 로봇을 이동시키는 경로 추종(path following) 임무를 실행한다. 이 노드는 <code>nav2_msgs::action::FollowPath</code> ROS2 액션 인터페이스의 클라이언트로 동작하며, <code>controller_server</code>에 경로 추종 요청을 전송한다.</p>
+<p>FollowPath는 내비게이션 파이프라인에서 경로 계획(ComputePathToPose)과 분리된 실행 단계에 해당한다. 경로 계획 노드가 생성한 <code>nav_msgs::msg::Path</code>를 입력으로 받아, 제어기(controller) 플러그인이 실시간으로 속도 명령(<code>cmd_vel</code>)을 생성하여 로봇을 경로를 따라 이동시킨다(Macenski et al., 2020).</p>
+<h2>2. 액션 인터페이스 정의</h2>
+<p>FollowPath가 호출하는 ROS2 액션 인터페이스의 구조는 다음과 같다.</p>
+<pre><code># nav2_msgs/action/FollowPath
+
+# Goal
+nav_msgs/Path path
+string controller_id
+string goal_checker_id
+---
+# Result
+std_msgs/Empty result
+---
+# Feedback
+float32 distance_to_goal
+float32 speed
+</code></pre>
+<p><strong>골(Goal) 필드</strong>:</p>
+<ul>
+<li><code>path</code>: 추종할 전역 경로. <code>nav_msgs::msg::Path</code> 타입으로, 순서가 지정된 <code>PoseStamped</code> 배열을 포함한다.</li>
+<li><code>controller_id</code>: 사용할 제어기 플러그인의 식별자. 빈 문자열일 경우 서버의 기본 제어기가 사용된다.</li>
+<li><code>goal_checker_id</code>: 사용할 목표 도달 판정기 플러그인의 식별자. 빈 문자열일 경우 기본 판정기가 사용된다.</li>
+</ul>
+<p><strong>피드백(Feedback) 필드</strong>:</p>
+<ul>
+<li><code>distance_to_goal</code>: 경로의 최종 지점까지의 잔여 거리 [m]</li>
+<li><code>speed</code>: 로봇의 현재 이동 속도 [m/s]</li>
+</ul>
+<h2>3. 클래스 구조</h2>
+<p>FollowPath 노드는 <code>nav2_behavior_tree::BtActionNode</code>를 상속하여 구현된다.</p>
+<pre><code class="language-cpp">#include "nav2_behavior_tree/bt_action_node.hpp"
+#include "nav2_msgs/action/follow_path.hpp"
+
+namespace nav2_behavior_tree
+{
+
+class FollowPathAction
+  : public BtActionNode&lt;nav2_msgs::action::FollowPath&gt;
+{
+public:
+  FollowPathAction(
+    const std::string &amp; xml_tag_name,
+    const std::string &amp; action_name,
+    const BT::NodeConfiguration &amp; conf);
+
+  void on_tick() override;
+
+  void on_wait_for_result(
+    std::shared_ptr&lt;const nav2_msgs::action::FollowPath::Feedback&gt;
+      feedback) override;
+
+  BT::NodeStatus on_success() override;
+  BT::NodeStatus on_aborted() override;
+  BT::NodeStatus on_cancelled() override;
+
+  static BT::PortsList providedPorts();
+};
+
+}  // namespace nav2_behavior_tree
+</code></pre>
+<h2>4. 포트 정의</h2>
+<pre><code class="language-cpp">BT::PortsList FollowPathAction::providedPorts()
+{
+  return providedBasicPorts({
+    BT::InputPort&lt;nav_msgs::msg::Path&gt;(
+      "path", "Path to follow"),
+    BT::InputPort&lt;std::string&gt;(
+      "controller_id", "",
+      "Controller plugin to use for path following"),
+    BT::InputPort&lt;std::string&gt;(
+      "goal_checker_id", "",
+      "Goal checker plugin for arrival detection"),
+    BT::OutputPort&lt;int&gt;(
+      "error_code", "Error code on failure"),
+    BT::OutputPort&lt;float&gt;(
+      "distance_to_goal", "Remaining distance to goal"),
+    BT::OutputPort&lt;float&gt;(
+      "speed", "Current robot speed")
+  });
+}
+</code></pre>
+<p><code>path</code> 포트는 핵심 입력으로, <code>nav_msgs::msg::Path</code> 타입의 경로를 수신한다. 이 경로는 일반적으로 ComputePathToPose 노드가 블랙보드에 출력한 계획 결과이다.</p>
+<p><code>controller_id</code>와 <code>goal_checker_id</code> 포트는 사용할 플러그인을 선택하는 문자열 입력이다. Nav2의 <code>controller_server</code>는 다수의 제어기 플러그인을 동시에 로드할 수 있으며, 이 포트를 통해 상황에 적합한 제어기를 동적으로 선택한다.</p>
+<h2>5. on_tick() 구현</h2>
+<pre><code class="language-cpp">void FollowPathAction::on_tick()
+{
+  nav_msgs::msg::Path path;
+  getInput("path", path);
+  goal_.path = path;
+
+  std::string controller_id;
+  getInput("controller_id", controller_id);
+  goal_.controller_id = controller_id;
+
+  std::string goal_checker_id;
+  getInput("goal_checker_id", goal_checker_id);
+  goal_.goal_checker_id = goal_checker_id;
+}
+</code></pre>
+<h2>6. on_wait_for_result() 구현</h2>
+<pre><code class="language-cpp">void FollowPathAction::on_wait_for_result(
+  std::shared_ptr&lt;const nav2_msgs::action::FollowPath::Feedback&gt;
+    feedback)
+{
+  setOutput("distance_to_goal", feedback-&gt;distance_to_goal);
+  setOutput("speed", feedback-&gt;speed);
+
+  RCLCPP_DEBUG(
+    node_-&gt;get_logger(),
+    "FollowPath: distance to goal = %.2f m, speed = %.2f m/s",
+    feedback-&gt;distance_to_goal,
+    feedback-&gt;speed);
+}
+</code></pre>
+<p>피드백의 <code>distance_to_goal</code>은 경로의 최종 지점까지의 잔여 경로 길이를 나타내며, 행동 트리의 조건 노드에서 목표 근접 여부를 판정하는 데 활용된다. <code>speed</code>는 로봇의 현재 이동 속도로, 정지 상태 감지나 속도 기반 조건 평가에 사용된다.</p>
+<h2>7. 결과 처리 콜백 구현</h2>
+<pre><code class="language-cpp">BT::NodeStatus FollowPathAction::on_success()
+{
+  return BT::NodeStatus::SUCCESS;
+}
+
+BT::NodeStatus FollowPathAction::on_aborted()
+{
+  setOutput("error_code",
+    static_cast&lt;int&gt;(result_.result-&gt;error_code));
+  return BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus FollowPathAction::on_cancelled()
+{
+  return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>서버 측에서 경로 추종이 중단(abort)되는 주요 원인은 다음과 같다.</p>
+<ul>
+<li>장애물에 의한 경로 차단으로 안전한 속도 명령을 생성할 수 없는 경우</li>
+<li>로봇이 경로로부터 과도하게 이탈한 경우</li>
+<li>제어기 내부에서 유효한 속도 명령을 계산하지 못한 경우</li>
+<li>서버 측 타임아웃이 초과된 경우</li>
+</ul>
+<h2>8. ComputePathToPose와의 연계 패턴</h2>
+<p>FollowPath는 ComputePathToPose와 함께 사용되어 경로 계획과 경로 추종을 분리하는 내비게이션 파이프라인을 구성한다.</p>
+<h3>8.1 순차 실행 패턴</h3>
+<p>경로를 한 번 계획하고 추종하는 기본 패턴이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+  &lt;ComputePathToPose goal="{target_pose}"
+                      path="{planned_path}"
+                      planner_id="GridBased"/&gt;
+  &lt;FollowPath path="{planned_path}"
+              controller_id="FollowPath"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>8.2 반응적 경로 갱신 패턴</h3>
+<p>경로 추종 중 주기적으로 경로를 재계획하는 반응적 패턴이다. <code>PipelineSequence</code>를 사용하여 경로 계획과 경로 추종을 동시에 실행한다.</p>
+<pre><code class="language-xml">&lt;PipelineSequence&gt;
+  &lt;RateController hz="1.0"&gt;
+    &lt;ComputePathToPose goal="{target_pose}"
+                        path="{path}"
+                        planner_id="GridBased"/&gt;
+  &lt;/RateController&gt;
+  &lt;FollowPath path="{path}"
+              controller_id="FollowPath"/&gt;
+&lt;/PipelineSequence&gt;
+</code></pre>
+<p>이 구성에서 <code>PipelineSequence</code>는 다음과 같이 동작한다.</p>
+<ol>
+<li>첫 번째 자식(경로 계획)이 <code>SUCCESS</code>를 반환하면 두 번째 자식(경로 추종)의 Tick을 시작한다.</li>
+<li>두 번째 자식이 <code>RUNNING</code>을 반환하는 동안, 첫 번째 자식도 계속 Tick된다.</li>
+<li><code>RateController</code> 데코레이터가 경로 계획의 실행 빈도를 1Hz로 제한한다.</li>
+<li>경로가 갱신되면 FollowPath는 새로운 경로에 대한 골 선점(preemption)을 통해 추종 경로를 자동으로 갱신한다.</li>
+</ol>
+<h3>8.3 복구 행동 통합 패턴</h3>
+<p>경로 추종 실패 시 코스트맵 초기화 후 재시도하는 패턴이다.</p>
+<pre><code class="language-xml">&lt;RecoveryNode number_of_retries="1"&gt;
+  &lt;FollowPath path="{path}"
+              controller_id="FollowPath"/&gt;
+  &lt;ClearEntireCostmap
+    service_name="/local_costmap/clear_entirely_local_costmap"/&gt;
+&lt;/RecoveryNode&gt;
+</code></pre>
+<h2>9. 제어기 플러그인 선택</h2>
+<p>Nav2의 <code>controller_server</code>는 다수의 제어기 플러그인을 동시에 로드하고, <code>controller_id</code>를 통해 상황에 적합한 제어기를 선택할 수 있다. 주요 제어기 플러그인은 다음과 같다.</p>
+<table><thead><tr><th>제어기 플러그인</th><th>특성</th><th>적합한 상황</th></tr></thead><tbody>
+<tr><td>DWB (Dynamic Window Based)</td><td>동적 윈도우 방식 지역 경로 계획</td><td>일반적인 실내/실외 내비게이션</td></tr>
+<tr><td>TEB (Timed Elastic Band)</td><td>시간 탄성 밴드 기반 궤적 최적화</td><td>좁은 통로, 비홀로노믹 로봇</td></tr>
+<tr><td>MPPI (Model Predictive Path Integral)</td><td>모델 예측 경로 적분 제어</td><td>고성능 궤적 추종, 복잡한 환경</td></tr>
+<tr><td>Regulated Pure Pursuit</td><td>규제 순수 추종</td><td>단순한 경로, 고속 이동</td></tr>
+</tbody></table>
+<p>행동 트리에서 상황에 따라 제어기를 동적으로 전환하는 사례를 제시한다.</p>
+<pre><code class="language-xml">&lt;Fallback&gt;
+  &lt;Sequence&gt;
+    &lt;Condition ID="IsNarrowCorridor"/&gt;
+    &lt;FollowPath path="{path}" controller_id="TEBController"/&gt;
+  &lt;/Sequence&gt;
+  &lt;FollowPath path="{path}" controller_id="DWBController"/&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h2>10. 목표 도달 판정기 선택</h2>
+<p><code>goal_checker_id</code> 포트를 통해 경로 추종의 완료를 판정하는 플러그인을 선택한다.</p>
+<ul>
+<li><strong>SimpleGoalChecker</strong>: 유클리드 거리와 방향 오차가 허용 범위 이내이면 도달로 판정한다.</li>
+<li><strong>StoppedGoalChecker</strong>: SimpleGoalChecker 조건에 추가하여 로봇이 정지 상태일 때에만 도달로 판정한다.</li>
+</ul>
+<p>정밀한 위치 도달이 필요한 경우 StoppedGoalChecker를 사용하고, 경유점 통과 시에는 SimpleGoalChecker를 사용하여 로봇이 감속하지 않고 경유점을 부드럽게 통과할 수 있도록 구성한다.</p>
+<h2>11. 경로 갱신과 골 선점</h2>
+<p>FollowPath 노드가 <code>RUNNING</code> 상태에서 블랙보드의 <code>path</code> 값이 갱신되면, 기반 클래스 <code>BtActionNode</code>의 골 선점 메커니즘에 의해 기존 골이 취소되고 새로운 경로가 서버에 전송된다. 이 과정은 다음과 같이 진행된다.</p>
+<ol>
+<li>반응적 행동 트리 구성에서 ComputePathToPose가 새로운 경로를 블랙보드에 기록한다.</li>
+<li>FollowPath의 다음 Tick에서 <code>on_tick()</code>이 호출되어 새로운 경로를 읽는다.</li>
+<li>새로운 경로가 이전 경로와 다른 경우 기존 골을 취소하고 새로운 골을 전송한다.</li>
+<li><code>controller_server</code>는 새로운 경로에 대해 경로 추종을 즉시 시작한다.</li>
+</ol>
+<p>이 메커니즘은 동적 환경에서 장애물 변화에 따라 경로를 실시간으로 갱신하는 반응적 내비게이션의 핵심이다.</p>
+<h2>12. 플러그인 등록</h2>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+BT_REGISTER_NODES(factory)
+{
+  BT::NodeBuilder builder =
+    [](const%20std::string%20&amp;%20name,%20const%20BT::NodeConfiguration%20&amp;%20config)
+    {
+      return std::make_unique&lt;nav2_behavior_tree::FollowPathAction&gt;(
+        name, "follow_path", config);
+    };
+  factory.registerBuilder&lt;nav2_behavior_tree::FollowPathAction&gt;(
+    "FollowPath", builder);
+}
+</code></pre>
+<h2>13. 경로 추종 실패의 원인과 대응</h2>
+<p>FollowPath가 <code>FAILURE</code>를 반환하는 주요 원인과 대응 전략을 정리한다.</p>
+<table><thead><tr><th>실패 원인</th><th>증상</th><th>권장 대응 전략</th></tr></thead><tbody>
+<tr><td>경로 차단</td><td>장애물이 경로를 완전히 차단</td><td>경로 재계획 후 재시도</td></tr>
+<tr><td>경로 이탈</td><td>로봇이 경로에서 과도하게 벗어남</td><td>현재 위치 기준 경로 재계획</td></tr>
+<tr><td>제어기 실패</td><td>유효한 속도 명령 계산 불가</td><td>코스트맵 초기화 후 재시도</td></tr>
+<tr><td>진동(oscillation)</td><td>전후 반복 이동</td><td>Spin 복구 행동 후 재시도</td></tr>
+</tbody></table>
+<p>이러한 실패 대응은 행동 트리의 제어 노드(RecoveryNode, Fallback)를 활용하여 구성하며, FollowPath 노드 자체는 실패 원인을 <code>error_code</code> 출력 포트를 통해 보고하는 역할만 수행한다.</p>
+<h2>14. 성능 고려 사항</h2>
+<h3>14.1 경로 크기</h3>
+<p>전역 경로의 점(point) 수가 많을수록 <code>controller_server</code>의 처리 부하가 증가한다. 특히 장거리 경로에서는 수천 개의 경로 점이 생성될 수 있다. Nav2의 경로 계획기는 경로 점의 해상도를 코스트맵 해상도에 맞추어 생성하므로, 코스트맵 해상도의 설정이 경로 크기와 추종 정밀도에 영향을 미친다.</p>
+<h3>14.2 제어 주기</h3>
+<p><code>controller_server</code>의 제어 주기는 경로 추종의 정밀도와 반응성에 직접적인 영향을 미친다. 일반적으로 20Hz 이상의 제어 주기가 권장되며, 고속 이동 로봇이나 동적 환경에서는 더 높은 제어 주기가 필요하다. 제어 주기는 서버 측 파라미터로 구성되며, 행동 트리 노드에서 직접 제어하지 않는다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Nav2 공식 문서 — Controller Server: https://docs.nav2.org/configuration/packages/configuring-controller-server.html</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: Nav2 Humble Hawksbill (ROS2 Humble) 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

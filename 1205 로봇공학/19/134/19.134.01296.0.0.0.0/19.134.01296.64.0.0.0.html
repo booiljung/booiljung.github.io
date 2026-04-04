@@ -115,6 +115,262 @@
             </header>
             <article>
                 <h1>1296.64 GripperCommand 액션 노드 구현</h1>
+<h2>1. GripperCommand의 정의와 역할</h2>
+<p>GripperCommand는 로봇 매니퓰레이터의 그리퍼(gripper)를 제어하는 행동 트리 액션 노드이다. 이 노드는 <code>control_msgs::action::GripperCommand</code> ROS2 액션 인터페이스의 클라이언트로 동작하며, 그리퍼 제어기(gripper controller)에 개폐 명령을 전송한다.</p>
+<p>GripperCommand는 물체의 파지(grasp)와 배치(release) 동작을 행동 트리에서 제어하기 위한 핵심 노드이다. 그리퍼의 위치와 파지력을 입력으로 받아, 그리퍼가 목표 상태에 도달하거나 물체를 감지할 때까지 동작을 실행한다.</p>
+<h2>2. 액션 인터페이스 정의</h2>
+<pre><code># control_msgs/action/GripperCommand
+
+# Goal
+control_msgs/GripperCommand command
+  float64 position    # 그리퍼 위치 [m 또는 rad]
+  float64 max_effort  # 최대 파지력 [N 또는 Nm]
+---
+# Result
+float64 position      # 최종 그리퍼 위치
+float64 effort        # 최종 파지력
+bool stalled          # 모터 정지 여부 (물체 감지)
+bool reached_goal     # 목표 위치 도달 여부
+---
+# Feedback
+float64 position      # 현재 그리퍼 위치
+float64 effort        # 현재 파지력
+bool stalled          # 모터 정지 여부
+bool reached_goal     # 목표 위치 도달 여부
+</code></pre>
+<p><strong>골(Goal) 필드</strong>:</p>
+<ul>
+<li><code>position</code>: 그리퍼의 목표 위치. 단위는 그리퍼의 타입에 따라 미터(m) 또는 라디안(rad)이 사용된다. 0.0은 완전 폐쇄, 최대값은 완전 개방에 해당한다.</li>
+<li><code>max_effort</code>: 그리퍼가 가할 수 있는 최대 힘. 이 값을 초과하면 그리퍼가 정지한다.</li>
+</ul>
+<p><strong>결과(Result) 필드</strong>:</p>
+<ul>
+<li><code>stalled</code>: 그리퍼가 물체를 감지하여 모터가 정지한 경우 <code>true</code>. 이는 성공적인 파지를 나타낸다.</li>
+<li><code>reached_goal</code>: 그리퍼가 목표 위치에 도달한 경우 <code>true</code>. 물체 없이 완전히 닫힌 경우를 의미할 수 있다.</li>
+</ul>
+<h2>3. 클래스 구조와 구현</h2>
+<pre><code class="language-cpp">#include "behaviortree_cpp/action_node.h"
+#include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
+#include "control_msgs/action/gripper_command.hpp"
+
+class GripperCommandAction : public BT::StatefulActionNode
+{
+public:
+  GripperCommandAction(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::StatefulActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+    
+    std::string action_name;
+    getInput("action_name", action_name);
+    
+    action_client_ =
+      rclcpp_action::create_client&lt;control_msgs::action::GripperCommand&gt;(
+        node_, action_name);
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;(
+        "action_name", "gripper_controller/gripper_cmd",
+        "Gripper action server name"),
+      BT::InputPort&lt;double&gt;(
+        "position", "Target gripper position [m or rad]"),
+      BT::InputPort&lt;double&gt;(
+        "max_effort", 50.0,
+        "Maximum gripping effort [N or Nm]"),
+      BT::OutputPort&lt;bool&gt;(
+        "object_detected", "Whether an object was detected (stalled)"),
+      BT::OutputPort&lt;double&gt;(
+        "final_position", "Actual gripper position after action"),
+      BT::OutputPort&lt;int&gt;(
+        "error_code", "Error code on failure")
+    };
+  }
+
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  rclcpp_action::Client&lt;control_msgs::action::GripperCommand&gt;::SharedPtr
+    action_client_;
+  rclcpp_action::ClientGoalHandle&lt;
+    control_msgs::action::GripperCommand&gt;::SharedPtr goal_handle_;
+  bool goal_accepted_{false};
+  bool result_received_{false};
+  control_msgs::action::GripperCommand::Result::SharedPtr result_;
+};
+</code></pre>
+<h2>4. onStart() 구현</h2>
+<pre><code class="language-cpp">BT::NodeStatus GripperCommandAction::onStart()
+{
+  double position, max_effort;
+  getInput("position", position);
+  getInput("max_effort", max_effort);
+
+  if (!action_client_-&gt;wait_for_action_server(std::chrono::seconds(5))) {
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+      "Gripper action server not available");
+    return BT::NodeStatus::FAILURE;
+  }
+
+  auto goal = control_msgs::action::GripperCommand::Goal();
+  goal.command.position = position;
+  goal.command.max_effort = max_effort;
+
+  auto options = rclcpp_action::Client&lt;
+    control_msgs::action::GripperCommand&gt;::SendGoalOptions();
+
+  options.goal_response_callback =
+    [this](auto%20goal_handle) {
+      goal_handle_ = goal_handle;
+      goal_accepted_ = (goal_handle != nullptr);
+    };
+
+  options.result_callback =
+    [this](auto%20result) {
+      result_ = std::make_shared&lt;
+        control_msgs::action::GripperCommand::Result&gt;(result.result);
+      result_received_ = true;
+    };
+
+  goal_accepted_ = false;
+  result_received_ = false;
+  action_client_-&gt;async_send_goal(goal, options);
+
+  return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>5. onRunning() 구현</h2>
+<pre><code class="language-cpp">BT::NodeStatus GripperCommandAction::onRunning()
+{
+  if (!result_received_) {
+    return BT::NodeStatus::RUNNING;
+  }
+
+  setOutput("final_position", result_-&gt;position);
+  setOutput("object_detected", result_-&gt;stalled);
+
+  // stalled(물체 감지) 또는 reached_goal(목표 도달) 모두 성공으로 처리
+  if (result_-&gt;stalled || result_-&gt;reached_goal) {
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<p><code>stalled</code> 플래그가 <code>true</code>인 경우, 그리퍼가 물체에 접촉하여 모터가 정지한 것을 의미한다. 이는 파지 동작에서 성공적인 물체 감지를 나타낸다. <code>reached_goal</code>이 <code>true</code>인 경우, 그리퍼가 목표 위치에 도달한 것을 의미한다. 개방 동작에서는 <code>reached_goal</code>이, 파지 동작에서는 <code>stalled</code>가 성공 지표가 된다.</p>
+<h2>6. onHalted() 구현</h2>
+<pre><code class="language-cpp">void GripperCommandAction::onHalted()
+{
+  if (goal_handle_) {
+    action_client_-&gt;async_cancel_goal(goal_handle_);
+  }
+  goal_handle_.reset();
+  result_received_ = false;
+}
+</code></pre>
+<h2>7. XML 행동 트리에서의 사용</h2>
+<h3>7.1 그리퍼 개방</h3>
+<pre><code class="language-xml">&lt;GripperCommand position="0.04"
+                max_effort="10.0"
+                action_name="gripper_controller/gripper_cmd"/&gt;
+</code></pre>
+<p><code>position</code>을 그리퍼의 최대 개방 폭으로 설정하면 그리퍼가 완전히 개방된다.</p>
+<h3>7.2 그리퍼 폐쇄 (파지)</h3>
+<pre><code class="language-xml">&lt;GripperCommand position="0.0"
+                max_effort="50.0"
+                action_name="gripper_controller/gripper_cmd"
+                object_detected="{is_grasped}"/&gt;
+</code></pre>
+<p><code>position</code>을 0.0으로 설정하면 그리퍼가 완전히 닫히거나, 물체에 접촉하여 정지한다. <code>object_detected</code> 출력 포트를 통해 파지 성공 여부를 블랙보드에 기록한다.</p>
+<h3>7.3 파지-확인 시퀀스</h3>
+<p>파지 후 물체 감지 여부를 확인하는 구성이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+  &lt;!-- 그리퍼 개방 --&gt;
+  &lt;GripperCommand position="0.04" max_effort="10.0"/&gt;
+  
+  &lt;!-- 파지 위치로 이동 --&gt;
+  &lt;MoveToPose target_pose="{grasp_pose}"
+              planning_group="manipulator"/&gt;
+  
+  &lt;!-- 그리퍼 닫기 --&gt;
+  &lt;GripperCommand position="0.0"
+                  max_effort="50.0"
+                  object_detected="{is_grasped}"/&gt;
+  
+  &lt;!-- 파지 확인 --&gt;
+  &lt;Condition ID="CheckBlackboardBool"
+             key="is_grasped" expected="true"/&gt;
+  
+  &lt;!-- 들어올리기 --&gt;
+  &lt;MoveToPose target_pose="{lift_pose}"
+              planning_group="manipulator"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>7.4 파지 실패 시 재시도</h3>
+<pre><code class="language-xml">&lt;RetryNode num_attempts="3"&gt;
+  &lt;Sequence&gt;
+    &lt;GripperCommand position="0.04" max_effort="10.0"/&gt;
+    &lt;MoveToPose target_pose="{grasp_pose}"
+                planning_group="manipulator"/&gt;
+    &lt;GripperCommand position="0.0"
+                    max_effort="50.0"
+                    object_detected="{grasped}"/&gt;
+    &lt;Condition ID="CheckBlackboardBool"
+               key="grasped" expected="true"/&gt;
+  &lt;/Sequence&gt;
+&lt;/RetryNode&gt;
+</code></pre>
+<h2>8. 그리퍼 타입별 구성</h2>
+<h3>8.1 병렬 조(Parallel Jaw) 그리퍼</h3>
+<p>두 개의 핑거가 평행하게 이동하는 그리퍼이다. <code>position</code>은 두 핑거 사이의 간격을 미터 단위로 지정한다.</p>
+<pre><code class="language-xml">&lt;!-- 완전 개방 (40mm) --&gt;
+&lt;GripperCommand position="0.04" max_effort="10.0"/&gt;
+&lt;!-- 완전 폐쇄 --&gt;
+&lt;GripperCommand position="0.0" max_effort="50.0"/&gt;
+</code></pre>
+<h3>8.2 회전형 그리퍼</h3>
+<p>핑거가 회전 관절에 의해 구동되는 그리퍼이다. <code>position</code>은 관절 각도를 라디안 단위로 지정한다.</p>
+<pre><code class="language-xml">&lt;!-- 완전 개방 (0.7 rad) --&gt;
+&lt;GripperCommand position="0.7" max_effort="5.0"/&gt;
+&lt;!-- 완전 폐쇄 --&gt;
+&lt;GripperCommand position="0.0" max_effort="20.0"/&gt;
+</code></pre>
+<h3>8.3 흡착 그리퍼</h3>
+<p>진공 흡착 방식의 그리퍼는 GripperCommand 인터페이스와 직접 호환되지 않을 수 있다. 이 경우 별도의 서비스 또는 토픽 기반 액션 노드를 구현하여야 한다.</p>
+<h2>9. 파지력 설정</h2>
+<p><code>max_effort</code> 파라미터는 그리퍼가 물체에 가할 수 있는 최대 힘을 제한한다. 이 값의 설정은 파지 대상 물체의 특성에 따라 결정된다.</p>
+<table><thead><tr><th>물체 특성</th><th>권장 파지력</th><th>비고</th></tr></thead><tbody>
+<tr><td>연질 물체 (스펀지, 과일)</td><td>낮음 (5~15 N)</td><td>물체 손상 방지</td></tr>
+<tr><td>일반 물체 (상자, 캔)</td><td>중간 (20~50 N)</td><td>안정적 파지</td></tr>
+<tr><td>중량물체 (금속 부품)</td><td>높음 (50~100 N)</td><td>미끄러짐 방지</td></tr>
+</tbody></table>
+<p>물체의 재질, 무게, 표면 마찰 계수를 고려하여 적절한 파지력을 설정하여야 한다. 과도한 파지력은 물체를 손상시킬 수 있고, 부족한 파지력은 이동 중 미끄러짐을 유발한다.</p>
+<h2>10. 플러그인 등록</h2>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+BT_REGISTER_NODES(factory)
+{
+  factory.registerNodeType&lt;GripperCommandAction&gt;("GripperCommand");
+}
+</code></pre>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Coleman, D., Sucan, I., Chitta, S., &amp; Correll, N. (2014). “Reducing the Barrier to Entry of Complex Robotic Software: a MoveIt! Case Study.” <em>Journal of Software Engineering for Robotics</em>, 5(1), 3-16.</li>
+<li>ROS2 control_msgs 공식 문서: https://docs.ros.org/en/humble/p/control_msgs/</li>
+<li>MoveIt2 공식 문서: https://moveit.picknik.ai/main/index.html</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: ROS2 Humble Hawksbill 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

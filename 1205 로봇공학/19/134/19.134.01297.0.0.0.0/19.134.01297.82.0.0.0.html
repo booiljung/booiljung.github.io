@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.82 시간 기반 캐싱의 구현</title>
+    <title>BIJUNG:시간 기반 캐싱의 구현 (Time-Based Caching Implementation)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,206 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.82 시간 기반 캐싱의 구현</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.82 시간 기반 캐싱의 구현</span></nav>
+                    <h1>시간 기반 캐싱의 구현 (Time-Based Caching Implementation)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="시간 기반 캐싱의 구현 (Time-Based Caching Implementation)">시간 기반 캐싱의 구현 (Time-Based Ca...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.82 시간 기반 캐싱의 구현</h1>
+                <h1>시간 기반 캐싱의 구현 (Time-Based Caching Implementation)</h1>
+<h2>1. 개요</h2>
+<p>시간 기반 캐싱은 조건 노드의 평가 결과를 지정된 시간 동안 캐싱하고, 유효 기간이 경과한 후에만 조건을 다시 평가하는 캐싱 전략이다. 이 방식은 조건 평가의 비용과 결과의 시간적 안정성 사이의 균형을 제공하며, 서비스 호출, 원격 파라미터 접근, 복잡한 계산 등 높은 비용을 가진 조건 평가에 효과적이다.</p>
+<h2>2. 시간 기반 캐싱의 동작 원리</h2>
+<h3>2.1 캐시 상태 전이</h3>
+<pre><code>[캐시 없음] --평가--&gt; [캐시 유효] --시간 경과--&gt; [캐시 만료] --재평가--&gt; [캐시 유효]
+</code></pre>
+<ol>
+<li><strong>캐시 없음</strong>: 최초 tick 시 조건을 평가하고 결과를 캐싱한다.</li>
+<li><strong>캐시 유효</strong>: 캐시 유효 기간 내에서는 캐싱된 결과를 즉시 반환한다.</li>
+<li><strong>캐시 만료</strong>: 유효 기간이 경과하면 조건을 재평가하고 캐시를 갱신한다.</li>
+</ol>
+<h3>2.2 캐시 유효 기간의 결정</h3>
+<p>캐시 유효 기간 <span class="math math-inline">T_{\text{cache}}</span>는 다음 요소를 고려하여 설정한다.</p>
+<p><span class="math math-display">T_{\text{cache}} = \min(T_{\text{change}}, T_{\text{safety}}, T_{\text{performance}})</span></p>
+<ul>
+<li><span class="math math-inline">T_{\text{change}}</span>: 조건 결과가 변화할 수 있는 최소 시간</li>
+<li><span class="math math-inline">T_{\text{safety}}</span>: 안전 요구에 의한 최대 허용 반응 시간</li>
+<li><span class="math math-inline">T_{\text{performance}}</span>: 성능 요구에 의한 최소 캐시 시간</li>
+</ul>
+<h2>구현</h2>
+<h3>범용 시간 기반 캐싱 래퍼</h3>
+<p>기존 조건 노드에 시간 기반 캐싱을 추가하는 범용 래퍼(wrapper) 패턴이다.</p>
+<pre><code class="language-cpp">template &lt;typename BaseConditionT&gt;
+class TimeCachedCondition : public BaseConditionT
+{
+public:
+    template &lt;typename... Args&gt;
+    TimeCachedCondition(const std::string&amp; name,
+                        const BT::NodeConfiguration&amp; config,
+                        Args&amp;&amp;... args)
+        : BaseConditionT(name, config, std::forward&lt;Args&gt;(args)...),
+          has_cache_(false)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        auto ports = BaseConditionT::providedPorts();
+        ports.emplace(BT::InputPort&lt;double&gt;("cache_sec", 1.0,
+            "캐시 유효 기간 (초)"));
+        return ports;
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double cache_duration;
+        this-&gt;getInput("cache_sec", cache_duration);
+
+        if (has_cache_ &amp;&amp; cache_duration &gt; 0.0)
+        {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration&lt;double&gt;(
+                now - cache_time_).count();
+
+            if (elapsed &lt; cache_duration)
+            {
+                return cached_result_;
+            }
+        }
+
+        cached_result_ = BaseConditionT::tick();
+        cache_time_ = std::chrono::steady_clock::now();
+        has_cache_ = true;
+
+        return cached_result_;
+    }
+
+private:
+    bool has_cache_;
+    BT::NodeStatus cached_result_;
+    std::chrono::steady_clock::time_point cache_time_;
+};
+</code></pre>
+<p>이 템플릿 래퍼를 사용하면, 기존의 조건 노드 클래스를 수정하지 않고 캐싱 기능을 추가할 수 있다.</p>
+<pre><code class="language-cpp">// 기존 조건에 캐싱 적용
+using CachedBatteryCheck =
+    TimeCachedCondition&lt;IsBatteryAbove&gt;;
+
+factory.registerNodeType&lt;CachedBatteryCheck&gt;(
+    "IsBatteryAbove_Cached", params);
+</code></pre>
+<h3>적응적 캐시 유효 기간</h3>
+<p>조건 결과의 변화 빈도에 따라 캐시 유효 기간을 동적으로 조정하는 적응적 캐싱이다.</p>
+<pre><code class="language-cpp">class AdaptiveCachedCondition : public BT::ConditionNode
+{
+public:
+    AdaptiveCachedCondition(const std::string&amp; name,
+                            const BT::NodeConfiguration&amp; config,
+                            rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          has_cache_(false),
+          change_count_(0),
+          eval_count_(0)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;double&gt;("min_cache_sec", 0.1,
+                "최소 캐시 유효 기간 (초)"),
+            BT::InputPort&lt;double&gt;("max_cache_sec", 5.0,
+                "최대 캐시 유효 기간 (초)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double min_cache, max_cache;
+        getInput("min_cache_sec", min_cache);
+        getInput("max_cache_sec", max_cache);
+
+        double adaptive_duration = computeAdaptiveDuration(
+            min_cache, max_cache);
+
+        if (has_cache_)
+        {
+            double elapsed =
+                (node_-&gt;get_clock()-&gt;now() - cache_time_).seconds();
+            if (elapsed &lt; adaptive_duration)
+            {
+                return cached_result_;
+            }
+        }
+
+        BT::NodeStatus new_result = evaluateCondition();
+        ++eval_count_;
+
+        if (has_cache_ &amp;&amp; new_result != cached_result_)
+        {
+            ++change_count_;
+        }
+
+        cached_result_ = new_result;
+        cache_time_ = node_-&gt;get_clock()-&gt;now();
+        has_cache_ = true;
+
+        return cached_result_;
+    }
+
+protected:
+    virtual BT::NodeStatus evaluateCondition() = 0;
+
+private:
+    double computeAdaptiveDuration(double min_d, double max_d) const
+    {
+        if (eval_count_ == 0)
+        {
+            return min_d;
+        }
+        // 변화율이 낮을수록 캐시 유효 기간을 길게 설정
+        double change_rate =
+            static_cast&lt;double&gt;(change_count_) / eval_count_;
+        double ratio = 1.0 - change_rate;
+        return min_d + ratio * (max_d - min_d);
+    }
+
+    rclcpp::Node::SharedPtr node_;
+    bool has_cache_;
+    BT::NodeStatus cached_result_;
+    rclcpp::Time cache_time_;
+    int change_count_;
+    int eval_count_;
+};
+</code></pre>
+<p>조건 결과가 빈번히 변하면 캐시 유효 기간이 줄어들어 반응성이 향상되고, 조건이 안정적이면 유효 기간이 길어져 평가 빈도가 감소한다.</p>
+<h2>XML 행동 트리에서의 활용</h2>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsBatteryAbove_Cached"
+               topic_name="/battery_state"
+               min_percentage="0.2"
+               cache_sec="3.0"/&gt;
+    &lt;Condition ID="IsPathValid_Cached"
+               service_name="/is_path_valid"
+               cache_sec="1.0"/&gt;
+    &lt;Action ID="FollowPath"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>배터리 확인은 3초, 경로 유효성은 1초 간격으로 재평가한다.</p>
+<h2>설계 시 고려 사항</h2>
+<h3>안전 조건의 캐싱 제한</h3>
+<p>비상 정지, 충돌 감지 등 즉각적 반응이 필요한 안전 조건에는 캐싱을 적용하지 않거나 매우 짧은 유효 기간(tick 주기 이하)만 적용하여야 한다.</p>
+<h3>비동기 평가와의 결합</h3>
+<p>서비스 기반 조건 노드에서는 비동기 호출과 시간 기반 캐싱을 결합하여, 캐시 만료 시 비동기 요청을 발행하고 응답이 도착하면 캐시를 갱신하는 방식이 효과적이다. 응답 대기 중에는 이전 캐시 결과를 반환한다.</p>
+<h3>캐시 일관성</h3>
+<p>복수의 조건 노드가 동일한 데이터 소스를 참조하면서 서로 다른 캐시 유효 기간을 사용하면, 동일 시점에서 서로 다른 데이터를 기반으로 판정하는 일관성 문제가 발생할 수 있다. 공유 캐시 패턴을 적용하여 데이터 소스 수준에서 캐싱을 통합하면 이 문제를 방지할 수 있다.</p>
+<h2>참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

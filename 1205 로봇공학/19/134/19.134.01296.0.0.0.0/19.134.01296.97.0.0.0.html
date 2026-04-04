@@ -115,6 +115,337 @@
             </header>
             <article>
                 <h1>1296.97 액션 노드 포트 데이터 검사</h1>
+<h2>1. 개요</h2>
+<p>액션 노드 포트 데이터 검사는 행동 트리의 블랙보드를 통해 입출력되는 데이터의 값, 타입, 유효성을 런타임에 확인하는 디버깅 기법이다. 블랙보드 포트는 행동 트리 내 노드 간 데이터 교환의 핵심 메커니즘이며, 포트 데이터의 오류는 액션 노드의 비정상 동작, 잘못된 의사 결정, 임무 실패 등의 원인이 된다.</p>
+<p>포트 데이터 검사를 통해 입력 포트의 값이 예상 범위 내에 있는지, 출력 포트에 올바른 결과가 기록되었는지, 포트 바인딩이 올바르게 구성되었는지를 체계적으로 검증할 수 있다.</p>
+<h2>2. 블랙보드 포트의 데이터 흐름</h2>
+<h3>2.1 데이터 흐름 구조</h3>
+<pre><code>[XML 정적 값 / 블랙보드 키 바인딩]
+         ↓
+    [입력 포트] → getInput() → [액션 노드 내부 로직]
+                                       ↓
+                               setOutput() → [출력 포트]
+                                                  ↓
+                                          [블랙보드 키]
+                                                  ↓
+                                    [후속 노드의 입력 포트]
+</code></pre>
+<h3>2.2 포트 바인딩 방식</h3>
+<table><thead><tr><th style="text-align: center">바인딩 방식</th><th style="text-align: center">XML 표현</th><th style="text-align: left">의미</th></tr></thead><tbody>
+<tr><td style="text-align: center">정적 값</td><td style="text-align: center"><code>port="42.0"</code></td><td style="text-align: left">고정 상수값</td></tr>
+<tr><td style="text-align: center">블랙보드 키</td><td style="text-align: center"><code>port="{key_name}"</code></td><td style="text-align: left">블랙보드에서 동적으로 읽기</td></tr>
+<tr><td style="text-align: center">기본값</td><td style="text-align: center">(생략)</td><td style="text-align: left"><code>providedPorts()</code>에 정의된 기본값 사용</td></tr>
+</tbody></table>
+<h2>3. 런타임 포트 데이터 검사</h2>
+<h3>3.1 getInput() 반환값 검사</h3>
+<p><code>getInput()</code>의 반환값을 검사하여 포트 읽기 성공 여부를 확인한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    double target;
+    auto result = getInput("target_altitude", target);
+
+    if (!result)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "[%s] 포트 'target_altitude' 읽기 실패: %s",
+            name().c_str(),
+            result.error().c_str());
+        return BT::NodeStatus::FAILURE;
+    }
+
+    RCLCPP_DEBUG(node_-&gt;get_logger(),
+        "[%s] target_altitude = %.2f",
+        name().c_str(), target);
+
+    // 값 유효성 검사
+    if (target &lt; 0.0 || target &gt; 500.0)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "[%s] target_altitude 범위 초과: %.2f",
+            name().c_str(), target);
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // ...
+}
+</code></pre>
+<h3>3.2 포트 값 로깅 노드</h3>
+<p>블랙보드의 특정 키 값을 콘솔에 출력하는 전용 디버깅 노드를 구현한다.</p>
+<pre><code class="language-cpp">class InspectPort : public BT::SyncActionNode
+{
+public:
+    InspectPort(const std::string&amp; name,
+                const BT::NodeConfiguration&amp; config)
+        : BT::SyncActionNode(name, config)
+    {
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("key",
+                "검사할 블랙보드 키"),
+            BT::InputPort&lt;std::string&gt;("label", "",
+                "출력 레이블")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string key, label;
+        getInput("key", key);
+        getInput("label", label);
+
+        auto blackboard = config().blackboard;
+        auto entry = blackboard-&gt;getEntry(key);
+
+        if (!entry)
+        {
+            std::cout &lt;&lt; "[InspectPort] "
+                      &lt;&lt; (label.empty() ? key : label)
+                      &lt;&lt; ": &lt;키 없음&gt;"
+                      &lt;&lt; std::endl;
+        }
+        else
+        {
+            std::cout &lt;&lt; "[InspectPort] "
+                      &lt;&lt; (label.empty() ? key : label)
+                      &lt;&lt; " = " &lt;&lt; entry-&gt;value.toStr()
+                      &lt;&lt; " (타입: "
+                      &lt;&lt; entry-&gt;value.type().name()
+                      &lt;&lt; ")" &lt;&lt; std::endl;
+        }
+
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h3>3.3 XML에서의 활용</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;InspectPort key="target_pose"
+                 label="목표 위치" /&gt;
+    &lt;NavigateToPose goal="{target_pose}" /&gt;
+    &lt;InspectPort key="nav_result"
+                 label="내비게이션 결과" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>4. 블랙보드 전체 덤프</h2>
+<h3>4.1 전체 키-값 출력</h3>
+<p>블랙보드에 저장된 모든 데이터를 한 번에 출력하는 디버깅 노드이다.</p>
+<pre><code class="language-cpp">class DumpBlackboard : public BT::SyncActionNode
+{
+public:
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("prefix", "BB",
+                "출력 접두어")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        std::string prefix;
+        getInput("prefix", prefix);
+
+        auto blackboard = config().blackboard;
+        auto keys = blackboard-&gt;getKeys();
+
+        std::cout &lt;&lt; "=== [" &lt;&lt; prefix
+                  &lt;&lt; "] Blackboard Dump ===" &lt;&lt; std::endl;
+
+        for (const auto&amp; key : keys)
+        {
+            auto entry = blackboard-&gt;getEntry(key);
+            if (entry)
+            {
+                std::cout &lt;&lt; "  " &lt;&lt; key &lt;&lt; " = "
+                          &lt;&lt; entry-&gt;value.toStr()
+                          &lt;&lt; std::endl;
+            }
+            else
+            {
+                std::cout &lt;&lt; "  " &lt;&lt; key
+                          &lt;&lt; " = &lt;null&gt;" &lt;&lt; std::endl;
+            }
+        }
+
+        std::cout &lt;&lt; "=== 총 " &lt;&lt; keys.size()
+                  &lt;&lt; "개 키 ===" &lt;&lt; std::endl;
+
+        return BT::NodeStatus::SUCCESS;
+    }
+};
+</code></pre>
+<h2>5. 포트 타입 검사</h2>
+<h3>5.1 타입 불일치 감지</h3>
+<p>블랙보드에 저장된 값의 타입과 포트에서 기대하는 타입이 일치하지 않으면 <code>getInput()</code>이 실패한다. 이러한 타입 불일치를 사전에 감지하기 위해, 포트 매니페스트를 검사할 수 있다.</p>
+<pre><code class="language-cpp">void validatePortTypes(const BT::Tree&amp; tree)
+{
+    for (const auto&amp; subtree : tree.subtrees)
+    {
+        for (const auto&amp; node : subtree-&gt;nodes)
+        {
+            auto manifest =
+                node-&gt;getManifest();
+
+            for (const auto&amp; [port_name, port_info] :
+                 manifest.ports)
+            {
+                if (port_info.direction() ==
+                    BT::PortDirection::INPUT)
+                {
+                    // 포트에 바인딩된 블랙보드 키 확인
+                    auto remapped =
+                        node-&gt;getRawPortValue(port_name);
+
+                    if (remapped.empty())
+                    {
+                        std::cout &lt;&lt; "[경고] "
+                            &lt;&lt; node-&gt;name() &lt;&lt; "."
+                            &lt;&lt; port_name
+                            &lt;&lt; ": 바인딩 없음"
+                            &lt;&lt; std::endl;
+                    }
+                }
+            }
+        }
+    }
+}
+</code></pre>
+<h3>5.2 포트 연결 그래프</h3>
+<p>입출력 포트 간의 데이터 흐름을 그래프로 표현하면, 데이터 의존성을 시각적으로 파악할 수 있다.</p>
+<pre><code>[Takeoff]
+  out: reached_altitude → {takeoff_alt}
+                              ↓
+[FlyToWaypoint]
+  in: altitude ← {takeoff_alt}
+  out: final_distance → {nav_dist}
+                              ↓
+[LogMessage]
+  in: message ← {nav_dist}
+</code></pre>
+<h2>6. 값 범위 검증</h2>
+<h3>6.1 어서션 기반 검증</h3>
+<p>액션 노드 내부에서 포트 값의 유효 범위를 어서션으로 검증한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus onStart() override
+{
+    double latitude, longitude, altitude;
+    getInput("latitude", latitude);
+    getInput("longitude", longitude);
+    getInput("altitude", altitude);
+
+    // 위도 범위 검사 (-90 ~ 90)
+    if (latitude &lt; -90.0 || latitude &gt; 90.0)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "위도 범위 초과: %.6f", latitude);
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 경도 범위 검사 (-180 ~ 180)
+    if (longitude &lt; -180.0 || longitude &gt; 180.0)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "경도 범위 초과: %.6f", longitude);
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // 고도 범위 검사 (0 ~ 500m)
+    if (altitude &lt; 0.0 || altitude &gt; 500.0)
+    {
+        RCLCPP_ERROR(node_-&gt;get_logger(),
+            "고도 범위 초과: %.1f", altitude);
+        return BT::NodeStatus::FAILURE;
+    }
+
+    // ...
+}
+</code></pre>
+<h3>6.2 NaN 및 무한대 검사</h3>
+<p>부동소수점 값에 대해 NaN(Not a Number)과 무한대(infinity) 여부를 검사한다.</p>
+<pre><code class="language-cpp">template &lt;typename T&gt;
+bool isValidNumeric(T value)
+{
+    return std::isfinite(value);
+}
+
+// 사용
+double target;
+getInput("target", target);
+if (!isValidNumeric(target))
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "유효하지 않은 수치: %f", target);
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>7. 포트 변화 감시</h2>
+<h3>7.1 블랙보드 키 변화 추적</h3>
+<p>특정 블랙보드 키의 값이 변경될 때 콜백을 실행하는 감시 메커니즘을 구현한다.</p>
+<pre><code class="language-cpp">class BlackboardWatcher
+{
+public:
+    void watch(BT::Blackboard::Ptr blackboard,
+               const std::string&amp; key,
+               std::function&lt;void(const std::string&amp;)&gt;
+                   callback)
+    {
+        watchers_[key] = {blackboard, callback, ""};
+    }
+
+    void checkChanges()
+    {
+        for (auto&amp; [key, watcher] : watchers_)
+        {
+            auto entry =
+                watcher.blackboard-&gt;getEntry(key);
+            if (entry)
+            {
+                std::string current =
+                    entry-&gt;value.toStr();
+                if (current != watcher.last_value)
+                {
+                    watcher.callback(current);
+                    watcher.last_value = current;
+                }
+            }
+        }
+    }
+
+private:
+    struct WatchEntry
+    {
+        BT::Blackboard::Ptr blackboard;
+        std::function&lt;void(const std::string&amp;)&gt; callback;
+        std::string last_value;
+    };
+    std::unordered_map&lt;std::string, WatchEntry&gt; watchers_;
+};
+</code></pre>
+<h2>8. XML 행동 트리에서의 활용</h2>
+<h3>8.1 디버그 모드 조건부 검사</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;Precondition if="{debug_mode}" else="SKIP"&gt;
+        &lt;DumpBlackboard prefix="PRE_FLIGHT" /&gt;
+    &lt;/Precondition&gt;
+    &lt;Takeoff target_altitude="{alt}"
+             reached_altitude="{reached}" /&gt;
+    &lt;Precondition if="{debug_mode}" else="SKIP"&gt;
+        &lt;InspectPort key="reached"
+                     label="도달 고도" /&gt;
+    &lt;/Precondition&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p><code>debug_mode</code> 블랙보드 키를 통해 배포 환경에서는 검사를 건너뛰고, 디버깅 시에만 포트 데이터를 검사할 수 있다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Faconti, D., “Groot2: A GUI for BehaviorTree.CPP,” https://www.behaviortree.dev/groot/.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

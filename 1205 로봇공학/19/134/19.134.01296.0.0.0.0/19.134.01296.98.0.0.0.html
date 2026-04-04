@@ -115,6 +115,188 @@
             </header>
             <article>
                 <h1>1296.98 액션 노드 설계의 모범 사례</h1>
+<h2>1. 개요</h2>
+<p>액션 노드 설계의 모범 사례(best practice)는 행동 트리 기반 로봇 시스템에서 재사용성, 유지보수성, 안전성, 테스트 용이성을 극대화하기 위한 검증된 설계 지침이다. 이러한 모범 사례는 BehaviorTree.CPP 프레임워크의 설계 철학, Nav2 프로젝트의 실무 경험, 그리고 소프트웨어 공학의 일반적 원칙에 기반한다.</p>
+<h2>2. 노드 설계 원칙</h2>
+<h3>2.1 단일 책임 원칙 준수</h3>
+<p>하나의 액션 노드는 하나의 명확한 작업만을 수행해야 한다. 복합 작업을 하나의 노드에 구현하면 재사용성이 저하되고, 오류 격리가 어려워진다.</p>
+<pre><code class="language-xml">&lt;!-- 모범 사례: 분리된 노드 --&gt;
+&lt;Sequence&gt;
+    &lt;CaptureImage image="{img}" /&gt;
+    &lt;DetectObject image="{img}" detections="{det}" /&gt;
+    &lt;PlanGrasp detections="{det}" grasp="{grasp}" /&gt;
+    &lt;ExecuteGrasp grasp="{grasp}" /&gt;
+&lt;/Sequence&gt;
+
+&lt;!-- 안티패턴: 단일 노드에 복합 기능 --&gt;
+&lt;CaptureDetectAndGrasp /&gt;
+</code></pre>
+<h3>2.2 파라미터화를 통한 재사용</h3>
+<p>하드코딩된 상수 대신 입력 포트를 통해 파라미터를 외부화하여, 동일 노드를 다양한 맥락에서 재사용한다.</p>
+<pre><code class="language-cpp">// 모범 사례: 파라미터화된 포트
+static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;std::string&gt;("action_server",
+            "navigate_to_pose",
+            "액션 서버 이름"),
+        BT::InputPort&lt;double&gt;("timeout", 30.0,
+            "타임아웃 (초)"),
+        BT::InputPort&lt;double&gt;("tolerance", 0.5,
+            "목표 허용 오차 (미터)")
+    };
+}
+</code></pre>
+<h3>2.3 명시적 포트 선언</h3>
+<p>노드가 사용하는 모든 입출력 데이터를 <code>providedPorts()</code>에 명시적으로 선언한다. 블랙보드에 직접 접근하여 포트 선언 없이 데이터를 읽고 쓰는 것은 노드의 인터페이스를 불투명하게 만든다.</p>
+<pre><code class="language-cpp">// 모범 사례: 명시적 포트 선언
+static BT::PortsList providedPorts()
+{
+    return {
+        BT::InputPort&lt;double&gt;("target_altitude",
+            "목표 고도"),
+        BT::OutputPort&lt;double&gt;("reached_altitude",
+            "도달 고도")
+    };
+}
+
+// 안티패턴: 직접 블랙보드 접근
+BT::NodeStatus tick() override
+{
+    auto bb = config().blackboard;
+    double alt;
+    bb-&gt;get("some_hidden_key", alt);  // 포트 선언 없음
+}
+</code></pre>
+<h2>3. 상태 반환 규칙</h2>
+<h3>3.1 SUCCESS와 FAILURE의 명확한 기준</h3>
+<p><code>SUCCESS</code>와 <code>FAILURE</code>의 반환 기준을 명확히 정의하고 문서화한다.</p>
+<table><thead><tr><th style="text-align: center">반환 상태</th><th style="text-align: left">기준</th></tr></thead><tbody>
+<tr><td style="text-align: center">SUCCESS</td><td style="text-align: left">요청된 작업이 의도한 결과를 달성함</td></tr>
+<tr><td style="text-align: center">FAILURE</td><td style="text-align: left">작업 수행이 불가하거나 실패 조건을 충족함</td></tr>
+<tr><td style="text-align: center">RUNNING</td><td style="text-align: left">작업이 진행 중이며 아직 완료되지 않음</td></tr>
+</tbody></table>
+<p>탐지 결과가 0개인 경우에도 탐지 알고리즘이 정상적으로 실행되었다면 <code>SUCCESS</code>를 반환하는 것이 올바르다. 탐지된 물체의 존재 여부는 후속 조건 노드에서 판단한다.</p>
+<h3>3.2 RUNNING의 제한적 사용</h3>
+<p><code>SyncActionNode</code>에서는 <code>RUNNING</code>을 절대 반환하지 않는다. <code>StatefulActionNode</code>에서는 작업이 실제로 진행 중일 때만 <code>RUNNING</code>을 반환하며, 무한 RUNNING을 방지하기 위해 타임아웃을 반드시 구현한다.</p>
+<h2>4. Halt 구현</h2>
+<h3>4.1 완전한 onHalted() 구현</h3>
+<p>비동기 노드에서 <code>onHalted()</code>는 반드시 다음을 수행해야 한다.</p>
+<ol>
+<li>진행 중인 외부 작업 취소 (ROS2 액션 취소 등)</li>
+<li>모든 자원 해제 (구독, 타이머, 파일 핸들 등)</li>
+<li>내부 상태 변수 초기화</li>
+<li>필요시 안전 상태 전환</li>
+</ol>
+<pre><code class="language-cpp">void onHalted() override
+{
+    if (goal_handle_)
+    {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+        goal_handle_.reset();
+    }
+    subscription_.reset();
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+}
+</code></pre>
+<h3>4.2 Halt 후 재진입 보장</h3>
+<p><code>onHalted()</code> 이후 <code>onStart()</code>가 다시 호출되었을 때, 이전 실행의 잔여 상태가 영향을 미치지 않도록 완전한 초기화를 수행한다.</p>
+<h2>5. ROS2 연동 설계</h2>
+<h3>5.1 노드 인스턴스 주입</h3>
+<p>ROS2 노드 인스턴스를 생성자를 통해 주입(injection)하여, 테스트 시 모의 노드로 대체할 수 있도록 한다.</p>
+<pre><code class="language-cpp">class MyAction : public BT::StatefulActionNode
+{
+public:
+    MyAction(const std::string&amp; name,
+             const BT::NodeConfiguration&amp; config,
+             rclcpp::Node::SharedPtr node)
+        : BT::StatefulActionNode(name, config),
+          node_(node)
+    {
+        // ROS2 클라이언트 초기화
+    }
+};
+
+// 팩토리 등록 시 빌더 패턴 사용
+factory.registerBuilder&lt;MyAction&gt;(
+    "MyAction",
+    [node](const%20std::string&amp;%20name,
+%20%20%20%20%20%20%20%20%20%20%20const%20BT::NodeConfiguration&amp;%20config)
+    {
+        return std::make_unique&lt;MyAction&gt;(
+            name, config, node);
+    });
+</code></pre>
+<h3>5.2 QoS 일관성</h3>
+<p>센서 데이터 토픽은 <code>SensorDataQoS()</code>, 명령 토픽은 <code>ReliableQoS()</code>를 사용하여 발행자-구독자 간 QoS 호환성을 보장한다.</p>
+<h3>5.3 서버 가용성 검사</h3>
+<p><code>onStart()</code>에서 ROS2 서비스 또는 액션 서버의 가용성을 확인하고, 연결 불가 시 즉시 <code>FAILURE</code>를 반환한다.</p>
+<pre><code class="language-cpp">if (!action_client_-&gt;wait_for_action_server(
+        std::chrono::seconds(3)))
+{
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+        "서버 연결 실패: %s", server_name.c_str());
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h2>6. 오류 처리</h2>
+<h3>6.1 실패 원인 보고</h3>
+<p><code>FAILURE</code> 반환 시 출력 포트에 오류 코드와 메시지를 기록하여, 상위 노드에서 실패 원인에 따른 분기를 수행할 수 있도록 한다.</p>
+<h3>6.2 예외 안전 보장</h3>
+<p>모든 외부 호출을 try-catch로 감싸고, 예외 발생 시에도 자원이 올바르게 해제되도록 RAII 패턴을 활용한다.</p>
+<h3>6.3 로깅 전략</h3>
+<ul>
+<li><code>onStart()</code> 진입 시: DEBUG 레벨로 입력 파라미터 기록</li>
+<li><code>FAILURE</code> 반환 시: ERROR 레벨로 실패 원인 기록</li>
+<li><code>SUCCESS</code> 반환 시: DEBUG 레벨로 결과 요약 기록</li>
+<li>주기적 진행 상황: DEBUG 레벨로 빈도 제한(throttle) 로깅</li>
+</ul>
+<h2>7. 테스트 설계</h2>
+<h3>7.1 테스트 용이한 구조</h3>
+<p>외부 의존성을 인터페이스로 추상화하여, 테스트 시 모의 객체로 대체할 수 있도록 설계한다.</p>
+<h3>7.2 필수 테스트 항목</h3>
+<ul>
+<li>정상 입력에 대한 SUCCESS 반환</li>
+<li>잘못된 입력에 대한 FAILURE 반환</li>
+<li>서버 미응답 시 타임아웃</li>
+<li>Halt 후 재시작</li>
+<li>입출력 포트 정확성</li>
+</ul>
+<h2>8. 네이밍 규칙</h2>
+<h3>8.1 노드 이름</h3>
+<p>동사 + 명사 형태로 작업의 내용을 명확히 표현한다.</p>
+<table><thead><tr><th style="text-align: center">좋은 이름</th><th style="text-align: center">나쁜 이름</th></tr></thead><tbody>
+<tr><td style="text-align: center">NavigateToPose</td><td style="text-align: center">DoNavigation</td></tr>
+<tr><td style="text-align: center">CaptureImage</td><td style="text-align: center">CameraAction</td></tr>
+<tr><td style="text-align: center">DetectObject</td><td style="text-align: center">Perception</td></tr>
+<tr><td style="text-align: center">PublishStatus</td><td style="text-align: center">StatusNode</td></tr>
+<tr><td style="text-align: center">ComputePathToPose</td><td style="text-align: center">PathPlanner</td></tr>
+</tbody></table>
+<h3>8.2 포트 이름</h3>
+<p>소문자 스네이크 케이스(snake_case)를 사용하고, 데이터의 의미를 명확히 표현한다.</p>
+<table><thead><tr><th style="text-align: center">좋은 이름</th><th style="text-align: center">나쁜 이름</th></tr></thead><tbody>
+<tr><td style="text-align: center">target_altitude</td><td style="text-align: center">alt</td></tr>
+<tr><td style="text-align: center">acceptance_radius</td><td style="text-align: center">r</td></tr>
+<tr><td style="text-align: center">error_message</td><td style="text-align: center">msg</td></tr>
+<tr><td style="text-align: center">detection_count</td><td style="text-align: center">cnt</td></tr>
+</tbody></table>
+<h2>9. 성능 고려</h2>
+<h3>9.1 tick() 실행 시간 최소화</h3>
+<p><code>SyncActionNode</code>의 <code>tick()</code>은 수 밀리초 이내에 반환해야 한다. 장시간 블로킹 연산은 <code>StatefulActionNode</code>로 전환한다.</p>
+<h3>9.2 불필요한 자원 생성 방지</h3>
+<p>매 tick마다 ROS2 발행자나 구독자를 새로 생성하지 않고, 생성자에서 한 번만 초기화하거나 캐싱하여 재사용한다.</p>
+<h3>9.3 블랙보드 대용량 데이터 주의</h3>
+<p>이미지나 포인트 클라우드와 같은 대용량 데이터를 블랙보드에 저장할 때는 공유 포인터(<code>std::shared_ptr</code>)를 사용하여 불필요한 복사를 방지한다.</p>
+<h2>10. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Macenski, S. et al., “The Marathon 2: A Navigation System,” arXiv preprint arXiv:2003.00368, 2020.</li>
+<li>Martin, R. C., “Clean Code: A Handbook of Agile Software Craftsmanship,” Prentice Hall, 2008.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

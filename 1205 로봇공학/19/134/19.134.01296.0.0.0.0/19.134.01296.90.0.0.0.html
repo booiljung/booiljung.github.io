@@ -115,6 +115,197 @@
             </header>
             <article>
                 <h1>1296.90 ROS2 액션 취소를 통한 Halt 구현</h1>
+<h2>1. 개요</h2>
+<p>ROS2 액션(action)은 장시간 수행되는 작업에 대한 비동기 통신 인터페이스로, 목표(goal) 전송, 피드백(feedback) 수신, 결과(result) 획득과 함께 취소(cancel) 기능을 제공한다. 행동 트리의 액션 노드에서 halt가 호출되면, 진행 중인 ROS2 액션 목표를 취소하여 서버 측의 작업을 안전하게 중단해야 한다.</p>
+<p>ROS2 액션 취소는 클라이언트가 취소 요청을 전송하고 서버가 이를 수락하여 작업을 중단하는 협력적(cooperative) 메커니즘이다. 서버가 취소를 거부하거나 즉시 응답하지 않을 수 있으므로, 클라이언트 측에서 이러한 상황에 대비해야 한다.</p>
+<h2>2. ROS2 액션 취소 프로토콜</h2>
+<h3>2.1 취소 요청 흐름</h3>
+<pre><code>[클라이언트]                        [서버]
+     │                                │
+     ├── cancel_goal() 전송            │
+     │                                ├── cancel 콜백 실행
+     │                                │   ├── 취소 수락/거부 결정
+     │                                │   └── CancelResponse 반환
+     ├── CancelResponse 수신           │
+     │                                ├── 작업 정리
+     │                                └── 결과 전송 (CANCELED)
+     ├── 결과 수신 (CANCELED)           │
+</code></pre>
+<h3>2.2 취소 응답 코드</h3>
+<p><code>action_msgs/srv/CancelGoal</code> 서비스의 응답에는 취소 결과 코드가 포함된다.</p>
+<table><thead><tr><th style="text-align: center">코드</th><th style="text-align: center">상수</th><th style="text-align: left">의미</th></tr></thead><tbody>
+<tr><td style="text-align: center">0</td><td style="text-align: center">ERROR_NONE</td><td style="text-align: left">취소 성공</td></tr>
+<tr><td style="text-align: center">1</td><td style="text-align: center">ERROR_REJECTED</td><td style="text-align: left">취소 거부</td></tr>
+<tr><td style="text-align: center">2</td><td style="text-align: center">ERROR_UNKNOWN_GOAL_ID</td><td style="text-align: left">알 수 없는 목표 ID</td></tr>
+<tr><td style="text-align: center">3</td><td style="text-align: center">ERROR_GOAL_TERMINATED</td><td style="text-align: left">이미 종료된 목표</td></tr>
+</tbody></table>
+<h2>3. 클라이언트 측 구현</h2>
+<h3>3.1 기본 취소 구현</h3>
+<pre><code class="language-cpp">void onHalted() override
+{
+    if (goal_handle_)
+    {
+        auto cancel_future =
+            action_client_-&gt;async_cancel_goal(goal_handle_);
+
+        RCLCPP_INFO(node_-&gt;get_logger(),
+            "[%s] 액션 취소 요청 전송", name().c_str());
+    }
+
+    // 자원 해제 및 상태 초기화
+    goal_handle_.reset();
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+}
+</code></pre>
+<p><code>async_cancel_goal()</code>은 비동기적으로 취소 요청을 전송하고 즉시 반환한다. halt 메서드는 취소 완료를 대기하지 않는다. 이는 halt가 빠르게 완료되어야 한다는 원칙에 부합한다.</p>
+<h3>3.2 취소 결과 확인 (선택적)</h3>
+<p>취소 결과를 확인해야 하는 경우, 취소 응답 콜백을 등록한다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    if (goal_handle_)
+    {
+        auto cancel_future =
+            action_client_-&gt;async_cancel_goal(
+                goal_handle_,
+                [this](const%20auto&amp;%20cancel_response)
+                {
+                    if (cancel_response-&gt;return_code ==
+                        action_msgs::srv::CancelGoal::Response
+                            ::ERROR_NONE)
+                    {
+                        RCLCPP_INFO(node_-&gt;get_logger(),
+                            "액션 취소 수락됨");
+                    }
+                    else
+                    {
+                        RCLCPP_WARN(node_-&gt;get_logger(),
+                            "액션 취소 거부: 코드 %d",
+                            cancel_response-&gt;return_code);
+                    }
+                });
+    }
+
+    goal_handle_.reset();
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+}
+</code></pre>
+<h3>3.3 Goal Handle 유효성 검사</h3>
+<p>취소 요청 전에 <code>goal_handle_</code>의 유효성을 확인해야 한다. 목표가 이미 완료되었거나 거부된 경우 <code>goal_handle_</code>이 null일 수 있다.</p>
+<pre><code class="language-cpp">void onHalted() override
+{
+    if (goal_handle_ &amp;&amp;
+        (goal_handle_-&gt;get_status() ==
+         rclcpp_action::GoalStatus::STATUS_ACCEPTED ||
+         goal_handle_-&gt;get_status() ==
+         rclcpp_action::GoalStatus::STATUS_EXECUTING))
+    {
+        action_client_-&gt;async_cancel_goal(goal_handle_);
+    }
+
+    goal_handle_.reset();
+    goal_completed_ = false;
+    goal_succeeded_ = false;
+}
+</code></pre>
+<h2>4. 서버 측 취소 처리</h2>
+<h3>4.1 취소 콜백 구현</h3>
+<p>ROS2 액션 서버는 <code>handle_cancel</code> 콜백을 통해 취소 요청을 처리한다.</p>
+<pre><code class="language-cpp">rclcpp_action::CancelResponse handle_cancel(
+    const std::shared_ptr&lt;GoalHandle&gt; goal_handle)
+{
+    RCLCPP_INFO(get_logger(), "취소 요청 수신");
+
+    // 안전하게 중단 가능한지 확인
+    if (canSafelyCancel())
+    {
+        return rclcpp_action::CancelResponse::ACCEPT;
+    }
+    else
+    {
+        RCLCPP_WARN(get_logger(),
+            "현재 단계에서는 취소 불가");
+        return rclcpp_action::CancelResponse::REJECT;
+    }
+}
+</code></pre>
+<h3>4.2 취소 수행</h3>
+<p>취소가 수락되면 실행 중인 작업을 안전하게 중단하고, <code>CANCELED</code> 결과를 반환한다.</p>
+<pre><code class="language-cpp">void execute(
+    const std::shared_ptr&lt;GoalHandle&gt; goal_handle)
+{
+    while (rclcpp::ok() &amp;&amp; !isComplete())
+    {
+        // 취소 확인
+        if (goal_handle-&gt;is_canceling())
+        {
+            auto result = std::make_shared&lt;Action::Result&gt;();
+            result-&gt;success = false;
+            goal_handle-&gt;canceled(result);
+            RCLCPP_INFO(get_logger(), "목표 취소 완료");
+            return;
+        }
+
+        // 작업 수행 및 피드백 발행
+        performStep();
+        publishFeedback(goal_handle);
+    }
+
+    // 정상 완료
+    auto result = std::make_shared&lt;Action::Result&gt;();
+    result-&gt;success = true;
+    goal_handle-&gt;succeed(result);
+}
+</code></pre>
+<h2>5. 취소와 결과 코드의 매핑</h2>
+<p>ROS2 액션의 결과 코드에 따라 행동 트리 노드의 반환 상태를 결정한다.</p>
+<table><thead><tr><th style="text-align: center">ResultCode</th><th style="text-align: left">의미</th><th style="text-align: center">행동 트리 반환</th></tr></thead><tbody>
+<tr><td style="text-align: center">SUCCEEDED</td><td style="text-align: left">정상 완료</td><td style="text-align: center">SUCCESS</td></tr>
+<tr><td style="text-align: center">ABORTED</td><td style="text-align: left">서버 측 오류로 중단</td><td style="text-align: center">FAILURE</td></tr>
+<tr><td style="text-align: center">CANCELED</td><td style="text-align: left">클라이언트 취소에 의한 중단</td><td style="text-align: center">(halt에 의해 처리)</td></tr>
+<tr><td style="text-align: center">UNKNOWN</td><td style="text-align: left">알 수 없는 상태</td><td style="text-align: center">FAILURE</td></tr>
+</tbody></table>
+<p><code>CANCELED</code> 결과는 halt 과정에서 발생하므로, <code>onRunning()</code>에서 처리되지 않고 <code>onHalted()</code>에서 이미 노드가 <code>IDLE</code>로 전환된 후에 도착한다. 따라서 결과 콜백에서 <code>CANCELED</code>를 수신하면 무시하는 것이 올바르다.</p>
+<pre><code class="language-cpp">send_goal_options.result_callback =
+    [this](const%20GoalHandle::WrappedResult&amp;%20result)
+    {
+        if (result.code ==
+            rclcpp_action::ResultCode::CANCELED)
+        {
+            // Halt에 의한 취소 — 무시
+            RCLCPP_DEBUG(node_-&gt;get_logger(),
+                "취소된 목표의 결과 수신 (무시)");
+            return;
+        }
+
+        goal_completed_ = true;
+        goal_succeeded_ =
+            (result.code ==
+             rclcpp_action::ResultCode::SUCCEEDED);
+    };
+</code></pre>
+<h2>6. 취소 불가 상황의 처리</h2>
+<p>일부 액션 서버는 특정 단계에서 취소를 거부할 수 있다. 예를 들어, 착륙의 최종 단계에서는 안전상 취소가 불가능할 수 있다. 이 경우 클라이언트 측에서는 취소 거부를 로깅하고, 서버가 자연스럽게 작업을 완료하도록 대기하거나 상위 시스템에 상황을 보고한다.</p>
+<h2>7. XML 행동 트리에서의 활용</h2>
+<pre><code class="language-xml">&lt;ReactiveFallback&gt;
+    &lt;Inverter&gt;
+        &lt;CheckEmergency /&gt;
+    &lt;/Inverter&gt;
+    &lt;NavigateToPose goal="{target}"
+                    timeout="60.0" /&gt;
+    &lt;EmergencyLand /&gt;
+&lt;/ReactiveFallback&gt;
+</code></pre>
+<p>이 구조에서 비상 상황이 감지되면 <code>ReactiveFallback</code>이 <code>NavigateToPose</code>의 halt를 호출하고, halt 내에서 ROS2 액션 취소가 수행된다. 이후 <code>EmergencyLand</code> 노드가 실행된다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Open Robotics, “ROS 2 Design: Actions,” ROS 2 Documentation, https://design.ros2.org/articles/actions.html.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

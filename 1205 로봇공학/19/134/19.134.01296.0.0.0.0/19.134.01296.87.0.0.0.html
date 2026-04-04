@@ -115,6 +115,118 @@
             </header>
             <article>
                 <h1>1296.87 동기 액션 노드의 Halt 처리</h1>
+<h2>1. 개요</h2>
+<p>동기 액션 노드(<code>SyncActionNode</code>)는 단일 tick 내에서 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 즉시 반환하며, <code>RUNNING</code> 상태를 반환하지 않는다. 따라서 동기 액션 노드는 행동 트리의 관점에서 항상 완료된 상태에 있으므로, 외부에서 halt가 호출되는 상황이 구조적으로 발생하지 않는다.</p>
+<p>그러나 BehaviorTree.CPP 프레임워크에서 <code>SyncActionNode</code>도 <code>TreeNode</code>를 상속하므로 <code>halt()</code> 가상 메서드를 보유하며, 특정 조건에서 halt가 호출될 수 있다. 본 절에서는 동기 액션 노드에서의 halt 처리 특성과 고려 사항을 기술한다.</p>
+<h2>2. SyncActionNode의 Halt 특성</h2>
+<h3>2.1 RUNNING 미반환 원칙과 Halt</h3>
+<p><code>SyncActionNode</code>의 <code>tick()</code> 메서드는 <code>RUNNING</code>을 반환하지 않으므로, 노드가 실행 중인 상태에서 halt가 호출되는 정상적인 경우는 존재하지 않는다. <code>tick()</code>이 호출되면 즉시 <code>SUCCESS</code> 또는 <code>FAILURE</code> 중 하나를 반환하고, 노드의 상태는 즉시 <code>IDLE</code>로 전환된다.</p>
+<h3>2.2 트리 전체 중지 시의 Halt</h3>
+<p>행동 트리 전체를 중지(<code>Tree::haltTree()</code>)할 때, 프레임워크는 모든 노드에 대해 halt를 호출한다. 이 경우 동기 노드도 halt 대상에 포함되지만, 동기 노드는 이미 실행이 완료된 상태이므로 실질적인 중단 동작은 필요하지 않다.</p>
+<h3>2.3 기본 halt() 구현</h3>
+<p><code>SyncActionNode</code>는 기본 <code>halt()</code> 구현을 상속하며, 이는 노드의 상태를 <code>IDLE</code>로 설정하는 것 이외의 동작을 수행하지 않는다.</p>
+<pre><code class="language-cpp">// BehaviorTree.CPP 내부 (간략화)
+void TreeNode::halt()
+{
+    setStatus(NodeStatus::IDLE);
+}
+</code></pre>
+<h2>3. 동기 노드에서 Halt가 문제되는 경우</h2>
+<h3>3.1 장시간 실행 tick()</h3>
+<p><code>SyncActionNode</code>의 <code>tick()</code> 메서드가 장시간 블로킹되는 경우, 그 동안 다른 노드의 halt 처리가 지연된다. 동기 노드의 <code>tick()</code>은 즉시 반환되어야 하며, 장시간 소요되는 작업은 <code>StatefulActionNode</code> 또는 <code>ThreadedAction</code>으로 구현해야 한다.</p>
+<pre><code class="language-cpp">// 잘못된 설계: 동기 노드에서의 블로킹
+BT::NodeStatus tick() override
+{
+    // 서비스 응답을 동기적으로 대기 (수 초 소요 가능)
+    auto result = service_client_-&gt;call(request);
+    // 이 시간 동안 다른 노드의 halt 불가
+    return result ? BT::NodeStatus::SUCCESS
+                  : BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<pre><code class="language-cpp">// 올바른 설계: 즉시 반환
+BT::NodeStatus tick() override
+{
+    // 비동기 요청 전송
+    auto future = service_client_-&gt;async_send_request(
+        request);
+
+    // 즉시 완료 여부 확인
+    if (future.wait_for(std::chrono::milliseconds(0))
+        == std::future_status::ready)
+    {
+        auto result = future.get();
+        return result-&gt;success
+            ? BT::NodeStatus::SUCCESS
+            : BT::NodeStatus::FAILURE;
+    }
+
+    // 즉시 완료되지 않으면 FAILURE 반환
+    // (또는 StatefulActionNode로 전환)
+    return BT::NodeStatus::FAILURE;
+}
+</code></pre>
+<h3>3.2 부작용이 있는 동기 노드</h3>
+<p><code>tick()</code>에서 부작용(ROS2 토픽 발행, 파일 쓰기, 하드웨어 명령 전송 등)을 수행하는 동기 노드는, <code>tick()</code>이 호출된 시점에서 이미 부작용이 발생한 상태이다. 이후 halt가 호출되더라도 이미 발생한 부작용을 되돌리는 것은 동기 노드의 범위를 벗어난다.</p>
+<p>부작용의 취소가 필요한 경우, 보상 동작을 별도의 노드로 구현하고 행동 트리에서 명시적으로 호출하는 것이 올바른 설계이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;SendCommand command="START_MOTOR" /&gt;
+    &lt;SomeTask /&gt;
+    &lt;!-- SomeTask 실패 시 보상 동작으로 모터 정지 --&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h2>4. 동기 노드의 halt 커스터마이징</h2>
+<p>대부분의 동기 노드에서는 기본 halt 구현으로 충분하다. 그러나 동기 노드가 내부적으로 캐시, 발행자 객체, 또는 기타 장기 자원을 보유하는 경우, halt를 재정의하여 이러한 자원을 정리할 수 있다.</p>
+<pre><code class="language-cpp">class CachedSyncAction : public BT::SyncActionNode
+{
+public:
+    BT::NodeStatus tick() override
+    {
+        // 캐시 활용
+        if (!publisher_)
+        {
+            publisher_ =
+                node_-&gt;create_publisher&lt;std_msgs::msg::String&gt;(
+                    topic_, rclcpp::QoS(10));
+        }
+        // ...
+        return BT::NodeStatus::SUCCESS;
+    }
+
+    void halt() override
+    {
+        publisher_.reset();  // 자원 해제
+        BT::SyncActionNode::halt();  // 기본 구현 호출
+    }
+
+private:
+    rclcpp::Publisher&lt;std_msgs::msg::String&gt;::SharedPtr
+        publisher_;
+};
+</code></pre>
+<h2>5. SyncActionNode와 StatefulActionNode의 Halt 비교</h2>
+<table><thead><tr><th style="text-align: center">특성</th><th style="text-align: left">SyncActionNode</th><th style="text-align: left">StatefulActionNode</th></tr></thead><tbody>
+<tr><td style="text-align: center">Halt 호출 빈도</td><td style="text-align: left">극히 드묾</td><td style="text-align: left">빈번</td></tr>
+<tr><td style="text-align: center">Halt 구현 필요성</td><td style="text-align: left">대부분 불필요</td><td style="text-align: left">필수</td></tr>
+<tr><td style="text-align: center">자원 정리</td><td style="text-align: left">선택적</td><td style="text-align: left">필수</td></tr>
+<tr><td style="text-align: center">안전 전환</td><td style="text-align: left">해당 없음</td><td style="text-align: left">필수</td></tr>
+<tr><td style="text-align: center">진행 중 작업 취소</td><td style="text-align: left">해당 없음</td><td style="text-align: left">필수</td></tr>
+</tbody></table>
+<h2>6. 설계 지침</h2>
+<ol>
+<li><code>SyncActionNode</code>의 <code>tick()</code> 메서드는 수 밀리초 이내에 반환되어야 한다.</li>
+<li><code>tick()</code> 실행 시간이 수십 밀리초를 초과하는 경우, <code>StatefulActionNode</code>로 전환하여 비동기 처리한다.</li>
+<li>대부분의 동기 노드에서는 halt를 재정의할 필요가 없다.</li>
+<li>동기 노드가 장기 자원(발행자, 구독자, 캐시 등)을 보유하는 경우에만 halt를 재정의하여 자원을 정리한다.</li>
+<li>halt 재정의 시 반드시 기반 클래스의 <code>halt()</code>를 호출하여 노드 상태를 <code>IDLE</code>로 설정한다.</li>
+</ol>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

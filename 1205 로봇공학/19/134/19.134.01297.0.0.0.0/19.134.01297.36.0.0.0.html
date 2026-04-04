@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1297.36 서비스 호출 결과 기반 조건 노드</title>
+    <title>BIJUNG:서비스 호출 결과 기반 조건 노드 (Service Call Result-Based Condition Node)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,424 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1297.36 서비스 호출 결과 기반 조건 노드</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span>1297.36 서비스 호출 결과 기반 조건 노드</span></nav>
+                    <h1>서비스 호출 결과 기반 조건 노드 (Service Call Result-Based Condition Node)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1297. 조건 노드 설계와 구현 (Condition Node Design and Implementation)">Chapter 1297. 조건 노드 설계와 구현 ...</a> <span class="separator">/</span> <span title="서비스 호출 결과 기반 조건 노드 (Service Call Result-Based Condition Node)">서비스 호출 결과 기반 조건 노드 (Service...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1297.36 서비스 호출 결과 기반 조건 노드</h1>
+                <h1>서비스 호출 결과 기반 조건 노드 (Service Call Result-Based Condition Node)</h1>
+<h2>1. 개요</h2>
+<p>서비스 호출 결과 기반 조건 노드는 ROS2 서비스의 응답(response) 메시지에 포함된 값을 분석하여 조건의 참/거짓을 판정하는 조건 노드이다. 서비스 호출 자체의 성공 여부뿐만 아니라, 응답 메시지의 특정 필드를 기준값과 비교하거나, 응답에 포함된 상태 코드를 해석하여 세밀한 조건 평가를 수행한다. 본 절에서는 서비스 응답의 다양한 평가 패턴과 구체적인 구현 방법을 다룬다.</p>
+<h2>2. 응답 메시지 평가 유형</h2>
+<h3>2.1 불리언 응답 필드 평가</h3>
+<p>가장 단순한 형태는 서비스 응답에 포함된 불리언 필드를 직접 확인하는 것이다. 다수의 ROS2 서비스 정의는 <code>success</code>, <code>is_valid</code>, <code>result</code> 등의 불리언 필드를 포함한다.</p>
+<pre><code class="language-cpp">class IsPathValidCondition : public BT::ConditionNode
+{
+public:
+    IsPathValidCondition(const std::string&amp; name,
+                         const BT::NodeConfiguration&amp; config,
+                         rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          response_received_(false),
+          last_result_(false)
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+        client_ = node_-&gt;create_client&lt;nav2_msgs::srv::IsPathValid&gt;(
+            service_name);
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name",
+                "/is_path_valid", "서비스 이름"),
+            BT::InputPort&lt;nav_msgs::msg::Path&gt;("path", "검증할 경로")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        if (!client_-&gt;service_is_ready())
+        {
+            return BT::NodeStatus::FAILURE;
+        }
+
+        auto request =
+            std::make_shared&lt;nav2_msgs::srv::IsPathValid::Request&gt;();
+        getInput("path", request-&gt;path);
+
+        auto future = client_-&gt;async_send_request(request);
+        auto timeout = std::chrono::milliseconds(100);
+
+        if (future.wait_for(timeout) == std::future_status::ready)
+        {
+            auto response = future.get();
+            last_result_ = response-&gt;is_valid;
+            response_received_ = true;
+        }
+
+        if (response_received_ &amp;&amp; last_result_)
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Client&lt;nav2_msgs::srv::IsPathValid&gt;::SharedPtr client_;
+    bool response_received_;
+    bool last_result_;
+};
+</code></pre>
+<p>이 구현에서 서비스 응답이 타임아웃 내에 도착하지 않으면, 이전에 캐싱된 결과(<code>last_result_</code>)를 사용한다. 최초 호출에서 응답이 도착하지 않은 경우(<code>response_received_</code>가 <code>false</code>)에는 <code>FAILURE</code>를 반환한다.</p>
+<h3>2.2 수치 응답 필드 평가</h3>
+<p>서비스 응답에 포함된 수치 필드를 임계값과 비교하는 패턴이다. 다음은 코스트맵(costmap)의 특정 좌표에서의 비용 값을 질의하여 통행 가능 여부를 판정하는 예시이다.</p>
+<pre><code class="language-cpp">class IsCellTraversable : public BT::ConditionNode
+{
+public:
+    IsCellTraversable(const std::string&amp; name,
+                      const BT::NodeConfiguration&amp; config,
+                      rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          cached_result_(BT::NodeStatus::FAILURE)
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+        client_ = node_-&gt;create_client&lt;nav2_msgs::srv::GetCosts&gt;(
+            service_name);
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name",
+                "/global_costmap/get_cost", "서비스 이름"),
+            BT::InputPort&lt;double&gt;("x", "질의 X 좌표"),
+            BT::InputPort&lt;double&gt;("y", "질의 Y 좌표"),
+            BT::InputPort&lt;double&gt;("max_cost", 252.0,
+                "최대 허용 비용 값")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        if (!client_-&gt;service_is_ready())
+        {
+            return cached_result_;
+        }
+
+        auto request =
+            std::make_shared&lt;nav2_msgs::srv::GetCosts::Request&gt;();
+
+        geometry_msgs::msg::PoseStamped pose;
+        double x, y;
+        getInput("x", x);
+        getInput("y", y);
+        pose.pose.position.x = x;
+        pose.pose.position.y = y;
+        request-&gt;poses.push_back(pose);
+
+        auto future = client_-&gt;async_send_request(request);
+        auto timeout = std::chrono::milliseconds(50);
+
+        if (future.wait_for(timeout) == std::future_status::ready)
+        {
+            auto response = future.get();
+            double max_cost;
+            getInput("max_cost", max_cost);
+
+            if (!response-&gt;costs.empty() &amp;&amp;
+                response-&gt;costs[0] &lt; max_cost)
+            {
+                cached_result_ = BT::NodeStatus::SUCCESS;
+            }
+            else
+            {
+                cached_result_ = BT::NodeStatus::FAILURE;
+            }
+        }
+        return cached_result_;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Client&lt;nav2_msgs::srv::GetCosts&gt;::SharedPtr client_;
+    BT::NodeStatus cached_result_;
+};
+</code></pre>
+<h3>2.3 상태 코드 기반 평가</h3>
+<p>서비스 응답에 정수형 상태 코드가 포함된 경우, 해당 코드의 의미를 해석하여 조건을 판정한다.</p>
+<pre><code class="language-cpp">class IsLocalizationReliable : public BT::ConditionNode
+{
+public:
+    IsLocalizationReliable(const std::string&amp; name,
+                           const BT::NodeConfiguration&amp; config,
+                           rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          cached_result_(BT::NodeStatus::FAILURE)
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+        client_ = node_-&gt;create_client&lt;
+            diagnostic_msgs::srv::SelfTest&gt;(service_name);
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name",
+                "자가 진단 서비스 이름"),
+            BT::InputPort&lt;int&gt;("min_status", 0,
+                "최소 요구 상태 레벨 (0=OK)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        if (!client_-&gt;service_is_ready())
+        {
+            return cached_result_;
+        }
+
+        auto request =
+            std::make_shared&lt;diagnostic_msgs::srv::SelfTest::Request&gt;();
+        auto future = client_-&gt;async_send_request(request);
+        auto timeout = std::chrono::milliseconds(100);
+
+        if (future.wait_for(timeout) == std::future_status::ready)
+        {
+            auto response = future.get();
+            int min_status;
+            getInput("min_status", min_status);
+
+            if (response-&gt;passed)
+            {
+                cached_result_ = BT::NodeStatus::SUCCESS;
+            }
+            else
+            {
+                cached_result_ = BT::NodeStatus::FAILURE;
+            }
+        }
+        return cached_result_;
+    }
+
+private:
+    rclcpp::Node::SharedPtr node_;
+    rclcpp::Client&lt;diagnostic_msgs::srv::SelfTest&gt;::SharedPtr client_;
+    BT::NodeStatus cached_result_;
+};
+</code></pre>
+<h2>3. 시간 기반 캐싱을 적용한 서비스 조건 노드</h2>
+<p>서비스 호출의 오버헤드를 줄이기 위해, 일정 시간 동안 이전 응답 결과를 재사용하는 캐싱 전략을 적용한다.</p>
+<pre><code class="language-cpp">template &lt;typename ServiceT&gt;
+class CachedServiceCondition : public BT::ConditionNode
+{
+public:
+    CachedServiceCondition(const std::string&amp; name,
+                           const BT::NodeConfiguration&amp; config,
+                           rclcpp::Node::SharedPtr node)
+        : BT::ConditionNode(name, config),
+          node_(node),
+          has_cached_result_(false),
+          request_pending_(false)
+    {
+        std::string service_name;
+        getInput("service_name", service_name);
+        client_ = node_-&gt;create_client&lt;ServiceT&gt;(service_name);
+    }
+
+    static BT::PortsList providedPorts()
+    {
+        return {
+            BT::InputPort&lt;std::string&gt;("service_name", "서비스 이름"),
+            BT::InputPort&lt;double&gt;("cache_duration_sec", 1.0,
+                "캐시 유효 기간 (초)")
+        };
+    }
+
+    BT::NodeStatus tick() override
+    {
+        double cache_duration;
+        getInput("cache_duration_sec", cache_duration);
+
+        // 캐시가 유효한 경우 서비스를 호출하지 않고 반환
+        if (has_cached_result_)
+        {
+            auto elapsed =
+                (node_-&gt;get_clock()-&gt;now() - cache_time_).seconds();
+            if (elapsed &lt; cache_duration)
+            {
+                return cached_result_;
+            }
+        }
+
+        if (!client_-&gt;service_is_ready())
+        {
+            return has_cached_result_ ? cached_result_
+                                      : BT::NodeStatus::FAILURE;
+        }
+
+        if (!request_pending_)
+        {
+            auto request = createRequest();
+            request_pending_ = true;
+
+            client_-&gt;async_send_request(
+                request,
+                [this](typename%20rclcpp::Client&lt;ServiceT&gt;::SharedFuture
+%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20future) {
+                    std::lock_guard&lt;std::mutex&gt; lock(mutex_);
+                    auto response = future.get();
+                    cached_result_ = evaluateResponse(response);
+                    cache_time_ = node_-&gt;get_clock()-&gt;now();
+                    has_cached_result_ = true;
+                    request_pending_ = false;
+                });
+        }
+
+        return has_cached_result_ ? cached_result_
+                                  : BT::NodeStatus::FAILURE;
+    }
+
+protected:
+    virtual typename ServiceT::Request::SharedPtr createRequest() = 0;
+    virtual BT::NodeStatus evaluateResponse(
+        const typename ServiceT::Response::SharedPtr&amp; response) = 0;
+
+    rclcpp::Node::SharedPtr node_;
+
+private:
+    typename rclcpp::Client&lt;ServiceT&gt;::SharedPtr client_;
+    std::mutex mutex_;
+    bool has_cached_result_;
+    bool request_pending_;
+    BT::NodeStatus cached_result_;
+    rclcpp::Time cache_time_;
+};
+</code></pre>
+<p>이 구현의 핵심은 다음과 같다.</p>
+<ol>
+<li>캐시가 유효 기간 내에 있으면 서비스를 호출하지 않고 캐싱된 결과를 즉시 반환한다.</li>
+<li>캐시가 만료되면 비동기 서비스 호출을 발행한다.</li>
+<li>응답이 도착하면 결과를 캐싱하고 타임스탬프를 갱신한다.</li>
+<li>요청이 진행 중이고 캐시가 있으면 이전 결과를 반환한다.</li>
+</ol>
+<h2>4. 생명주기 노드 상태 질의 조건 노드</h2>
+<p>ROS2 생명주기 노드(lifecycle node)의 상태를 질의하는 실용적 구현 예시이다.</p>
+<pre><code class="language-cpp">class IsLifecycleNodeInState
+    : public CachedServiceCondition&lt;lifecycle_msgs::srv::GetState&gt;
+{
+public:
+    IsLifecycleNodeInState(const std::string&amp; name,
+                           const BT::NodeConfiguration&amp; config,
+                           rclcpp::Node::SharedPtr node)
+        : CachedServiceCondition(name, config, node)
+    {}
+
+    static BT::PortsList providedPorts()
+    {
+        auto ports = CachedServiceCondition::providedPorts();
+        ports.emplace(BT::InputPort&lt;uint8_t&gt;("expected_state_id", 3,
+            "기대 상태 ID (1=unconfigured, 2=inactive, 3=active, 4=finalized)"));
+        return ports;
+    }
+
+protected:
+    lifecycle_msgs::srv::GetState::Request::SharedPtr
+    createRequest() override
+    {
+        return std::make_shared&lt;
+            lifecycle_msgs::srv::GetState::Request&gt;();
+    }
+
+    BT::NodeStatus evaluateResponse(
+        const lifecycle_msgs::srv::GetState::Response::SharedPtr&amp;
+            response) override
+    {
+        uint8_t expected_id;
+        getInput("expected_state_id", expected_id);
+
+        if (response-&gt;current_state.id == expected_id)
+        {
+            return BT::NodeStatus::SUCCESS;
+        }
+        return BT::NodeStatus::FAILURE;
+    }
+};
+</code></pre>
+<p>ROS2 생명주기 노드의 상태 ID는 다음과 같이 정의된다.</p>
+<table><thead><tr><th>상태 ID</th><th>상태 이름</th><th>설명</th></tr></thead><tbody>
+<tr><td>1</td><td><code>unconfigured</code></td><td>미설정 상태</td></tr>
+<tr><td>2</td><td><code>inactive</code></td><td>비활성 상태</td></tr>
+<tr><td>3</td><td><code>active</code></td><td>활성 상태</td></tr>
+<tr><td>4</td><td><code>finalized</code></td><td>종료 상태</td></tr>
+</tbody></table>
+<h2>5. XML 행동 트리에서의 활용</h2>
+<h3>5.1 경로 유효성 확인 후 경로 추종</h3>
+<pre><code class="language-xml">&lt;BehaviorTree ID="ValidatedNavigation"&gt;
+    &lt;ReactiveSequence&gt;
+        &lt;Condition ID="IsPathValidCondition"
+                   service_name="/is_path_valid"
+                   path="{current_path}"/&gt;
+        &lt;Action ID="FollowPath"
+                path="{current_path}"/&gt;
+    &lt;/ReactiveSequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>5.2 생명주기 노드 상태 확인 후 동작 수행</h3>
+<pre><code class="language-xml">&lt;BehaviorTree ID="LifecycleAwareTask"&gt;
+    &lt;Sequence&gt;
+        &lt;Condition ID="IsLifecycleNodeInState"
+                   service_name="/controller_server/get_state"
+                   expected_state_id="3"
+                   cache_duration_sec="2.0"/&gt;
+        &lt;Action ID="FollowPath"/&gt;
+    &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<p><code>cache_duration_sec</code>를 2.0초로 설정하여, 2초 동안 생명주기 상태 질의를 반복하지 않도록 한다. 생명주기 상태는 일반적으로 빈번하게 변경되지 않으므로 긴 캐시 유효 기간이 적절하다.</p>
+<h2>6. 응답 결과의 블랙보드 전달 패턴</h2>
+<p>서비스 응답의 값을 블랙보드에 기록하여 후속 노드가 참조할 수 있도록 하는 패턴이다. 이 경우 조건 노드가 출력 포트를 사용하므로 엄밀한 의미에서 부작용 금지 원칙과 충돌할 수 있다. 따라서 이 패턴은 주의하여 적용하여야 하며, 블랙보드 출력이 필수적인 경우에는 별도의 액션 노드로 분리하는 것이 바람직하다.</p>
+<p>그 대안으로, 서비스 호출을 담당하는 액션 노드와 결과를 평가하는 조건 노드를 분리하는 2단계 패턴이 있다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;!-- 액션 노드: 서비스 호출 및 결과를 블랙보드에 기록 --&gt;
+    &lt;Action ID="QueryPathValidity"
+            service_name="/is_path_valid"
+            path="{current_path}"
+            output_is_valid="{path_is_valid}"/&gt;
+
+    &lt;!-- 조건 노드: 블랙보드 값만 평가 --&gt;
+    &lt;Condition ID="IsBoolTrue"
+               value="{path_is_valid}"/&gt;
+
+    &lt;Action ID="FollowPath"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이 패턴은 각 노드의 역할을 명확히 분리하여 조건 노드의 설계 원칙을 준수하면서도, 서비스 호출 결과를 활용한 조건 평가를 구현한다.</p>
+<h2>7. 설계 시 고려 사항</h2>
+<h3>7.1 응답 해석의 명확성</h3>
+<p>서비스 응답의 해석은 서비스 정의(<code>.srv</code> 파일)에 명시된 의미론을 정확히 따라야 한다. 응답 필드의 이름이 모호한 경우, 서비스 서버의 구현 문서를 참조하여 각 필드의 정확한 의미를 확인하여야 한다.</p>
+<h3>7.2 서비스 호출 실패와 응답 내 실패의 구분</h3>
+<p>서비스 호출의 실패(서버 미가용, 타임아웃 등)와 서비스 응답 내의 부정적 결과(예: <code>is_valid = false</code>)는 의미론적으로 구분되어야 한다. 전자는 시스템 수준의 문제를 나타내며, 후자는 정상적인 조건 평가 결과이다. 두 경우 모두 조건 노드에서는 <code>FAILURE</code>를 반환하지만, 로깅이나 진단 목적에서는 이를 구분하여 기록하는 것이 유용하다.</p>
+<h3>7.3 응답의 일관성</h3>
+<p>서비스 서버가 동일한 요청에 대해 비결정적(non-deterministic) 응답을 반환할 수 있는 경우, 연속된 tick에서 조건 평가 결과가 진동(oscillation)할 수 있다. 이를 방지하기 위해 캐싱 전략을 적용하거나, 여러 번의 응답 결과를 종합하여 판정하는 다수결(majority voting) 방식을 고려할 수 있다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Macenski, S., et al. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+<li>ROS2 공식 문서. https://docs.ros.org/en/humble/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

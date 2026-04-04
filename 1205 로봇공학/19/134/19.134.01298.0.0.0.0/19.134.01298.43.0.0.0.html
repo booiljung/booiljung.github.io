@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1298.43 Delay의 지연 중 Running 반환</title>
+    <title>BIJUNG:Delay의 지연 중 Running 반환 (Delay's Running Return During Delay Period)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,90 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1298.43 Delay의 지연 중 Running 반환</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span>1298.43 Delay의 지연 중 Running 반환</span></nav>
+                    <h1>Delay의 지연 중 Running 반환 (Delay's Running Return During Delay Period)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span title="Delay의 지연 중 Running 반환 (Delay's Running Return During Delay Period)">Delay의 지연 중 Running 반환 (Del...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1298.43 Delay의 지연 중 Running 반환</h1>
+                <h1>Delay의 지연 중 Running 반환 (Delay’s Running Return During Delay Period)</h1>
+<h2>1. 개요</h2>
+<p>Delay 데코레이터는 지연 시간 동안 <code>RUNNING</code> 상태를 반환하여, 부모 노드에게 아직 행동이 진행 중임을 알린다. 이 <code>RUNNING</code> 반환은 자식 노드가 실행 중인 것이 아니라, 데코레이터 자체가 지연 대기 중임을 나타낸다. 지연 동안 자식 노드는 tick되지 않으며, 지연이 완료된 후에야 자식의 실행이 시작된다.</p>
+<h2>2. RUNNING 반환의 메커니즘</h2>
+<h3>2.1 지연 중 tick 흐름</h3>
+<pre><code>Tick 1: Delay 진입 → 타이머 시작 → 자식 tick 안 함 → RUNNING 반환
+Tick 2: 경과 시간 확인 → 미완료 → 자식 tick 안 함 → RUNNING 반환
+Tick 3: 경과 시간 확인 → 미완료 → 자식 tick 안 함 → RUNNING 반환
+...
+Tick N: 경과 시간 확인 → 완료 → 자식 tick 시작
+</code></pre>
+<h3>2.2 코드 수준</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    if (status() == BT::NodeStatus::IDLE)
+    {
+        start_time_ = std::chrono::steady_clock::now();
+        setStatus(BT::NodeStatus::RUNNING);
+    }
+
+    auto elapsed = std::chrono::steady_clock::now() - start_time_;
+    if (elapsed &lt; delay_duration_)
+    {
+        // 지연 중: 자식을 tick하지 않고 RUNNING 반환
+        return BT::NodeStatus::RUNNING;
+    }
+
+    // 지연 완료: 자식 tick
+    return child_node_-&gt;executeTick();
+}
+</code></pre>
+<h2>3. RUNNING 반환의 효과</h2>
+<h3>3.1 부모 노드에 대한 영향</h3>
+<p>부모 노드(Sequence, Fallback 등)는 Delay의 <code>RUNNING</code>을 수신하면 다음 자식으로 진행하지 않고, 다음 tick에서 Delay를 다시 tick한다. 이는 행동 트리의 표준 <code>RUNNING</code> 전파 메커니즘에 의한 것이다.</p>
+<h3>3.2 ReactiveSequence에서의 동작</h3>
+<p><code>ReactiveSequence</code> 내에서 Delay가 <code>RUNNING</code>을 반환하면, 매 tick마다 Delay 앞의 조건 노드가 재평가된다.</p>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsNotEmergencyStopped"/&gt;
+    &lt;Delay delay_msec="5000"&gt;
+        &lt;Action ID="StartTask"/&gt;
+    &lt;/Delay&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p>5초 지연 중에도 비상 정지 조건이 매 tick마다 확인된다. 비상 정지가 활성화되면 Delay가 halt되어 지연과 후속 행동이 모두 취소된다.</p>
+<h2>4. Delay의 RUNNING과 자식의 RUNNING의 구분</h2>
+<p>Delay의 tick 흐름에서 두 가지 <code>RUNNING</code> 상태가 존재한다.</p>
+<table><thead><tr><th>시점</th><th>RUNNING의 원인</th><th>자식 상태</th></tr></thead><tbody>
+<tr><td>지연 중</td><td>Delay 자체의 대기</td><td>IDLE (tick되지 않음)</td></tr>
+<tr><td>지연 후</td><td>자식의 비동기 실행</td><td>RUNNING</td></tr>
+</tbody></table>
+<p>부모 노드의 관점에서 두 RUNNING은 구분되지 않으며, 동일한 방식으로 처리된다.</p>
+<h2>5. halt 시의 RUNNING 처리</h2>
+<p>Delay가 <code>RUNNING</code> 상태에서 halt되면:</p>
+<ol>
+<li><strong>지연 중에 halt된 경우</strong>: 타이머가 리셋되고, 자식은 tick된 적이 없으므로 자식의 halt는 불필요하다.</li>
+<li><strong>자식 실행 중에 halt된 경우</strong>: 타이머가 리셋되고, 자식의 <code>halt()</code>가 호출된다.</li>
+</ol>
+<pre><code class="language-cpp">void halt() override
+{
+    // 자식이 RUNNING이면 halt
+    haltChild();
+    // 상태를 IDLE로 전환
+    DecoratorNode::halt();
+}
+</code></pre>
+<h2>6. 설계 시 고려 사항</h2>
+<h3>6.1 지연 중 자원 소모</h3>
+<p>Delay의 <code>RUNNING</code> 반환은 행동 트리의 tick 루프를 점유한다. tick 주기마다 시간 비교 연산이 수행되지만, 이 비용은 무시할 수 있을 정도로 작다.</p>
+<h3>6.2 시뮬레이션 시간과의 호환</h3>
+<p>BehaviorTree.CPP의 Delay는 <code>std::chrono::steady_clock</code>을 사용하므로 시뮬레이션 시간과 독립적이다. 시뮬레이션 환경에서 정확한 지연이 필요하면 ROS2 시간을 사용하는 사용자 정의 Delay를 구현하여야 한다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

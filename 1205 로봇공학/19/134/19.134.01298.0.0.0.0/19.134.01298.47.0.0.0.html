@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1298.47 RunOnce의 최초 단일 실행 보장</title>
+    <title>BIJUNG:RunOnce의 최초 단일 실행 보장 (RunOnce's Single Execution Guarantee)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,91 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1298.47 RunOnce의 최초 단일 실행 보장</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span>1298.47 RunOnce의 최초 단일 실행 보장</span></nav>
+                    <h1>RunOnce의 최초 단일 실행 보장 (RunOnce's Single Execution Guarantee)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span title="RunOnce의 최초 단일 실행 보장 (RunOnce's Single Execution Guarantee)">RunOnce의 최초 단일 실행 보장 (RunOn...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1298.47 RunOnce의 최초 단일 실행 보장</h1>
+                <h1>RunOnce의 최초 단일 실행 보장 (RunOnce’s Single Execution Guarantee)</h1>
+<h2>1. 개요</h2>
+<p>RunOnce 데코레이터의 최초 단일 실행 보장은 자식 노드가 정확히 한 번만 완전히 실행(SUCCESS 또는 FAILURE로 완료)되도록 보장하는 메커니즘이다. 자식이 완료된 후에는 동일한 행동 트리가 반복적으로 tick되더라도 자식을 재실행하지 않으며, 캐싱된 결과를 즉시 반환한다.</p>
+<h2>2. 단일 실행 보장의 메커니즘</h2>
+<h3>2.1 내부 플래그</h3>
+<p>RunOnce는 <code>already_completed_</code> 불리언 플래그를 유지한다.</p>
+<pre><code>초기 상태:    already_completed_ = false
+자식 완료 후: already_completed_ = true
+</code></pre>
+<h3>2.2 tick() 동작</h3>
+<pre><code class="language-cpp">BT::NodeStatus tick() override
+{
+    // 이미 완료된 경우: 캐싱된 결과 즉시 반환
+    if (already_completed_)
+    {
+        return cached_status_;
+    }
+
+    // 아직 완료되지 않은 경우: 자식 tick
+    auto status = child_node_-&gt;executeTick();
+
+    if (status != BT::NodeStatus::RUNNING)
+    {
+        already_completed_ = true;
+        cached_status_ = status;
+    }
+
+    return status;
+}
+</code></pre>
+<h2>3. 단일 실행이 보장되는 범위</h2>
+<h3>3.1 ReactiveSequence 내에서</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsActive"/&gt;
+    &lt;RunOnce&gt;
+        &lt;Action ID="Initialize"/&gt;
+    &lt;/RunOnce&gt;
+    &lt;Action ID="MainTask"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><code>ReactiveSequence</code>는 매 tick마다 모든 자식을 재평가하지만, RunOnce에 의해 <code>Initialize</code>는 최초 한 번만 실행된다.</p>
+<h3>3.2 Repeat 내에서</h3>
+<pre><code class="language-xml">&lt;Repeat num_cycles="10"&gt;
+    &lt;Sequence&gt;
+        &lt;RunOnce&gt;
+            &lt;Action ID="PrepareOnce"/&gt;
+        &lt;/RunOnce&gt;
+        &lt;Action ID="RepeatableTask"/&gt;
+    &lt;/Sequence&gt;
+&lt;/Repeat&gt;
+</code></pre>
+<p>10회 반복 중 <code>PrepareOnce</code>는 첫 번째 반복에서만 실행되고, 나머지 9회에서는 캐싱된 결과가 반환된다.</p>
+<h2>4. 비동기 자식의 단일 실행</h2>
+<p>자식이 비동기 행동인 경우, <code>RUNNING</code> 상태 동안에는 매 tick마다 자식을 계속 tick한다. 자식이 최종적으로 <code>SUCCESS</code> 또는 <code>FAILURE</code>를 반환하면 그 시점에서 <code>already_completed_</code>가 <code>true</code>로 설정되고, 이후에는 캐싱된 결과가 반환된다.</p>
+<pre><code>Tick 1: already_completed_=false → 자식 tick → RUNNING
+Tick 2: already_completed_=false → 자식 tick → RUNNING
+Tick 3: already_completed_=false → 자식 tick → SUCCESS
+         → already_completed_=true, cached_status_=SUCCESS
+Tick 4: already_completed_=true → SUCCESS (캐시)
+</code></pre>
+<h2>5. halt에 의한 리셋</h2>
+<p>RunOnce가 halt되었을 때 <code>already_completed_</code> 플래그를 리셋하는지 여부는 구현 정책에 따라 다르다.</p>
+<table><thead><tr><th>정책</th><th>halt 후 재실행 여부</th><th>적합한 상황</th></tr></thead><tbody>
+<tr><td>리셋</td><td>다음 tick에서 자식 재실행</td><td>행동 트리가 재시작될 때마다 초기화 필요</td></tr>
+<tr><td>비리셋</td><td>자식 재실행 안 함</td><td>전체 생명주기에서 단 한 번만 필요</td></tr>
+</tbody></table>
+<h2>6. 설계 시 고려 사항</h2>
+<h3>6.1 자식 FAILURE의 영구 캐싱</h3>
+<p>자식이 <code>FAILURE</code>를 반환하면 이것이 영구적으로 캐싱되어, 이후 모든 tick에서 <code>FAILURE</code>가 반환된다. 초기화 실패 시 재시도가 필요하면 RunOnce 내부에 Retry를 배치한다.</p>
+<h3>6.2 행동 트리 교체 시의 상태</h3>
+<p>행동 트리가 동적으로 교체되면 RunOnce의 내부 상태도 초기화된다. 새로운 행동 트리에서 RunOnce는 다시 자식을 실행한다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

@@ -115,6 +115,149 @@
             </header>
             <article>
                 <h1>1296.75 통신 관련 액션 노드 설계</h1>
+<h2>1. 개요</h2>
+<p>통신 관련 액션 노드는 로봇이 외부 시스템, 지상 관제 소프트웨어(GCS), 다른 로봇, 또는 클라우드 서버와 메시지를 교환하는 동작을 행동 트리 내에서 수행하는 리프 노드 군(群)이다. 통신은 로봇 시스템의 상태 보고, 명령 수신, 임무 데이터 전송, 다중 로봇 협업 등 다양한 기능의 기반이며, 행동 트리를 통해 통신의 시점과 조건을 체계적으로 제어할 수 있다.</p>
+<p>본 절에서는 통신 관련 액션 노드의 일반적인 설계 원칙, 아키텍처, 그리고 ROS2 환경에서의 통신 인터페이스 활용 방안을 기술한다.</p>
+<h2>2. 통신 액션 노드의 분류</h2>
+<h3>2.1 통신 방향에 따른 분류</h3>
+<p>통신 액션 노드는 데이터 흐름의 방향에 따라 다음과 같이 분류된다.</p>
+<table><thead><tr><th style="text-align: center">분류</th><th style="text-align: center">방향</th><th style="text-align: left">기능</th><th style="text-align: left">예시 노드</th></tr></thead><tbody>
+<tr><td style="text-align: center">발신 노드</td><td style="text-align: center">로봇 → 외부</td><td style="text-align: left">상태, 데이터, 메시지 전송</td><td style="text-align: left">SendMessage, PublishStatus</td></tr>
+<tr><td style="text-align: center">수신 노드</td><td style="text-align: center">외부 → 로봇</td><td style="text-align: left">명령, 데이터, 메시지 수신</td><td style="text-align: left">ReceiveCommand, WaitForMessage</td></tr>
+<tr><td style="text-align: center">양방향 노드</td><td style="text-align: center">로봇 ↔ 외부</td><td style="text-align: left">요청-응답 패턴</td><td style="text-align: left">QueryServer, Handshake</td></tr>
+</tbody></table>
+<p>발신 노드는 일반적으로 단일 tick 내에서 완료되므로 <code>SyncActionNode</code>로 구현할 수 있다. 수신 노드는 메시지 도착을 대기해야 하므로 <code>StatefulActionNode</code>로 구현한다. 양방향 노드는 요청 전송 후 응답을 대기하므로 역시 비동기 방식이 적합하다.</p>
+<h3>2.2 통신 대상에 따른 분류</h3>
+<table><thead><tr><th style="text-align: center">통신 대상</th><th style="text-align: center">프로토콜</th><th style="text-align: left">용도</th></tr></thead><tbody>
+<tr><td style="text-align: center">지상 관제(GCS)</td><td style="text-align: center">MAVLink, ROS2 DDS</td><td style="text-align: left">상태 보고, 명령 수신</td></tr>
+<tr><td style="text-align: center">다른 로봇</td><td style="text-align: center">ROS2 DDS, 사용자 정의</td><td style="text-align: left">협업, 정보 공유</td></tr>
+<tr><td style="text-align: center">클라우드 서버</td><td style="text-align: center">HTTP/REST, MQTT, gRPC</td><td style="text-align: left">데이터 업로드, 원격 분석</td></tr>
+<tr><td style="text-align: center">운용자</td><td style="text-align: center">ROS2 토픽, WebSocket</td><td style="text-align: left">알림, 경고 메시지</td></tr>
+</tbody></table>
+<h2>3. 설계 원칙</h2>
+<h3>3.1 통신과 행동의 분리</h3>
+<p>통신 액션 노드는 메시지의 전송과 수신만을 담당하며, 메시지 내용에 기반한 의사 결정은 후속 조건 노드 또는 제어 노드에서 수행해야 한다. 이는 단일 책임 원칙에 부합하며, 통신 노드의 재사용성을 보장한다.</p>
+<pre><code class="language-xml">&lt;!-- 올바른 설계: 통신과 판단의 분리 --&gt;
+&lt;Sequence&gt;
+    &lt;SendMessage topic="/robot/status"
+                 message="{status_msg}" /&gt;
+    &lt;WaitForMessage topic="/gcs/command"
+                    message="{command}" /&gt;
+    &lt;ProcessCommand command="{command}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>3.2 통신 실패 허용 설계</h3>
+<p>무선 통신 환경에서는 패킷 손실, 지연, 연결 해제 등이 빈번하게 발생한다. 통신 액션 노드는 이러한 실패 상황에 대해 적절한 타임아웃과 재시도 메커니즘을 갖추어야 한다. 통신 실패가 로봇의 안전 기능을 방해하지 않도록, 통신 노드의 실패가 전체 임무의 중단으로 이어지지 않는 행동 트리 구조를 설계해야 한다.</p>
+<pre><code class="language-xml">&lt;!-- 통신 실패를 허용하는 구조 --&gt;
+&lt;Fallback&gt;
+    &lt;RetryNode num_attempts="3"&gt;
+        &lt;SendMessage topic="/gcs/report"
+                     message="{report}" /&gt;
+    &lt;/RetryNode&gt;
+    &lt;LogMessage message="통신 실패: 로컬 저장" /&gt;
+&lt;/Fallback&gt;
+</code></pre>
+<h3>3.3 블랙보드 포트 설계</h3>
+<p>통신 액션 노드의 포트 설계에서는 다음 사항을 고려한다.</p>
+<p><strong>발신 노드 입력 포트:</strong></p>
+<ul>
+<li>대상 토픽 또는 서비스 이름</li>
+<li>전송할 메시지 데이터</li>
+<li>QoS 설정(신뢰도, 내구성 등)</li>
+</ul>
+<p><strong>수신 노드 출력 포트:</strong></p>
+<ul>
+<li>수신된 메시지 데이터</li>
+<li>발신자 정보</li>
+<li>수신 시각</li>
+</ul>
+<p>메시지 내용은 ROS2 메시지 타입 또는 직렬화된 문자열(JSON, Protocol Buffers 등)로 블랙보드에 저장할 수 있다. 복잡한 메시지 구조는 ROS2 메시지 타입의 공유 포인터로 저장하는 것이 타입 안전성 측면에서 바람직하다.</p>
+<h2>4. ROS2 통신 인터페이스 활용</h2>
+<h3>4.1 토픽 기반 통신</h3>
+<p>ROS2 토픽은 발행-구독(publish-subscribe) 패턴의 비동기 통신을 제공한다. 상태 보고나 주기적 데이터 전송과 같은 단방향 통신에 적합하다.</p>
+<pre><code class="language-cpp">// 토픽 발행 기반 통신
+publisher_ = node_-&gt;create_publisher&lt;std_msgs::msg::String&gt;(
+    topic_name,
+    rclcpp::QoS(10).reliable());
+
+auto msg = std_msgs::msg::String();
+msg.data = message_content;
+publisher_-&gt;publish(msg);
+</code></pre>
+<h3>4.2 서비스 기반 통신</h3>
+<p>요청-응답 패턴이 필요한 통신에는 ROS2 서비스를 사용한다. 서비스는 동기적 응답을 보장하므로, 명령 확인이나 데이터 질의에 적합하다.</p>
+<h3>4.3 QoS 설정</h3>
+<p>통신의 신뢰성 요구 사항에 따라 적절한 QoS(Quality of Service) 프로파일을 선택한다.</p>
+<table><thead><tr><th style="text-align: center">QoS 정책</th><th style="text-align: center">상태 보고</th><th style="text-align: center">명령 전달</th><th style="text-align: center">긴급 알림</th></tr></thead><tbody>
+<tr><td style="text-align: center">신뢰도</td><td style="text-align: center">BEST_EFFORT</td><td style="text-align: center">RELIABLE</td><td style="text-align: center">RELIABLE</td></tr>
+<tr><td style="text-align: center">내구성</td><td style="text-align: center">VOLATILE</td><td style="text-align: center">TRANSIENT_LOCAL</td><td style="text-align: center">TRANSIENT_LOCAL</td></tr>
+<tr><td style="text-align: center">이력 깊이</td><td style="text-align: center">1</td><td style="text-align: center">10</td><td style="text-align: center">1</td></tr>
+</tbody></table>
+<p>상태 보고는 최신 데이터만 중요하므로 <code>BEST_EFFORT</code>와 작은 이력 깊이로 충분하지만, 명령 전달은 메시지 손실이 허용되지 않으므로 <code>RELIABLE</code>을 사용한다.</p>
+<h2>5. DDS 기반 다중 로봇 통신</h2>
+<h3>5.1 도메인 ID를 통한 네트워크 분리</h3>
+<p>ROS2의 기반 미들웨어인 DDS(Data Distribution Service)는 도메인 ID를 통해 통신 네트워크를 논리적으로 분리한다. 다중 로봇 환경에서는 공유 도메인을 통해 로봇 간 통신을 수행하고, 각 로봇의 내부 통신은 별도 도메인으로 분리할 수 있다.</p>
+<h3>5.2 네임스페이스를 통한 토픽 분리</h3>
+<p>동일 도메인 내에서 로봇별 토픽을 분리하기 위해 ROS2 네임스페이스를 활용한다.</p>
+<pre><code>/robot_01/status    # 로봇 1의 상태 토픽
+/robot_02/status    # 로봇 2의 상태 토픽
+/fleet/broadcast    # 전체 로봇 공유 토픽
+</code></pre>
+<p>통신 액션 노드의 토픽 이름을 입력 포트로 파라미터화하면, 네임스페이스에 따라 통신 대상을 동적으로 변경할 수 있다.</p>
+<h2>6. 외부 프로토콜 브리지</h2>
+<h3>6.1 MAVLink 통신</h3>
+<p>드론 시스템에서 지상 관제와의 통신은 MAVLink 프로토콜을 통해 수행된다. MAVROS 패키지는 MAVLink와 ROS2 간의 브리지를 제공하므로, 통신 액션 노드는 MAVROS 토픽을 통해 MAVLink 메시지를 간접적으로 송수신할 수 있다.</p>
+<h3>6.2 MQTT 브리지</h3>
+<p>사물 인터넷(IoT) 환경이나 클라우드 서버와의 통신에는 MQTT 프로토콜이 활용된다. ROS2-MQTT 브리지를 통해 ROS2 토픽과 MQTT 토픽 간의 양방향 메시지 전달을 구성할 수 있으며, 통신 액션 노드는 ROS2 토픽만을 사용하여 외부 시스템과 통신한다.</p>
+<h2>7. 통신 보안</h2>
+<h3>7.1 데이터 암호화</h3>
+<p>DDS Security 사양은 인증(authentication), 접근 제어(access control), 암호화(encryption)를 지원한다. ROS2에서는 SROS2(Secure ROS 2) 도구를 통해 DDS Security를 활성화할 수 있으며, 이를 통해 통신 데이터의 기밀성과 무결성을 보장한다.</p>
+<h3>7.2 인증과 권한 관리</h3>
+<p>다중 로봇 환경에서는 각 로봇의 신원을 확인하고, 권한에 따라 토픽 접근을 제한해야 한다. SROS2는 X.509 인증서 기반의 인증과 XML 기반의 접근 제어 정책을 제공한다.</p>
+<h2>8. XML 행동 트리에서의 활용 패턴</h2>
+<h3>8.1 상태 보고 후 임무 수행</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;PublishStatus topic="/robot/status"
+                   status="MISSION_START" /&gt;
+    &lt;FlyToWaypoint latitude="{wp_lat}"
+                   longitude="{wp_lon}"
+                   altitude="30.0" /&gt;
+    &lt;PublishStatus topic="/robot/status"
+                   status="MISSION_COMPLETE" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>8.2 명령 대기 후 실행</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;WaitForMessage topic="/gcs/command"
+                    timeout="60.0"
+                    message="{command}" /&gt;
+    &lt;ExecuteCommand command="{command}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>8.3 다중 로봇 동기화</h3>
+<p>복수의 로봇이 특정 지점에서 합류한 후 동시에 다음 단계를 진행하는 구조이다.</p>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;FlyToWaypoint latitude="{rendezvous_lat}"
+                   longitude="{rendezvous_lon}" /&gt;
+    &lt;SendMessage topic="/fleet/ready"
+                 message="{robot_id}" /&gt;
+    &lt;WaitForMessage topic="/fleet/go"
+                    timeout="120.0" /&gt;
+    &lt;FlyToWaypoint latitude="{target_lat}"
+                   longitude="{target_lon}" /&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>이 구조에서 각 로봇은 합류 지점에 도착하면 준비 완료 메시지를 발신하고, 조율 서버(coordinator)가 모든 로봇의 준비 완료를 확인한 후 전진 명령을 발행한다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Colledanchise, M. and Ögren, P., “Behavior Trees in Robotics and AI: An Introduction,” CRC Press, 2018.</li>
+<li>Macenski, S. et al., “Robot Operating System 2: Design, Architecture, and Uses in the Wild,” Science Robotics, vol. 7, no. 66, 2022.</li>
+<li>Faconti, D. and Contributors, “BehaviorTree.CPP: A C++ library to build Behavior Trees,” GitHub Repository, https://github.com/BehaviorTree/BehaviorTree.CPP.</li>
+<li>Object Management Group, “Data Distribution Service (DDS) Specification,” Version 1.4, 2015.</li>
+<li>Koubaa, A. et al., “Robot Operating System 2 (ROS 2): The Ultimate Guide,” Springer, 2023.</li>
+</ul>
+<hr />
+<p>버전: 2026-04-04</p>
 
             </article>
             <footer>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BIJUNG:1298.46 RunOnce 데코레이터의 동작</title>
+    <title>BIJUNG:RunOnce 데코레이터의 동작 (Operation of the RunOnce Decorator)</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -109,12 +109,131 @@
         <main class="content">
             <header>
                 <div class="header-content">
-                    <h1>1298.46 RunOnce 데코레이터의 동작</h1>
-                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span>1298.46 RunOnce 데코레이터의 동작</span></nav>
+                    <h1>RunOnce 데코레이터의 동작 (Operation of the RunOnce Decorator)</h1>
+                    <nav class="breadcrumbs"><a href="../../../../index.html">Home</a> <span class="separator">/</span> <a href="../../../index.html">로봇 공학 (Robotics Engineering)</a> <span class="separator">/</span> <a href="../../index.html" title="Volume 19. ROS2 로봇 행동 제어와 임무 계획 (Robot Behavior Control and Mission Planning with ROS2)">Volume 19. ROS2 로봇 행동 제어와 임...</a> <span class="separator">/</span> <a href="../index.html" title="Part 134. 유연한 의사 결정: 행동 트리 (Flexible Decision-Making: Behavior Trees)">Part 134. 유연한 의사 결정: 행동 트리 ...</a> <span class="separator">/</span> <a href="index.html" title="Chapter 1298. 데코레이터 노드 활용 (Decorator Node Usage)">Chapter 1298. 데코레이터 노드 활용 (...</a> <span class="separator">/</span> <span title="RunOnce 데코레이터의 동작 (Operation of the RunOnce Decorator)">RunOnce 데코레이터의 동작 (Operatio...</span></nav>
                 </div>
             </header>
             <article>
-                <h1>1298.46 RunOnce 데코레이터의 동작</h1>
+                <h1>RunOnce 데코레이터의 동작 (Operation of the RunOnce Decorator)</h1>
+<h2>1. 개요</h2>
+<p>RunOnce 데코레이터는 자식 노드를 최초 한 번만 실행하고, 이후의 tick에서는 자식을 다시 실행하지 않고 이전 결과를 캐싱하여 반환하는 실행 제어 데코레이터이다. 시스템 초기화, 일회성 설정, 센서 캘리브레이션 등 한 번만 수행하면 되는 행동에 적합하다.</p>
+<h2>2. 동작 규칙</h2>
+<h3>2.1 상태 전이</h3>
+<table><thead><tr><th>상태</th><th>동작</th><th>RunOnce 반환</th></tr></thead><tbody>
+<tr><td>최초 tick (자식 미실행)</td><td>자식을 tick</td><td>자식의 반환 상태</td></tr>
+<tr><td>이후 tick (자식 실행 완료)</td><td>자식을 tick하지 않음</td><td>캐싱된 이전 결과</td></tr>
+<tr><td>자식이 RUNNING 중</td><td>자식을 계속 tick</td><td>RUNNING</td></tr>
+</tbody></table>
+<h3>2.2 수학적 표현</h3>
+<p><span class="math math-display">f_{\text{RunOnce}}(t) = \begin{cases} \text{child.tick()} &amp; \text{if } t = t_{\text{first}} \text{ or } s_{\text{prev}} = \text{RUNNING} \\ s_{\text{cached}} &amp; \text{otherwise} \end{cases}</span></p>
+<h2>구현</h2>
+<pre><code class="language-cpp">class RunOnceNode : public BT::DecoratorNode
+{
+    BT::NodeStatus tick() override
+    {
+        if (already_completed_)
+        {
+            return cached_status_;
+        }
+
+        setStatus(BT::NodeStatus::RUNNING);
+        auto child_status = child_node_-&gt;executeTick();
+
+        if (child_status != BT::NodeStatus::RUNNING)
+        {
+            already_completed_ = true;
+            cached_status_ = child_status;
+        }
+
+        return child_status;
+    }
+
+    void halt() override
+    {
+        // RunOnce의 halt 정책에 따라 리셋 여부 결정
+        // 기본: 리셋하지 않음 (한 번 실행된 것은 유지)
+        DecoratorNode::halt();
+    }
+
+    bool already_completed_ = false;
+    BT::NodeStatus cached_status_ = BT::NodeStatus::IDLE;
+};
+</code></pre>
+<h2>XML에서의 사용</h2>
+<pre><code class="language-xml">&lt;RunOnce&gt;
+    &lt;Action ID="InitializeHardware"/&gt;
+&lt;/RunOnce&gt;
+</code></pre>
+<h2>시간적 동작 흐름</h2>
+<h3>동기 자식의 경우</h3>
+<pre><code>Tick 1: 최초 tick → 자식 tick → SUCCESS → RunOnce=SUCCESS (캐싱)
+Tick 2: 캐시 사용 → RunOnce=SUCCESS (자식 미실행)
+Tick 3: 캐시 사용 → RunOnce=SUCCESS (자식 미실행)
+...
+</code></pre>
+<h3>비동기 자식의 경우</h3>
+<pre><code>Tick 1: 자식 tick → RUNNING → RunOnce=RUNNING
+Tick 2: 자식 tick → RUNNING → RunOnce=RUNNING
+Tick 3: 자식 tick → SUCCESS → RunOnce=SUCCESS (캐싱)
+Tick 4: 캐시 사용 → RunOnce=SUCCESS (자식 미실행)
+...
+</code></pre>
+<p>자식이 <code>RUNNING</code> 동안에는 계속 tick한다. 자식이 최종 결과(<code>SUCCESS</code> 또는 <code>FAILURE</code>)를 반환하면 캐싱하고, 이후에는 캐싱된 결과를 반환한다.</p>
+<h2>활용 사례</h2>
+<h3>시스템 초기화</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;RunOnce&gt;
+        &lt;Action ID="InitializeSensors"/&gt;
+    &lt;/RunOnce&gt;
+    &lt;RunOnce&gt;
+        &lt;Action ID="LoadCalibrationData"/&gt;
+    &lt;/RunOnce&gt;
+    &lt;SubTree ID="MainMission"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<p>센서 초기화와 캘리브레이션 데이터 로딩을 최초 한 번만 수행하고, 이후에는 바로 메인 임무를 수행한다.</p>
+<h3>일회성 알림</h3>
+<pre><code class="language-xml">&lt;Sequence&gt;
+    &lt;RunOnce&gt;
+        &lt;Action ID="AnnounceStartup"/&gt;
+    &lt;/RunOnce&gt;
+    &lt;Action ID="StartOperation"/&gt;
+&lt;/Sequence&gt;
+</code></pre>
+<h3>ReactiveSequence 내에서의 RunOnce</h3>
+<pre><code class="language-xml">&lt;ReactiveSequence&gt;
+    &lt;Condition ID="IsSystemActive"/&gt;
+    &lt;RunOnce&gt;
+        &lt;Action ID="PerformInitialSetup"/&gt;
+    &lt;/RunOnce&gt;
+    &lt;Action ID="MainTask"/&gt;
+&lt;/ReactiveSequence&gt;
+</code></pre>
+<p><code>ReactiveSequence</code>에서 매 tick마다 조건이 재평가되더라도, RunOnce에 의해 초기 설정은 한 번만 수행된다.</p>
+<h2>설계 시 고려 사항</h2>
+<h3>halt 시의 리셋 정책</h3>
+<p>RunOnce가 halt될 때, 캐싱된 결과를 리셋할지 유지할지는 설계 정책에 따라 다르다. BehaviorTree.CPP에서는 halt 시 리셋하는 것이 기본이나, 구현에 따라 다를 수 있다.</p>
+<table><thead><tr><th>정책</th><th>halt 시 동작</th><th>재실행 여부</th></tr></thead><tbody>
+<tr><td>리셋</td><td>캐시 초기화</td><td>다음 tick에서 자식 재실행</td></tr>
+<tr><td>유지</td><td>캐시 유지</td><td>자식 재실행하지 않음</td></tr>
+</tbody></table>
+<h3>자식 FAILURE의 캐싱</h3>
+<p>자식이 <code>FAILURE</code>를 반환한 경우에도 캐싱되므로, 이후 tick에서 항상 <code>FAILURE</code>가 반환된다. 초기화가 실패한 경우 재시도가 필요하다면 <code>Retry</code>를 내부에 배치한다.</p>
+<pre><code class="language-xml">&lt;RunOnce&gt;
+    &lt;RetryNode num_attempts="3"&gt;
+        &lt;Action ID="InitializeSensor"/&gt;
+    &lt;/RetryNode&gt;
+&lt;/RunOnce&gt;
+</code></pre>
+<h2>참고 문헌</h2>
+<ul>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>BehaviorTree.CPP 공식 문서. https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<table><thead><tr><th>버전</th><th>날짜</th><th>변경 사항</th></tr></thead><tbody>
+<tr><td>v0.1</td><td>2026-04-04</td><td>초안 작성</td></tr>
+</tbody></table>
 
             </article>
             <footer>

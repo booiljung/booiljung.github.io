@@ -115,6 +115,217 @@
             </header>
             <article>
                 <h1>1296.58 Spin 액션 노드 구현</h1>
+<h2>1. Spin 액션 노드의 정의와 역할</h2>
+<p>Spin은 Nav2 프레임워크에서 제공하는 복구 행동(recovery behavior) 액션 노드로, 로봇을 제자리에서 지정된 각도만큼 회전시키는 임무를 실행한다. 이 노드는 <code>nav2_msgs::action::Spin</code> ROS2 액션 인터페이스의 클라이언트로 동작하며, <code>behavior_server</code>에 제자리 회전 요청을 전송한다.</p>
+<p>Spin 행동의 주된 목적은 내비게이션 실패 시 로봇 주변의 장애물 상황을 변경하여 경로 계획을 재시도할 수 있는 조건을 조성하는 것이다. 제자리 회전은 다음과 같은 효과를 제공한다.</p>
+<ul>
+<li>로봇 주변 360도 범위의 센서 데이터를 갱신하여 코스트맵의 정확도를 향상시킨다.</li>
+<li>좁은 공간에서 로봇의 방향을 변경하여 새로운 탈출 경로의 가능성을 생성한다.</li>
+<li>동적 장애물이 로봇의 전방에서 이동할 시간을 확보한다.</li>
+</ul>
+<h2>2. 액션 인터페이스 정의</h2>
+<pre><code># nav2_msgs/action/Spin
+
+# Goal
+float32 target_yaw
+float32 time_allowance
+---
+# Result
+float32 total_elapsed_time
+---
+# Feedback
+float32 angular_distance_traveled
+</code></pre>
+<p><strong>골(Goal) 필드</strong>:</p>
+<ul>
+<li><code>target_yaw</code>: 목표 회전 각도 [rad]. 양수 값은 반시계 방향, 음수 값은 시계 방향 회전을 나타낸다.</li>
+<li><code>time_allowance</code>: 회전 동작에 허용되는 최대 시간 [s]. 이 시간을 초과하면 서버가 동작을 중단한다.</li>
+</ul>
+<p><strong>결과(Result) 필드</strong>:</p>
+<ul>
+<li><code>total_elapsed_time</code>: 회전 동작에 소요된 총 시간 [s].</li>
+</ul>
+<p><strong>피드백(Feedback) 필드</strong>:</p>
+<ul>
+<li><code>angular_distance_traveled</code>: 현재까지 회전한 각도 [rad].</li>
+</ul>
+<h2>3. 클래스 구조</h2>
+<pre><code class="language-cpp">#include "nav2_behavior_tree/bt_action_node.hpp"
+#include "nav2_msgs/action/spin.hpp"
+
+namespace nav2_behavior_tree
+{
+
+class SpinAction
+  : public BtActionNode&lt;nav2_msgs::action::Spin&gt;
+{
+public:
+  SpinAction(
+    const std::string &amp; xml_tag_name,
+    const std::string &amp; action_name,
+    const BT::NodeConfiguration &amp; conf);
+
+  void on_tick() override;
+
+  void on_wait_for_result(
+    std::shared_ptr&lt;const nav2_msgs::action::Spin::Feedback&gt;
+      feedback) override;
+
+  BT::NodeStatus on_success() override;
+  BT::NodeStatus on_aborted() override;
+  BT::NodeStatus on_cancelled() override;
+
+  static BT::PortsList providedPorts();
+};
+
+}  // namespace nav2_behavior_tree
+</code></pre>
+<h2>4. 포트 정의</h2>
+<pre><code class="language-cpp">BT::PortsList SpinAction::providedPorts()
+{
+  return providedBasicPorts({
+    BT::InputPort&lt;double&gt;(
+      "spin_dist", 1.57,
+      "Target rotation angle [rad]"),
+    BT::InputPort&lt;double&gt;(
+      "time_allowance", 10.0,
+      "Maximum time allowed for rotation [s]"),
+    BT::OutputPort&lt;int&gt;(
+      "error_code", "Error code on failure")
+  });
+}
+</code></pre>
+<p><code>spin_dist</code> 포트의 기본값은 1.57 rad(약 90도)로 설정되어 있다. 360도 회전이 필요한 경우 <span class="math math-inline">2\pi \approx 6.28</span> rad을 지정한다. 양수 값은 반시계 방향, 음수 값은 시계 방향 회전에 해당한다.</p>
+<h2>5. on_tick() 구현</h2>
+<pre><code class="language-cpp">void SpinAction::on_tick()
+{
+  double spin_dist;
+  getInput("spin_dist", spin_dist);
+  goal_.target_yaw = static_cast&lt;float&gt;(spin_dist);
+
+  double time_allowance;
+  getInput("time_allowance", time_allowance);
+  goal_.time_allowance = rclcpp::Duration::from_seconds(time_allowance);
+}
+</code></pre>
+<h2>6. on_wait_for_result() 구현</h2>
+<pre><code class="language-cpp">void SpinAction::on_wait_for_result(
+  std::shared_ptr&lt;const nav2_msgs::action::Spin::Feedback&gt; feedback)
+{
+  RCLCPP_DEBUG(
+    node_-&gt;get_logger(),
+    "Spin: angular distance traveled = %.2f rad",
+    feedback-&gt;angular_distance_traveled);
+}
+</code></pre>
+<p>피드백의 <code>angular_distance_traveled</code>는 현재까지 회전한 누적 각도를 나타낸다. 이 값은 디버깅 목적으로 사용되며, 필요한 경우 블랙보드에 기록하여 조건 노드에서 참조할 수도 있다.</p>
+<h2>7. 결과 처리 콜백 구현</h2>
+<pre><code class="language-cpp">BT::NodeStatus SpinAction::on_success()
+{
+  return BT::NodeStatus::SUCCESS;
+}
+
+BT::NodeStatus SpinAction::on_aborted()
+{
+  setOutput("error_code",
+    static_cast&lt;int&gt;(result_.result-&gt;error_code));
+  return BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus SpinAction::on_cancelled()
+{
+  return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<p>Spin이 실패하는 주요 원인은 다음과 같다.</p>
+<ul>
+<li>회전 중 장애물과의 충돌이 감지된 경우</li>
+<li>허용 시간 내에 목표 각도에 도달하지 못한 경우</li>
+<li>로봇의 기구학적 제약으로 인해 제자리 회전이 불가능한 경우 (비홀로노믹 로봇)</li>
+</ul>
+<h2>8. XML 행동 트리에서의 사용</h2>
+<h3>8.1 단독 사용</h3>
+<pre><code class="language-xml">&lt;Spin spin_dist="1.57"
+      time_allowance="10.0"
+      server_name="spin"
+      server_timeout="5"/&gt;
+</code></pre>
+<h3>8.2 복구 행동 시퀀스 내 사용</h3>
+<p>Spin은 일반적으로 다른 복구 행동과 함께 순차적으로 구성되어 사용된다.</p>
+<pre><code class="language-xml">&lt;SequenceStar&gt;
+  &lt;ClearEntireCostmap
+    service_name="/global_costmap/clear_entirely_global_costmap"/&gt;
+  &lt;ClearEntireCostmap
+    service_name="/local_costmap/clear_entirely_local_costmap"/&gt;
+  &lt;Spin spin_dist="1.57"/&gt;
+  &lt;Wait wait_duration="5"/&gt;
+&lt;/SequenceStar&gt;
+</code></pre>
+<p>이 구성에서 <code>SequenceStar</code>는 이전 실행에서 성공한 자식 노드를 건너뛰고 실패한 자식부터 재시도하는 제어 노드이다. 코스트맵 초기화 → 제자리 회전 → 대기의 순서로 복구를 시도한다.</p>
+<h3>8.3 RecoveryNode 내 사용</h3>
+<pre><code class="language-xml">&lt;RecoveryNode number_of_retries="3"&gt;
+  &lt;PipelineSequence&gt;
+    &lt;ComputePathToPose goal="{target}" path="{path}"/&gt;
+    &lt;FollowPath path="{path}"/&gt;
+  &lt;/PipelineSequence&gt;
+  &lt;SequenceStar&gt;
+    &lt;ClearEntireCostmap
+      service_name="/global_costmap/clear_entirely_global_costmap"/&gt;
+    &lt;Spin spin_dist="1.57"/&gt;
+  &lt;/SequenceStar&gt;
+&lt;/RecoveryNode&gt;
+</code></pre>
+<p><code>RecoveryNode</code>는 첫 번째 자식(정상 행동)이 실패하면 두 번째 자식(복구 행동)을 실행하고, 복구 후 정상 행동을 재시도한다. <code>number_of_retries</code>는 최대 복구 시도 횟수를 지정한다.</p>
+<h2>9. 회전 방향과 각도 설정</h2>
+<h3>9.1 반시계 방향 회전</h3>
+<pre><code class="language-xml">&lt;Spin spin_dist="1.57"/&gt;  &lt;!-- 90도 반시계 방향 --&gt;
+&lt;Spin spin_dist="3.14"/&gt;  &lt;!-- 180도 반시계 방향 --&gt;
+&lt;Spin spin_dist="6.28"/&gt;  &lt;!-- 360도 반시계 방향 --&gt;
+</code></pre>
+<h3>9.2 시계 방향 회전</h3>
+<pre><code class="language-xml">&lt;Spin spin_dist="-1.57"/&gt;  &lt;!-- 90도 시계 방향 --&gt;
+&lt;Spin spin_dist="-3.14"/&gt;  &lt;!-- 180도 시계 방향 --&gt;
+</code></pre>
+<h2>10. 서버 측 동작 원리</h2>
+<p><code>behavior_server</code>의 Spin 플러그인은 다음의 과정을 통해 제자리 회전을 실행한다.</p>
+<ol>
+<li>골 수신 시 로봇의 현재 방향(yaw)을 기록한다.</li>
+<li>목표 각속도(angular velocity)를 계산하여 <code>cmd_vel</code> 토픽으로 발행한다.</li>
+<li>매 제어 주기마다 로봇의 현재 방향을 측정하여 누적 회전 각도를 계산한다.</li>
+<li>누적 회전 각도가 목표 각도에 도달하면 정지 명령을 발행하고 <code>SUCCESS</code>를 반환한다.</li>
+<li>장애물과의 충돌이 감지되면 정지 명령을 발행하고 <code>ABORTED</code>를 반환한다.</li>
+</ol>
+<p>서버 측의 각속도는 <code>max_rotational_vel</code> 파라미터에 의해 제한된다. 기본값은 일반적으로 1.0 rad/s로 설정되어 있으며, 로봇의 기구학적 특성에 맞추어 조정하여야 한다.</p>
+<h2>11. 충돌 검사</h2>
+<p>Spin 동작 중 서버는 로봇의 회전 궤적 상에 장애물이 존재하는지 지속적으로 검사한다. 코스트맵의 장애물 데이터와 로봇의 풋프린트(footprint)를 사용하여 충돌 가능성을 평가한다. 충돌이 예상되는 경우 회전을 즉시 중단하고 <code>ABORTED</code> 결과를 반환한다.</p>
+<p>이 충돌 검사는 로봇의 안전을 보장하지만, 코스트맵에 오래된 장애물 데이터가 남아 있는 경우 불필요한 회전 중단을 유발할 수 있다. 따라서 Spin 실행 전에 코스트맵 초기화를 선행하는 것이 효과적이다.</p>
+<h2>12. 비홀로노믹 로봇에서의 제약</h2>
+<p>자동차형(Ackermann steering) 로봇과 같은 비홀로노믹(nonholonomic) 로봇은 제자리 회전이 기구학적으로 불가능하다. 이러한 로봇에서 Spin 행동을 실행���면 서버가 유효한 속도 명령을 생성하지 못하여 실패한다. 비홀로노믹 로봇을 위한 대체 복구 전략으로는 후진(BackUp), 3점 회전(three-point turn), 또는 원호 이동(arc motion) 등이 사용된다.</p>
+<h2>13. 플러그인 등록</h2>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+BT_REGISTER_NODES(factory)
+{
+  BT::NodeBuilder builder =
+    [](const%20std::string%20&amp;%20name,%20const%20BT::NodeConfiguration%20&amp;%20config)
+    {
+      return std::make_unique&lt;nav2_behavior_tree::SpinAction&gt;(
+        name, "spin", config);
+    };
+  factory.registerBuilder&lt;nav2_behavior_tree::SpinAction&gt;(
+    "Spin", builder);
+}
+</code></pre>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Nav2 공식 문서 — Behavior Server: https://docs.nav2.org/configuration/packages/configuring-behavior-server.html</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: Nav2 Humble Hawksbill (ROS2 Humble) 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>

@@ -115,6 +115,471 @@
             </header>
             <article>
                 <h1>1296.52 ROS2 파라미터 설정 액션 노드 구현</h1>
+<h2>1. 파라미터 설정 액션 노드의 개념</h2>
+<p>ROS2 파라미터 설정 액션 노드는 행동 트리의 리프 노드로서, 행동 트리 실행 중 다른 ROS2 노드의 파라미터를 동적으로 변경하는 기능을 수행한다. ROS2의 파라미터 시스템은 노드의 구성 값을 런타임에 조회하고 수정할 수 있는 메커니즘을 제공하며, 이를 행동 트리에서 활용하면 로봇의 행동 전략에 따라 시스템 구성을 적응적으로 변경할 수 있다.</p>
+<p>예를 들어, 좁은 통로를 통과하기 전에 로봇의 최대 속도를 감소시키거나, 장애물 밀집 구역에서 코스트맵의 팽창 반경(inflation radius)을 증가시키는 등의 동적 구성 변경이 행동 트리의 파라미터 설정 노드를 통해 구현된다.</p>
+<h2>2. ROS2 파라미터 시스템의 기초</h2>
+<p>ROS2 파라미터 시스템은 각 노드가 키-값(key-value) 쌍의 파라미터를 보유하도록 설계되어 있다. 파라미터의 타입은 다음과 같이 분류된다.</p>
+<table><thead><tr><th>파라미터 타입</th><th>ROS2 타입 상수</th><th>C++ 타입</th></tr></thead><tbody>
+<tr><td>부울</td><td><code>PARAMETER_BOOL</code></td><td><code>bool</code></td></tr>
+<tr><td>정수</td><td><code>PARAMETER_INTEGER</code></td><td><code>int64_t</code></td></tr>
+<tr><td>부동소수점</td><td><code>PARAMETER_DOUBLE</code></td><td><code>double</code></td></tr>
+<tr><td>문자열</td><td><code>PARAMETER_STRING</code></td><td><code>std::string</code></td></tr>
+<tr><td>바이트 배열</td><td><code>PARAMETER_BYTE_ARRAY</code></td><td><code>std::vector&lt;uint8_t&gt;</code></td></tr>
+<tr><td>부울 배열</td><td><code>PARAMETER_BOOL_ARRAY</code></td><td><code>std::vector&lt;bool&gt;</code></td></tr>
+<tr><td>정수 배열</td><td><code>PARAMETER_INTEGER_ARRAY</code></td><td><code>std::vector&lt;int64_t&gt;</code></td></tr>
+<tr><td>부동소수점 배열</td><td><code>PARAMETER_DOUBLE_ARRAY</code></td><td><code>std::vector&lt;double&gt;</code></td></tr>
+<tr><td>문자열 배열</td><td><code>PARAMETER_STRING_ARRAY</code></td><td><code>std::vector&lt;std::string&gt;</code></td></tr>
+</tbody></table>
+<p>외부 노드의 파라미터를 조회하거나 변경하기 위해서는 <code>rclcpp::AsyncParametersClient</code> 또는 <code>rclcpp::SyncParametersClient</code>를 사용한다. 파라미터 서비스는 각 ROS2 노드가 자동으로 제공하는 내장 서비스로, 별도의 서비스 서버 구현이 필요하지 않다.</p>
+<h2>3. 비동기 파라미터 클라이언트 기반 구현</h2>
+<p>행동 트리의 Tick 루프를 블로킹하지 않기 위해 <code>rclcpp::AsyncParametersClient</code>를 사용한 비동기 구현을 채택한다. 이 구현은 <code>BT::StatefulActionNode</code>를 기반으로 하며, 파라미터 설정 요청을 비동기적으로 전송하고 결과를 후속 Tick에서 확인한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/action_node.h"
+#include "rclcpp/rclcpp.hpp"
+#include &lt;future&gt;
+
+class SetParameter : public BT::StatefulActionNode
+{
+public:
+  SetParameter(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::StatefulActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;("node_name", "target ROS2 node name"),
+      BT::InputPort&lt;std::string&gt;("param_name", "parameter name"),
+      BT::InputPort&lt;std::string&gt;("param_value", "parameter value as string"),
+      BT::InputPort&lt;std::string&gt;("param_type", "double",
+        "parameter type: bool, int, double, string")
+    };
+  }
+
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  std::shared_ptr&lt;rclcpp::AsyncParametersClient&gt; param_client_;
+  std::shared_future&lt;std::vector&lt;rcl_interfaces::msg::SetParametersResult&gt;&gt; future_;
+  rclcpp::Time start_time_;
+};
+</code></pre>
+<h2>4. onStart() 콜백 구현</h2>
+<p><code>onStart()</code>는 파라미터 클라이언트를 생성하고, 파라미터 설정 요청을 비동기적으로 전송한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus SetParameter::onStart()
+{
+  std::string node_name, param_name, param_value, param_type;
+  getInput("node_name", node_name);
+  getInput("param_name", param_name);
+  getInput("param_value", param_value);
+  getInput("param_type", param_type);
+
+  // 파라미터 클라이언트 생성
+  param_client_ = std::make_shared&lt;rclcpp::AsyncParametersClient&gt;(
+    node_, node_name);
+
+  // 서비스 가용성 확인
+  if (!param_client_-&gt;wait_for_service(std::chrono::seconds(1))) {
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+      "Parameter service not available for node: %s", node_name.c_str());
+    return BT::NodeStatus::FAILURE;
+  }
+
+  // 파라미터 값 생성
+  rclcpp::Parameter parameter;
+  if (param_type == "bool") {
+    parameter = rclcpp::Parameter(param_name, param_value == "true");
+  } else if (param_type == "int") {
+    parameter = rclcpp::Parameter(param_name, std::stol(param_value));
+  } else if (param_type == "double") {
+    parameter = rclcpp::Parameter(param_name, std::stod(param_value));
+  } else if (param_type == "string") {
+    parameter = rclcpp::Parameter(param_name, param_value);
+  } else {
+    RCLCPP_ERROR(node_-&gt;get_logger(),
+      "Unsupported parameter type: %s", param_type.c_str());
+    return BT::NodeStatus::FAILURE;
+  }
+
+  // 비동기 파라미터 설정 요청
+  future_ = param_client_-&gt;set_parameters({parameter});
+  start_time_ = node_-&gt;now();
+
+  return BT::NodeStatus::RUNNING;
+}
+</code></pre>
+<h2>5. onRunning() 콜백 구현</h2>
+<p><code>onRunning()</code>은 비동기 요청의 완료 여부를 확인하고 결과를 처리한다.</p>
+<pre><code class="language-cpp">BT::NodeStatus SetParameter::onRunning()
+{
+  // 타임아웃 확인
+  auto elapsed = (node_-&gt;now() - start_time_).seconds();
+  if (elapsed &gt; 5.0) {
+    RCLCPP_ERROR(node_-&gt;get_logger(), "Set parameter request timed out");
+    return BT::NodeStatus::FAILURE;
+  }
+
+  // 결과 수신 확인
+  if (future_.wait_for(std::chrono::milliseconds(0)) !=
+    std::future_status::ready)
+  {
+    return BT::NodeStatus::RUNNING;
+  }
+
+  // 결과 처리
+  auto results = future_.get();
+  for (const auto &amp; result : results) {
+    if (!result.successful) {
+      RCLCPP_ERROR(node_-&gt;get_logger(),
+        "Failed to set parameter: %s", result.reason.c_str());
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+
+  return BT::NodeStatus::SUCCESS;
+}
+</code></pre>
+<h2>6. onHalted() 콜백 구현</h2>
+<p><code>onHalted()</code>는 중단 시 내부 상태를 정리한다. 파라미터 서비스 호출은 취소 메커니즘이 없으므로, 진행 중인 요청의 결과를 무시하는 방식으로 처리한다.</p>
+<pre><code class="language-cpp">void SetParameter::onHalted()
+{
+  param_client_.reset();
+}
+</code></pre>
+<h2>7. SyncActionNode 기반 동기 구현</h2>
+<p>파라미터 설정이 신속하게 완료되는 것이 보장되는 환경에서는 <code>BT::SyncActionNode</code>를 기반으로 동기적 구현을 채택할 수 있다. 이 경우 <code>rclcpp::SyncParametersClient</code>를 사용하여 파라미터 설정을 즉시 완료한다.</p>
+<pre><code class="language-cpp">class SetParameterSync : public BT::SyncActionNode
+{
+public:
+  SetParameterSync(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::SyncActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;("node_name", "target node"),
+      BT::InputPort&lt;std::string&gt;("param_name", "parameter name"),
+      BT::InputPort&lt;double&gt;("param_value", "parameter value")
+    };
+  }
+
+  BT::NodeStatus tick() override
+  {
+    std::string node_name, param_name;
+    double param_value;
+    getInput("node_name", node_name);
+    getInput("param_name", param_name);
+    getInput("param_value", param_value);
+
+    auto param_client = std::make_shared&lt;rclcpp::SyncParametersClient&gt;(
+      node_, node_name);
+
+    if (!param_client-&gt;wait_for_service(std::chrono::seconds(1))) {
+      return BT::NodeStatus::FAILURE;
+    }
+
+    auto results = param_client-&gt;set_parameters(
+      {rclcpp::Parameter(param_name, param_value)});
+
+    for (const auto &amp; result : results) {
+      if (!result.successful) {
+        return BT::NodeStatus::FAILURE;
+      }
+    }
+    return BT::NodeStatus::SUCCESS;
+  }
+
+private:
+  rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<p>동기 구현은 Tick 스레드를 블로킹하므로, 파라미터 서비스의 응답이 지연될 경우 행동 트리 전체의 반응성이 저하된다. 따라서 실시간 반응성이 요구되는 시스템에서는 비동기 구현을 사용하여야 한다.</p>
+<h2>8. 파라미터 조회 액션 노드 구현</h2>
+<p>파라미터를 설정하는 것뿐만 아니라, 다른 노드의 현재 파라미터 값을 조회하여 블랙보드에 기록하는 액션 노드도 구현할 수 있다.</p>
+<pre><code class="language-cpp">class GetParameter : public BT::SyncActionNode
+{
+public:
+  GetParameter(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::SyncActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;("node_name", "target node"),
+      BT::InputPort&lt;std::string&gt;("param_name", "parameter name"),
+      BT::OutputPort&lt;double&gt;("param_value", "retrieved parameter value")
+    };
+  }
+
+  BT::NodeStatus tick() override
+  {
+    std::string node_name, param_name;
+    getInput("node_name", node_name);
+    getInput("param_name", param_name);
+
+    auto param_client = std::make_shared&lt;rclcpp::SyncParametersClient&gt;(
+      node_, node_name);
+
+    if (!param_client-&gt;wait_for_service(std::chrono::seconds(1))) {
+      return BT::NodeStatus::FAILURE;
+    }
+
+    auto parameters = param_client-&gt;get_parameters({param_name});
+    if (parameters.empty()) {
+      return BT::NodeStatus::FAILURE;
+    }
+
+    setOutput("param_value", parameters[0].as_double());
+    return BT::NodeStatus::SUCCESS;
+  }
+
+private:
+  rclcpp::Node::SharedPtr node_;
+};
+</code></pre>
+<h2>9. 다중 파라미터 일괄 설정</h2>
+<p>다수의 파라미터를 원자적으로(atomically) 설정하여야 하는 경우, 단일 서비스 호출에 복수의 파라미터를 포함하여 전송한다. 이는 관련된 파라미터 간의 일관성을 보장하는 데 유용하다.</p>
+<pre><code class="language-cpp">class SetMultipleParameters : public BT::StatefulActionNode
+{
+public:
+  SetMultipleParameters(
+    const std::string &amp; xml_tag_name,
+    const BT::NodeConfiguration &amp; conf)
+  : BT::StatefulActionNode(xml_tag_name, conf)
+  {
+    node_ = config().blackboard-&gt;get&lt;rclcpp::Node::SharedPtr&gt;("node");
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort&lt;std::string&gt;("node_name", "target node"),
+      BT::InputPort&lt;std::string&gt;("param_names",
+        "semicolon-separated parameter names"),
+      BT::InputPort&lt;std::string&gt;("param_values",
+        "semicolon-separated parameter values"),
+      BT::InputPort&lt;std::string&gt;("param_types",
+        "semicolon-separated parameter types")
+    };
+  }
+
+  BT::NodeStatus onStart() override
+  {
+    std::string node_name, names_str, values_str, types_str;
+    getInput("node_name", node_name);
+    getInput("param_names", names_str);
+    getInput("param_values", values_str);
+    getInput("param_types", types_str);
+
+    auto names = splitString(names_str, ';');
+    auto values = splitString(values_str, ';');
+    auto types = splitString(types_str, ';');
+
+    if (names.size() != values.size() || names.size() != types.size()) {
+      RCLCPP_ERROR(node_-&gt;get_logger(),
+        "Parameter names, values, and types count mismatch");
+      return BT::NodeStatus::FAILURE;
+    }
+
+    param_client_ = std::make_shared&lt;rclcpp::AsyncParametersClient&gt;(
+      node_, node_name);
+
+    if (!param_client_-&gt;wait_for_service(std::chrono::seconds(1))) {
+      return BT::NodeStatus::FAILURE;
+    }
+
+    std::vector&lt;rclcpp::Parameter&gt; parameters;
+    for (size_t i = 0; i &lt; names.size(); ++i) {
+      if (types[i] == "double") {
+        parameters.emplace_back(names[i], std::stod(values[i]));
+      } else if (types[i] == "int") {
+        parameters.emplace_back(names[i], std::stol(values[i]));
+      } else if (types[i] == "bool") {
+        parameters.emplace_back(names[i], values[i] == "true");
+      } else {
+        parameters.emplace_back(names[i], values[i]);
+      }
+    }
+
+    future_ = param_client_-&gt;set_parameters(parameters);
+    start_time_ = node_-&gt;now();
+    return BT::NodeStatus::RUNNING;
+  }
+
+  BT::NodeStatus onRunning() override
+  {
+    if ((node_-&gt;now() - start_time_).seconds() &gt; 5.0) {
+      return BT::NodeStatus::FAILURE;
+    }
+
+    if (future_.wait_for(std::chrono::milliseconds(0)) !=
+      std::future_status::ready)
+    {
+      return BT::NodeStatus::RUNNING;
+    }
+
+    auto results = future_.get();
+    for (const auto &amp; result : results) {
+      if (!result.successful) {
+        return BT::NodeStatus::FAILURE;
+      }
+    }
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  void onHalted() override { param_client_.reset(); }
+
+private:
+  std::vector&lt;std::string&gt; splitString(
+    const std::string &amp; str, char delimiter)
+  {
+    std::vector&lt;std::string&gt; tokens;
+    std::istringstream stream(str);
+    std::string token;
+    while (std::getline(stream, token, delimiter)) {
+      tokens.push_back(token);
+    }
+    return tokens;
+  }
+
+  rclcpp::Node::SharedPtr node_;
+  std::shared_ptr&lt;rclcpp::AsyncParametersClient&gt; param_client_;
+  std::shared_future&lt;std::vector&lt;rcl_interfaces::msg::SetParametersResult&gt;&gt; future_;
+  rclcpp::Time start_time_;
+};
+</code></pre>
+<h2>10. 실용적 활용 사례</h2>
+<h3>10.1 내비게이션 속도 제한 변경</h3>
+<p>좁은 통로 진입 전에 로봇의 최대 속도를 감소시키고, 통과 후 복원하는 행동 트리 구성을 제시한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;!-- 좁은 통로 감지 시 속도 감소 --&gt;
+    &lt;SetParameterSync node_name="/controller_server"
+                      param_name="FollowPath.max_vel_x"
+                      param_value="0.2"/&gt;
+    
+    &lt;!-- 좁은 통로 통과 --&gt;
+    &lt;NavigateThroughPoses goals="{narrow_path_goals}"/&gt;
+    
+    &lt;!-- 속도 복원 --&gt;
+    &lt;SetParameterSync node_name="/controller_server"
+                      param_name="FollowPath.max_vel_x"
+                      param_value="0.5"/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>10.2 코스트맵 팽창 반경 조정</h3>
+<p>장애물 밀집 구역에서 코스트맵의 팽창 반경을 증가시켜 안전 여유를 확보하는 구성을 제시한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;!-- 팽창 반경 증가 --&gt;
+    &lt;SetParameterSync node_name="/global_costmap/inflation_layer"
+                      param_name="inflation_radius"
+                      param_value="0.8"/&gt;
+    
+    &lt;!-- 경로 재계획 --&gt;
+    &lt;ComputePathToPose goal="{target_pose}" path="{new_path}"/&gt;
+    &lt;FollowPath path="{new_path}"/&gt;
+    
+    &lt;!-- 팽창 반경 복원 --&gt;
+    &lt;SetParameterSync node_name="/global_costmap/inflation_layer"
+                      param_name="inflation_radius"
+                      param_value="0.55"/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h3>10.3 센서 구성 변경</h3>
+<p>특정 작업 수행 시 센서의 감지 범위나 갱신 빈도를 조정하는 구성을 제시한다.</p>
+<pre><code class="language-xml">&lt;BehaviorTree&gt;
+  &lt;Sequence&gt;
+    &lt;!-- 정밀 작업 모드: 센서 갱신 빈도 증가 --&gt;
+    &lt;SetParameterSync node_name="/laser_scanner"
+                      param_name="scan_frequency"
+                      param_value="20.0"/&gt;
+    
+    &lt;!-- 정밀 접근 수행 --&gt;
+    &lt;NavigateToPose goal="{precise_target}"/&gt;
+    
+    &lt;!-- 일반 모드 복원 --&gt;
+    &lt;SetParameterSync node_name="/laser_scanner"
+                      param_name="scan_frequency"
+                      param_value="10.0"/&gt;
+  &lt;/Sequence&gt;
+&lt;/BehaviorTree&gt;
+</code></pre>
+<h2>11. 파라미터 콜백과의 상호 작용</h2>
+<p>ROS2 노드는 파라미터 변경에 대한 콜백(parameter callback)을 등록할 수 있다. 이 콜백에서 파라미터 변경 요청을 거부할 수 있으므로, 파라미터 설정 액션 노드는 반환된 <code>SetParametersResult</code>의 <code>successful</code> 필드를 반드시 검사하여야 한다.</p>
+<p>파라미터 콜백이 변경을 거부하는 일반적인 사유는 다음과 같다.</p>
+<ul>
+<li>값이 허용 범위를 벗어난 경우</li>
+<li>읽기 전용 파라미터에 대한 변경 시도</li>
+<li>노드의 현재 상태에서 변경이 허용되지 않는 경우</li>
+</ul>
+<pre><code class="language-cpp">// 대상 노드에서의 파라미터 콜백 예시
+rcl_interfaces::msg::SetParametersResult
+on_parameter_change(const std::vector&lt;rclcpp::Parameter&gt; &amp; parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+  
+  for (const auto &amp; param : parameters) {
+    if (param.get_name() == "max_vel_x") {
+      if (param.as_double() &lt; 0.0 || param.as_double() &gt; 2.0) {
+        result.successful = false;
+        result.reason = "max_vel_x must be in range [0.0, 2.0]";
+        return result;
+      }
+    }
+  }
+  return result;
+}
+</code></pre>
+<h2>12. 플러그인 등록</h2>
+<p>구현한 파라미터 설정 액션 노드를 BehaviorTree.CPP 팩토리에 등록한다.</p>
+<pre><code class="language-cpp">#include "behaviortree_cpp/bt_factory.h"
+
+BT_REGISTER_NODES(factory)
+{
+  factory.registerNodeType&lt;SetParameter&gt;("SetParameter");
+  factory.registerNodeType&lt;SetParameterSync&gt;("SetParameterSync");
+  factory.registerNodeType&lt;GetParameter&gt;("GetParameter");
+  factory.registerNodeType&lt;SetMultipleParameters&gt;("SetMultipleParameters");
+}
+</code></pre>
+<h2>13. 설계 시 고려 사항</h2>
+<h3>13.1 파라미터 복원 보장</h3>
+<p>행동 트리가 중단되거나 실패할 경우 변경된 파라미터가 원래 값으로 복원되지 않을 수 있다. 이를 방지하기 위해 파라미터 변경 전 원래 값을 블랙보드에 저장하고, Fallback 노드 또는 ForceSuccess 데코레이터를 활용하여 복원 로직을 보장하는 설계가 필요하다.</p>
+<h3>13.2 파라미터 서비스 가용성</h3>
+<p>대상 노드가 아직 시작되지 않았거나 비정상 종료된 경우 파라미터 서비스에 접근할 수 없다. <code>wait_for_service()</code> 호출에 적절한 타임아웃을 설정하고, 서비스 불가용 시의 대체 전략을 행동 트리 수준에서 구성하여야 한다.</p>
+<h3>13.3 타입 안전성</h3>
+<p>문자열로 전달된 파라미터 값을 적절한 타입으로 변환하는 과정에서 변환 오류가 발생할 수 있다. <code>std::stod()</code>, <code>std::stol()</code> 등의 변환 함수에서 발생하는 예외를 적절히 처리하여 행동 트리의 안정성을 보장하여야 한다.</p>
+<hr />
+<p><strong>참고 문헌 및 출처</strong></p>
+<ul>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>arXiv preprint arXiv:2003.00368</em>.</li>
+<li>Colledanchise, M., &amp; Ogren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>ROS2 공식 문서 — Parameters: https://docs.ros.org/en/humble/Concepts/Basic/About-Parameters.html</li>
+<li>BehaviorTree.CPP 공식 문서: https://www.behaviortree.dev/</li>
+</ul>
+<hr />
+<p><strong>버전 정보</strong>: ROS2 Humble Hawksbill 기준, BehaviorTree.CPP v3.8 이상.</p>
 
             </article>
             <footer>
