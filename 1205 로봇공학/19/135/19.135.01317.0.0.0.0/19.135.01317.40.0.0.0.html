@@ -115,6 +115,95 @@
             </header>
             <article>
                 <h1>1317.40 사용자 정의 액션 수행기 개발</h1>
+<h2>1. 액션 수행기의 역할</h2>
+<p>PlanSys2에서 액션 수행기(action performer)는 PDDL 수준의 추상적 액션을 로봇의 구체적 물리 행동으로 변환하는 구성 요소이다. 도메인에 정의된 각 PDDL 액션에 대해 최소 하나의 액션 수행기가 구현되어야 하며, 이 수행기가 실제 로봇 제어, 센서 처리, 외부 시스템 호출 등을 담당한다. 사용자 정의 액션 수행기의 개발은 PlanSys2를 실제 로봇 시스템에 적용하는 과정의 핵심 단계이다(Martín et al., 2021).</p>
+<h2>2. ActionExecutorClient 기반 클래스</h2>
+<h3>2.1 클래스 구조</h3>
+<p>모든 사용자 정의 액션 수행기는 <code>plansys2::ActionExecutorClient</code> 클래스를 상속하여 구현한다. 이 기반 클래스는 ROS2 라이프사이클 노드를 상속하며, ROS2 액션 서버와 주기적 콜백의 관리를 내부적으로 처리한다.</p>
+<pre><code class="language-cpp">#include "plansys2_executor/ActionExecutorClient.hpp"
+
+class MoveAction : public plansys2::ActionExecutorClient
+{
+public:
+  MoveAction()
+  : ActionExecutorClient("move", 500ms)
+  {
+  }
+
+protected:
+  void do_work() override;
+};
+</code></pre>
+<p>생성자에서 전달되는 인자는 다음과 같다.</p>
+<table><thead><tr><th>인자</th><th>설명</th></tr></thead><tbody>
+<tr><td>액션 이름</td><td>이 수행기가 처리하는 PDDL 액션의 이름</td></tr>
+<tr><td>틱 주기</td><td><code>do_work()</code> 콜백이 호출되는 주기</td></tr>
+</tbody></table>
+<h3>2.2 핵심 콜백 메서드</h3>
+<p>개발자가 반드시 오버라이드해야 하는 핵심 메서드는 <code>do_work()</code>이다. 이 메서드는 설정된 틱 주기마다 호출되며, 액션의 실제 행동 로직을 포함한다.</p>
+<h2>3. 개발 절차</h2>
+<h3>3.1 단계: 행동 로직 설계</h3>
+<p>PDDL 액션의 의미론(semantics)에 따라, 수행기가 수행해야 하는 구체적 행동을 설계한다. 예를 들어, <code>move</code> 액션의 수행기는 Nav2의 네비게이션 기능을 호출하여 로봇을 목표 위치로 이동시키는 로직을 포함한다.</p>
+<h3>3.2 단계: 인자 접근</h3>
+<p>PDDL 액션의 인자는 <code>get_arguments()</code> 메서드를 통해 문자열 벡터로 접근할 수 있다. 각 인자는 PDDL에서 정의된 순서대로 반환된다.</p>
+<pre><code class="language-cpp">void do_work() override
+{
+  auto args = get_arguments();
+  // args[0]: robot name
+  // args[1]: from location
+  // args[2]: to location
+}
+</code></pre>
+<h3>3.3 단계: 외부 시스템 연동</h3>
+<p>액션 수행기 내에서 ROS2의 토픽 발행/구독, 서비스 호출, 액션 클라이언트 등을 사용하여 외부 시스템과 연동한다. 예를 들어, 이동 수행기는 Nav2의 <code>NavigateToPose</code> 액션 클라이언트를 사용하여 네비게이션을 요청한다.</p>
+<h3>3.4 단계: 피드백 전송</h3>
+<p>실행 중 주기적으로 <code>send_feedback()</code> 메서드를 호출하여 진행률과 상태 메시지를 보고한다.</p>
+<pre><code class="language-cpp">send_feedback(progress, "Moving to target");
+</code></pre>
+<h3>3.5 단계: 완료 처리</h3>
+<p>액션이 완료되면 <code>finish()</code> 메서드를 호출하여 결과를 반환한다.</p>
+<pre><code class="language-cpp">// 성공
+finish(true, 1.0, "Arrived at destination");
+
+// 실패
+finish(false, 0.5, "Path blocked by obstacle");
+</code></pre>
+<h2>4. PDDL 인자와 실세계 매핑</h2>
+<p>PDDL 액션의 인자는 심볼릭 이름(예: <code>kitchen</code>, <code>bedroom</code>, <code>robot1</code>)이므로, 이를 실세계의 구체적 값(좌표, 식별자 등)으로 변환하는 매핑이 필요하다. 이 매핑은 다음과 같은 방식으로 구현할 수 있다.</p>
+<ul>
+<li><strong>파라미터 파일 기반</strong>: ROS2 파라미터 파일에 심볼릭 이름과 실세계 값의 매핑 테이블을 정의한다.</li>
+<li><strong>서비스 기반 조회</strong>: 외부 지식 베이스 노드에 심볼릭 이름에 대한 실세계 값을 질의한다.</li>
+<li><strong>하드코딩</strong>: 소규모 시스템에서는 코드 내에 직접 매핑을 정의할 수 있다.</li>
+</ul>
+<pre><code class="language-yaml"># 위치 매핑 파라미터 예시
+waypoints:
+  kitchen: [1.0, 2.0, 0.0]
+  bedroom: [5.0, 3.0, 1.57]
+  corridor: [3.0, 2.5, 0.0]
+</code></pre>
+<h2>5. 라이프사이클 관리</h2>
+<p>액션 수행기는 ROS2 관리형 노드이므로, <code>on_configure</code>, <code>on_activate</code>, <code>on_deactivate</code>, <code>on_cleanup</code> 등의 라이프사이클 콜백을 오버라이드하여 초기화와 정리 로직을 구현할 수 있다.</p>
+<table><thead><tr><th>콜백</th><th>활용</th></tr></thead><tbody>
+<tr><td><code>on_configure</code></td><td>파라미터 로딩, 외부 클라이언트 초기화</td></tr>
+<tr><td><code>on_activate</code></td><td>구독/발행 활성화, 하드웨어 연결</td></tr>
+<tr><td><code>on_deactivate</code></td><td>구독/발행 비활성화, 하드웨어 해제</td></tr>
+<tr><td><code>on_cleanup</code></td><td>리소스 정리</td></tr>
+</tbody></table>
+<h2>6. 테스트 방법</h2>
+<p>개발된 액션 수행기는 다음과 같은 수준에서 테스트할 수 있다.</p>
+<ul>
+<li><strong>단위 테스트</strong>: 수행기의 행동 로직을 모의 환경(mock environment)에서 테스트한다.</li>
+<li><strong>PlanSys2 통합 테스트</strong>: PlanSys2 터미널 인터페이스를 통해 간단한 계획을 수립하고 실행하여, 수행기가 올바르게 호출되는지 확인한다.</li>
+<li><strong>시뮬레이션 테스트</strong>: Gazebo 등의 시뮬레이터와 연동하여, 로봇의 물리적 행동이 기대대로 이루어지는지 검증한다(Martín et al., 2021).</li>
+</ul>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

@@ -115,6 +115,76 @@
             </header>
             <article>
                 <h1>1317.41 PlanSys2와 Nav2의 통합 시나리오</h1>
+<h2>1. 통합의 동기</h2>
+<p>Nav2(Navigation2)는 ROS2 생태계에서 이동 로봇의 자율 주행을 담당하는 표준 네비게이션 프레임워크이다(Macenski et al., 2020). PlanSys2와 Nav2의 통합은 PDDL 수준의 임무 계획과 물리적 로봇 이동을 연결하는 전형적인 사례로, 이동 로봇 기반 자율 임무 시스템의 구현에 핵심적이다. 이 통합을 통해, PlanSys2가 수립한 계획의 이동 액션이 Nav2의 경로 계획과 추종(path following) 기능을 활용하여 실행된다(Martín et al., 2021).</p>
+<h2>2. 통합 아키텍처</h2>
+<h3>2.1 계층 구조</h3>
+<p>PlanSys2와 Nav2의 통합은 다음과 같은 계층 구조를 형성한다.</p>
+<table><thead><tr><th>계층</th><th>역할</th><th>담당 시스템</th></tr></thead><tbody>
+<tr><td>임무 계획 계층</td><td>PDDL 기반 임무 계획 수립</td><td>PlanSys2</td></tr>
+<tr><td>임무 실행 계층</td><td>계획의 액션 디스패치와 모니터링</td><td>PlanSys2 실행기</td></tr>
+<tr><td>행동 계층</td><td>개별 액션의 구체적 행동 구현</td><td>액션 수행기</td></tr>
+<tr><td>네비게이션 계층</td><td>경로 계획, 장애물 회피, 위치 추적</td><td>Nav2</td></tr>
+</tbody></table>
+<h3>2.2 이동 액션 수행기</h3>
+<p>PlanSys2의 <code>move</code> 액션에 대응하는 수행기는 Nav2의 <code>NavigateToPose</code> ROS2 액션 클라이언트를 내부적으로 사용한다. PDDL의 이동 액션이 실행되면, 수행기는 목표 위치의 심볼릭 이름을 실제 좌표로 변환하고, Nav2에 네비게이션을 요청한다.</p>
+<pre><code class="language-cpp">class MoveAction : public plansys2::ActionExecutorClient
+{
+  rclcpp_action::Client&lt;nav2_msgs::action::NavigateToPose&gt;::SharedPtr
+    nav_client_;
+
+  void do_work() override
+  {
+    auto args = get_arguments();
+    auto goal = create_nav_goal(args[2]); // 목표 위치
+    nav_client_-&gt;async_send_goal(goal);
+    // Nav2 피드백을 PlanSys2 피드백으로 변환
+  }
+};
+</code></pre>
+<h2>3. PDDL 도메인 설계</h2>
+<p>Nav2와의 통합을 위한 PDDL 도메인은 일반적으로 다음과 같은 구조를 가진다.</p>
+<pre><code class="language-lisp">(define (domain navigation)
+  (:requirements :strips :typing :durative-actions)
+  (:types robot location)
+  (:predicates
+    (at ?r - robot ?l - location)
+    (connected ?l1 - location ?l2 - location))
+  (:durative-action move
+    :parameters (?r - robot ?from - location ?to - location)
+    :duration (= ?duration 10)
+    :condition (and
+      (at start (at ?r ?from))
+      (at start (connected ?from ?to)))
+    :effect (and
+      (at start (not (at ?r ?from)))
+      (at end (at ?r ?to)))))
+</code></pre>
+<h2>4. Nav2 피드백의 활용</h2>
+<p>Nav2는 네비게이션 진행 중 현재 위치, 남은 거리, 예상 소요 시간 등의 피드백을 제공한다. 이동 액션 수행기는 이 피드백을 수신하여 PlanSys2의 피드백 형식으로 변환한다. 예를 들어, 남은 거리 비율을 완료율로 변환하여 <code>send_feedback()</code> 메서드를 통해 보고한다.</p>
+<p><span class="math math-display">
+\text{progress} = 1.0 - \frac{d_{remaining}}{d_{total}}
+</span></p>
+<p>여기서 <span class="math math-inline">d_{remaining}</span>은 목표까지의 남은 거리이고, <span class="math math-inline">d_{total}</span>은 초기 전체 거리이다.</p>
+<h2>5. 네비게이션 실패의 처리</h2>
+<p>Nav2의 네비게이션이 실패하는 경우(경로를 찾을 수 없음, 장애물에 의한 차단, 시간 초과 등), 이동 액션 수행기는 <code>finish(false, ...)</code> 를 호출하여 PlanSys2에 실패를 보고한다. 이 실패는 PlanSys2의 오류 처리 메커니즘을 통해 상위 수준으로 전파되며, 재계획의 트리거가 될 수 있다.</p>
+<h2>6. 통합 시나리오 예시</h2>
+<p>전형적인 PlanSys2-Nav2 통합 시나리오는 로봇이 여러 위치를 순차적으로 방문하면서 각 위치에서 작업을 수행하는 임무이다.</p>
+<ol>
+<li>PlanSys2가 “주방에서 물건을 집어 침실로 배달“이라는 목표에 대해 계획을 수립한다.</li>
+<li>계획: <code>move(robot1, dock, kitchen)</code> → <code>pick(robot1, cup, kitchen)</code> → <code>move(robot1, kitchen, bedroom)</code> → <code>place(robot1, cup, bedroom)</code></li>
+<li>각 <code>move</code> 액션이 실행될 때 Nav2가 경로 계획과 주행을 수행한다.</li>
+<li><code>pick</code>과 <code>place</code> 액션은 별도의 매니퓰레이션 수행기가 처리한다.</li>
+</ol>
+<p>이러한 통합은 PlanSys2의 심볼릭 계획 능력과 Nav2의 강건한 네비게이션 능력을 결합하여, 실용적인 자율 임무 시스템을 구현하는 기반을 제공한다(Martín et al., 2021; Macenski et al., 2020).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Macenski, S., Martín, F., White, R., &amp; Clavero, J. G. (2020). “The Marathon 2: A Navigation System.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

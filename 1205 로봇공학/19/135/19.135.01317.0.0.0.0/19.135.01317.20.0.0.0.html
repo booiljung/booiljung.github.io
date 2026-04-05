@@ -115,6 +115,108 @@
             </header>
             <article>
                 <h1>1317.20 도메인 모델의 로딩과 파싱 절차</h1>
+<h2>1. 도메인 모델 로딩의 개요</h2>
+<p>PlanSys2에서 도메인 모델(domain model)의 로딩과 파싱은 자율 임무 계획 파이프라인의 최초 단계에 해당한다. PDDL(Planning Domain Definition Language)로 기술된 도메인 파일은 로봇이 수행할 수 있는 액션, 전제 조건, 효과, 타입 계층 구조, 술어(predicate), 함수(function) 등 계획 수립에 필요한 모든 정적 지식을 포함한다. 도메인 전문가 노드(Domain Expert Node)는 이 도메인 파일을 시스템 초기화 시점에 로딩하고, 내부 파서를 통해 구문 분석(parsing)한 뒤 구조화된 내부 표현(internal representation)으로 변환하여 메모리에 유지한다. 이 과정이 정확하게 수행되지 않으면 후속 단계인 문제 인스턴스 생성, 계획 수립, 액션 실행이 모두 실패하게 되므로, 도메인 모델의 로딩과 파싱은 PlanSys2 전체 시스템의 신뢰성을 결정하는 핵심 절차이다(Martín et al., 2021).</p>
+<h2>2. 도메인 파일의 로딩 경로</h2>
+<h3>2.1 런치 파라미터를 통한 로딩</h3>
+<p>PlanSys2는 ROS2 런치 시스템과 통합되어 있으므로, 도메인 파일의 경로는 런치 파일(launch file) 내의 파라미터로 지정된다. 도메인 전문가 노드는 <code>model_file</code> 파라미터를 통해 PDDL 도메인 파일의 절대 경로 또는 패키지 상대 경로를 전달받는다. 런치 시점에 해당 파라미터가 설정되어 있으면, 노드는 <code>on_configure</code> 콜백에서 지정된 파일을 읽어들여 도메인 모델 로딩을 개시한다.</p>
+<pre><code class="language-python">Node(
+    package='plansys2_domain_expert',
+    executable='domain_expert_node',
+    name='domain_expert',
+    parameters=[{
+        'model_file': '/path/to/domain.pddl'
+    }]
+)
+</code></pre>
+<h3>2.2 서비스 인터페이스를 통한 동적 로딩</h3>
+<p>런치 시점 외에도, PlanSys2는 ROS2 서비스 인터페이스를 통해 런타임 중 도메인 모델을 동적으로 로딩할 수 있는 메커니즘을 제공한다. 도메인 전문가 노드는 <code>add_problem</code>이나 도메인 관련 서비스 호출을 통해 PDDL 문자열을 직접 수신하고 파싱할 수 있다. 이 방식은 시스템 재시작 없이 도메인 모델을 갱신하거나 확장해야 하는 상황에서 활용된다.</p>
+<h2>3. PDDL 파싱 절차</h2>
+<h3>3.1 어휘 분석 단계</h3>
+<p>도메인 파일이 메모리에 로딩되면, 파서는 먼저 어휘 분석(lexical analysis)을 수행한다. 이 단계에서는 PDDL 텍스트를 토큰(token) 단위로 분리하며, 괄호, 키워드(<code>:requirements</code>, <code>:types</code>, <code>:predicates</code>, <code>:action</code> 등), 식별자(identifier), 변수(<code>?variable</code>), 연산자 등을 개별 토큰으로 분류한다. PDDL은 LISP 계열의 S-표현식(S-expression) 구문을 따르므로, 괄호 매칭(parenthesis matching)이 어휘 분석의 핵심 요소이다. 괄호가 올바르게 쌍을 이루지 않을 경우, 파서는 구문 오류(syntax error)를 보고하고 로딩을 중단한다.</p>
+<h3>3.2 구문 분석 단계</h3>
+<p>어휘 분석이 완료된 토큰 스트림은 구문 분석(syntactic analysis) 단계로 전달된다. PlanSys2의 PDDL 파서는 재귀 하강 파서(recursive descent parser) 방식에 기반하여, PDDL 문법 규칙에 따라 토큰 스트림을 파싱 트리(parse tree)로 구성한다. 구문 분석 과정에서 처리되는 주요 구문 요소는 다음과 같다.</p>
+<table><thead><tr><th>구문 요소</th><th>PDDL 키워드</th><th>설명</th></tr></thead><tbody>
+<tr><td>요구사항 선언</td><td><code>:requirements</code></td><td>도메인이 사용하는 PDDL 기능 집합</td></tr>
+<tr><td>타입 선언</td><td><code>:types</code></td><td>객체 타입의 계층적 정의</td></tr>
+<tr><td>상수 선언</td><td><code>:constants</code></td><td>도메인 전역 상수 객체</td></tr>
+<tr><td>술어 선언</td><td><code>:predicates</code></td><td>상태를 기술하는 논리 술어</td></tr>
+<tr><td>함수 선언</td><td><code>:functions</code></td><td>수치 값을 표현하는 함수</td></tr>
+<tr><td>액션 선언</td><td><code>:action</code></td><td>전제 조건과 효과를 갖는 연산자</td></tr>
+<tr><td>파생 술어 선언</td><td><code>:derived</code></td><td>다른 술어로부터 유도되는 술어</td></tr>
+<tr><td>시간적 액션 선언</td><td><code>:durative-action</code></td><td>지속 시간을 갖는 액션</td></tr>
+</tbody></table>
+<p>각 구문 요소는 PDDL 사양(specification)에 정의된 문법 규칙에 따라 검증되며, 문법에 부합하지 않는 토큰 시퀀스가 발견되면 파싱 오류가 발생한다.</p>
+<h3>3.3 의미 분석 단계</h3>
+<p>구문 분석이 완료된 파싱 트리는 의미 분석(semantic analysis) 단계를 거친다. 이 단계에서는 다음과 같은 의미적 일관성 검증이 수행된다.</p>
+<ul>
+<li><strong>타입 일관성 검증</strong>: 액션의 파라미터에 선언된 타입이 <code>:types</code> 섹션에 정의되어 있는지 확인한다. 정의되지 않은 타입이 사용될 경우 오류를 보고한다.</li>
+<li><strong>술어 참조 검증</strong>: 전제 조건(precondition)과 효과(effect)에서 참조하는 술어가 <code>:predicates</code> 섹션에 선언되어 있는지, 인자(arity)와 타입이 일치하는지 검증한다.</li>
+<li><strong>함수 참조 검증</strong>: 수치 표현식에서 사용되는 함수가 <code>:functions</code> 섹션에 올바르게 선언되어 있는지 확인한다.</li>
+<li><strong>변수 범위 검증</strong>: 액션 내부에서 사용되는 변수(<code>?var</code>)가 해당 액션의 파라미터 목록 또는 <code>forall</code>, <code>exists</code> 등의 한정자(quantifier) 내에서 올바르게 바인딩되어 있는지 검증한다.</li>
+<li><strong>요구사항 호환성 검증</strong>: 도메인에서 사용하는 기능이 <code>:requirements</code> 선언과 일치하는지 확인한다. 예를 들어, <code>:durative-action</code>을 사용하면서 <code>:durative-actions</code> 요구사항이 선언되지 않은 경우 경고 또는 오류를 발생시킨다.</li>
+</ul>
+<h2>4. 내부 표현으로의 변환</h2>
+<h3>4.1 도메인 모델 데이터 구조</h3>
+<p>파싱이 완료된 도메인 정보는 PlanSys2 내부의 C++ 데이터 구조로 변환된다. PlanSys2는 도메인 모델을 다음과 같은 계층적 자료 구조로 관리한다.</p>
+<ul>
+<li><strong>타입 트리(Type Tree)</strong>: 객체 타입 간의 상속 관계를 트리 구조로 표현한다. 부모 타입과 자식 타입 간의 관계가 보존되며, 타입 검증 시 상속 관계를 추적할 수 있다.</li>
+<li><strong>술어 집합(Predicate Set)</strong>: 각 술어의 이름, 파라미터 목록, 파라미터별 타입 정보를 저장한다.</li>
+<li><strong>함수 집합(Function Set)</strong>: 각 함수의 이름과 파라미터 정보를 저장하며, 수치 계획(numeric planning)에 활용된다.</li>
+<li><strong>액션 모델(Action Model)</strong>: 각 액션에 대해 이름, 파라미터, 전제 조건의 논리식 트리, 효과의 논리식 트리를 저장한다. 전제 조건과 효과는 논리 연산자(<code>and</code>, <code>or</code>, <code>not</code>, <code>forall</code>, <code>exists</code> 등)로 구성된 트리 구조로 내부 표현된다.</li>
+<li><strong>시간적 액션 모델(Durative Action Model)</strong>: 지속 시간, 시작 조건(<code>at start</code>), 종료 조건(<code>at end</code>), 불변 조건(<code>over all</code>), 시작 효과, 종료 효과 등 시간적 요소가 추가된 확장 구조이다.</li>
+</ul>
+<h3>4.2 논리식의 트리 표현</h3>
+<p>PDDL의 전제 조건과 효과는 중첩된 논리식으로 구성되며, PlanSys2는 이를 트리 자료 구조로 변환한다. 예를 들어 다음과 같은 PDDL 전제 조건이 있다고 하자.</p>
+<pre><code class="language-lisp">(:action move
+  :parameters (?r - robot ?from - location ?to - location)
+  :precondition (and
+    (at ?r ?from)
+    (connected ?from ?to)
+    (not (occupied ?to)))
+  :effect (and
+    (at ?r ?to)
+    (not (at ?r ?from))))
+</code></pre>
+<p>이 전제 조건은 루트 노드가 <code>AND</code>인 트리로 변환되며, 자식 노드로 <code>(at ?r ?from)</code>, <code>(connected ?from ?to)</code>, <code>NOT</code> 노드(그 자식으로 <code>(occupied ?to)</code>)가 배치된다. 이러한 트리 표현은 계획 수립 시 상태 매칭(state matching)과 효과 적용(effect application)의 효율적 수행을 가능하게 한다.</p>
+<h2>5. 도메인 모델의 검증과 오류 처리</h2>
+<h3>5.1 파싱 오류의 분류</h3>
+<p>도메인 모델 로딩 과정에서 발생할 수 있는 오류는 다음과 같이 분류된다.</p>
+<ol>
+<li><strong>파일 접근 오류</strong>: 지정된 경로에 도메인 파일이 존재하지 않거나 읽기 권한이 없는 경우 발생한다.</li>
+<li><strong>어휘 오류</strong>: 인식 불가능한 문자나 불완전한 토큰이 발견된 경우 발생한다.</li>
+<li><strong>구문 오류</strong>: 괄호 불일치, 필수 키워드 누락, 잘못된 구문 구조 등이 원인이다.</li>
+<li><strong>의미 오류</strong>: 미선언 타입 참조, 술어 인자 불일치, 변수 미바인딩 등 의미적 불일치에 의해 발생한다.</li>
+</ol>
+<p>PlanSys2는 각 오류에 대해 오류 위치(행과 열 정보)와 오류 원인을 포함한 진단 메시지를 ROS2 로그 시스템을 통해 출력한다. 이를 통해 도메인 파일 작성자는 오류의 원인을 신속하게 파악하고 수정할 수 있다.</p>
+<h3>5.2 부분 로딩과 오류 복구 전략</h3>
+<p>PlanSys2의 도메인 전문가 노드는 도메인 파일에 심각한 구문 오류가 존재할 경우 전체 로딩을 중단하고 비활성(inactive) 상태를 유지한다. 이는 불완전한 도메인 모델에 기반한 계획 수립이 예측 불가능한 결과를 초래할 수 있기 때문이다. 노드는 라이프사이클 관리형 노드(managed node)로 구현되어 있으므로, 오류 수정 후 <code>configure</code> 전이를 다시 트리거하여 도메인을 재로딩할 수 있다.</p>
+<h2>6. 다중 도메인 파일의 병합 처리</h2>
+<p>PlanSys2는 복수의 PDDL 도메인 파일을 로딩하여 단일 도메인 모델로 병합(merge)하는 기능을 지원한다. 이 기능은 대규모 로봇 시스템에서 도메인 정의를 모듈화하여 관리할 때 유용하다. 예를 들어, 이동(navigation) 관련 액션과 조작(manipulation) 관련 액션을 별도의 도메인 파일로 분리하고, PlanSys2가 이를 하나의 통합 도메인으로 병합하여 사용할 수 있다.</p>
+<p>병합 시에는 다음과 같은 규칙이 적용된다.</p>
+<ul>
+<li>동일한 이름의 타입이 여러 파일에 선언된 경우, 타입 계층이 일관성을 유지하는지 검증한다.</li>
+<li>동일한 이름의 술어가 중복 선언된 경우, 파라미터 시그니처가 동일한지 확인하고, 상이할 경우 오류를 보고한다.</li>
+<li>액션 이름의 중복은 허용되지 않으며, 중복이 발견되면 충돌 오류를 발생시킨다.</li>
+<li>요구사항(<code>:requirements</code>)은 모든 도메인 파일의 합집합(union)으로 결합된다.</li>
+</ul>
+<h2>7. 로딩 완료 후의 도메인 모델 관리</h2>
+<p>도메인 모델의 로딩과 파싱이 성공적으로 완료되면, 도메인 전문가 노드는 활성(active) 상태로 전이하며, 다음과 같은 서비스를 통해 다른 노드에 도메인 정보를 제공한다.</p>
+<ul>
+<li><strong>도메인 정보 조회 서비스</strong>: 등록된 타입, 술어, 함수, 액션의 목록과 세부 정보를 조회할 수 있다.</li>
+<li><strong>PDDL 문자열 생성 서비스</strong>: 내부 표현을 다시 PDDL 텍스트로 직렬화(serialization)하여 반환한다. 이 기능은 플래너 노드가 외부 플래너에 도메인 파일을 전달할 때 사용된다.</li>
+<li><strong>도메인 검증 서비스</strong>: 특정 술어나 액션이 현재 도메인에 존재하는지 확인하는 검증 기능을 제공한다.</li>
+</ul>
+<p>이러한 서비스 인터페이스를 통해, 문제 전문가 노드는 도메인에 정의된 술어만을 사용하여 문제 인스턴스를 구성할 수 있고, 플래너 노드는 완전한 도메인 정의를 획득하여 계획 수립을 수행할 수 있다. 도메인 모델의 정확한 로딩과 파싱은 이후 모든 계획 및 실행 단계의 정합성(consistency)을 보장하는 기반이 된다(Martín et al., 2021; Fox &amp; Long, 2003).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Fox, M., &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>McDermott, D., Ghallab, M., Howe, A., Knoblock, C., Ram, A., Veloso, M., Weld, D., &amp; Wilkins, D. (1998). “PDDL—The Planning Domain Definition Language.” <em>Technical Report CVC TR-98-003</em>, Yale Center for Computational Vision and Control.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

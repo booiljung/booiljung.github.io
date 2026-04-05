@@ -115,6 +115,134 @@
             </header>
             <article>
                 <h1>1316.49 고전적 플래너와 ROS2의 통합 전략</h1>
+<h2>1. 통합의 개요</h2>
+<p>고전적 플래너를 ROS2 기반 로봇 시스템에 통합하는 것은 추상적 임무 계획 수준과 구체적 로봇 실행 수준을 연결하는 핵심 과제이다. PlanSys2가 이 통합의 표준 프레임워크로 기능하며, 외부 플래너를 플러그인 방식으로 연결하여 PDDL 기반 임무 계획을 ROS2 액션 노드로 실행한다(Gonzalez et al., 2021).</p>
+<h2>2. 통합 아키텍처</h2>
+<pre><code>[PDDL 도메인/문제] ←→ [PlanSys2]
+                          ├── Domain Expert (도메인 관리)
+                          ├── Problem Expert (문제 관리)
+                          ├── Planner (외부 플래너 호출)
+                          └── Executor (계획 실행)
+                               ↓
+                    [ROS2 액션 노드들]
+                          ├── move_action (Nav2 연동)
+                          ├── pick_action (MoveIt2 연동)
+                          └── inspect_action (센서 연동)
+</code></pre>
+<h2>3. 플래너 플러그인 인터페이스</h2>
+<p>PlanSys2는 플래너를 플러그인으로 설정할 수 있다:</p>
+<pre><code class="language-cpp">// plansys2_planner/PlanSolverBase 인터페이스
+class PlanSolverBase {
+public:
+    virtual std::optional&lt;Plan&gt; getPlan(
+        const std::string &amp; domain,
+        const std::string &amp; problem,
+        const std::string &amp; node_namespace) = 0;
+};
+</code></pre>
+<h3>3.1 POPF 플러그인 (기본)</h3>
+<pre><code class="language-yaml"># PlanSys2 설정
+planner:
+  plugin: "plansys2/POPFPlanSolver"
+</code></pre>
+<h3>3.2 Fast Downward 플러그인</h3>
+<pre><code class="language-yaml">planner:
+  plugin: "plansys2/FDPlanSolver"
+  configuration: "lama-first"
+</code></pre>
+<h2>4. 도메인 파일과 ROS2 패키지의 통합</h2>
+<p>PDDL 도메인 파일은 ROS2 패키지의 일부로 관리된다:</p>
+<pre><code class="language-cmake"># CMakeLists.txt
+install(DIRECTORY pddl/ DESTINATION share/${PROJECT_NAME}/pddl)
+</code></pre>
+<pre><code class="language-python"># 런치 파일
+import os
+from ament_index_python.packages import get_package_share_directory
+
+pkg_dir = get_package_share_directory('my_robot_planner')
+domain_file = os.path.join(pkg_dir, 'pddl', 'domain.pddl')
+</code></pre>
+<h2>5. 세계 상태의 동기화</h2>
+<p>PDDL의 세계 모델과 실제 로봇 상태를 동기화하는 것이 통합의 핵심 과제이다:</p>
+<h3>5.1 센서 → PDDL 상태 변환</h3>
+<pre><code class="language-cpp">// ROS2 노드에서 센서 데이터를 PDDL 상태로 변환
+void updateWorldState() {
+    auto problem_client = std::make_shared&lt;plansys2::ProblemExpertClient&gt;();
+    
+    // 로봇 위치 갱신
+    std::string current_wp = getClosestWaypoint(robot_pose_);
+    problem_client-&gt;removePredicate(plansys2::Predicate("(robot_at robot1 " + last_wp_ + ")"));
+    problem_client-&gt;addPredicate(plansys2::Predicate("(robot_at robot1 " + current_wp + ")"));
+    
+    // 배터리 상태 갱신
+    problem_client-&gt;addFunction(plansys2::Function(
+        "(= (battery_level robot1) " + std::to_string(battery_level_) + ")"));
+}
+</code></pre>
+<h3>5.2 실행 결과 → PDDL 효과 반영</h3>
+<p>PlanSys2의 Executor는 액션 완료 시 PDDL 효과를 자동으로 Problem Expert에 반영한다. 액션 노드에서 <code>finish(true, ...)</code>를 호출하면 해당 액션의 PDDL 효과가 적용된다.</p>
+<h2>6. 재계획 메커니즘</h2>
+<pre><code class="language-cpp">// 재계획 루프
+void executionLoop() {
+    while (rclcpp::ok()) {
+        updateWorldState();  // 세계 상태 갱신
+        
+        if (!current_plan_valid_) {
+            // 목표 설정
+            problem_client_-&gt;setGoal(plansys2::Goal("(and (delivered pkg1 customer1))"));
+            
+            // 계획 생성
+            auto plan = planner_client_-&gt;getPlan(domain_client_-&gt;getDomain(),
+                                                  problem_client_-&gt;getProblem());
+            if (plan.has_value()) {
+                executor_client_-&gt;start(plan.value());
+            }
+        }
+        
+        // 실행 모니터링
+        if (executor_client_-&gt;getResult().has_value()) {
+            auto result = executor_client_-&gt;getResult().value();
+            if (!result.success) {
+                current_plan_valid_ = false;  // 재계획 트리거
+            }
+        }
+    }
+}
+</code></pre>
+<h2>7. ROS2 하위 시스템과의 연동</h2>
+<h3>7.1 Nav2 연동</h3>
+<p>PDDL <code>move</code> 액션 → Nav2 <code>NavigateToPose</code> 액션 서버:</p>
+<pre><code class="language-cpp">class MoveAction : public plansys2::ActionExecutorClient {
+    void do_work() override {
+        auto goal = nav2_msgs::action::NavigateToPose::Goal();
+        goal.pose = waypointToPose(get_arguments()[2]);
+        nav_client_-&gt;async_send_goal(goal);
+    }
+};
+</code></pre>
+<h3>7.2 MoveIt2 연동</h3>
+<p>PDDL <code>pick</code> 액션 → MoveIt2 조작 파이프라인:</p>
+<pre><code class="language-cpp">class PickAction : public plansys2::ActionExecutorClient {
+    void do_work() override {
+        moveit::planning_interface::MoveGroupInterface move_group(node_, "manipulator");
+        move_group.setPoseTarget(getGraspPose(get_arguments()[1]));
+        move_group.move();
+    }
+};
+</code></pre>
+<h2>8. 통합 시 고려사항</h2>
+<ol>
+<li><strong>이름 일관성</strong>: PDDL 액션 이름과 ROS2 액션 노드 이름이 정확히 일치해야 한다.</li>
+<li><strong>매개변수 매핑</strong>: PDDL 매개변수 순서와 <code>get_arguments()</code> 인덱스의 정합성을 유지한다.</li>
+<li><strong>시간 관리</strong>: 플래너의 응답 시간이 실시간 요구를 초과하지 않도록 시간 제한을 설정한다.</li>
+<li><strong>상태 동기화 주기</strong>: 센서 데이터의 PDDL 상태 갱신 주기를 적절히 설정한다.</li>
+</ol>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE ICARSC</em>.</li>
+<li>Cashmore, M., Fox, M., Long, D., Magazzeni, D., Ridder, B., Carrera, A., Palomeras, N., Hurtos, N., &amp; Carreras, M. (2015). “ROSPlan: Planning in the Robot Operating System.” <em>Proceedings of ICAPS</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,87 @@
             </header>
             <article>
                 <h1>1317.12 ROS2 서비스 기반 노드 간 상호작용</h1>
+<h2>1. ROS2 서비스의 개요</h2>
+<p>ROS2 서비스(Service)는 동기적 요청-응답(request-response) 패턴의 통신 메커니즘이다. 클라이언트가 요청 메시지를 전송하면 서버가 처리 후 응답 메시지를 반환한다. PlanSys2에서 서비스는 도메인 정보 조회, 세계 상태 관리, 계획 생성 등 즉각적 응답이 필요한 상호 작용에 사용된다.</p>
+<h2>2. PlanSys2의 서비스 사용 패턴</h2>
+<h3>2.1 도메인 정보 조회</h3>
+<p>Domain Expert 노드가 서비스 서버로, 다른 노드와 외부 클라이언트가 서비스 클라이언트로 동작한다:</p>
+<pre><code class="language-cpp">// 서비스 서버 (Domain Expert 내부)
+auto get_types_srv = create_service&lt;plansys2_msgs::srv::GetDomainTypes&gt;(
+    "get_domain_types",
+    std::bind(&amp;DomainExpertNode::getTypesCallback, this, _1, _2));
+
+// 서비스 콜백
+void getTypesCallback(
+    const std::shared_ptr&lt;plansys2_msgs::srv::GetDomainTypes::Request&gt; request,
+    std::shared_ptr&lt;plansys2_msgs::srv::GetDomainTypes::Response&gt; response)
+{
+    response-&gt;types = domain_expert_-&gt;getTypes();
+    response-&gt;success = true;
+}
+</code></pre>
+<pre><code class="language-cpp">// 서비스 클라이언트 (DomainExpertClient)
+auto client = create_client&lt;plansys2_msgs::srv::GetDomainTypes&gt;("get_domain_types");
+auto request = std::make_shared&lt;plansys2_msgs::srv::GetDomainTypes::Request&gt;();
+auto future = client-&gt;async_send_request(request);
+
+if (rclcpp::spin_until_future_complete(node, future) == rclcpp::FutureReturnCode::SUCCESS) {
+    auto response = future.get();
+    return response-&gt;types;
+}
+</code></pre>
+<h3>2.2 세계 상태 관리</h3>
+<p>Problem Expert 노드가 서비스 서버로, 외부 노드(센서 처리, 상태 모니터링)와 Executor가 서비스 클라이언트로 동작한다:</p>
+<pre><code class="language-cpp">// 술어 추가 서비스
+auto add_pred_srv = create_service&lt;plansys2_msgs::srv::AddPredicate&gt;(
+    "add_predicate",
+    std::bind(&amp;ProblemExpertNode::addPredicateCallback, this, _1, _2));
+
+void addPredicateCallback(
+    const std::shared_ptr&lt;plansys2_msgs::srv::AddPredicate::Request&gt; request,
+    std::shared_ptr&lt;plansys2_msgs::srv::AddPredicate::Response&gt; response)
+{
+    response-&gt;success = problem_expert_-&gt;addPredicate(
+        plansys2::Predicate(request-&gt;predicate));
+}
+</code></pre>
+<h3>2.3 계획 생성</h3>
+<p>Planner 노드가 서비스 서버로, 계획 요청 노드가 클라이언트로 동작한다:</p>
+<pre><code class="language-cpp">// 계획 생성 서비스 호출
+auto planner_client = create_client&lt;plansys2_msgs::srv::GetPlan&gt;("get_plan");
+auto request = std::make_shared&lt;plansys2_msgs::srv::GetPlan::Request&gt;();
+request-&gt;domain = domain_text;
+request-&gt;problem = problem_text;
+auto future = planner_client-&gt;async_send_request(request);
+</code></pre>
+<h2>3. 클라이언트 라이브러리의 서비스 추상화</h2>
+<p>PlanSys2의 클라이언트 라이브러리는 ROS2 서비스 호출을 고수준 메서드로 추상화한다:</p>
+<pre><code class="language-cpp">// 직접 서비스 호출 (저수준)
+auto client = create_client&lt;plansys2_msgs::srv::AddPredicate&gt;("add_predicate");
+auto request = std::make_shared&lt;plansys2_msgs::srv::AddPredicate::Request&gt;();
+request-&gt;predicate = "(robot_at robot1 wp1)";
+auto future = client-&gt;async_send_request(request);
+// ... future 대기 및 결과 처리
+
+// 클라이언트 라이브러리 사용 (고수준)
+auto problem_client = std::make_shared&lt;plansys2::ProblemExpertClient&gt;();
+bool success = problem_client-&gt;addPredicate(plansys2::Predicate("(robot_at robot1 wp1)"));
+</code></pre>
+<h2>4. 서비스 통신의 동기적 특성과 비동기 처리</h2>
+<p>ROS2 서비스는 본질적으로 동기적이지만, <code>async_send_request</code>를 사용하여 비동기적으로 호출할 수 있다. PlanSys2의 클라이언트 라이브러리는 내부적으로 비동기 호출과 타임아웃 처리를 수행하여, 서비스 서버의 일시적 비가용 상태에 대응한다.</p>
+<h2>5. 서비스 가용성 확인</h2>
+<p>PlanSys2의 클라이언트 라이브러리는 서비스 서버의 가용성을 자동으로 확인한다:</p>
+<pre><code class="language-cpp">// 서비스 대기 (타임아웃 포함)
+if (!client-&gt;wait_for_service(std::chrono::seconds(5))) {
+    RCLCPP_ERROR(get_logger(), "Service not available");
+    return false;
+}
+</code></pre>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE ICARSC</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,89 @@
             </header>
             <article>
                 <h1>1317.15 PlanSys2의 라이프사이클 관리</h1>
+<h2>1. ROS2 라이프사이클 노드의 개요</h2>
+<p>ROS2의 관리형 노드(Managed Node, Lifecycle Node)는 노드의 상태 전이를 표준화된 상태 기계(state machine)로 관리하는 인터페이스이다. PlanSys2의 4대 핵심 노드는 모두 라이프사이클 노드로 구현되어 있으며, 이에 따라 체계적인 초기화, 활성화, 비활성화, 종료가 가능하다.</p>
+<h2>2. 라이프사이클 상태 전이</h2>
+<pre><code>                  create
+    ┌──────────────────────────────────┐
+    │           Unconfigured           │
+    └──────────┬───────────────────────┘
+               │ on_configure (성공)
+    ┌──────────▼───────────────────────┐
+    │            Inactive              │
+    └──────────┬───────────────────────┘
+               │ on_activate (성공)
+    ┌──────────▼───────────────────────┐
+    │             Active               │←─── on_deactivate로 Inactive 복귀
+    └──────────┬───────────────────────┘
+               │ on_shutdown
+    ┌──────────▼───────────────────────┐
+    │            Finalized             │
+    └──────────────────────────────────┘
+</code></pre>
+<h2>3. PlanSys2 노드별 라이프사이클 구현</h2>
+<h3>3.1 Domain Expert</h3>
+<table><thead><tr><th>전이</th><th>수행 작업</th></tr></thead><tbody>
+<tr><td><code>on_configure</code></td><td>PDDL 도메인 파일 로드, 파싱, 내부 모델 구성</td></tr>
+<tr><td><code>on_activate</code></td><td>ROS2 서비스 서버 활성화, 도메인 정보 제공 시작</td></tr>
+<tr><td><code>on_deactivate</code></td><td>서비스 서버 비활성화</td></tr>
+<tr><td><code>on_cleanup</code></td><td>도메인 모델 메모리 해제</td></tr>
+<tr><td><code>on_shutdown</code></td><td>노드 종료</td></tr>
+</tbody></table>
+<h3>3.2 Problem Expert</h3>
+<table><thead><tr><th>전이</th><th>수행 작업</th></tr></thead><tbody>
+<tr><td><code>on_configure</code></td><td>Domain Expert 클라이언트 초기화, 세계 상태 저장소 준비</td></tr>
+<tr><td><code>on_activate</code></td><td>서비스 서버 활성화, 세계 상태 관리 시작</td></tr>
+<tr><td><code>on_deactivate</code></td><td>서비스 비활성화, 상태 보존</td></tr>
+<tr><td><code>on_cleanup</code></td><td>세계 상태 초기화</td></tr>
+<tr><td><code>on_shutdown</code></td><td>노드 종료</td></tr>
+</tbody></table>
+<h3>3.3 Planner</h3>
+<table><thead><tr><th>전이</th><th>수행 작업</th></tr></thead><tbody>
+<tr><td><code>on_configure</code></td><td>플래너 플러그인 로드, Domain/Problem Expert 클라이언트 초기화</td></tr>
+<tr><td><code>on_activate</code></td><td>계획 생성 서비스 활성화</td></tr>
+<tr><td><code>on_deactivate</code></td><td>서비스 비활성화</td></tr>
+<tr><td><code>on_cleanup</code></td><td>플러그인 해제</td></tr>
+<tr><td><code>on_shutdown</code></td><td>노드 종료</td></tr>
+</tbody></table>
+<h3>3.4 Executor</h3>
+<table><thead><tr><th>전이</th><th>수행 작업</th></tr></thead><tbody>
+<tr><td><code>on_configure</code></td><td>행동 트리 엔진 초기화, ActionExecutorClient 발견</td></tr>
+<tr><td><code>on_activate</code></td><td>실행 액션 서버 활성화</td></tr>
+<tr><td><code>on_deactivate</code></td><td>진행 중 실행 정지, 액션 서버 비활성화</td></tr>
+<tr><td><code>on_cleanup</code></td><td>행동 트리 해제</td></tr>
+<tr><td><code>on_shutdown</code></td><td>노드 종료</td></tr>
+</tbody></table>
+<h2>4. PlanSys2 Bringup의 라이프사이클 조율</h2>
+<p>PlanSys2의 런치 시스템은 4대 노드의 라이프사이클을 순서대로 조율한다:</p>
+<pre><code class="language-python"># 런치 파일에서의 라이프사이클 조율
+# 1. 모든 노드를 Unconfigured로 생성
+# 2. Domain Expert → configure → activate
+# 3. Problem Expert → configure → activate (Domain Expert 필요)
+# 4. Planner → configure → activate
+# 5. Executor → configure → activate
+</code></pre>
+<p>의존 관계에 따라 Domain Expert가 먼저 활성화된 후, Problem Expert, Planner, Executor 순으로 활성화된다.</p>
+<h2>5. 런타임 라이프사이클 제어</h2>
+<p>외부에서 노드의 라이프사이클을 제어할 수 있다:</p>
+<pre><code class="language-bash"># ROS2 CLI를 통한 라이프사이클 제어
+ros2 lifecycle set /domain_expert configure
+ros2 lifecycle set /domain_expert activate
+ros2 lifecycle get /domain_expert  # 현재 상태 조회
+</code></pre>
+<h2>6. 라이프사이클 관리의 이점</h2>
+<ol>
+<li><strong>단계적 초기화</strong>: 도메인 로드, 서비스 준비 등을 명확한 단계로 분리</li>
+<li><strong>우아한 종료</strong>: 실행 중인 액션을 정리하고 자원을 체계적으로 해제</li>
+<li><strong>오류 복구</strong>: 오류 발생 시 노드를 비활성화 후 재구성하여 복구</li>
+<li><strong>외부 제어</strong>: 운영자가 런타임에 노드의 상태를 제어 가능</li>
+<li><strong>의존성 관리</strong>: 노드 간 의존 관계에 따른 순차적 활성화 보장</li>
+</ol>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE ICARSC</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+</ul>
 
             </article>
             <footer>

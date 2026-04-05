@@ -115,6 +115,78 @@
             </header>
             <article>
                 <h1>1317.43 PlanSys2의 다중 로봇 지원 전략</h1>
+<h2>1. 다중 로봇 임무 계획의 개요</h2>
+<p>다중 로봇 시스템(Multi-Robot System, MRS)에서의 임무 계획은 복수의 로봇에게 태스크를 할당하고, 각 로봇의 행동을 조율하여 전체 임무의 효율적 수행을 보장하는 과정이다. PlanSys2는 PDDL의 표현력을 활용하여 다중 로봇 시나리오를 지원할 수 있으며, 이를 위한 도메인 설계 전략과 시스템 구성 방법을 제공한다(Martín et al., 2021).</p>
+<h2>2. PDDL을 통한 다중 로봇 표현</h2>
+<h3>2.1 로봇을 객체로 모델링</h3>
+<p>PDDL에서 복수의 로봇은 <code>robot</code> 타입의 개별 객체로 모델링된다. 각 로봇은 고유한 이름을 가지며, 술어를 통해 각 로봇의 상태(위치, 점유 상태, 보유 물체 등)가 독립적으로 관리된다.</p>
+<pre><code class="language-lisp">(:types robot location object)
+(:predicates
+  (at ?r - robot ?l - location)
+  (free ?r - robot)
+  (holding ?r - robot ?o - object))
+</code></pre>
+<h3>2.2 문제 인스턴스에서의 다중 로봇 등록</h3>
+<p>문제 인스턴스에 복수의 로봇 객체를 등록하고, 각 로봇의 초기 상태를 개별적으로 설정한다.</p>
+<pre><code>set instance robot1 robot
+set instance robot2 robot
+set predicate (at robot1 kitchen)
+set predicate (at robot2 warehouse)
+set predicate (free robot1)
+set predicate (free robot2)
+</code></pre>
+<h3>2.3 플래너에 의한 태스크 할당</h3>
+<p>플래너는 목표 조건을 달성하기 위해 각 로봇에게 적절한 액션을 할당하는 계획을 생성한다. PDDL 플래너는 모든 로봇을 동등한 자원으로 취급하며, 목표 달성을 위한 최적 또는 만족해를 탐색하는 과정에서 자동으로 태스크 할당이 이루어진다.</p>
+<pre><code>0.000: (move robot1 kitchen corridor) [5.000]
+0.000: (move robot2 warehouse corridor) [8.000]
+8.001: (pick robot2 box corridor) [3.000]
+5.001: (pick robot1 cup corridor) [3.000]
+</code></pre>
+<h2>3. 다중 로봇 실행 전략</h2>
+<h3>3.1 중앙 집중식 실행</h3>
+<p>가장 단순한 다중 로봇 실행 전략은 단일 PlanSys2 인스턴스가 모든 로봇의 계획 수립과 실행을 중앙에서 관리하는 방식이다. 실행기 노드는 계획의 병렬 액션 구간에서 서로 다른 로봇의 액션을 동시에 디스패치한다.</p>
+<table><thead><tr><th>장점</th><th>단점</th></tr></thead><tbody>
+<tr><td>구현이 단순하다</td><td>단일 장애점이 존재한다</td></tr>
+<tr><td>전역 최적 계획이 가능하다</td><td>로봇 수 증가 시 확장성이 제한된다</td></tr>
+<tr><td>로봇 간 조율이 용이하다</td><td>통신 지연에 취약하다</td></tr>
+</tbody></table>
+<h3>3.2 분산 실행</h3>
+<p>각 로봇에 독립적인 PlanSys2 인스턴스를 배치하는 분산 실행 전략도 가능하다. 이 경우 ROS2의 이름공간(namespace) 메커니즘을 활용하여 각 로봇의 PlanSys2 노드를 격리한다. 상위 수준의 태스크 할당기(task allocator)가 각 로봇에 개별 목표를 분배하고, 각 로봇의 PlanSys2가 독립적으로 계획을 수립하고 실행한다.</p>
+<h3>3.3 ROS2 이름공간을 통한 격리</h3>
+<p>다중 로봇 환경에서 각 로봇의 PlanSys2 인스턴스는 ROS2 이름공간을 통해 격리된다.</p>
+<pre><code>/robot1/plansys2/domain_expert
+/robot1/plansys2/problem_expert
+/robot1/plansys2/planner
+/robot1/plansys2/executor
+/robot2/plansys2/domain_expert
+/robot2/plansys2/problem_expert
+...
+</code></pre>
+<p>이 격리를 통해 각 로봇의 도메인, 문제, 계획, 실행이 독립적으로 관리되며, 로봇 간의 간섭이 방지된다.</p>
+<h2>4. 로봇 간 조율</h2>
+<h3>4.1 공유 자원과 상호 배제</h3>
+<p>다중 로봇 시나리오에서는 공유 자원(좁은 통로, 충전 스테이션 등)에 대한 접근 제어가 필요하다. PDDL 수준에서는 상호 배제(mutual exclusion)를 술어로 모델링하여 플래너가 충돌을 회피하는 계획을 생성하도록 할 수 있다.</p>
+<pre><code class="language-lisp">(:predicates (corridor_free))
+
+(:action enter_corridor
+  :parameters (?r - robot)
+  :precondition (corridor_free)
+  :effect (not (corridor_free)))
+
+(:action leave_corridor
+  :parameters (?r - robot)
+  :effect (corridor_free))
+</code></pre>
+<h3>4.2 실행 시 동기화</h3>
+<p>계획 수립 시점에 예측하지 못한 충돌은 실행 시점에 감지되어야 한다. 이를 위해 로봇 간 통신을 통한 실시간 상태 공유와 동기화 메커니즘이 필요하며, 이는 PlanSys2의 표준 기능을 넘어서는 추가적인 시스템 계층에서 구현된다(Martín et al., 2021).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Korsah, G. A., Stentz, A., &amp; Dias, M. B. (2013). “A Comprehensive Taxonomy for Multi-Robot Task Allocation.” <em>International Journal of Robotics Research</em>, 32(12), 1495–1512.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

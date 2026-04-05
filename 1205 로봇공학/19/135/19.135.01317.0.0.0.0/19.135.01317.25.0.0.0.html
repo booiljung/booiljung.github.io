@@ -115,6 +115,90 @@
             </header>
             <article>
                 <h1>1317.25 다중 플래너 지원 전략</h1>
+<h2>1. 다중 플래너 지원의 동기</h2>
+<p>자동화된 계획 수립(automated planning) 분야에는 단일한 최적 플래너가 존재하지 않는다. 국제 계획 수립 대회(International Planning Competition, IPC)의 결과가 매 대회마다 다른 플래너의 우위를 보여주듯이, 각 플래너는 특정 도메인 구조와 문제 특성에 대해 상이한 성능을 나타낸다(Vallati et al., 2015). 로봇 공학에서도 임무의 유형에 따라 시간적 계획(temporal planning)이 필요한 경우, 수치적 계획(numeric planning)이 요구되는 경우, 고전적 STRIPS 계획으로 충분한 경우 등 다양한 상황이 발생한다. PlanSys2는 이러한 현실을 반영하여, 복수의 플래너를 동시에 등록하고 상황에 따라 적절한 플래너를 선택할 수 있는 다중 플래너 지원 전략을 구현하고 있다(Martín et al., 2021).</p>
+<h2>2. 다중 플래너 등록 메커니즘</h2>
+<h3>2.1 파라미터 기반 플래너 목록 관리</h3>
+<p>PlanSys2의 플래너 노드는 <code>plan_solver_plugins</code> 파라미터를 통해 복수의 플래너 플러그인을 등록할 수 ���다. 이 파라미터는 문자열 배열(string array) 타입으로, 각 원소가 플래너 플러그인의 논리적 이름을 나타낸다.</p>
+<pre><code class="language-yaml">planner:
+  ros__parameters:
+    plan_solver_plugins:
+      - "POPF"
+      - "TFD"
+      - "FastDownward"
+    POPF:
+      plugin: "plansys2_popf_plan_solver/POPFPlanSolver"
+    TFD:
+      plugin: "plansys2_tfd_plan_solver/TFDPlanSolver"
+    FastDownward:
+      plugin: "plansys2_fd_plan_solver/FDPlanSolver"
+</code></pre>
+<p>각 플래너 이름 아래에는 해당 플러그인의 클래스 경로와 플래너 고유 파라미터가 하위 이름공간(sub-namespace)으로 구성된다. 이를 통해 동일한 플래너 노드 인스턴스 내에서 복수의 플래너가 독립적으로 구성되고 관리된다.</p>
+<h3>2.2 플러그인 초기화 순서</h3>
+<p>플래너 노드는 <code>on_configure</code> 라이프사이클 콜백에서 <code>plan_solver_plugins</code> 목록에 기재된 순서대로 각 플러그인을 로딩하고 초기화한다. 초기화 과정에서 특정 플러그인의 로딩이 실패하면, 해당 플러그인은 건너뛰고 나머지 플러그인의 로딩을 계속 진행한다. 모든 플러그인의 로딩이 실패한 경우에만 노드가 비활성 상태를 유지한다.</p>
+<h2>3. 플래너 선택 전략</h2>
+<h3>3.1 기본 플래너 우선 전략</h3>
+<p>가장 단순한 다중 플래너 활용 전략은 기본 플래너 우선(primary planner first) 방식이다. <code>plan_solver_plugins</code> 목록의 첫 번째 플래너가 기본 플래너로 지정되며, 계획 수립 요청 시 이 플래너가 우선적으로 호출된다. 기본 플래너가 계획 수립에 실패한 경우(해를 찾지 못하거나 시간 초과가 발생한 경우), 목록의 다음 플래너가 순차적으로 시도된다. 이 전략은 별도의 플래너 선택 로직 없이도 다중 플래너의 이점을 활용할 수 있다.</p>
+<h3>3.2 도메인 특성 기반 선택</h3>
+<p>보다 정교한 전략으로, 도메인 모델의 요구사항(<code>:requirements</code>)을 분석하여 적합한 플래너를 자동으로 선택하는 방식이 있다. 이 전략에서는 각 플래너 플러그인이 지원하는 PDDL 요구사항 집합을 선언하고, 현재 도메인의 요구사항과 비교하여 가장 적합한 플래너를 선택한다.</p>
+<table><thead><tr><th>도메인 요구사항</th><th>권장 플래너 유형</th></tr></thead><tbody>
+<tr><td><code>:strips</code>, <code>:typing</code></td><td>고전적 플래너(Fast Downward, LAMA 등)</td></tr>
+<tr><td><code>:durative-actions</code></td><td>시간적 플래너(POPF, TFD 등)</td></tr>
+<tr><td><code>:numeric-fluents</code></td><td>수치 지원 플래너(Metric-FF, POPF 등)</td></tr>
+<tr><td><code>:derived-predicates</code></td><td>파생 술어 지원 플래너(Fast Downward 등)</td></tr>
+</tbody></table>
+<p>이러한 자동 선택 메커니즘은 도메인 설계자가 플래너 선택에 대한 전문 지식이 없더라도 적절한 플래너가 사용되도록 보장한다.</p>
+<h3>3.3 사용자 명시적 선택</h3>
+<p>PlanSys2는 계획 수립 요청 시 사용할 플래너를 명시적으로 지정하는 인터페이스도 제공한다. 상위 수준의 임무 관리 노드가 임무 특성에 따라 특정 플래너를 선택하여 요청할 수 있으며, 이 경우 플래너 노드는 지정된 플래너 플러그인만을 사용하여 계획을 수립한다.</p>
+<h2>4. 대체 플래너(Fallback) 전략</h2>
+<h3>4.1 순차적 대체 실행</h3>
+<p>다중 플래너 환경에서 가장 실용적인 전략 중 하나는 순차적 대체(sequential fallback) 방식이다. 주 플래너가 계획 수립에 실패하면, 등록된 순서에 따라 다음 플래너가 자동으로 호출된다. 이 과정은 유효한 계획이 생성되거나 모든 플래너가 실패할 때까지 반복된다.</p>
+<p>순차적 대체 전략의 의사결정 흐름은 다음과 같다.</p>
+<ol>
+<li>첫 번째 플래너에 도메인과 문제를 전달하여 계획 수립을 시도한다.</li>
+<li>계획 수립에 성공하면 해당 계획을 반환한���.</li>
+<li>실패하면 오류 정보를 기록하고 다음 플래너로 전환한다.</li>
+<li>모든 플래너가 실패하면 최종 실패를 보고한다.</li>
+</ol>
+<p>이 전략은 각 플래너의 장점을 상호 보완적으로 활용할 수 있게 한다. 예를 들어, POPF가 특정 도메인 구조에서 시간 초과를 발생시키는 경우, Fast Downward가 대체 플래너로서 해를 찾아낼 수 있다.</p>
+<h3>4.2 병렬 실행과 최선해 선택</h3>
+<p>보다 고급 전략으로, 복수의 플래너를 병렬로 실행하고 가장 먼저 반환된 해 또는 가장 품질이 좋은 해를 선택하는 방식이 있다. 이 전략은 포트폴리오 기반 계획 수립(portfolio-based planning)이라 불리며, IPC에서 높은 성능을 보인 접근법이다(Seipp et al., 2015). 다만, PlanSys2의 현재 구현에서는 플래너의 병렬 실행이 기본으로 지원되지 않으며, 이를 구현하려면 플래너 노드의 확장이 필요하다.</p>
+<h2>5. 플래너 간 출력 호환성</h2>
+<p>다중 플래너를 지원하기 위해서는 각 플래너의 출력 형식 차이를 통합적으로 처리할 수 있어야 한다. 대부분의 PDDL 플래너는 IPC 표준 출력 형식을 따르지만, 세부적인 형식에서 차이가 존재한다. 각 플래너 플러그인은 자체적인 출력 파서를 포함하여, 해당 플래너의 출력을 PlanSys2의 통일된 <code>Plan</code> 자료 구조로 변환하는 책임을 진다.</p>
+<table><thead><tr><th>플래너</th><th>출력 형식 특성</th></tr></thead><tbody>
+<tr><td>POPF</td><td>표준 출력에 시간 인덱싱된 계획 출력</td></tr>
+<tr><td>TFD</td><td>별도의 출력 파일에 계획 저장</td></tr>
+<tr><td>Fast Downward</td><td>SAS+ 인코딩 기반, 별도 출력 파일</td></tr>
+<tr><td>Metric-FF</td><td>표준 출력에 순차적 계획 출력</td></tr>
+</tbody></table>
+<p>이러한 형식 차이는 각 플러그인 내부에서 처리되므로, 플래너 노드와 실행기 노드는 플래너의 종류에 무관하게 동일한 <code>Plan</code> 인터페이스를 통해 계획 결과를 처리할 수 있다.</p>
+<h2>6. 플래너별 구성의 독립성</h2>
+<p>다중 플래너 환경에서 각 플래너는 독립적인 파라미터 이름공간을 가진다. 이를 통해 플래너별로 다음과 같은 구성 항목을 개별적으로 설정할 수 있다.</p>
+<ul>
+<li><strong>실행 파일 경로</strong>: 각 플래너의 바이너리가 설치된 경로</li>
+<li><strong>시간 제한</strong>: 플래너의 최대 실행 시간</li>
+<li><strong>메모리 제한</strong>: 플래너의 최대 메모리 사용량</li>
+<li><strong>탐색 구성</strong>: 휴리스틱 선택, 탐색 전략, 가중치 등 플래너 고유의 설정</li>
+<li><strong>임시 파일 경로</strong>: 도메인, 문제, 출력 파일이 저장되는 디렉터리</li>
+</ul>
+<p>이러한 독립적 구성은 각 플래너가 최적의 조건에서 실행될 수 있도록 보장하며, 플래너 간의 설정 충돌을 방지한다(Martín et al., 2021).</p>
+<h2>7. 다중 플래너 전략의 실용적 가치</h2>
+<p>로봇 시스템의 운용 환경에서 다중 플래너 지원은 다음과 같은 실용적 가치를 제공한다.</p>
+<ul>
+<li><strong>강건성 향상</strong>: 단일 플래너의 실패가 전체 시스템의 실패로 이어지지 않는다.</li>
+<li><strong>도메인 적응성</strong>: 임무 유형에 따라 최적의 플래너를 사용할 수 있다.</li>
+<li><strong>실험적 유연성</strong>: 연구 개발 과정에서 다양한 플래너의 성능을 동일 환경에서 비교 평가할 수 있다.</li>
+<li><strong>점진적 마이그레이션</strong>: 기존 플래너에서 새로운 플래너로의 전환을 대체 전략을 통해 점진적으로 수행할 수 있다.</li>
+</ul>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Vallati, M., Chrpa, L., Grzes, M., McCluskey, T. L., Roberts, M., &amp; Sanner, S. (2015). “The 2014 International Planning Competition: Progress and Trends.” <em>AI Magazine</em>, 36(3), 90–98.</li>
+<li>Seipp, J., Sievers, S., Helmert, M., &amp; Hutter, F. (2015). “Automatic Configuration of Sequential Planning Portfolios.” <em>Proceedings of the 29th AAAI Conference on Artificial Intelligence</em>.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

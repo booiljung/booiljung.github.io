@@ -115,6 +115,121 @@
             </header>
             <article>
                 <h1>1317.26 계획 결과의 파싱과 표현</h1>
+<h2>1. 계획 결과 파싱의 필요성</h2>
+<p>외부 플래너가 계획 수립을 완료하면, 그 결과는 플래너 고유의 텍스트 형식으로 출력된다. PlanSys2가 이 계획을 실행기 노드에 전달하고 실제 로봇 행동으로 변환하기 위해서는, 플래너의 텍스트 출력을 구조화된 내부 표현(internal representation)으로 변환하는 파싱(parsing) 과정이 필수적이다. 이 파싱 과정은 플래너의 출력 형식 차이를 추상화하여, 실행기 노드가 플래너 종류에 무관하게 동일한 인터페이스로 계획을 처리할 수 있게 하는 역할을 수행한다(Martín et al., 2021).</p>
+<h2>2. 플래너 출력 형식의 표준</h2>
+<h3>2.1 IPC 표준 계획 출력 형식</h3>
+<p>국제 계획 수립 대회(International Planning Competition, IPC)는 플래너의 계획 출력에 대한 사실상의 표준 형식을 확립하였다. 이 형식에서 계획은 시간 인덱싱된 액션의 순서열(sequence)로 표현된다.</p>
+<p><strong>시간적 계획(temporal plan)의 출력 형식</strong>:</p>
+<pre><code>0.000: (move robot1 kitchen corridor) [5.000]
+0.000: (charge robot2 station) [10.000]
+5.001: (pick robot1 cup corridor) [3.000]
+8.002: (move robot1 corridor bedroom) [5.000]
+</code></pre>
+<p>각 행의 구문 구조는 다음과 같다.</p>
+<ul>
+<li><code>&lt;시작_시각&gt;</code>: 액션의 시작 시점(부동 소수점, 단위: 초)</li>
+<li><code>(&lt;액션_이름&gt; &lt;인자1&gt; &lt;인���2&gt; ...)</code>: PDDL 액션과 그 인자(argument)</li>
+<li><code>[&lt;지속_시간&gt;]</code>: 액션의 지속 시간(부동 소수점, 단위: 초)</li>
+</ul>
+<p><strong>고전적 순차 계획(classical sequential plan)의 출력 형식</strong>:</p>
+<pre><code>(move robot1 kitchen corridor)
+(pick robot1 cup corridor)
+(move robot1 corridor bedroom)
+</code></pre>
+<p>고전적 계획에서는 시간 정보가 없으며, 액션이 수행 순서대로 나열된다.</p>
+<h3>2.2 주석과 메타데이터</h3>
+<p>플래너의 출력에는 계획 항목 외에도 탐색 통계, 휴리스틱 값, 비용 정보 등의 메타데이터가 포함될 수 있다. 이러한 메타데이터는 일반적으로 세미콜론(<code>;</code>)으로 시작하는 주석 행으로 표현된다.</p>
+<pre><code>; Plan found with cost: 18.002
+; States evaluated: 145
+; Time: 0.23s
+</code></pre>
+<p>파서는 이러한 주석 행을 식별하여 계획 항목과 분리해야 한다.</p>
+<h2>3. PlanSys2의 계획 파싱 절차</h2>
+<h3>3.1 텍스트 전처리</h3>
+<p>파싱의 첫 단계는 플래너 출력의 텍스트 전처리(text preprocessing)이다. 이 단계에서는 다음과 같은 처리가 수행된다.</p>
+<ol>
+<li><strong>주석 행 제거</strong>: 세미콜론(<code>;</code>)으로 시작하는 행을 필터링한다.</li>
+<li><strong>빈 행 제거</strong>: 공백만으로 구성된 행을 제거한다.</li>
+<li><strong>공백 정규화</strong>: 연속된 공백을 단일 공백으로 치환하고, 행의 앞뒤 공백을 제거한다.</li>
+<li><strong>계획 영역 식별</strong>: 일부 플래너는 계획 시작과 종료를 특정 구분자로 표시한다. 예를 들어, 일부 플래너는 계획 시작을 빈 행이나 특정 키워드로 표시한다. 파서는 이러한 구분자를 인식하여 계획 영역만을 추출한다.</li>
+</ol>
+<h3>3.2 행 단위 파싱</h3>
+<p>전처리된 각 행은 정규 표현식(regular expression)을 사용하여 파싱된다. 시간적 계획의 경우, 다음과 같은 정규 표현식 패턴이 적용된다.</p>
+<pre><code>^(\d+\.?\d*)\s*:\s*\((.+)\)\s*\[(\d+\.?\d*)\]$
+</code></pre>
+<p>이 패턴은 세 개의 캡처 그룹(capture group)을 포함한다.</p>
+<table><thead><tr><th>캡처 그룹</th><th>내용</th><th>예시</th></tr></thead><tbody>
+<tr><td>그룹 1</td><td>시작 시각</td><td><code>0.000</code></td></tr>
+<tr><td>그룹 2</td><td>액션 문자열</td><td><code>move robot1 kitchen corridor</code></td></tr>
+<tr><td>그룹 3</td><td>지속 시간</td><td><code>5.000</code></td></tr>
+</tbody></table>
+<p>고전적 순차 계획의 경우, 보다 단순한 패턴이 사용된다.</p>
+<pre><code>^\((.+)\)$
+</code></pre>
+<p>�� 경우, 시작 시각은 액션의 순서에 따라 자동으로 할당되며, 지속 시간은 기본값(일반적으로 0 또는 1)으로 설정된다.</p>
+<h3>3.3 액션 문자열의 분석</h3>
+<p>각 행에서 추출된 액션 문자열은 추가적으로 분석되어 액션 이름과 인자로 분리된다. 액션 문자열 <code>move robot1 kitchen corridor</code>에서 첫 번째 토큰 <code>move</code>가 액션 이름이 되고, 나머지 토큰 <code>robot1</code>, <code>kitchen</code>, <code>corridor</code>가 순서대로 인자가 된다.</p>
+<p>이 분석 결과는 도메인 모델의 액션 정의와 대조하여 검증할 수 있다. 액션 이름이 도메인에 정의되어 있는지, 인자의 수가 액션의 파라미터 수와 일치하는지 등을 확인하여, 플래너가 유효한 계획을 생성했는지 검증한다.</p>
+<h2>4. PlanSys2의 내부 계획 표현</h2>
+<h3>4.1 Plan 자료 구조</h3>
+<p>PlanSys2는 파싱된 계획을 <code>Plan</code> 자료 구조로 내부 표현한다. <code>Plan</code>은 <code>PlanItem</code>의 벡터(vector)로 구성되며, 각 <code>PlanItem</code>은 다음과 같은 필드를 포함한다.</p>
+<pre><code class="language-cpp">struct PlanItem {
+  float time;           // 시작 시각 (초)
+  std::string action;   // 액션 PDDL 문자열
+  float duration;       // 지속 시간 (초)
+};
+
+using Plan = std::vector&lt;PlanItem&gt;;
+</code></pre>
+<p>이 자료 구조는 시간적 계획과 순차적 계획을 모두 표현할 수 있는 통일된 형식이다. 순차적 계획의 경우, 각 <code>PlanItem</code>의 <code>time</code> 필드가 누적 시간으로 설정된다.</p>
+<h3>4.2 계획의 시간적 구조 분석</h3>
+<p>파싱된 계획에서는 시간적 구조를 분석하여 다음과 같은 정보를 추출할 수 있다.</p>
+<ul>
+<li><strong>만듦새(makespan)</strong>: 계획의 총 소요 시간. 마지막 액션의 시작 시각과 지속 시간의 합으로 계산된다.</li>
+</ul>
+<p><span class="math math-display">
+\text{makespan} = \max_{i}(t_i + d_i)
+</span></p>
+<p>여기서 <span class="math math-inline">t_i</span>는 <span class="math math-inline">i</span>번째 액션의 시작 시각이고, <span class="math math-inline">d_i</span>는 지속 시간이다.</p>
+<ul>
+<li><strong>병렬 액션 집합</strong>: 동일한 시작 시각을 가진 액션들의 집합. 이는 동시 실행 가능한 액션을 식별하는 데 사용된다.</li>
+<li><strong>순서 의존성</strong>: 시작 시각의 순서에 따른 액션 간의 실행 순서. 실행기 노드가 액션을 올바른 순서로 디스패치(dispatch)하는 데 활용된다.</li>
+</ul>
+<h2>5. 계획 표현의 ROS2 메시지 형식</h2>
+<p>PlanSys2는 파싱된 계획을 ROS2 노드 간에 전달하기 위해 사용자 정의 메시지 타입을 사용한다. 계획 관련 주요 메시지 타입은 다음과 같다.</p>
+<table><thead><tr><th>메시지 타입</th><th>필드</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>plansys2_msgs/Plan</code></td><td><code>items[]</code></td><td>PlanItem의 배열</td></tr>
+<tr><td><code>plansys2_msgs/PlanItem</code></td><td><code>time</code>, <code>action</code>, <code>duration</code></td><td>개별 계획 항목</td></tr>
+</tbody></table>
+<p>이 메시지 형식은 계획 수립 서비스의 응답 필드와 실행기 노드의 입력 인터페이스에서 공통으로 사용된다. ROS2의 메시지 직렬화(serialization) 메커니즘을 통해 노드 간 통신 시 자동으로 직렬화와 역직렬화가 수행된다.</p>
+<h2>6. 파싱 오류의 처리</h2>
+<p>계획 파싱 과정에서 발생할 수 있는 오류와 처리 방식은 다음과 같다.</p>
+<ul>
+<li><strong>형식 불일치</strong>: 플래너 출력이 기대한 정규 표현식 패턴과 일치하지 않는 경우. 해당 행을 건너뛰고 경고 로그를 출력한다.</li>
+<li><strong>빈 계획</strong>: 플래너가 유효한 계획 항목을 생성하지 못한 경우. 빈 <code>Plan</code> 객체를 반환하고, 이를 계획 수립 실패로 처리한다.</li>
+<li><strong>수치 변환 오류</strong>: 시작 시각이나 지속 시간의 문자열을 부동 소수점으로 변환하는 과정에서 오류가 발생한 경우. 해당 행을 건너뛰고 오류를 기록한다.</li>
+<li><strong>도메인 불일치</strong>: 계획에 포함된 액션이 도메인 모델에 정의되지 않은 경우. 이는 플래너와 도메인의 불일치를 나타내며, 심각한 오류로 분류된다.</li>
+</ul>
+<p>PlanSys2는 이러한 오류를 ROS2 로그 시스템을 통해 상세하게 보고하여, 디버깅과 문제 해결을 지원한다.</p>
+<h2>7. 계획 표현의 활용</h2>
+<p>파싱되고 구조화된 계획 표현은 PlanSys2 시스템 내에서 다음과 같은 목적으로 활용된다.</p>
+<ul>
+<li><strong>실행 스케줄링</strong>: 실행기 노드가 각 액션의 시작 시각에 맞추어 행동 트리(behavior tree)를 디스패치하는 기준으로 사용된다.</li>
+<li><strong>진행 상태 추적</strong>: 현재 실행 중인 액션과 대기 중인 액션을 식별하여 계획의 진행률을 계산한다.</li>
+<li><strong>시각화</strong>: 계획을 타임라인(timeline) 형태로 시각화하여 사용자에게 제공한다.</li>
+<li><strong>로깅과 감사</strong>: 수립된 계획의 이력을 기록하여 사후 분석(post-analysis)에 활용한다.</li>
+</ul>
+<p>이처럼 계획 결과의 정확한 파싱과 체계적 표현은 계획 수립에서 실행에 이르는 PlanSys2의 전체 파이프라인을 연결하는 핵심 요소이다(Martín et al., 2021).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Fox, M., &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

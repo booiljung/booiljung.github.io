@@ -115,6 +115,98 @@
             </header>
             <article>
                 <h1>1317.39 사용자 정의 플래너 플러그인 개발</h1>
+<h2>1. 사용자 정의 플래너의 필요성</h2>
+<p>PlanSys2는 POPF를 기본 플래너로 제공하지만, 특정 도메인이나 응용 시나리오에서는 다른 플래너가 더 적합할 수 있다. 예를 들어, 파생 술어(derived predicate)를 사용하는 도메인에서는 POPF 대신 Fast Downward가 필요하며, 확률적 도메인에서는 확률적 플래너가 요구된다. PlanSys2의 플러그인 아키텍처는 이러한 요구에 대응하여, 개발자가 자신만의 플래너 플러그인을 개발하고 통합할 수 있는 체계적 절차를 제공한다(Martín et al., 2021).</p>
+<h2>2. 개발 절차</h2>
+<h3>2.1 단계: ROS2 패키지 생성</h3>
+<p>사용자 정의 플래너 플러그인을 위한 독립적인 ROS2 패키지를 생성한다. 이 패키지는 <code>plansys2_core</code>에 대한 빌드 의존성을 가진다.</p>
+<pre><code class="language-cmake">find_package(plansys2_core REQUIRED)
+find_package(pluginlib REQUIRED)
+</code></pre>
+<h3>2.2 단계: PlanSolverBase 상속 클래스 구현</h3>
+<p><code>plansys2::PlanSolverBase</code> 추상 클래스를 상속하는 플러그인 클래스를 구현한다.</p>
+<pre><code class="language-cpp">#include "plansys2_core/PlanSolverBase.hpp"
+
+namespace my_planner
+{
+class MyPlanSolver : public plansys2::PlanSolverBase
+{
+public:
+  void configure(
+    rclcpp_lifecycle::LifecycleNode::SharedPtr node,
+    const std::string &amp; plugin_name) override;
+
+  std::optional&lt;plansys2_msgs::msg::Plan&gt; getPlan(
+    const std::string &amp; domain,
+    const std::string &amp; problem,
+    const std::string &amp; node_namespace) override;
+};
+}
+</code></pre>
+<p><code>configure</code> 메서드에서는 플래너 실행 파일 경로, 시간 제한, 탐색 옵션 등 플래너 고유 파라미터를 ROS2 파라미터 시스템으로부터 로딩한다. <code>getPlan</code> 메서드에서는 도메인과 문제 PDDL 문자열을 수신하여, 외부 플래너를 호출하고 결과를 파싱하여 반환하는 전체 로직을 구현한다.</p>
+<h3>2.3 단계: getPlan 메서드의 구현</h3>
+<p><code>getPlan</code> 메서드의 전형적 구현 패턴은 다음과 같다.</p>
+<ol>
+<li><strong>임시 파일 작성</strong>: 수신된 도메인과 문제 PDDL 문자열을 임시 파일로 저장한다.</li>
+<li><strong>외부 프로세스 실행</strong>: <code>std::system()</code> 또는 POSIX <code>fork()</code>/<code>exec()</code> 계열 함수를 사용하여 플래너 프로세스를 생성한다.</li>
+<li><strong>종료 대기 및 결과 확인</strong>: 프로세스의 종료를 대기하고 종료 코드를 확인한다.</li>
+<li><strong>출력 파싱</strong>: 플래너의 출력을 읽어 <code>Plan</code> 메시지의 <code>PlanItem</code> 배열로 변환한다.</li>
+<li><strong>임시 파일 정리</strong>: 생성된 임시 파일을 삭제한다.</li>
+<li><strong>결과 반환</strong>: 성공 시 <code>Plan</code> 메시지를, 실패 시 <code>std::nullopt</code>을 반환한다.</li>
+</ol>
+<h3>2.4 단계: 플러그인 등록</h3>
+<p>소스 파일에 <code>PLUGINLIB_EXPORT_CLASS</code> 매크로를 추가하여 플러그인을 <code>pluginlib</code>에 등록한다.</p>
+<pre><code class="language-cpp">#include "pluginlib/class_list_macros.hpp"
+PLUGINLIB_EXPORT_CLASS(
+  my_planner::MyPlanSolver,
+  plansys2::PlanSolverBase)
+</code></pre>
+<h3>2.5 단계: 플러그인 기술 XML 작성</h3>
+<p>플러그인의 메타데이터를 기술하는 XML 파일을 작성한다.</p>
+<pre><code class="language-xml">&lt;library path="my_plan_solver"&gt;
+  &lt;class type="my_planner::MyPlanSolver"
+         base_class_type="plansys2::PlanSolverBase"&gt;
+    &lt;description&gt;Custom planner plugin&lt;/description&gt;
+  &lt;/class&gt;
+&lt;/library&gt;
+</code></pre>
+<h3>2.6 단계: CMakeLists.txt 구성</h3>
+<p>공유 라이브러리의 빌드와 플러그인 XML 파일의 등록을 <code>CMakeLists.txt</code>에 설정한다.</p>
+<pre><code class="language-cmake">add_library(my_plan_solver SHARED src/my_plan_solver.cpp)
+ament_target_dependencies(my_plan_solver plansys2_core pluginlib)
+pluginlib_export_plugin_description_file(plansys2_core my_planner_plugin.xml)
+install(TARGETS my_plan_solver LIBRARY DESTINATION lib)
+</code></pre>
+<h3>2.7 단계: 런치 파일 구성</h3>
+<p>개발된 플러그인을 PlanSys2에서 사용하기 위해 런치 파일의 파라미터를 구성한다.</p>
+<pre><code class="language-yaml">planner:
+  ros__parameters:
+    plan_solver_plugins: ["MyPlanner"]
+    MyPlanner:
+      plugin: "my_planner/MyPlanSolver"
+      timeout: 30.0
+</code></pre>
+<h2>3. 출력 파싱의 구현</h2>
+<p>플래너마다 출력 형식이 상이하므로, 출력 파싱 로직은 플러그인 개발에서 가장 주의가 필요한 부분이다. 주요 고려사항은 다음과 같다.</p>
+<ul>
+<li><strong>시간적 계획과 순차 계획의 구분</strong>: 플래너가 시간 정보를 포함하는 출력을 생성하는지 여부에 따라 파싱 방식이 달라진다.</li>
+<li><strong>주석과 메타데이터의 필터링</strong>: 플래너 출력에 포함된 통계 정보, 주석 등을 계획 항목과 분리해야 한다.</li>
+<li><strong>인코딩 차이의 처리</strong>: 일부 플래너는 SAS+ 인코딩이나 고유한 중간 표현을 사용하므로, PDDL 수준의 액션으로 역변환하는 과정이 필요할 수 있다.</li>
+</ul>
+<h2>4. 테스트와 검증</h2>
+<p>개발된 플러그인은 다음과 같은 테스트를 통해 검증해야 한다.</p>
+<ul>
+<li><strong>단위 테스트</strong>: <code>getPlan</code> 메서드가 알려진 도메인과 문제에 대해 유효한 계획을 반환하는지 확인한다.</li>
+<li><strong>통합 테스트</strong>: PlanSys2의 전체 파이프라인에서 플러그인이 올바르게 로딩되고 동작하는지 확인한다.</li>
+<li><strong>오류 처리 테스트</strong>: 해 부재, 시간 초과, 잘못된 입력 등의 오류 상황에서 플러그인이 적절하게 반응하는지 확인한다(Martín et al., 2021).</li>
+</ul>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

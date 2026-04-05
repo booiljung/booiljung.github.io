@@ -115,6 +115,111 @@
             </header>
             <article>
                 <h1>1317.10 실행기 노드의 아키텍처</h1>
+<h2>1. Executor 노드의 역할</h2>
+<p>Executor 노드는 PlanSys2에서 Planner가 생성한 계획을 실제 로봇 행동으로 실행하는 핵심 노드이다. 계획의 각 액션을 대응하는 ROS2 액션 노드(ActionExecutorClient)에 위임하고, 실행 상태를 모니터링하며, 액션 완료 시 PDDL 효과를 세계 상태에 반영한다.</p>
+<h2>2. 내부 구조</h2>
+<pre><code>Executor Node
+├── Plan Manager
+│   ├── 계획 수신 및 저장
+│   └── 실행 순서 결정
+├── Behavior Tree Engine
+│   ├── 계획 → 행동 트리 변환
+│   └── BehaviorTree.CPP 실행 엔진
+├── Action Client Manager
+│   ├── ActionExecutorClient 노드 발견
+│   └── 액션 실행 위임
+├── State Updater
+│   ├── 액션 완료 시 효과 적용
+│   └── Problem Expert 상태 갱신
+├── Feedback Manager
+│   └── 실행 상태 토픽 발행
+└── ROS2 Interface
+    ├── Action Server: execute_plan
+    ├── Topic Publisher: execution_status
+    └── Service Client: Problem Expert 갱신
+</code></pre>
+<h2>3. 계획에서 행동 트리로의 변환</h2>
+<p>Executor의 핵심 메커니즘은 PDDL 계획을 BehaviorTree.CPP의 행동 트리로 변환하는 것이다:</p>
+<h3>3.1 순차 계획의 변환</h3>
+<p>순차 계획은 시퀀스(Sequence) 노드로 변환된다:</p>
+<pre><code class="language-xml">&lt;root&gt;
+  &lt;BehaviorTree&gt;
+    &lt;Sequence&gt;
+      &lt;ExecuteAction action="(move robot1 wp1 wp2)"/&gt;
+      &lt;ExecuteAction action="(pick robot1 box1 wp2)"/&gt;
+      &lt;ExecuteAction action="(move robot1 wp2 wp3)"/&gt;
+      &lt;ExecuteAction action="(place robot1 box1 wp3)"/&gt;
+    &lt;/Sequence&gt;
+  &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<h3>3.2 병렬 계획의 변환</h3>
+<p>시간적으로 중첩 가능한 액션은 병렬(Parallel) 노드로 변환된다:</p>
+<pre><code class="language-xml">&lt;root&gt;
+  &lt;BehaviorTree&gt;
+    &lt;Sequence&gt;
+      &lt;Parallel&gt;
+        &lt;ExecuteAction action="(move robot1 wp1 wp2)"/&gt;
+        &lt;ExecuteAction action="(move robot2 wp3 wp4)"/&gt;
+      &lt;/Parallel&gt;
+      &lt;Parallel&gt;
+        &lt;ExecuteAction action="(pick robot1 box1 wp2)"/&gt;
+        &lt;ExecuteAction action="(pick robot2 box2 wp4)"/&gt;
+      &lt;/Parallel&gt;
+    &lt;/Sequence&gt;
+  &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<h2>4. 액션 실행 흐름</h2>
+<pre><code>1. Executor가 행동 트리의 현재 노드를 틱(tick)
+2. ExecuteAction 노드가 해당 액션의 ActionExecutorClient를 식별
+3. 액션 이름과 인수를 ActionExecutorClient에 전달
+4. ActionExecutorClient의 do_work()가 주기적으로 호출됨
+5. 액션 수행 중 send_feedback()으로 진행률 보고
+6. 완료 시 finish(success, completion, message) 호출
+7. Executor가 결과를 수신하고 행동 트리를 진행
+</code></pre>
+<h2>5. 상태 갱신 메커니즘</h2>
+<p>액션이 성공적으로 완료되면(<code>finish(true, ...)</code>), Executor는 해당 액션의 PDDL 효과를 Problem Expert에 자동으로 반영한다:</p>
+<pre><code>move(robot1, wp1, wp2) 완료:
+  → Problem Expert: remove (robot_at robot1 wp1)
+  → Problem Expert: add (robot_at robot1 wp2)
+</code></pre>
+<p>이 자동 갱신은 PDDL 도메인에 정의된 효과를 기반으로 수행되므로, 액션 노드 개발자가 별도의 상태 갱신 코드를 작성할 필요가 없다.</p>
+<h2>6. 실패 처리</h2>
+<p>액션이 실패하면(<code>finish(false, ...)</code>):</p>
+<ol>
+<li>행동 트리의 해당 노드가 FAILURE를 반환</li>
+<li>Executor가 전체 계획 실행을 중단</li>
+<li>실패 정보(액션, 메시지)가 피드백으로 발행</li>
+<li>상위 시스템이 재계획을 결정</li>
+</ol>
+<h2>7. 실행 상태 피드백</h2>
+<p>Executor는 ROS2 토픽을 통해 실행 상태를 지속적으로 발행한다:</p>
+<pre><code class="language-cpp">// 실행 상태 모니터링
+auto executor_client = std::make_shared&lt;plansys2::ExecutorClient&gt;();
+executor_client-&gt;start(plan);
+
+while (rclcpp::ok()) {
+    auto feedback = executor_client-&gt;getFeedBack();
+    for (const auto &amp; action_feedback : feedback.action_execution_status) {
+        RCLCPP_INFO(node-&gt;get_logger(), 
+            "Action: %s, Status: %s, Progress: %.1f%%",
+            action_feedback.action.c_str(),
+            action_feedback.status.c_str(),
+            action_feedback.completion * 100);
+    }
+    
+    if (executor_client-&gt;getResult().has_value()) {
+        break;  // 실행 완료
+    }
+}
+</code></pre>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE ICARSC</em>.</li>
+<li>Colledanchise, M. &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+</ul>
 
             </article>
             <footer>

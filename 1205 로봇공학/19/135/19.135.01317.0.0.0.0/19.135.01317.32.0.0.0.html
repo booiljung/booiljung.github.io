@@ -115,6 +115,94 @@
             </header>
             <article>
                 <h1>1317.32 액션 실행 상태의 피드백 메커니즘</h1>
+<h2>1. 피드백 메커니즘의 개요</h2>
+<p>PlanSys2의 액션 실행 체계에서 피드백 메커니즘(feedback mechanism)은 액션 수행기(action performer)가 자신의 실행 상태를 실행기 노드(Executor Node)에 보고하고, 실행기 노드가 이를 종합하여 상위 수준 시스템에 전달하는 다계층 정보 흐름을 의미한다. 이 메커니즘은 ROS2 액션 프로토콜의 피드백 채널을 기반으로 구현되며, 계획 실행의 투명성과 제어 가능성을 확보하는 핵심 요소이다(Martín et al., 2021).</p>
+<h2>2. ROS2 액션 프로토콜의 피드백 채널</h2>
+<h3>2.1 액션 프로토콜의 3단계 구조</h3>
+<p>ROS2 액션 프로토콜은 목표(Goal), 피드백(Feedback), 결과(Result)의 3단계 통신 구조를 제공한다. 피드백은 액션 실행 중 주기적으로 서버에서 클라이언트로 전송되는 중간 상태 정보이다.</p>
+<table><thead><tr><th>통신 단계</th><th>방향</th><th>시점</th><th>내용</th></tr></thead><tbody>
+<tr><td>Goal</td><td>클라이언트 → 서버</td><td>실행 시작 시</td><td>액션 이름, 인자</td></tr>
+<tr><td>Feedback</td><td>서버 → 클라이언트</td><td>실행 중 주기적</td><td>진행률, 상태 메시지</td></tr>
+<tr><td>Result</td><td>서버 → 클라이언트</td><td>실행 완료 시</td><td>성공/실패, 최종 결과</td></tr>
+</tbody></table>
+<p>PlanSys2의 맥락에서, 액션 수행기가 서버 역할을, 실행기 노드 내의 행동 트리 액션 노드가 클라이언트 역할을 수행한다. 피드백 채널은 액션 실행이 진행되는 동안 지속적으로 활성화된다.</p>
+<h2>3. 액션 수행기의 피드백 생성</h2>
+<h3>3.1 send_feedback 메서드</h3>
+<p><code>ActionExecutorClient</code> 기반 클래스는 <code>send_feedback()</code> 메서드를 제공하여 개발자가 피드백을 전송할 수 있게 한다. 이 메서드는 <code>do_work()</code> 콜백 내에서 호출되며, 현재 진행 상태를 포함한 피드백 메시지를 생성하여 클라이언트에 전송한다.</p>
+<pre><code class="language-cpp">void do_work() override
+{
+  // 로봇 이동 진행률 계산
+  float progress = calculate_progress();
+  
+  send_feedback(progress, "Navigating to target location");
+  
+  if (progress &gt;= 1.0) {
+    finish(true, 1.0, "Navigation completed");
+  }
+}
+</code></pre>
+<p><code>send_feedback()</code> 메서드의 인자는 다음과 같다.</p>
+<table><thead><tr><th>인자</th><th>타입</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>completion</code></td><td><code>float</code></td><td>완료율(0.0 ~ 1.0)</td></tr>
+<tr><td><code>status</code></td><td><code>std::string</code></td><td>현재 상태를 설명하는 문자열</td></tr>
+</tbody></table>
+<h3>3.2 피드백 생성 주기</h3>
+<p>피드백의 생성 주기는 <code>ActionExecutorClient</code> 생성자에서 설정한 틱 주기에 의해 결정된다. <code>do_work()</code> 콜백이 호출될 때마다 피드백을 전송할 수 있으므로, 틱 주기가 곧 피드백의 최대 발생 빈도가 된다. 예를 들어, 틱 주기가 500ms인 경우 피드백은 최대 2Hz로 전송된다.</p>
+<p>피드백 주기의 선택은 다음과 같은 요인을 고려하여 결정한다.</p>
+<ul>
+<li><strong>정보의 시간적 해상도</strong>: 빠르게 변화하는 액션(예: 로봇 이동)은 높은 피드백 빈도가 유리하다.</li>
+<li><strong>통신 부하</strong>: 지나치게 높은 피드백 빈도는 네트워크와 처리 자원을 소모한다.</li>
+<li><strong>모니터링 요구사항</strong>: 인간 운영자 대상의 모니터링에서는 1~5Hz가 일반적으로 충분하다.</li>
+</ul>
+<h2>4. 피드백의 계층적 전파</h2>
+<h3>4.1 수행기에서 실행기로의 전파</h3>
+<p>액션 수행기가 전송한 피드백은 ROS2 액션 프로토콜을 통해 실행기 노드 내의 행동 트리 액션 노드에 도달한다. 행동 트리 액션 노드는 수신된 피드백에서 완료율과 상태 메시지를 추출하여 내부 상태에 반영한다.</p>
+<h3>4.2 실행기에서 상위 수준으로의 전파</h3>
+<p>실행기 노드는 모든 활성 액션의 피드백을 집약(aggregate)하여 <code>ExecutePlan</code> 액션의 피드백으로 재구성한다. 이 과정에서 개별 액션의 피드백은 <code>ActionExecutionInfo</code> 배열의 형태로 번들링되어, 상위 수준의 임무 관리자에게 전달된다.</p>
+<p>피드백의 계층적 전파 흐름은 다음과 같다.</p>
+<pre><code>액션 수행기 A ──피드백──→ 행동 트리 액션 노드 A ──┐
+                                                 │
+액션 수행기 B ──피드백──→ 행동 트리 액션 노드 B ──┼──집약──→ ExecutePlan 피드백
+                                                 │
+액션 수행기 C ──피드백──→ 행동 트리 액션 노드 C ──┘
+</code></pre>
+<h2>5. 피드백 정보의 활용</h2>
+<h3>5.1 진행 상태 표시</h3>
+<p>피드백의 가장 직접적인 활용은 계획 실행의 진행 상태를 시각적으로 표시하는 것이다. PlanSys2의 터미널 인터페이스와 시각화 도구는 피드백 데이터를 수신하여 각 액션의 진행률 막대(progress bar)와 상태 메시지를 실시간으로 갱신한다.</p>
+<h3>5.2 이상 탐지</h3>
+<p>피드백 데이터를 분석하면 액션 실행의 이상 상태를 조기에 탐지할 수 있다. 예를 들어, 다음과 같은 상황이 이상으로 판단될 수 있다.</p>
+<ul>
+<li><strong>진행률 정체</strong>: 일정 시간 이상 완료율이 변화하지 않는 경우. 이는 액션 수행기가 교착 상태(deadlock)에 빠졌거나 물리적 장애에 의해 진행이 차단되었음을 시사한다.</li>
+<li><strong>진행률 후퇴</strong>: 완료율이 감소하는 경우. 이는 비정상적인 상황으로, 수행기의 상태 추정 오류나 외부 방해 요인의 존재를 나타낸다.</li>
+<li><strong>피드백 중단</strong>: 피드백 수신이 일정 시간 이상 이루어지지 않는 경우. 이는 수행기 노드의 비정상 종료나 통신 장애를 의미할 수 있다.</li>
+</ul>
+<p>상위 수준 시스템은 이러한 이상 패턴을 감지하면 해당 액션의 취소, 재시도, 또는 재계획 등의 대응을 결정할 수 있다.</p>
+<h3>5.3 적응적 시간 관리</h3>
+<p>시간적 계획에서 피드백의 진행률 정보는 각 액션의 실제 소요 시간을 실시간으로 추정하는 데 활용된다. 현재 진행률과 경과 시간에 기반하여 예상 완료 시각을 계산하고, 이를 계획의 시간표와 비교하여 후속 액션의 스케줄링을 조정할 수 있다.</p>
+<p><span class="math math-display">
+t_{estimated} = t_{start} + \frac{t_{elapsed}}{c_{current}}
+</span></p>
+<p>여기서 <span class="math math-inline">t_{estimated}</span>는 예상 완료 시각, <span class="math math-inline">t_{start}</span>는 시작 시각, <span class="math math-inline">t_{elapsed}</span>는 경과 시간, <span class="math math-inline">c_{current}</span>는 현재 완료율(0 &lt; <span class="math math-inline">c_{current}</span> ≤ 1)이다.</p>
+<h2>6. 결과 메시지의 구조와 처리</h2>
+<h3>6.1 finish 메서드에 의한 결과 생성</h3>
+<p>액션 실행이 완료되면 수행기는 <code>finish()</code> 메서드를 호출하여 최종 결과를 생성한다.</p>
+<table><thead><tr><th>인자</th><th>타입</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>success</code></td><td><code>bool</code></td><td>성공 여부</td></tr>
+<tr><td><code>completion</code></td><td><code>float</code></td><td>최종 완료율</td></tr>
+<tr><td><code>message</code></td><td><code>std::string</code></td><td>결과 설명 메시지</td></tr>
+</tbody></table>
+<p>성공 결과가 반환되면 해당 행동 트리 액션 노드가 <code>SUCCESS</code> 상태로 전이하고, 실패 결과가 반환되면 <code>FAILURE</code> 상태로 전이한다. 이 상태 전이는 행동 트리의 제어 흐름에 따라 상위 노드로 전파되어, 후속 액션의 실행 여부를 결정한다.</p>
+<h3>6.2 실패 원인의 전달</h3>
+<p>실패 결과의 상태 메시지는 실패의 구체적 원인을 포함해야 한다. 이 정보는 실행기 노드의 로그에 기록되며, 디버깅과 사후 분석에 활용된다. 잘 구성된 실패 메시지는 재계획 결정이나 운영자의 개입 판단에도 기여한다.</p>
+<p>PlanSys2의 피드백 메커니즘은 분산된 액션 수행기들의 실행 상태를 중앙 실행기 노드에서 통합적으로 관리하고, 이를 상위 수준으로 투명하게 전달하는 체계적 구조를 제공한다(Martín et al., 2021).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

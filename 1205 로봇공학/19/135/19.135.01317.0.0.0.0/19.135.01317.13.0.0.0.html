@@ -115,6 +115,94 @@
             </header>
             <article>
                 <h1>1317.13 ROS2 액션 기반 계획 실행</h1>
+<h2>1. ROS2 액션의 개요</h2>
+<p>ROS2 액션(Action)은 장시간 실행되는 비동기적 작업을 관리하기 위한 통신 패턴이다. 목표(Goal), 피드백(Feedback), 결과(Result)의 세 가지 구성 요소를 포함하며, 실행 중 진행 상황을 주기적으로 보고하고, 취소(cancel) 요청을 처리할 수 있다. PlanSys2에서 ROS2 액션은 계획 실행과 개별 로봇 행동의 수행에 핵심적으로 활용된다.</p>
+<h2>2. PlanSys2에서의 액션 활용 계층</h2>
+<h3>2.1 계층 1: 계획 실행 (Executor 수준)</h3>
+<p>Executor 노드가 ROS2 액션 서버로서 전체 계획의 실행을 관리한다:</p>
+<pre><code>ExecutorClient → Executor (Action Server)
+  Goal: 실행할 Plan
+  Feedback: 각 액션의 실행 상태
+  Result: 전체 계획의 성공/실패
+</code></pre>
+<h3>2.2 계층 2: 개별 액션 실행 (ActionExecutorClient 수준)</h3>
+<p>Executor가 각 PDDL 액션을 대응하는 ActionExecutorClient에 위임한다:</p>
+<pre><code>Executor → ActionExecutorClient (Action Server/Client)
+  Goal: PDDL 액션 이름 + 바인딩된 매개변수
+  Feedback: 진행률(0.0~1.0) + 상태 메시지
+  Result: 성공(true/false) + 완료 정보
+</code></pre>
+<h3>2.3 계층 3: 로봇 하위 시스템 (Nav2, MoveIt2 등)</h3>
+<p>ActionExecutorClient가 ROS2 하위 시스템의 액션 서버를 호출한다:</p>
+<pre><code>ActionExecutorClient → Nav2 NavigateToPose (Action Server)
+  Goal: 목표 위치
+  Feedback: 경로 추종 진행률
+  Result: 도착 성공/실패
+</code></pre>
+<h2>3. ActionExecutorClient의 구현</h2>
+<p>PlanSys2는 <code>ActionExecutorClient</code> 클래스를 제공하여, PDDL 액션과 실제 로봇 행동을 연결하는 표준 인터페이스를 정의한다:</p>
+<pre><code class="language-cpp">class MoveAction : public plansys2::ActionExecutorClient
+{
+public:
+    MoveAction()
+    : plansys2::ActionExecutorClient("move", 500ms)  // 이름, do_work 주기
+    {
+    }
+
+private:
+    void do_work() override
+    {
+        // PDDL 매개변수 추출
+        auto args = get_arguments();
+        std::string robot = args[0];
+        std::string from = args[1];
+        std::string to = args[2];
+
+        if (!goal_sent_) {
+            // Nav2에 목표 전송
+            sendNavigationGoal(to);
+            goal_sent_ = true;
+        }
+
+        // 진행 상황 보고
+        double progress = getNavigationProgress();
+        send_feedback(progress, "Moving from " + from + " to " + to);
+
+        // 완료 판단
+        if (isNavigationComplete()) {
+            finish(true, 1.0, "Navigation completed");
+        } else if (isNavigationFailed()) {
+            finish(false, progress, "Navigation failed");
+        }
+    }
+};
+</code></pre>
+<h2>4. 액션의 생명 주기</h2>
+<pre><code>1. Executor가 계획의 현재 액션을 식별
+2. 해당 이름의 ActionExecutorClient를 탐색
+3. Goal 메시지로 액션 이름과 매개변수 전송
+4. ActionExecutorClient의 do_work()가 주기적으로 호출
+5. send_feedback()으로 진행 상황 보고
+6. 완료 시 finish()로 결과 반환
+7. Executor가 결과를 수신하고 다음 액션으로 진행
+</code></pre>
+<h2>5. 액션 취소(Cancellation)</h2>
+<p>ROS2 액션은 실행 중 취소를 지원한다. 계획 전체가 중단되거나 재계획이 요청되면, Executor가 진행 중인 액션에 취소 요청을 전송한다:</p>
+<pre><code class="language-cpp">// ActionExecutorClient에서 취소 처리
+void on_cancel() override
+{
+    // 하위 시스템 정지 요청
+    cancelNavigation();
+    RCLCPP_INFO(get_logger(), "Action cancelled");
+}
+</code></pre>
+<h2>6. 병렬 액션 실행</h2>
+<p>시간적 계획에서 병렬 실행이 가능한 액션들은 Executor에 의해 동시에 시작된다. 각 ActionExecutorClient는 독립적으로 실행되며, 모든 병렬 액션이 완료될 때까지 Executor가 대기한다.</p>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE ICARSC</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+</ul>
 
             </article>
             <footer>

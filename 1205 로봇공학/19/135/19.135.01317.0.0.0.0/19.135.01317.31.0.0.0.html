@@ -115,6 +115,85 @@
             </header>
             <article>
                 <h1>1317.31 계획 상태의 실시간 추적</h1>
+<h2>1. 실시간 추적의 개요</h2>
+<p>PlanSys2에서 계획 상태의 실시간 추적(real-time plan state tracking)이란, 수립된 계획의 실행 과정에서 각 액션의 현재 상태, 전체 계획의 진행률, 시간적 진척 상황 등을 지속적으로 모니터링하고 보고하는 메커니즘을 의미한다. 이 추적 기능은 상위 수준 임무 관리자가 계획 실행의 정상 진행 여부를 판단하고, 이상 상황 발생 시 적절한 대응(재계획, 실행 취소 등)을 결정하는 데 필수적인 정보를 제공한다(Martín et al., 2021).</p>
+<h2>2. ExecutePlan 액션의 피드백 구조</h2>
+<h3>2.1 피드백 메시지의 구성</h3>
+<p>실행기 노드는 <code>ExecutePlan</code> ROS2 액션 서버로서 계획 실행의 진행 상태를 피드백(feedback) 메시지 형태로 주기적으로 발행한다. 이 피드백 메시지에는 다음과 같은 정보가 포함된다.</p>
+<table><thead><tr><th>필드</th><th>타입</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>action_execution_status</code></td><td><code>ActionExecutionInfo[]</code></td><td>각 액션의 실행 상태 배열</td></tr>
+</tbody></table>
+<p><code>ActionExecutionInfo</code> 메시지는 개별 액션의 추적 정보를 포함한다.</p>
+<table><thead><tr><th>필드</th><th>타입</th><th>설명</th></tr></thead><tbody>
+<tr><td><code>action</code></td><td><code>string</code></td><td>PDDL 액션 문자열</td></tr>
+<tr><td><code>status</code></td><td><code>int8</code></td><td>액션의 현재 상태 코드</td></tr>
+<tr><td><code>completion</code></td><td><code>float32</code></td><td>개별 액션의 완료율(0.0 ~ 1.0)</td></tr>
+<tr><td><code>message_status</code></td><td><code>string</code></td><td>상태 설명 메시지</td></tr>
+<tr><td><code>start_stamp</code></td><td><code>builtin_interfaces/Time</code></td><td>액션 실행 시작 시각</td></tr>
+</tbody></table>
+<h3>2.2 액션 상태 코드</h3>
+<p>각 액션은 다음과 같은 상태 코드 중 하나를 가진다.</p>
+<table><thead><tr><th>상태 코드</th><th>의미</th></tr></thead><tbody>
+<tr><td><code>NOT_EXECUTED</code></td><td>아직 실행이 시작되지 않은 상태</td></tr>
+<tr><td><code>EXECUTING</code></td><td>현재 실행 중인 상태</td></tr>
+<tr><td><code>SUCCEEDED</code></td><td>성공적으로 완료된 상태</td></tr>
+<tr><td><code>FAILED</code></td><td>실행이 실패한 상태</td></tr>
+<tr><td><code>CANCELLED</code></td><td>실행이 취소된 상태</td></tr>
+</tbody></table>
+<p>이 상태 코드를 통해 계획의 각 액션이 현재 어떤 단계에 있는지를 명확하게 식별할 수 있다.</p>
+<h2>3. 진행률 계산 모델</h2>
+<h3>3.1 액션 수준 진행률</h3>
+<p>개별 액션의 진행률은 해당 액션 수행기(action performer)가 보고하는 완료율에 기반한다. 액션 수행기는 <code>do_work()</code> 콜백 내에서 <code>send_feedback()</code> 메서드를 통해 0.0에서 1.0 사이의 완료율을 주기적으로 보고한다. 이 값은 실행기 노드가 수집하여 <code>ActionExecutionInfo</code>의 <code>completion</code> 필드에 반영한다.</p>
+<h3>3.2 계획 수준 진행률</h3>
+<p>전체 계획의 진행률은 개별 액션의 상태를 종합하여 계산된다. 가장 기본적인 계산 방식은 다음과 같다.</p>
+<p><span class="math math-display">
+P_{plan} = \frac{\sum_{i=1}^{N} w_i \cdot c_i}{\sum_{i=1}^{N} w_i}
+</span></p>
+<p>여기서 <span class="math math-inline">N</span>은 계획의 총 액션 수, <span class="math math-inline">c_i</span>는 <span class="math math-inline">i</span>번째 액션의 완료율(0.0 ~ 1.0), <span class="math math-inline">w_i</span>는 가중치이다. 단순한 경우 모든 가중치를 동일하게 설정하여 산술 평균으로 계산하며, 시간적 계획에서는 각 액션의 예상 지속 시간을 가중치로 사용하여 시간 기반 진행률을 산출할 수 있다.</p>
+<h2>4. 시간적 추적</h2>
+<h3>4.1 예상 시간 대비 실제 시간 비교</h3>
+<p>시간적 계획(temporal plan)에서는 각 액션의 예상 시작 시각과 예상 지속 시간이 계획에 명시되어 있다. 실행기 노드는 각 액션의 실제 시작 시각과 실제 소요 시간을 기록하여, 예상 시간표와의 편차를 추적할 수 있다.</p>
+<p><span class="math math-display">
+\Delta t_i = (t_{i,\text{actual}} + d_{i,\text{actual}}) - (t_{i,\text{planned}} + d_{i,\text{planned}})
+</span></p>
+<p>여기서 <span class="math math-inline">\Delta t_i</span>는 <span class="math math-inline">i</span>번째 액션의 시간적 편차이며, 양수이면 지연(delay), 음수이면 조기 완료를 의미한다. 이 편차 정보는 상위 수준에서 계획의 시간적 실현 가능성을 평가하는 데 활용된다.</p>
+<h3>4.2 만듦새 추정</h3>
+<p>현재까지의 실행 상태에 기반하여 계획의 총 소요 시간(makespan)을 실시간으로 추정할 수 있다. 완료된 액션의 실제 소요 시간과 대기 중인 액션의 예상 소요 시간을 합산하면, 계획의 예상 완료 시각을 산출할 수 있다.</p>
+<h2>5. 토픽 기반 실시간 발행</h2>
+<h3>5.1 실행 상태 토픽</h3>
+<p>실행기 노드는 <code>ExecutePlan</code> 액션의 피드백 외에도, 별도의 ROS2 토픽을 통해 계획 실행 상태를 발행할 수 있다. 이 토픽은 <code>ExecutePlan</code> 액션에 가입하지 않은 외부 모니터링 시스템에서도 실행 상태를 구독할 수 있게 한다.</p>
+<p>발행되는 상태 정보의 구조는 다음과 같다.</p>
+<ul>
+<li><strong>계획 식별자</strong>: 현재 실행 중인 계획의 고유 식별자</li>
+<li><strong>실행 단계</strong>: 현재 실행 중인 시간적 그룹의 인덱스</li>
+<li><strong>활성 액션 목록</strong>: 현재 <code>EXECUTING</code> 상태인 액션들</li>
+<li><strong>완료 액션 수 / 총 액션 수</strong>: 진행 상황의 정량적 요약</li>
+</ul>
+<h3>5.2 발행 주기</h3>
+<p>상태 발행 주기는 시스템의 요구사항에 따라 구성할 수 있다. 일반적으로 1Hz ~ 10Hz의 주기가 사용되며, 이는 인간 운영자의 모니터링 목적에 적합한 주기이다. 자동화된 상위 수준 제어기가 상태를 소비하는 경우에는 더 높은 주기가 설정될 수 있다.</p>
+<h2>6. 행동 트리 상태의 추적</h2>
+<h3>6.1 트리 구조의 실시간 상태</h3>
+<p>PlanSys2의 행동 트리 엔진은 트리의 각 노드에 대해 현재 상태(<code>IDLE</code>, <code>RUNNING</code>, <code>SUCCESS</code>, <code>FAILURE</code>)를 유지한다. 이 정보를 직렬화하면, 행동 트리의 실시간 실행 상태를 외부에 공개할 수 있다. BT.CPP 라이브러리는 트리 상태의 로깅 및 직렬화 기능을 내장하고 있으며, PlanSys2는 이를 활용하여 트리 수준의 상세한 실행 추적을 제공한다.</p>
+<h3>6.2 Groot 연동을 통한 시각적 추적</h3>
+<p>BT.CPP는 Groot이라는 시각적 디버깅 도구와의 연동을 지원한다. Groot은 행동 트리의 구조를 그래프로 시각화하고, 각 노드의 실시간 상태를 색상으로 표시한다. PlanSys2의 실행기 노드가 Groot과 연동되면, 개발자와 운영자는 계획 실행의 행동 트리 수준 동작을 시각적으로 추적할 수 있다.</p>
+<h2>7. 추적 데이터의 기록과 분석</h2>
+<h3>7.1 로그 기반 사후 분석</h3>
+<p>계획 실행의 추적 데이터는 ROS2의 <code>rosbag2</code>를 통해 녹화하여 사후 분석(post-mortem analysis)에 활용할 수 있다. 녹화된 피드백 메시지와 상태 토픽 데이터를 재생하면, 계획 실행의 전체 이력을 시간 순서로 재구성하여 다음과 같은 분석이 가능하다.</p>
+<ul>
+<li>각 액션의 실제 소요 시간 통계 산출</li>
+<li>계획 시간표와 실제 실행의 편차 분석</li>
+<li>실패 발생 시점과 원인의 시간적 추적</li>
+<li>계획 실행 성능의 장기적 추세 파악</li>
+</ul>
+<p>이러한 실시간 추적 메커니즘은 PlanSys2 기반 임무 계획 시스템의 투명성과 제어 가능성을 확보하는 핵심 요소이다(Martín et al., 2021).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>

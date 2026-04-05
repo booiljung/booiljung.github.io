@@ -115,6 +115,104 @@
             </header>
             <article>
                 <h1>1317.8 문제 전문가 노드의 아키텍처</h1>
+<h2>1. Problem Expert 노드의 역할</h2>
+<p>Problem Expert 노드는 PlanSys2에서 현재 세계 상태(world state)와 목표 조건(goal)의 동적 관리를 전담하는 핵심 노드이다. 이 노드는 PDDL 문제 인스턴스의 구성 요소(객체, 술어 인스턴스, 함수 값, 목표)를 실행 시간에 동적으로 추가, 삭제, 수정할 수 있는 인터페이스를 제공한다.</p>
+<h2>2. 내부 구조</h2>
+<pre><code>Problem Expert Node
+├── World State Manager
+│   ├── 객체 인스턴스 관리 (타입 부여)
+│   ├── 술어 인스턴스 관리 (참/거짓)
+│   └── 함수 값 관리 (수치)
+├── Goal Manager
+│   └── 목표 조건 관리
+├── Problem Generator
+│   └── PDDL 문제 텍스트 생성
+├── Validation Layer
+│   └── Domain Expert 참조 유효성 검증
+└── ROS2 Service Server
+    ├── 객체: add_instance, remove_instance, get_instances
+    ├── 술어: add_predicate, remove_predicate, get_predicates
+    ├── 함수: add_function, get_function
+    ├── 목표: set_goal, get_goal, clear_goal
+    └── 문제: get_problem, clear_knowledge
+</code></pre>
+<h2>3. 세계 상태 관리</h2>
+<h3>3.1 객체 관리</h3>
+<pre><code class="language-cpp">auto problem_client = std::make_shared&lt;plansys2::ProblemExpertClient&gt;();
+
+// 객체 추가
+problem_client-&gt;addInstance(plansys2::Instance{"robot1", "robot"});
+problem_client-&gt;addInstance(plansys2::Instance{"wp1", "waypoint"});
+problem_client-&gt;addInstance(plansys2::Instance{"box1", "object"});
+
+// 객체 삭제
+problem_client-&gt;removeInstance(plansys2::Instance{"box1", "object"});
+
+// 객체 조회
+auto instances = problem_client-&gt;getInstances();
+</code></pre>
+<h3>3.2 술어 관리</h3>
+<pre><code class="language-cpp">// 술어 추가 (참으로 설정)
+problem_client-&gt;addPredicate(plansys2::Predicate("(robot_at robot1 wp1)"));
+problem_client-&gt;addPredicate(plansys2::Predicate("(connected wp1 wp2)"));
+problem_client-&gt;addPredicate(plansys2::Predicate("(gripper_free robot1)"));
+
+// 술어 삭제 (CWA에 의해 거짓으로 전환)
+problem_client-&gt;removePredicate(plansys2::Predicate("(robot_at robot1 wp1)"));
+
+// 술어 조회
+auto predicates = problem_client-&gt;getPredicates();
+</code></pre>
+<h3>3.3 함수 관리</h3>
+<pre><code class="language-cpp">// 함수 값 설정
+problem_client-&gt;addFunction(plansys2::Function("(= (battery_level robot1) 100)"));
+problem_client-&gt;addFunction(plansys2::Function("(= (distance wp1 wp2) 10.0)"));
+
+// 함수 값 조회
+auto function = problem_client-&gt;getFunction("(battery_level robot1)");
+</code></pre>
+<h3>3.4 목표 관리</h3>
+<pre><code class="language-cpp">// 목표 설정
+problem_client-&gt;setGoal(plansys2::Goal("(and (robot_at robot1 wp3) (holding robot1 box1))"));
+
+// 목표 조회
+auto goal = problem_client-&gt;getGoal();
+
+// 목표 초기화
+problem_client-&gt;clearGoal();
+</code></pre>
+<h2>4. PDDL 문제 텍스트 생성</h2>
+<p>Problem Expert는 현재 세계 상태와 목표를 기반으로 완전한 PDDL 문제 텍스트를 자동 생성한다:</p>
+<pre><code class="language-cpp">auto problem_text = problem_client-&gt;getProblem();
+// 결과:
+// (define (problem current_problem)
+//     (:domain robot_domain)
+//     (:objects robot1 - robot wp1 wp2 wp3 - waypoint box1 - object)
+//     (:init (robot_at robot1 wp1) (connected wp1 wp2) (gripper_free robot1)
+//            (= (battery_level robot1) 100) (= (distance wp1 wp2) 10.0))
+//     (:goal (and (robot_at robot1 wp3) (holding robot1 box1)))
+// )
+</code></pre>
+<p>이 텍스트가 Planner 노드에 전달되어 외부 플래너의 입력으로 사용된다.</p>
+<h2>5. 유효성 검증</h2>
+<p>Problem Expert는 객체, 술어, 함수의 추가 시 Domain Expert의 도메인 정보를 참조하여 유효성을 검증한다:</p>
+<ol>
+<li><strong>객체 추가 검증</strong>: 지정된 타입이 도메인에 선언되어 있는지 확인</li>
+<li><strong>술어 추가 검증</strong>: 술어 이름이 도메인에 선언되어 있고, 인수의 타입이 호환되는지 확인</li>
+<li><strong>함수 추가 검증</strong>: 함수 이름이 도메인에 선언되어 있는지 확인</li>
+<li><strong>목표 검증</strong>: 목표 조건에 사용된 술어와 객체가 유효한지 확인</li>
+</ol>
+<h2>6. Executor와의 상호 작용</h2>
+<p>Executor가 액션을 성공적으로 완료하면, 해당 액션의 PDDL 효과에 따라 Problem Expert의 세계 상태가 자동으로 갱신된다:</p>
+<pre><code>액션 move(robot1, wp1, wp2) 완료 시:
+  Problem Expert에서:
+    removePredicate("(robot_at robot1 wp1)")  ;; 삭제 효과
+    addPredicate("(robot_at robot1 wp2)")     ;; 추가 효과
+</code></pre>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE ICARSC</em>.</li>
+</ul>
 
             </article>
             <footer>

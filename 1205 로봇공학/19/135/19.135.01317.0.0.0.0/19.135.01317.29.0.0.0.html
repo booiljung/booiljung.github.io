@@ -115,6 +115,99 @@
             </header>
             <article>
                 <h1>1317.29 행동 트리 기반 액션 실행 메커니즘</h1>
+<h2>1. 행동 트리와 계획 실행의 결합</h2>
+<p>행동 트리(Behavior Tree, BT)는 로봇 행동 제어 분야에서 모듈성, 반응성, 재사용성이 뛰어난 의사결정 구조로 널리 채택되고 있다(Colledanchise &amp; Ögren, 2018). PlanSys2는 플래너가 생성한 PDDL 계획을 실행하기 위한 엔진으로 BehaviorTree.CPP 라이브러리를 활용한다. 계획의 시간적 구조를 행동 트리의 제어 흐름으로 변환함으로써, 순차 실행, 병렬 실행, 오류 처리, 실행 취소 등의 복잡한 실행 제어를 체계적으로 수행한다. 이 절에서는 PlanSys2가 행동 트리를 활용하여 계획을 실행하는 구체적 메커니즘을 기술한다(Martín et al., 2021).</p>
+<h2>2. BehaviorTree.CPP 라이브러리의 역할</h2>
+<p>PlanSys2는 BehaviorTree.CPP(이하 BT.CPP) 라이브러리를 행동 트리 실행 엔진으로 사용한다. BT.CPP는 C++로 구현된 고성능 행동 트리 프레임워크로, XML 기반의 트리 정의, 동적 트리 생성, 블랙보드(blackboard) 기반 데이터 공유 등의 기능을 제공한다(Faconti &amp; Iocchi, 2019).</p>
+<p>PlanSys2가 BT.CPP를 선택한 설계적 근거는 다음과 같다.</p>
+<ul>
+<li><strong>XML 기반 동적 생성</strong>: 계획으로부터 XML 트리 정의를 동적으로 생성하고, 이를 런타임에 로딩하여 실행할 수 있다.</li>
+<li><strong>커스텀 노드 등록</strong>: 사용자 정의 액션 노드와 조건 노드를 프레임워크에 등록하여 확장할 수 있다.</li>
+<li><strong>블랙보드 메커니즘</strong>: 노드 간 데이터 공유를 위한 블랙보드가 제공되어, 액션의 인자와 상태 정보를 효율적으로 전달할 수 있다.</li>
+<li><strong>비동기 실행 지원</strong>: 장시간 실행되는 비동기 액션을 자연스럽게 처리할 수 있다.</li>
+</ul>
+<h2>3. 계획에서 행동 트리로의 변환</h2>
+<h3>3.1 변환 알고리즘의 개요</h3>
+<p>실행기 노드는 수신된 계획(<code>Plan</code> 자료 구조)을 분석하여 BT.CPP 호환 XML 형식의 행동 트리를 생성한다. 변환 알고리즘의 핵심 단계는 다음과 같다.</p>
+<ol>
+<li><strong>시간적 그룹화</strong>: 계획의 각 액션을 시작 시각에 따라 그룹화한다. 동일한 시작 시각을 가진 액션들은 하나의 병렬 실행 그룹으로 묶인다.</li>
+<li><strong>순서 결정</strong>: 시간적 그룹들을 시작 시각의 오름차순으로 정렬하여 실행 순서를 결정한다.</li>
+<li><strong>트리 구조 생성</strong>: 정렬된 그룹들을 루트 <code>Sequence</code> 노드의 자식으로 배치한다. 단일 액션으로 구성된 그룹은 직접 액션 노드로 배치하고, 복수 액션으로 구성된 그룹은 <code>Parallel</code> 노드 아래에 배치한다.</li>
+</ol>
+<h3>3.2 XML 트리 정의의 생성</h3>
+<p>변환 알고리즘이 생성하는 XML 트리의 구조는 다음과 같은 형태를 가진다.</p>
+<pre><code class="language-xml">&lt;root main_tree_to_execute="MainTree"&gt;
+  &lt;BehaviorTree ID="MainTree"&gt;
+    &lt;Sequence&gt;
+      &lt;Parallel success_threshold="2"&gt;
+        &lt;ExecuteAction action="move:robot1:kitchen:corridor"/&gt;
+        &lt;ExecuteAction action="charge:robot2:station"/&gt;
+      &lt;/Parallel&gt;
+      &lt;ExecuteAction action="pick:robot1:cup:corridor"/&gt;
+      &lt;ExecuteAction action="move:robot1:corridor:bedroom"/&gt;
+    &lt;/Sequence&gt;
+  &lt;/BehaviorTree&gt;
+&lt;/root&gt;
+</code></pre>
+<p>여기서 <code>ExecuteAction</code>은 PlanSys2가 BT.CPP에 등록한 커스텀 액션 노드이며, <code>action</code> 속성에 PDDL 액션 이름과 인자가 콜론(<code>:</code>)으로 구분되어 전달된다.</p>
+<h3>3.3 전제 조건 검증 노드의 삽입</h3>
+<p>PlanSys2는 각 액션 노드의 실행 전에 전제 조건(precondition) 검증 노드를 삽입할 수 있다. 이 검증 노드는 현재 세계 상태(world state)에서 해당 액션의 PDDL 전제 조건이 충족되는지 확인한다. 전제 조건이 충족되지 않으면 트리가 <code>FAILURE</code>를 반환하여, 실세계의 상태 변화에 의해 계획이 무효화된 상황을 감지할 수 있게 한다.</p>
+<h2>4. 행동 트리의 틱 실행 메커니즘</h2>
+<h3>4.1 틱 주기와 실행 루프</h3>
+<p>실행기 노드는 고정 주기(일반적으로 10ms ~ 100ms 간격)로 행동 트리의 루트 노드를 틱(tick)한다. 각 틱에서 제어 흐름은 루트 노드에서 시작하여 활성 경로(active path)를 따라 리프 노드까지 전파된다. 리프 노드인 액션 노드의 반환 값에 따라 제어 흐름이 상위 노드로 역전파된다.</p>
+<h3>4.2 제어 노드의 동작</h3>
+<p>PlanSys2의 행동 트리에서 사용되는 주요 제어 노드(control node)의 동작 규칙은 다음과 같다.</p>
+<p><strong>Sequence 노드</strong>:</p>
+<table><thead><tr><th>자식 상태</th><th>Sequence 동작</th></tr></thead><tbody>
+<tr><td>첫 번째 자식이 <code>RUNNING</code></td><td><code>RUNNING</code> 반환</td></tr>
+<tr><td>첫 번째 자식이 <code>SUCCESS</code></td><td>다음 자식 틱</td></tr>
+<tr><td>모든 자식이 <code>SUCCESS</code></td><td><code>SUCCESS</code> 반환</td></tr>
+<tr><td>임의 자식이 <code>FAILURE</code></td><td><code>FAILURE</code> 반환</td></tr>
+</tbody></table>
+<p><strong>Parallel 노드</strong>:</p>
+<table><thead><tr><th>자식 상태</th><th>Parallel 동작</th></tr></thead><tbody>
+<tr><td>모든 자식을 동시에 틱</td><td>매 틱마다 활성 자식 모두 틱</td></tr>
+<tr><td>모든 자식이 <code>SUCCESS</code></td><td><code>SUCCESS</code> 반환</td></tr>
+<tr><td>임의 자식이 <code>FAILURE</code></td><td><code>FAILURE</code> 반환, 나머지 자식 중단</td></tr>
+<tr><td>그 외</td><td><code>RUNNING</code> 반환</td></tr>
+</tbody></table>
+<p><code>Parallel</code> 노드의 <code>success_threshold</code> 속성을 통해, 몇 개의 자식이 성공해야 전체를 성공으로 판정할지를 구성할 수 있다. PlanSys2에서는 기본적으로 모든 병렬 액션이 성공해야 해당 단계가 성공으로 처리된다.</p>
+<h3>4.3 액션 노드의 비동기 실행</h3>
+<p>BT.CPP의 액션 노드는 비동기(asynchronous) 실행을 지원한다. PlanSys2의 <code>ExecuteAction</code> 커스텀 노드는 첫 번째 틱에서 ROS2 액션 클라이언트를 통해 목표를 전송하고 즉시 <code>RUNNING</code> 상태를 반환한다. 이후 매 틱마다 액션 수행기로부터의 피드백과 결과를 확인한다.</p>
+<pre><code>첫 번째 틱: 목표 전송 → RUNNING 반환
+n번째 틱:   피드백 확인 → RUNNING 반환 (진행 중)
+            결과 수신 → SUCCESS 또는 FAILURE 반환
+</code></pre>
+<p>이 비동기 실행 모델은 행동 트리의 반응성을 유지하면서도, 로봇의 물리적 행동처럼 수 초에서 수 분이 소요되는 장시간 액션을 자연스럽게 처리할 수 있게 한다.</p>
+<h2>5. 블랙보드를 통한 데이터 전달</h2>
+<h3>5.1 액션 인자의 전달</h3>
+<p>BT.CPP의 블랙보드(blackboard)는 행동 트리 노드 간에 데이터를 공유하기 위한 키-값 저장소이다. PlanSys2는 블랙보드를 통해 각 액션 노드에 PDDL 인자를 전달한다. 트리 생성 시 각 <code>ExecuteAction</code> 노드의 <code>action</code> 속성에 액션 이름과 인자가 인코딩되며, 노드 내부에서 이를 디코딩하여 ROS2 액션 목표로 변환한다.</p>
+<h3>5.2 실행 상태의 공유</h3>
+<p>블랙보드는 액션 실행의 결과 데이터를 후속 노드에 전달하는 데도 사용된다. 예를 들어, 특정 액션이 계산한 위치 정보나 센서 데이터를 블랙보드에 기록하면, 후속 액션 노드가 이를 참조하여 행동을 조절할 수 있다.</p>
+<h2>6. 실행 중 오류 처리</h2>
+<h3>6.1 Fallback 노드의 활용</h3>
+<p>PlanSys2는 필요에 따라 행동 트리에 <code>Fallback</code>(또는 <code>Selector</code>) 노드를 삽입하여 오류 복구(error recovery)를 구현할 수 있다. <code>Fallback</code> 노드는 자식 노드를 순서대로 시도하며, 첫 번째 자식이 실패하면 다음 자식을 시도한다.</p>
+<table><thead><tr><th>자식 상태</th><th>Fallback 동작</th></tr></thead><tbody>
+<tr><td>첫 번째 자식이 <code>SUCCESS</code></td><td><code>SUCCESS</code> 반환</td></tr>
+<tr><td>첫 번째 자식이 <code>FAILURE</code></td><td>다음 자식 틱</td></tr>
+<tr><td>모든 자식이 <code>FAILURE</code></td><td><code>FAILURE</code> 반환</td></tr>
+</tbody></table>
+<p>이를 통해, 특정 액션이 실패했을 때 대체 행동을 시도하는 복구 전략을 트리 구조 내에서 표현할 수 있다.</p>
+<h3>6.2 실패 전파와 계획 중단</h3>
+<p>행동 트리의 특정 액션 노드가 <code>FAILURE</code>를 반환하면, 해당 제어 노드의 규칙에 따라 실패가 상위로 전파된다. 최종적으로 루트 노드가 <code>FAILURE</code>를 반환하면, 실행기 노드는 계획 실행이 실패했음을 <code>ExecutePlan</code> 액션의 결과로 보고한다. 이 시점에서 상위 수준의 임무 관리자가 재계획(replanning) 등의 대응 전략을 결정할 수 있다.</p>
+<h2>7. 사용자 정의 행동 트리의 활용</h2>
+<p>PlanSys2는 자동 생성된 행동 트리 외에도, 사용자가 직접 정의한 행동 트리를 특정 PDDL 액션에 연결하는 기능을 지원한다. 이를 통해 단일 PDDL 액션이 내부적으로 복잡한 행동 시퀀스를 포함하는 트리로 전개될 수 있다. 예를 들어, <code>pick</code> 액션에 대해 “접근 → 파지기 열기 → 물체 파지 → 파지기 닫기 → 들어올리기“의 세부 행동 시퀀스를 하위 행동 트리로 정의할 수 있다.</p>
+<p>사용자 정의 행동 트리는 XML 파일로 작성되어 런치 파라미터를 통해 지정되며, 실행기 노드는 해당 PDDL 액션이 실행될 때 자동 생성 트리 대신 사용자 정의 트리를 로딩하여 실행한다.</p>
+<p>이러한 행동 트리 기반의 실행 메커니즘은 PDDL 계획의 추상적 수준과 로봇 행동의 구체적 수준을 유연하게 연결하며, PlanSys2의 실행 계층에 반응성과 확장성을 동시에 부여한다(Martín et al., 2021; Colledanchise &amp; Ögren, 2018).</p>
+<hr />
+<p><strong>참고 문헌</strong></p>
+<ul>
+<li>Martín, F., Cañas, J. M., Ginés, J., &amp; Fuentetaja, R. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)</em>.</li>
+<li>Colledanchise, M., &amp; Ögren, P. (2018). <em>Behavior Trees in Robotics and AI: An Introduction</em>. CRC Press.</li>
+<li>Faconti, D., &amp; Iocchi, L. (2019). “BehaviorTree.CPP: A C++ Framework for Behavior Trees.” <em>ROS Developer Conference (ROSCon)</em>.</li>
+</ul>
+<hr />
+<p>버전: v1.0</p>
 
             </article>
             <footer>
