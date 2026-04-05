@@ -115,6 +115,132 @@
             </header>
             <article>
                 <h1>1315.47 다중 로봇 도메인의 고급 기능 활용</h1>
+<h2>1. 다중 로봇 도메인의 모델링 과제</h2>
+<p>다중 로봇 시스템(Multi-Robot Systems, MRS)의 PDDL 모델링에서는 이질적 로봇 유형의 능력 차이, 로봇 간 자원 공유와 경쟁, 협력 행동의 동기화, 통신 제약, 공간적 상호 배제 등의 과제를 다뤄야 한다. PDDL의 고급 기능은 이러한 과제를 효과적으로 모델링하는 데 기여한다.</p>
+<h2>2. 타입 계층을 활용한 이질적 로봇 모델링</h2>
+<pre><code class="language-pddl">(:types
+    robot - entity
+    ground_robot aerial_robot underwater_robot - robot
+    scout_robot transport_robot repair_robot - ground_robot
+    inspection_drone delivery_drone - aerial_robot
+)
+</code></pre>
+<p>타입 계층을 통해 각 로봇 유형의 고유 능력을 구조적으로 분리하고, 상위 타입으로 공통 능력을 일반화한다.</p>
+<h2>3. 수치 함수를 활용한 개별 자원 관리</h2>
+<pre><code class="language-pddl">(:functions
+    ;; 로봇별 자원
+    (battery_level ?r - robot)
+    (current_load ?r - robot)
+    (max_load ?r - robot)
+    (speed ?r - robot)
+
+    ;; 공유 자원
+    (charging_slots_available ?station - charging_station)
+
+    ;; 전역 메트릭
+    (total_fleet_cost)
+    (total_fleet_distance)
+    (makespan)
+)
+</code></pre>
+<p>각 로봇의 자원(배터리, 적재량)을 독립적으로 추적하면서, 공유 자원(충전 슬롯)과 전역 메트릭을 관리한다.</p>
+<h2>4. 파생 술어를 활용한 다중 로봇 조건 추상화</h2>
+<h3>4.1 가용 로봇 확인</h3>
+<pre><code class="language-pddl">(:derived (available_robot_for_task ?t - task)
+    (exists (?r - robot)
+        (and (robot_available ?r) (has_capability ?r ?t)
+             (location_reachable ?r (task_location ?t)))))
+</code></pre>
+<h3>4.2 공간 상호 배제</h3>
+<pre><code class="language-pddl">(:derived (location_occupied ?loc - waypoint)
+    (exists (?r - robot) (robot_at ?r ?loc)))
+
+(:derived (location_free ?loc - waypoint)
+    (not (location_occupied ?loc)))
+</code></pre>
+<h3>4.3 통신 연결성</h3>
+<pre><code class="language-pddl">(:derived (fleet_connected)
+    (forall (?r1 ?r2 - robot)
+        (imply (and (robot_active ?r1) (robot_active ?r2) (not (= ?r1 ?r2)))
+            (comm_reachable ?r1 ?r2))))
+</code></pre>
+<h3>4.4 협력 가능성</h3>
+<pre><code class="language-pddl">(:derived (cooperation_possible ?r1 ?r2 - robot ?loc - waypoint)
+    (and (not (= ?r1 ?r2))
+         (robot_at ?r1 ?loc) (robot_at ?r2 ?loc)
+         (robot_available ?r1) (robot_available ?r2)))
+</code></pre>
+<h2>5. 공유 자원의 경쟁 관리</h2>
+<p>충전 스테이션 등 공유 자원에 대한 접근을 수치 함수와 전제 조건으로 관리한다:</p>
+<pre><code class="language-pddl">(:action dock_for_charging
+    :parameters (?r - robot ?station - charging_station)
+    :precondition (and
+        (robot_at ?r ?station)
+        (&gt; (charging_slots_available ?station) 0)
+    )
+    :effect (and
+        (charging ?r ?station)
+        (decrease (charging_slots_available ?station) 1)
+    )
+)
+
+(:action undock
+    :parameters (?r - robot ?station - charging_station)
+    :precondition (charging ?r ?station)
+    :effect (and
+        (not (charging ?r ?station))
+        (increase (charging_slots_available ?station) 1)
+    )
+)
+</code></pre>
+<h2>6. 태스크 할당 모델링</h2>
+<pre><code class="language-pddl">(:action assign_task
+    :parameters (?r - robot ?t - task)
+    :precondition (and
+        (available_robot_for_task ?t)
+        (robot_available ?r)
+        (has_capability ?r ?t)
+        (not (task_assigned ?t))
+    )
+    :effect (and
+        (task_assigned ?t)
+        (robot_assigned ?r ?t)
+        (not (robot_available ?r))
+    )
+)
+</code></pre>
+<h2>7. 부하 균형 메트릭</h2>
+<p>다중 로봇의 작업 부하 균형을 메트릭으로 평가한다:</p>
+<pre><code class="language-pddl">(:functions
+    (tasks_assigned_count ?r - robot)
+    (total_fleet_cost)
+)
+
+;; 각 태스크 할당 시 카운터 증가
+(:action assign_task
+    :effect (...
+        (increase (tasks_assigned_count ?r) 1)
+        (increase (total_fleet_cost) (task_cost ?t))
+    )
+)
+
+;; 총 비용 최소화 (간접적으로 부하 균형 유도)
+(:metric minimize (total_fleet_cost))
+</code></pre>
+<h2>8. 종합적 다중 로봇 도메인 설계 지침</h2>
+<ol>
+<li><strong>타입으로 로봇 능력 분류</strong>: 공통 능력은 상위 타입, 특화 능력은 하위 타입으로 매핑</li>
+<li><strong>수치 함수로 개별/공유 자원 관리</strong>: 로봇별 독립 자원과 공유 자원을 분리</li>
+<li><strong>파생 술어로 가용성과 협력 조건 추상화</strong>: 복잡한 다중 로봇 조건을 간결하게 표현</li>
+<li><strong>상호 배제를 술어와 수치 제약으로 강제</strong>: 공간적, 자원적 충돌 방지</li>
+<li><strong>전역 메트릭으로 플릿 수준 최적화</strong>: 개별 로봇이 아닌 전체 시스템 성능 최적화</li>
+</ol>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Brafman, R. I. &amp; Domshlak, C. (2008). “From One to Many: Planning for Loosely Coupled Multi-Agent Systems.” <em>Proceedings of ICAPS</em>.</li>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

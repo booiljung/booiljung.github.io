@@ -115,6 +115,189 @@
             </header>
             <article>
                 <h1>1314.39 로봇 이동 액션의 PDDL 모델링 사례</h1>
+<h2>1. 이동 액션의 기본 모델</h2>
+<p>로봇 이동(navigation)은 PDDL 로봇 도메인에서 가장 기본적이고 빈번하게 사용되는 액션이다. 기본적인 이동 액션은 로봇이 연결된 두 웨이포인트 사이를 이동하는 행동을 모델링한다.</p>
+<h3>1.1 STRIPS 수준의 이동 액션</h3>
+<pre><code class="language-pddl">(define (domain mobile_robot)
+    (:requirements :strips :typing)
+    (:types robot waypoint - object)
+    (:predicates
+        (robot_at ?r - robot ?w - waypoint)
+        (connected ?w1 - waypoint ?w2 - waypoint)
+    )
+
+    (:action move
+        :parameters (?r - robot ?from - waypoint ?to - waypoint)
+        :precondition (and
+            (robot_at ?r ?from)
+            (connected ?from ?to)
+        )
+        :effect (and
+            (not (robot_at ?r ?from))
+            (robot_at ?r ?to)
+        )
+    )
+)
+</code></pre>
+<p>이 모델은 최소한의 전제 조건과 효과만을 포함하여, 순수한 위상적(topological) 이동을 표현한다. 연결 관계(<code>connected</code>)는 양방향일 수 있으며, 이 경우 <code>(:init)</code> 절에서 양방향 모두를 명시해야 한다.</p>
+<h3>1.2 장애물 회피를 고려한 이동</h3>
+<pre><code class="language-pddl">(:action move_safe
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+        (not (blocked ?to))
+        (not (occupied ?to))
+    )
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (not (occupied ?from))
+        (occupied ?to)
+        (visited ?to)
+    )
+)
+</code></pre>
+<p><code>occupied</code> 술어를 통해 다중 로봇 환경에서의 충돌 방지를, <code>blocked</code> 술어를 통해 정적 장애물 회피를 모델링한다.</p>
+<h3>1.3 에너지 소모를 포함한 이동</h3>
+<pre><code class="language-pddl">(:requirements :strips :typing :numeric-fluents)
+(:functions
+    (battery_level ?r - robot)
+    (distance ?w1 - waypoint ?w2 - waypoint)
+    (energy_per_meter ?r - robot)
+    (total_distance)
+)
+
+(:action move_energy_aware
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+        (&gt;= (battery_level ?r)
+            (* (distance ?from ?to) (energy_per_meter ?r)))
+    )
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (decrease (battery_level ?r)
+            (* (distance ?from ?to) (energy_per_meter ?r)))
+        (increase (total_distance) (distance ?from ?to))
+    )
+)
+</code></pre>
+<h2>2. 듀레이티브 이동 액션</h2>
+<p>실제 로봇의 이동은 시간이 소요되므로, 듀레이티브 액션으로 모델링하는 것이 현실적이다:</p>
+<pre><code class="language-pddl">(:requirements :strips :typing :durative-actions :numeric-fluents)
+
+(:durative-action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :duration (= ?duration (/ (distance ?from ?to) (speed ?r)))
+    :condition (and
+        (at start (robot_at ?r ?from))
+        (at start (connected ?from ?to))
+        (at start (not (occupied ?to)))
+        (over all (battery_sufficient ?r))
+        (over all (not (emergency_stop)))
+    )
+    :effect (and
+        (at start (not (robot_at ?r ?from)))
+        (at start (moving ?r))
+        (at start (occupied ?to))
+        (at start (not (occupied ?from)))
+        (at end (robot_at ?r ?to))
+        (at end (not (moving ?r)))
+    )
+)
+</code></pre>
+<p>이 모델에서:</p>
+<ul>
+<li>시작 시: 출발지를 떠나고, 이동 중 상태로 전환하며, 도착지를 예약한다.</li>
+<li>이동 중: 배터리 충분성과 비상 정지 부재를 지속 확인한다.</li>
+<li>종료 시: 도착지에 도달하고, 이동 상태를 해제한다.</li>
+</ul>
+<h2>3. 다중 로봇 이동</h2>
+<pre><code class="language-pddl">(:action move_coordinated
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+        (not (occupied ?to))
+        (not (reserved ?to))
+    )
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (not (occupied ?from))
+        (occupied ?to)
+    )
+)
+</code></pre>
+<p><code>reserved</code> 술어를 추가하여 다른 로봇이 이미 해당 위치로 이동할 계획인 경우를 방지한다.</p>
+<h2>4. 조건부 이동</h2>
+<p>이동 시 로봇이 화물을 운반하고 있으면 화물도 함께 이동하는 모델:</p>
+<pre><code class="language-pddl">(:action move_with_optional_cargo
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+    )
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (forall (?obj - object)
+            (when (holding ?r ?obj)
+                (and
+                    (not (cargo_location ?obj ?from))
+                    (cargo_location ?obj ?to)
+                )
+            )
+        )
+    )
+)
+</code></pre>
+<h2>5. PlanSys2에서의 이동 액션 구현</h2>
+<p>PlanSys2에서 PDDL <code>move</code> 액션에 대응하는 C++ 액션 노드:</p>
+<pre><code class="language-cpp">class MoveAction : public plansys2::ActionExecutorClient
+{
+public:
+    MoveAction() : ActionExecutorClient("move", 500ms) {}
+
+private:
+    void do_work() override
+    {
+        auto args = get_arguments();
+        std::string robot = args[0];
+        std::string from = args[1];
+        std::string to = args[2];
+
+        // Nav2 네비게이션 스택 호출
+        // 진행 상황에 따라 feedback 전송
+        send_feedback(progress, "Moving from " + from + " to " + to);
+
+        if (navigation_complete) {
+            finish(true, 1.0, "Navigation completed");
+        }
+    }
+};
+</code></pre>
+<h2>6. 설계 시 고려사항</h2>
+<ol>
+<li>
+<p><strong>연결 그래프의 설계</strong>: <code>connected</code> 술어가 유향(directed)인지 무향(undirected)인지를 명확히 결정하고, 문제 파일에서 일관되게 초기화해야 한다.</p>
+</li>
+<li>
+<p><strong>추상화 수준의 선택</strong>: 웨이포인트 간 이동만 모델링할지, 중간 경유지까지 포함할지를 결정한다. 웨이포인트 수가 많을수록 플래닝 복잡도가 증가한다.</p>
+</li>
+<li>
+<p><strong>실행 수준과의 정합성</strong>: PDDL의 이동 액션과 실제 네비게이션 스택(예: Nav2) 간의 인터페이스를 명확히 설계해야 한다.</p>
+</li>
+</ol>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE International Conference on Autonomous Robot Systems and Competitions (ICARSC)</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+</ul>
 
             </article>
             <footer>

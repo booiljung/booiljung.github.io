@@ -115,6 +115,81 @@
             </header>
             <article>
                 <h1>1315.31 파생 술어의 추론 메커니즘</h1>
+<h2>1. 추론의 시점과 절차</h2>
+<p>파생 술어의 추론은 상태가 변경될 때마다 수행된다. 플래너가 액션을 적용하여 기반 술어가 변경되면, 변경된 상태에서 모든 파생 술어의 값이 재계산된다. 이 재계산은 <code>:derived</code> 규칙을 현재 상태에 대해 평가함으로써 수행된다.</p>
+<p>추론의 절차는 다음과 같다:</p>
+<pre><code>EVALUATE_DERIVED(state):
+    1. derived_state ← ∅  (모든 파생 술어를 거짓으로 초기화)
+    2. REPEAT:
+        new_facts ← ∅
+        FOR EACH (:derived (P x1...xn) formula) IN domain:
+            FOR EACH ground substitution σ:
+                IF (state ∪ derived_state) ⊨ formula[σ]:
+                    IF P(σ(x1),...,σ(xn)) ∉ derived_state:
+                        new_facts ← new_facts ∪ {P(σ(x1),...,σ(xn))}
+        derived_state ← derived_state ∪ new_facts
+    3. UNTIL new_facts = ∅
+    4. RETURN state ∪ derived_state
+</code></pre>
+<h2>2. 고정점 계산</h2>
+<p>재귀적 파생 술어의 추론은 최소 고정점(least fixed-point) 계산을 통해 수행된다. 이는 반복적으로 규칙을 적용하여 새로운 사실이 더 이상 도출되지 않을 때까지 계속하는 방식이다.</p>
+<p><span class="math math-display">
+T^0 = \emptyset, \quad T^{i+1} = T^i \cup \text{apply\_rules}(s \cup T^i)
+</span></p>
+<p><span class="math math-display">
+T^* = \lim_{i \to \infty} T^i \quad (\text{고정점})
+</span></p>
+<p>유한한 객체 수와 유한한 술어 인스턴스 수에 의해, 고정점 계산은 유한 회 반복 후 종료됨이 보장된다.</p>
+<h3>2.1 계산 예시</h3>
+<pre><code class="language-pddl">;; 기반 상태: {(connected wp1 wp2), (connected wp2 wp3), (connected wp3 wp4)}
+
+;; 반복 1:
+;; (reachable wp1 wp2) ← (connected wp1 wp2) ✓
+;; (reachable wp2 wp3) ← (connected wp2 wp3) ✓
+;; (reachable wp3 wp4) ← (connected wp3 wp4) ✓
+
+;; 반복 2:
+;; (reachable wp1 wp3) ← (connected wp1 wp2) ∧ (reachable wp2 wp3) ✓
+;; (reachable wp2 wp4) ← (connected wp2 wp3) ∧ (reachable wp3 wp4) ✓
+
+;; 반복 3:
+;; (reachable wp1 wp4) ← (connected wp1 wp2) ∧ (reachable wp2 wp4) ✓
+
+;; 반복 4: 새로운 사실 없음 → 종료
+</code></pre>
+<h2>3. 계층화(Stratification)</h2>
+<p>부정을 포함하는 파생 술어는 계층화된 순서로 평가해야 한다. 파생 술어 간의 부정적 의존 관계에 따라 계층(stratum)을 형성하고, 하위 계층의 술어를 먼저 완전히 평가한 후 상위 계층을 평가한다:</p>
+<pre><code class="language-pddl">;; 계층 1: 기본 연결성 (부정 참조 없음)
+(:derived (reachable ?from ?to - waypoint)
+    (or (connected ?from ?to)
+        (exists (?mid - waypoint) (and (connected ?from ?mid) (reachable ?mid ?to)))))
+
+;; 계층 2: 안전성 (reachable의 부정 참조 없음, 기반 술어의 부정만)
+(:derived (safe_path ?from ?to - waypoint)
+    (and (reachable ?from ?to) (not (hazardous_route ?from ?to))))
+
+;; 계층 3: 접근 가능성 (safe_path 참조)
+(:derived (accessible ?loc - waypoint ?r - robot)
+    (exists (?cur - waypoint)
+        (and (robot_at ?r ?cur) (safe_path ?cur ?loc))))
+</code></pre>
+<p>계층화가 불가능한 경우(상호 부정적 재귀 참조)는 정의되지 않으며, PDDL 표준에서 금지된다.</p>
+<h2>4. 플래너에서의 구현</h2>
+<h3>4.1 Fast Downward의 공리 처리</h3>
+<p>Fast Downward는 파생 술어를 공리(axiom)라는 내부 표현으로 변환한다(Helmert, 2009). 공리는 상태 평가 시 고정점 계산을 통해 평가되며, 계층화된 순서로 처리된다. 공리 평가의 계산 비용은 상태 전이 비용에 추가되므로, 파생 술어의 수와 복잡도가 플래닝 성능에 영향을 미친다.</p>
+<h2>5. 추론 비용</h2>
+<table><thead><tr><th>파생 술어 유형</th><th>반복 횟수</th><th>비용 복잡도</th></tr></thead><tbody>
+<tr><td>비재귀적</td><td>1회</td><td><span class="math math-inline">O(m \cdot k)</span></td></tr>
+<tr><td>재귀적 (선형 체인)</td><td><span class="math math-inline">O(n)</span></td><td><span class="math math-inline">O(n \cdot m \cdot k)</span></td></tr>
+<tr><td>재귀적 (일반 그래프)</td><td><span class="math math-inline">O(n^2)</span></td><td><span class="math math-inline">O(n^2 \cdot m \cdot k)</span></td></tr>
+</tbody></table>
+<p>여기서 <span class="math math-inline">n</span>은 도달 가능 경로의 최대 길이, <span class="math math-inline">m</span>은 술어 인스턴스 수, <span class="math math-inline">k</span>는 규칙 본체의 크기이다.</p>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Thiébaux, S., Hoffmann, J., &amp; Nebel, B. (2005). “In Defense of PDDL Axioms.” <em>Artificial Intelligence</em>, 168(1–2), 38–69.</li>
+<li>Helmert, M. (2009). “Concise Finite-Domain Representations for PDDL Planning Tasks.” <em>Artificial Intelligence</em>, 173(5–6), 503–535.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

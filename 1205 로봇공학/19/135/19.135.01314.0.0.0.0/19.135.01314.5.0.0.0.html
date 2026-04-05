@@ -115,6 +115,132 @@
             </header>
             <article>
                 <h1>1314.5 매개변수와 객체 바인딩 메커니즘</h1>
+<h2>1. 객체 바인딩의 개념</h2>
+<p>PDDL에서 객체 바인딩(object binding)은 액션 스키마의 매개변수 변수에 도메인 내의 구체적 객체를 대입하는 과정이다. 이 과정을 통해 추상적인 액션 스키마가 특정 객체들에 대해 실행 가능한 구체적 액션 인스턴스, 즉 그라운드 액션(ground action)으로 변환된다.</p>
+<p>형식적으로, 바인딩은 대입 함수(substitution function) <span class="math math-inline">\sigma</span>로 표현된다:</p>
+<p><span class="math math-display">
+\sigma: \text{Vars}(\mathcal{A}) \rightarrow \mathcal{O}
+</span></p>
+<p>여기서 <span class="math math-inline">\text{Vars}(\mathcal{A})</span>는 액션 스키마 <span class="math math-inline">\mathcal{A}</span>의 매개변수 변수 집합이고, <span class="math math-inline">\mathcal{O}</span>는 문제 인스턴스에 선언된 객체 집합이다. 유효한 바인딩은 각 변수의 타입 제약을 만족해야 한다:</p>
+<p><span class="math math-display">
+\forall v_i \in \text{Vars}(\mathcal{A}): \text{type}(\sigma(v_i)) \preceq \text{decltype}(v_i)
+</span></p>
+<p>여기서 <span class="math math-inline">\text{decltype}(v_i)</span>는 변수 <span class="math math-inline">v_i</span>에 선언된 타입이고, <span class="math math-inline">\preceq</span>는 타입 계층의 하위 타입 관계이다.</p>
+<h2>2. 그라운딩 과정</h2>
+<p>그라운딩(grounding)은 액션 스키마의 모든 유효한 바인딩을 열거하여 그라운드 액션 집합을 생성하는 과정이다. 이 과정은 플래닝의 전처리(preprocessing) 단계에서 수행되거나, 플래너의 탐색 과정에서 필요 시 동적으로 수행된다.</p>
+<p>다음의 예시를 통해 그라운딩 과정을 설명한다:</p>
+<pre><code class="language-pddl">;; 도메인 정의
+(:types robot waypoint - object)
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and (robot_at ?r ?from) (connected ?from ?to))
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+
+;; 문제 정의
+(:objects
+    robot1 - robot
+    wp1 wp2 wp3 - waypoint
+)
+</code></pre>
+<p>이 도메인에서 <code>move</code> 액션의 가능한 바인딩은 다음과 같다:</p>
+<table><thead><tr><th>바인딩</th><th><code>?r</code></th><th><code>?from</code></th><th><code>?to</code></th><th>그라운드 액션</th></tr></thead><tbody>
+<tr><td><span class="math math-inline">\sigma_1</span></td><td>robot1</td><td>wp1</td><td>wp2</td><td><code>(move robot1 wp1 wp2)</code></td></tr>
+<tr><td><span class="math math-inline">\sigma_2</span></td><td>robot1</td><td>wp1</td><td>wp3</td><td><code>(move robot1 wp1 wp3)</code></td></tr>
+<tr><td><span class="math math-inline">\sigma_3</span></td><td>robot1</td><td>wp2</td><td>wp1</td><td><code>(move robot1 wp2 wp1)</code></td></tr>
+<tr><td><span class="math math-inline">\sigma_4</span></td><td>robot1</td><td>wp2</td><td>wp3</td><td><code>(move robot1 wp2 wp3)</code></td></tr>
+<tr><td><span class="math math-inline">\sigma_5</span></td><td>robot1</td><td>wp3</td><td>wp1</td><td><code>(move robot1 wp3 wp1)</code></td></tr>
+<tr><td><span class="math math-inline">\sigma_6</span></td><td>robot1</td><td>wp3</td><td>wp2</td><td><code>(move robot1 wp3 wp2)</code></td></tr>
+</tbody></table>
+<p><code>?from</code>과 <code>?to</code>에 동일한 객체가 바인딩되는 경우(예: <code>(move robot1 wp1 wp1)</code>)도 구문적으로는 유효한 바인딩이다. 이러한 자기 참조적 바인딩을 제외하려면 전제 조건에 별도의 불동 조건(inequality condition)을 명시해야 한다. <code>:equality</code> 요구사항이 활성화된 도메인에서는 다음과 같이 처리한다:</p>
+<pre><code class="language-pddl">:precondition (and
+    (robot_at ?r ?from)
+    (connected ?from ?to)
+    (not (= ?from ?to))
+)
+</code></pre>
+<h2>3. 바인딩의 적용 가능성 필터링</h2>
+<p>모든 타입 호환 바인딩이 실제로 유효한 액션을 생성하는 것은 아니다. 그라운드 액션이 특정 상태에서 적용 가능하려면, 바인딩된 전제 조건이 해당 상태에서 참이어야 한다. 따라서 실제 플래닝 과정에서는 두 단계의 필터링이 적용된다:</p>
+<p><strong>1단계: 타입 기반 필터링</strong>: 타입 제약을 만족하는 바인딩만을 후보로 생성한다.</p>
+<p><strong>2단계: 전제 조건 기반 필터링</strong>: 현재 상태에서 전제 조건이 참인 그라운드 액션만을 적용 가능한 액션으로 선택한다.</p>
+<p>현재 상태가 다음과 같다고 가정한다:</p>
+<p><span class="math math-display">
+s = \{(\text{robot\_at} \ \text{robot1} \ \text{wp1}), (\text{connected} \ \text{wp1} \ \text{wp2}), (\text{connected} \ \text{wp2} \ \text{wp3})\}
+</span></p>
+<p>이 상태에서 적용 가능한 그라운드 <code>move</code> 액션은 <code>(move robot1 wp1 wp2)</code>뿐이다. <code>?from</code>이 <code>wp1</code>에 바인딩되어야 <code>robot_at</code> 전제 조건이 충족되고, <code>?to</code>는 <code>wp1</code>과 연결된 <code>wp2</code>에만 바인딩될 수 있기 때문이다.</p>
+<h2>4. 양화사와 바인딩의 상호 작용</h2>
+<p>전제 조건이나 효과에 양화사(<code>forall</code>, <code>exists</code>)가 포함된 경우, 양화사 내부의 변수에 대한 바인딩은 매개변수 바인딩과는 독립적으로 처리된다.</p>
+<h3>4.1 전칭 양화와 바인딩</h3>
+<p><code>forall</code> 양화사 내부의 변수는 해당 타입의 모든 객체에 대해 순회한다:</p>
+<pre><code class="language-pddl">(:action secure_area
+    :parameters (?r - robot ?area - zone)
+    :precondition (and
+        (robot_at ?r ?area)
+        (forall (?d - door)
+            (imply (door_in ?d ?area) (door_locked ?d))
+        )
+    )
+    :effect (secured ?area)
+)
+</code></pre>
+<p>이 예시에서 <code>?r</code>과 <code>?area</code>는 매개변수 바인딩의 대상이지만, <code>?d</code>는 <code>forall</code> 양화사에 의해 도메인 내의 모든 <code>door</code> 타입 객체에 대해 내부 조건이 평가된다. 매개변수 바인딩 <span class="math math-inline">\sigma = \{?r \mapsto \text{robot1}, ?area \mapsto \text{zone1}\}</span>이 주어지면, 전제 조건의 평가는 다음과 같이 진행된다:</p>
+<p><span class="math math-display">
+s \models (\text{robot\_at} \ \text{robot1} \ \text{zone1}) \wedge \bigwedge_{d \in \text{objects}(\text{door})} \left( (\text{door\_in} \ d \ \text{zone1}) \Rightarrow (\text{door\_locked} \ d) \right)
+</span></p>
+<h3>4.2 존재 양화와 바인딩</h3>
+<p><code>exists</code> 양화사는 해당 타입의 객체 중 적어도 하나가 내부 조건을 만족하는지를 검사한다:</p>
+<pre><code class="language-pddl">(:action request_assistance
+    :parameters (?r - robot ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (robot_stuck ?r)
+        (exists (?helper - robot)
+            (and
+                (not (= ?helper ?r))
+                (robot_available ?helper)
+            )
+        )
+    )
+    :effect (assistance_requested ?r)
+)
+</code></pre>
+<p>여기서 <code>?helper</code>는 <code>exists</code> 양화사 내부의 지역 변수(local variable)로서, 매개변수 <code>?r</code>과는 별개의 바인딩 공간을 가진다. <code>?helper</code>에 대한 바인딩은 조건을 만족하는 객체가 존재하는지 여부만 판단하는 데 사용되며, 액션 인스턴스의 인수로 노출되지 않는다.</p>
+<h2>5. 상수와 바인딩</h2>
+<p>도메인 수준에서 선언된 상수(constants)는 그라운딩 과정에서 특수하게 처리된다. 상수는 모든 문제 인스턴스에서 자동으로 존재하는 객체로서, 매개변수에 바인딩될 수 있다:</p>
+<pre><code class="language-pddl">(:constants
+    base_station - waypoint
+    emergency - priority_level
+)
+</code></pre>
+<p>상수 <code>base_station</code>은 <code>waypoint</code> 타입의 매개변수에 바인딩 가능하며, 문제 파일에서 별도로 선언할 필요가 없다. 이는 도메인 전반에 걸쳐 공통적으로 참조되는 고정 객체를 효율적으로 관리하는 데 유용하다.</p>
+<h2>6. 플래너의 바인딩 최적화 기법</h2>
+<p>현대의 플래너들은 그라운딩의 조합적 폭발을 완화하기 위해 다양한 최적화 기법을 사용한다.</p>
+<h3>6.1 도달 가능성 분석</h3>
+<p>도달 가능성 분석(reachability analysis)은 초기 상태에서 도달 가능한 술어 인스턴스만을 기반으로 유효한 바인딩의 범위를 축소한다. 초기 상태에서 어떤 술어가 성립할 수 없다면, 해당 술어를 전제 조건으로 요구하는 바인딩은 사전에 제거된다(Helmert, 2009).</p>
+<h3>6.2 리프팅된 플래닝</h3>
+<p>일부 플래너는 그라운딩을 완전히 수행하지 않고, 리프팅된(lifted) 표현에서 직접 탐색을 수행한다. 이 접근에서는 바인딩이 탐색 중에 점진적으로 결정되며, 불필요한 그라운드 액션의 생성을 회피한다(Corrêa et al., 2020).</p>
+<h3>6.3 대칭성 제거</h3>
+<p>동일한 타입의 매개변수 간에 순서가 무관한 경우(예: 두 웨이포인트가 교환 가능한 경우), 대칭적 바인딩을 제거하여 탐색 공간을 축소할 수 있다. 이는 자동 대칭성 탐지(automatic symmetry detection) 기법을 통해 수행된다(Fox &amp; Long, 1999).</p>
+<h2>7. PlanSys2에서의 바인딩 처리</h2>
+<p>PlanSys2에서 플래너가 생성한 계획의 각 액션은 이미 그라운딩된 형태로 제공된다. Executor 노드는 계획에서 각 그라운드 액션의 이름과 바인딩된 인수를 추출하여, 해당 액션 노드에 전달한다:</p>
+<pre><code class="language-cpp">// PlanSys2 액션 노드에서 바인딩된 인수 접근
+void do_work() override
+{
+    auto args = get_arguments();
+    // args[0]: 첫 번째 매개변수에 바인딩된 객체 이름
+    // args[1]: 두 번째 매개변수에 바인딩된 객체 이름
+    // ...
+}
+</code></pre>
+<p>인수의 순서는 PDDL 도메인에서 액션 스키마의 <code>:parameters</code> 절에 선언된 순서와 동일하다. 따라서 매개변수의 선언 순서가 변경되면 액션 노드의 인수 처리 코드도 함께 수정해야 한다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Helmert, M. (2009). “Concise Finite-Domain Representations for PDDL Planning Tasks.” <em>Artificial Intelligence</em>, 173(5–6), 503–535.</li>
+<li>Corrêa, A. B., Pommerening, F., Helmert, M., &amp; Francès, G. (2020). “Lifted Successor Generation Using Query Decomposition.” <em>Proceedings of the International Conference on Automated Planning and Scheduling (ICAPS)</em>, 30, 65–73.</li>
+<li>Fox, M. &amp; Long, D. (1999). “The Detection and Exploitation of Symmetry in Planning Problems.” <em>Proceedings of the 16th International Joint Conference on Artificial Intelligence (IJCAI)</em>, 956–961.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

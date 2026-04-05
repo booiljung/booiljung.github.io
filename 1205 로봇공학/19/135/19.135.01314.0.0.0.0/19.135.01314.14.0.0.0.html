@@ -115,6 +115,178 @@
             </header>
             <article>
                 <h1>1314.14 전제 조건 설계의 모범 사례</h1>
+<h2>1. 전제 조건 설계의 핵심 원칙</h2>
+<p>PDDL 도메인에서 전제 조건의 설계는 계획의 정확성, 플래닝 효율성, 도메인 유지 보수성에 직접적인 영향을 미친다. 전제 조건이 과소 명세(under-specification)되면 실행 불가능한 계획이 생성되고, 과잉 명세(over-specification)되면 유효한 계획이 존재함에도 플래너가 이를 찾지 못하는 상황이 발생한다. 다음에서 제시하는 모범 사례는 이 두 극단 사이의 적절한 균형을 달성하기 위한 지침이다.</p>
+<h2>2. 필요 충분 조건의 추구</h2>
+<h3>2.1 필요 조건의 완전한 포함</h3>
+<p>전제 조건에는 액션 실행에 필수적인 모든 조건이 포함되어야 한다. 누락된 필요 조건은 실행 시 실패를 초래하며, 이는 재계획 비용의 증가로 이어진다:</p>
+<pre><code class="language-pddl">;; 불완전한 전제 조건: gripper_free 조건 누락
+(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        ;; (gripper_free ?r)  -- 누락: 이미 물체를 쥐고 있어도 pick_up이 허용됨
+    )
+    :effect (...)
+)
+
+;; 완전한 전제 조건
+(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+    )
+    :effect (...)
+)
+</code></pre>
+<h3>2.2 불필요한 조건의 배제</h3>
+<p>반대로, 액션의 실행에 영향을 미치지 않는 조건은 전제 조건에서 제외해야 한다. 불필요한 조건은 플래너의 탐색 공간을 과도하게 제한하고 계획 생성 시간을 증가시킨다:</p>
+<pre><code class="language-pddl">;; 과잉 명세: battery_full은 불필요 (battery_sufficient로 충분)
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+        (battery_full ?r)          ;; 과잉: 배터리가 가득 차 있을 필요는 없음
+        (not (in_maintenance ?r))  ;; 과잉: 유지보수 중이면 다른 조건이 이미 차단
+    )
+    :effect (...)
+)
+
+;; 적절한 명세
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+        (battery_sufficient ?r)
+    )
+    :effect (...)
+)
+</code></pre>
+<h2>3. 추상화 수준의 일관성</h2>
+<h3>3.1 PDDL 수준에 적합한 조건만 포함</h3>
+<p>전제 조건은 PDDL의 이산적 술어 모델로 자연스럽게 표현 가능한 조건만을 포함해야 한다. 센서 정밀도, 마찰 계수, 관절 각도 등의 연속적 물리량에 의존하는 세밀한 조건은 PDDL 수준에서 모델링하기보다 실행 수준의 액션 노드에서 처리하는 것이 적절하다:</p>
+<pre><code class="language-pddl">;; PDDL 수준에 적합한 추상적 전제 조건
+:precondition (and
+    (robot_at ?r ?loc)
+    (object_reachable ?r ?obj)
+    (gripper_free ?r)
+)
+
+;; PDDL 수준에 부적합한 저수준 조건 (회피)
+:precondition (and
+    (robot_at ?r ?loc)
+    (joint_angle_within_range ?r ?obj)     ;; 연속 변수 의존
+    (gripper_force_sufficient ?r ?obj)      ;; 센서 데이터 의존
+    (surface_friction_adequate ?obj)        ;; 물리 특성 의존
+)
+</code></pre>
+<h3>3.2 동일 도메인 내 일관된 추상화</h3>
+<p>모든 액션의 전제 조건이 동일한 추상화 수준에서 정의되어야 한다. 일부 액션은 고수준 조건을 사용하고 다른 액션은 저수준 조건을 사용하면, 플래너가 조건 간의 관계를 올바르게 분석하지 못한다.</p>
+<h2>4. 독립적 조건의 분리</h2>
+<p>전제 조건 내의 조건들을 논리적 독립성에 따라 그룹화하면 도메인의 가독성과 유지 보수성이 향상된다. 일반적으로 다음의 범주로 분류할 수 있다:</p>
+<pre><code class="language-pddl">(:action complex_operation
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        ;; 1. 에이전트 상태 조건
+        (robot_at ?r ?loc)
+        (robot_operational ?r)
+
+        ;; 2. 대상 객체 조건
+        (object_at ?obj ?loc)
+        (not (object_secured ?obj))
+
+        ;; 3. 자원 가용성 조건
+        (gripper_free ?r)
+        (battery_sufficient ?r)
+
+        ;; 4. 환경 조건
+        (workspace_clear ?loc)
+        (not (emergency_mode))
+    )
+    :effect (...)
+)
+</code></pre>
+<p>이러한 범주별 그룹화는 문서화 목적 외에도, 전제 조건의 누락이나 중복을 체계적으로 검출하는 데 유용하다.</p>
+<h2>5. 중복 조건의 제거</h2>
+<h3>5.1 논리적 함의에 의한 중복</h3>
+<p>하나의 전제 조건이 다른 전제 조건을 논리적으로 함의하는 경우, 함의되는 조건은 중복이므로 제거해야 한다:</p>
+<pre><code class="language-pddl">;; 중복: robot_operational이 참이면 not (robot_in_error)는 항상 참
+;; (robot_operational의 달성을 위해 robot_in_error를 제거하는 액션이 존재한다고 가정)
+:precondition (and
+    (robot_operational ?r)
+    (not (robot_in_error ?r))    ;; 중복 가능
+)
+</code></pre>
+<p>그러나 이러한 중복 판단은 도메인의 액션 효과 구조에 대한 깊은 이해를 전제하므로, 확실하지 않은 경우에는 명시적으로 유지하는 것이 안전하다.</p>
+<h3>5.2 타입 제약에 의한 중복</h3>
+<p>매개변수의 타입 제약이 이미 특정 조건을 보장하는 경우, 해당 조건을 전제 조건에 반복할 필요가 없다:</p>
+<pre><code class="language-pddl">;; 불필요: ?r이 이미 robot 타입으로 선언됨
+:precondition (and
+    (is_robot ?r)               ;; 중복: 타입 시스템이 이미 보장
+    (robot_at ?r ?from)
+)
+</code></pre>
+<h2>6. 전제 조건과 효과의 일관성</h2>
+<h3>6.1 상호 보완적 설계</h3>
+<p>동일한 술어가 한 액션의 전제 조건과 다른 액션의 효과에 나타나는 경우, 이들의 관계가 논리적으로 일관되어야 한다:</p>
+<pre><code class="language-pddl">;; move 액션이 robot_at을 변경
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (robot_at ?r ?from)
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+
+;; pick_up 액션이 robot_at을 전제 조건으로 사용
+(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and (robot_at ?r ?loc) (object_at ?obj ?loc) ...)
+    :effect (...)
+)
+</code></pre>
+<p><code>pick_up</code>의 전제 조건 <code>(robot_at ?r ?loc)</code>는 <code>move</code>의 효과 <code>(robot_at ?r ?to)</code>와 일치하므로, 플래너는 <code>move</code> 후에 <code>pick_up</code>을 연결하는 계획을 자연스럽게 생성할 수 있다. 이러한 전제 조건-효과 연쇄(precondition-effect chaining)가 올바르게 형성되어야 유효한 계획이 생성된다.</p>
+<h3>6.2 닫힌 세계 가정과의 정합성</h3>
+<p>전제 조건에서 부정적 리터럴 <code>(not (p))</code>를 사용하는 경우, 도메인 내에 술어 <code>p</code>를 참으로 만드는 액션과 거짓으로 만드는 액션이 모두 존재하는지 확인해야 한다. <code>p</code>를 거짓으로 만드는 액션이 없으면, <code>p</code>가 초기 상태에서 참인 경우 영원히 참으로 유지되어 <code>(not (p))</code> 전제 조건이 달성 불가능해진다.</p>
+<h2>7. 플래닝 효율성을 위한 설계</h2>
+<h3>7.1 전제 조건의 크기 관리</h3>
+<p>전제 조건 리터럴의 수가 증가하면 적용 가능한 액션의 수가 감소하여 탐색의 분기 요인이 줄어들지만, 개별 적용 가능성 검사의 비용이 증가한다. 일반적으로 5–10개의 리터럴이 적절한 범위이며, 20개를 초과하면 도메인 구조의 재설계를 고려해야 한다.</p>
+<h3>7.2 STRIPS 호환성 우선</h3>
+<p>가능하면 긍정적 리터럴의 접합(STRIPS 수준)으로 전제 조건을 표현하는 것이 최대 플래너 호환성과 최적 휴리스틱 성능을 보장한다. ADL 수준의 논리적 구성(<code>or</code>, <code>exists</code>, <code>forall</code>)은 진정으로 필요한 경우에만 사용해야 한다.</p>
+<h3>7.3 대칭적 전제 조건의 회피</h3>
+<p>매개변수의 순서 교환이 동일한 조건을 생성하는 경우, 명시적 순서 제약을 추가하여 대칭적 그라운딩을 줄일 수 있다:</p>
+<pre><code class="language-pddl">;; 대칭적 바인딩 허용 (비효율)
+(:action exchange
+    :parameters (?r1 ?r2 - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r1 ?loc)
+        (robot_at ?r2 ?loc)
+        (holding ?r1 ?obj)
+        (not (= ?r1 ?r2))
+    )
+    :effect (...)
+)
+</code></pre>
+<p>이 설계에서 <code>(exchange robot1 robot2 box1 wp1)</code>과 <code>(exchange robot2 robot1 box1 wp1)</code>은 사실상 동일한 상황을 나타내지만 별도의 그라운드 액션으로 생성된다.</p>
+<h2>8. 검증과 테스트</h2>
+<h3>8.1 전제 조건의 체계적 테스트</h3>
+<p>전제 조건이 올바르게 설계되었는지 확인하기 위해, 다음의 테스트 시나리오를 체계적으로 수행해야 한다:</p>
+<ol>
+<li><strong>긍정 테스트</strong>: 모든 전제 조건이 충족된 상태에서 액션이 적용 가능한지 확인한다.</li>
+<li><strong>부정 테스트</strong>: 각 전제 조건을 하나씩 불충족 상태로 변경하여 액션이 적용 불가능하게 되는지 확인한다.</li>
+<li><strong>경계 테스트</strong>: 전제 조건의 경계 사례(빈 객체 집합에 대한 양화, 동일 객체 바인딩 등)를 검사한다.</li>
+</ol>
+<p>PlanSys2의 터미널 인터페이스를 활용하면 다양한 초기 상태에서 전제 조건의 평가 결과를 대화적으로 확인할 수 있다.</p>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Helmert, M. (2006). “The Fast Downward Planning System.” <em>Journal of Artificial Intelligence Research</em>, 26, 191–246.</li>
+<li>Hoffmann, J. &amp; Nebel, B. (2001). “The FF Planning System: Fast Plan Generation Through Heuristic Search.” <em>Journal of Artificial Intelligence Research</em>, 14, 253–302.</li>
+</ul>
 
             </article>
             <footer>

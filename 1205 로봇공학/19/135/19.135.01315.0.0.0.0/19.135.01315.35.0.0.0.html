@@ -115,6 +115,116 @@
             </header>
             <article>
                 <h1>1315.35 연결성 검사를 위한 파생 술어 활용</h1>
+<h2>1. 연결성 검사의 필요성</h2>
+<p>로봇 도메인에서 연결성(connectivity)은 두 위치 사이에 이동 가능한 경로가 존재하는지를 판단하는 속성이다. 직접 연결(<code>connected</code>) 술어만으로는 간접적 경로의 존재 여부를 확인할 수 없으므로, 이행적 폐쇄(transitive closure)를 계산하는 파생 술어가 필요하다.</p>
+<h2>2. 직접 연결과 간접 연결</h2>
+<pre><code class="language-pddl">;; 직접 연결: 기반 술어 (액션 효과로 변경 가능)
+(:predicates (connected ?w1 - waypoint ?w2 - waypoint))
+
+;; 간접 연결: 파생 술어 (자동 추론)
+;; 기저 조건
+(:derived (reachable ?from - waypoint ?to - waypoint)
+    (connected ?from ?to)
+)
+
+;; 재귀 조건
+(:derived (reachable ?from - waypoint ?to - waypoint)
+    (exists (?mid - waypoint)
+        (and (connected ?from ?mid) (reachable ?mid ?to))
+    )
+)
+</code></pre>
+<p>이 정의에 의해 <code>(reachable wp1 wp5)</code>는 <code>wp1</code>에서 <code>wp5</code>까지 연결 체인이 존재하면 자동으로 참이 된다.</p>
+<h2>3. 조건부 연결성</h2>
+<p>장애물이나 차단 상태를 고려한 조건부 연결성을 정의할 수 있다:</p>
+<pre><code class="language-pddl">;; 통과 가능한 연결만 고려
+(:derived (passable_path ?from - waypoint ?to - waypoint)
+    (and
+        (connected ?from ?to)
+        (not (blocked ?to))
+    )
+)
+
+(:derived (passable_path ?from - waypoint ?to - waypoint)
+    (exists (?mid - waypoint)
+        (and
+            (connected ?from ?mid)
+            (not (blocked ?mid))
+            (passable_path ?mid ?to)
+        )
+    )
+)
+</code></pre>
+<p>이 파생 술어는 차단된 위치를 경유하지 않는 경로만을 유효한 연결로 인정한다. 기반 술어 <code>(blocked ?w)</code>가 변경되면 <code>passable_path</code>가 자동으로 재계산된다.</p>
+<h2>4. 액션 전제 조건에서의 활용</h2>
+<pre><code class="language-pddl">(:action plan_route
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (reachable ?from ?to)
+    )
+    :effect (route_planned ?r ?from ?to)
+)
+
+(:action deploy_to_area
+    :parameters (?r - robot ?area - waypoint)
+    :precondition (and
+        (robot_ready ?r)
+        (exists (?cur - waypoint)
+            (and (robot_at ?r ?cur) (passable_path ?cur ?area))
+        )
+    )
+    :effect (deployed ?r ?area)
+)
+</code></pre>
+<h2>5. 양방향 연결성</h2>
+<p>무향 그래프의 연결성을 위해 양방향을 고려한 파생 술어:</p>
+<pre><code class="language-pddl">;; 양방향 직접 연결
+(:derived (bidirectional_connected ?w1 - waypoint ?w2 - waypoint)
+    (or (connected ?w1 ?w2) (connected ?w2 ?w1))
+)
+
+;; 양방향 도달 가능성
+(:derived (bidirectional_reachable ?from - waypoint ?to - waypoint)
+    (bidirectional_connected ?from ?to)
+)
+
+(:derived (bidirectional_reachable ?from - waypoint ?to - waypoint)
+    (exists (?mid - waypoint)
+        (and (bidirectional_connected ?from ?mid)
+             (bidirectional_reachable ?mid ?to))
+    )
+)
+</code></pre>
+<h2>6. 다중 로봇 통신 연결성</h2>
+<p>통신 범위 기반의 로봇 간 연결성 검사:</p>
+<pre><code class="language-pddl">(:derived (comm_reachable ?r1 - robot ?r2 - robot)
+    (and (not (= ?r1 ?r2)) (in_comm_range ?r1 ?r2))
+)
+
+(:derived (comm_reachable ?r1 - robot ?r2 - robot)
+    (exists (?relay - robot)
+        (and (not (= ?relay ?r1)) (not (= ?relay ?r2))
+             (in_comm_range ?r1 ?relay)
+             (comm_reachable ?relay ?r2))
+    )
+)
+</code></pre>
+<p>이 파생 술어는 직접 통신 범위 내에 있거나 다른 로봇을 릴레이하여 통신 가능한 경우를 모두 포함한다.</p>
+<h2>7. 성능 고려사항</h2>
+<p>재귀적 연결성 파생 술어의 고정점 계산 비용은 그래프의 크기에 의존한다:</p>
+<table><thead><tr><th>그래프 특성</th><th>반복 횟수</th><th>비용</th></tr></thead><tbody>
+<tr><td>선형 체인 (<span class="math math-inline">n</span> 노드)</td><td><span class="math math-inline">O(n)</span></td><td><span class="math math-inline">O(n^2)</span> 인스턴스</td></tr>
+<tr><td>완전 그래프 (<span class="math math-inline">n</span> 노드)</td><td><span class="math math-inline">O(1)</span></td><td><span class="math math-inline">O(n^2)</span> 인스턴스</td></tr>
+<tr><td>희소 그래프 (<span class="math math-inline">n</span> 노드, <span class="math math-inline">m</span> 간선)</td><td><span class="math math-inline">O(d)</span> (<span class="math math-inline">d</span>: 직경)</td><td><span class="math math-inline">O(n \cdot m)</span></td></tr>
+</tbody></table>
+<p>웨이포인트 수가 수십 개 수준이면 실용적이지만, 수백 개 이상이면 성능 저하가 발생할 수 있다. 이 경우 연결성을 기반 술어로 사전 계산하여 설정하는 것이 효율적이다.</p>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Thiébaux, S., Hoffmann, J., &amp; Nebel, B. (2005). “In Defense of PDDL Axioms.” <em>Artificial Intelligence</em>, 168(1–2), 38–69.</li>
+<li>Helmert, M. (2009). “Concise Finite-Domain Representations for PDDL Planning Tasks.” <em>Artificial Intelligence</em>, 173(5–6), 503–535.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

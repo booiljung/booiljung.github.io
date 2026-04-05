@@ -115,6 +115,138 @@
             </header>
             <article>
                 <h1>1315.4 다중 상속과 타입 합집합</h1>
+<h2>1. PDDL에서의 다중 상속</h2>
+<p>표준 PDDL의 타입 시스템은 단일 상속(single inheritance)만을 공식적으로 지원한다. 즉, 각 타입은 하나의 상위 타입만 가질 수 있으며, 타입 계층은 트리 구조를 형성한다. 다중 상속(multiple inheritance)은 PDDL 표준에 명시적으로 정의되어 있지 않으며, 파서에 따라 지원 여부가 달라진다.</p>
+<pre><code class="language-pddl">;; 단일 상속 (표준)
+(:types
+    ground_robot - robot
+    aerial_robot - robot
+)
+
+;; 다중 상속 (비표준, 대부분의 파서에서 미지원)
+;; amphibious_robot이 ground_robot과 aquatic_robot을 동시에 상속하려는 시도
+;; (:types amphibious_robot - ground_robot aquatic_robot)  ;; 비표준
+</code></pre>
+<p>다중 상속의 부재는 교차 범주(cross-cutting category)에 속하는 객체를 모델링하는 데 제약을 가한다. 예를 들어, 수륙양용 로봇은 지상 로봇의 능력과 수중 로봇의 능력을 모두 보유하지만, 단일 상속 체계에서는 하나의 상위 타입만 선택할 수 있다.</p>
+<h2>2. either를 이용한 타입 합집합</h2>
+<p>PDDL은 <code>either</code> 구문을 통해 타입 합집합(type union)을 지원한다. <code>either</code>는 매개변수 선언에서 여러 타입의 객체를 수용할 수 있도록 허용한다:</p>
+<pre><code class="language-pddl">(:action transport
+    :parameters (?r - robot ?cargo - (either package tool) ?from ?to - waypoint)
+    :precondition (...)
+    :effect (...)
+)
+</code></pre>
+<p>이 선언에서 <code>?cargo</code> 매개변수는 <code>package</code> 또는 <code>tool</code> 타입의 객체를 수용한다. 형식적으로:</p>
+<p><span class="math math-display">
+\text{objects}(\text{either} \ T_1 \ T_2) = \text{objects}(T_1) \cup \text{objects}(T_2)
+</span></p>
+<h2>3. either의 활용 사례</h2>
+<h3>3.1 다중 유형 대상 액션</h3>
+<p>로봇이 서로 다른 유형의 물체를 동일한 방식으로 조작하는 경우:</p>
+<pre><code class="language-pddl">(:action pick_up
+    :parameters (?r - robot ?item - (either package tool sensor_module) ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (item_at ?item ?loc)
+        (gripper_free ?r)
+    )
+    :effect (and
+        (holding ?r ?item)
+        (not (item_at ?item ?loc))
+        (not (gripper_free ?r))
+    )
+)
+</code></pre>
+<h3>3.2 다중 유형 위치 참조</h3>
+<pre><code class="language-pddl">(:action dock
+    :parameters (?r - robot ?station - (either charging_station maintenance_station))
+    :precondition (and
+        (robot_at ?r ?station)
+        (station_available ?station)
+    )
+    :effect (docked ?r ?station)
+)
+</code></pre>
+<h2>4. 다중 상속의 대안적 모델링 기법</h2>
+<p>PDDL의 단일 상속 제약을 우회하는 실용적 기법을 제시한다.</p>
+<h3>4.1 기법 1: 공통 상위 타입 도입</h3>
+<p>교차 범주의 객체를 공통 상위 타입으로 묶고, 능력을 술어로 표현한다:</p>
+<pre><code class="language-pddl">(:types
+    robot - object
+    ground_robot aquatic_robot amphibious_robot - robot
+)
+
+(:predicates
+    (can_move_ground ?r - robot)
+    (can_move_water ?r - robot)
+)
+
+;; 초기화
+(:init
+    (can_move_ground ground_bot1)
+    (can_move_water aquatic_bot1)
+    (can_move_ground amphibious_bot1)   ;; 양쪽 능력 모두 부여
+    (can_move_water amphibious_bot1)
+)
+
+(:action move_on_ground
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and (robot_at ?r ?from) (connected ?from ?to) (can_move_ground ?r))
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+</code></pre>
+<h3>4.2 기법 2: either를 이용한 매개변수 확장</h3>
+<pre><code class="language-pddl">(:types
+    ground_robot aquatic_robot - robot
+)
+
+;; 양쪽 로봇 유형 모두 허용하는 액션
+(:action deploy_to_shore
+    :parameters (?r - (either ground_robot aquatic_robot) ?loc - shore_location)
+    ...)
+</code></pre>
+<h3>4.3 기법 3: 역할 기반 술어</h3>
+<p>타입 계층 대신 역할 술어를 사용하여 교차 범주를 표현한다:</p>
+<pre><code class="language-pddl">(:predicates
+    (role_transporter ?r - robot)
+    (role_inspector ?r - robot)
+    (role_rescuer ?r - robot)
+)
+
+;; 한 로봇이 여러 역할을 수행 가능
+(:init
+    (role_transporter robot1)
+    (role_inspector robot1)    ;; 운송과 점검 모두 가능
+    (role_rescuer robot2)
+)
+</code></pre>
+<h2>5. either의 제약과 주의사항</h2>
+<ol>
+<li>
+<p><strong>플래너 호환성</strong>: 모든 플래너가 <code>either</code> 구문을 지원하는 것은 아니다. Fast Downward, FF 등 주요 플래너는 지원하지만, 일부 특수 플래너에서는 제한될 수 있다.</p>
+</li>
+<li>
+<p><strong>과도한 사용 자제</strong>: <code>either</code>의 과도한 사용은 타입 시스템의 구조적 이점을 감소시킨다. 빈번히 결합되는 타입에 대해서는 공통 상위 타입을 정의하는 것이 바람직하다.</p>
+</li>
+<li>
+<p><strong>효과에서의 타입 구분 불가</strong>: <code>either</code>로 수용된 객체의 실제 타입을 효과에서 구분할 수 없다. 타입에 따라 다른 효과가 필요하면 별도 액션으로 분리해야 한다.</p>
+</li>
+<li>
+<p><strong>술어와의 정합성</strong>: <code>either</code> 타입의 매개변수가 술어에 전달될 때, 해당 술어의 매개변수 타입이 <code>either</code>의 모든 구성 타입과 호환되어야 한다.</p>
+</li>
+</ol>
+<h2>6. 설계 권장사항</h2>
+<ol>
+<li><strong>먼저 단일 상속 계층으로 설계를 시도하라.</strong> 대부분의 도메인은 단일 상속만으로 충분히 표현 가능하다.</li>
+<li><strong>교차 범주가 발생하면 능력 술어로 보완하라.</strong> 타입으로 표현하기 어려운 교차 속성은 술어로 모델링한다.</li>
+<li><strong><code>either</code>는 매개변수 수준의 임시 합집합에만 사용하라.</strong> 도메인 수준의 구조적 분류에는 타입 계층을 사용한다.</li>
+</ol>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>McDermott, D., Ghallab, M., Howe, A., Knoblock, C., Ram, A., Veloso, M., Weld, D., &amp; Wilkins, D. (1998). “PDDL—The Planning Domain Definition Language.” <em>Technical Report CVC TR-98-003</em>, Yale Center for Computational Vision and Control.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+</ul>
 
             </article>
             <footer>

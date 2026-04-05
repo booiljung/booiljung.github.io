@@ -115,6 +115,174 @@
             </header>
             <article>
                 <h1>1314.48 PlanSys2에서의 액션 정의와 활용</h1>
+<h2>1. PlanSys2와 PDDL 액션의 관계</h2>
+<p>PlanSys2에서 PDDL 도메인의 각 액션은 실제 로봇 행동을 수행하는 ROS2 액션 노드와 일대일로 대응한다. PDDL 액션은 추상적 행동 모델을 정의하고, PlanSys2 액션 노드는 그 모델에 대응하는 구체적 실행 로직을 구현한다(Gonzalez et al., 2021).</p>
+<h2>2. PDDL 도메인에서의 액션 정의</h2>
+<p>PlanSys2에서 사용하는 PDDL 도메인의 액션은 표준 PDDL 구문을 따른다:</p>
+<pre><code class="language-pddl">(define (domain robot_tasks)
+    (:requirements :strips :typing :durative-actions)
+    (:types robot waypoint object - entity)
+    (:predicates
+        (robot_at ?r - robot ?w - waypoint)
+        (object_at ?o - object ?w - waypoint)
+        (holding ?r - robot ?o - object)
+        (gripper_free ?r - robot)
+        (connected ?w1 - waypoint ?w2 - waypoint)
+    )
+
+    (:durative-action move
+        :parameters (?r - robot ?from - waypoint ?to - waypoint)
+        :duration (= ?duration 5)
+        :condition (and
+            (at start (robot_at ?r ?from))
+            (at start (connected ?from ?to))
+        )
+        :effect (and
+            (at start (not (robot_at ?r ?from)))
+            (at end (robot_at ?r ?to))
+        )
+    )
+
+    (:durative-action pick
+        :parameters (?r - robot ?obj - object ?loc - waypoint)
+        :duration (= ?duration 3)
+        :condition (and
+            (at start (robot_at ?r ?loc))
+            (at start (object_at ?obj ?loc))
+            (at start (gripper_free ?r))
+            (over all (robot_at ?r ?loc))
+        )
+        :effect (and
+            (at start (not (gripper_free ?r)))
+            (at end (holding ?r ?obj))
+            (at end (not (object_at ?obj ?loc)))
+        )
+    )
+)
+</code></pre>
+<h2>3. ActionExecutorClient를 이용한 액션 노드 구현</h2>
+<p>PlanSys2에서 각 PDDL 액션에 대응하는 C++ 노드는 <code>plansys2::ActionExecutorClient</code> 클래스를 상속하여 구현한다:</p>
+<pre><code class="language-cpp">#include "plansys2_executor/ActionExecutorClient.hpp"
+#include "rclcpp/rclcpp.hpp"
+
+class MoveAction : public plansys2::ActionExecutorClient
+{
+public:
+    MoveAction()
+    : plansys2::ActionExecutorClient("move", 500ms)
+    {
+    }
+
+private:
+    void do_work() override
+    {
+        // PDDL 액션의 매개변수 추출
+        auto args = get_arguments();
+        // args[0] = robot name
+        // args[1] = from waypoint
+        // args[2] = to waypoint
+
+        // 실제 로봇 이동 로직
+        // Nav2 네비게이션 스택 호출 등
+
+        if (navigation_complete_) {
+            finish(true, 1.0, "Move completed successfully");
+        } else {
+            send_feedback(progress_, "Moving...");
+        }
+    }
+};
+
+int main(int argc, char ** argv)
+{
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared&lt;MoveAction&gt;();
+    node-&gt;set_parameter(rclcpp::Parameter("action_name", "move"));
+    rclcpp::spin(node-&gt;get_node_base_interface());
+    rclcpp::shutdown();
+    return 0;
+}
+</code></pre>
+<h2>4. 핵심 API</h2>
+<h3>4.1 get_arguments()</h3>
+<p>플래너가 생성한 계획에서 해당 액션의 바인딩된 매개변수를 문자열 벡터로 반환한다. 순서는 PDDL 도메인의 <code>:parameters</code> 선언 순서와 일치한다.</p>
+<h3>4.2 send_feedback(progress, message)</h3>
+<p>액션 실행 중 진행률(0.0~1.0)과 상태 메시지를 Executor에 전달한다. Executor는 이 정보를 기반으로 액션의 실행 상태를 모니터링한다.</p>
+<h3>4.3 finish(success, completion, message)</h3>
+<p>액션 실행의 완료를 Executor에 통보한다. <code>success</code>가 <code>true</code>이면 PDDL 효과가 적용되고, <code>false</code>이면 실행 실패로 처리된다.</p>
+<h2>5. 런치 파일 구성</h2>
+<p>PlanSys2 기반 시스템의 런치 파일에서 도메인 파일과 액션 노드를 함께 구성한다:</p>
+<pre><code class="language-python">from launch import LaunchDescription
+from launch_ros.actions import Node
+import os
+from ament_index_python.packages import get_package_share_directory
+
+def generate_launch_description():
+    pkg_dir = get_package_share_directory('my_robot_planner')
+
+    return LaunchDescription([
+        # PlanSys2 시스템 실행
+        Node(
+            package='plansys2_bringup',
+            executable='plansys2_node',
+            output='screen',
+            parameters=[{
+                'model_file': os.path.join(pkg_dir, 'pddl', 'domain.pddl')
+            }]
+        ),
+        # 액션 노드들
+        Node(package='my_robot_planner', executable='move_action_node', output='screen'),
+        Node(package='my_robot_planner', executable='pick_action_node', output='screen'),
+        Node(package='my_robot_planner', executable='place_action_node', output='screen'),
+    ])
+</code></pre>
+<h2>6. 액션 실행 흐름</h2>
+<p>PlanSys2에서 PDDL 액션의 실행 흐름은 다음과 같다:</p>
+<ol>
+<li><strong>계획 생성</strong>: Planner 노드가 PDDL 도메인과 현재 문제를 기반으로 계획을 생성한다.</li>
+<li><strong>계획 분배</strong>: Executor 노드가 계획의 각 액션을 해당 액션 노드에 분배한다.</li>
+<li><strong>액션 실행</strong>: 각 액션 노드의 <code>do_work()</code> 메서드가 주기적으로 호출되어 실제 로봇 행동을 수행한다.</li>
+<li><strong>피드백 전달</strong>: 액션 노드가 진행률과 상태 메시지를 Executor에 전달한다.</li>
+<li><strong>완료 통보</strong>: 액션 완료 시 <code>finish()</code>를 호출하여 Executor에 결과를 통보한다.</li>
+<li><strong>상태 갱신</strong>: 성공 시 PDDL 효과가 Problem Expert의 세계 상태에 적용된다.</li>
+</ol>
+<h2>7. 순간적 액션과 듀레이티브 액션의 처리 차이</h2>
+<p>PlanSys2는 듀레이티브 액션을 기본으로 사용하며, 순간적 액션도 내부적으로 짧은 듀레이티브 액션으로 처리된다. 두 유형 모두 동일한 <code>ActionExecutorClient</code> 인터페이스로 구현한다.</p>
+<h2>8. 액션 실패 처리</h2>
+<p>액션 노드에서 <code>finish(false, ...)</code>를 호출하면, Executor는 실행 실패를 감지하고 재계획 절차를 시작할 수 있다:</p>
+<pre><code class="language-cpp">void do_work() override
+{
+    if (error_detected_) {
+        finish(false, 0.0, "Navigation failed: obstacle detected");
+        return;
+    }
+    // 정상 실행 로직
+}
+</code></pre>
+<h2>9. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>PDDL 액션 이름과 노드 이름을 일치시키라.</strong> PlanSys2는 PDDL 액션 이름으로 대응하는 액션 노드를 식별하므로, 이름이 정확히 일치해야 한다.</p>
+</li>
+<li>
+<p><strong>매개변수 순서에 주의하라.</strong> <code>get_arguments()</code>가 반환하는 인수의 순서는 PDDL <code>:parameters</code>의 선언 순서와 동일하다.</p>
+</li>
+<li>
+<p><strong>적절한 피드백 주기를 설정하라.</strong> <code>ActionExecutorClient</code> 생성자의 두 번째 인수가 <code>do_work()</code> 호출 주기이며, 로봇 행동의 특성에 맞게 설정해야 한다.</p>
+</li>
+<li>
+<p><strong>실패 시 명확한 메시지를 제공하라.</strong> <code>finish(false, ...)</code>의 메시지는 디버깅과 재계획에 중요한 정보를 제공한다.</p>
+</li>
+<li>
+<p><strong>상태 갱신의 원자성을 보장하라.</strong> 액션 완료 시 PDDL 효과의 모든 상태 변경이 일관되게 적용되어야 한다.</p>
+</li>
+</ol>
+<h2>10. 참고 문헌</h2>
+<ul>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE International Conference on Autonomous Robot Systems and Competitions (ICARSC)</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,158 @@
             </header>
             <article>
                 <h1>1314.41 드론 이착륙 액션의 PDDL 모델링 사례</h1>
+<h2>1. 드론 도메인의 특수성</h2>
+<p>드론(무인 항공기, UAV)의 PDDL 모델링은 지상 로봇과 구별되는 다음의 특수한 상태 요소를 포함한다:</p>
+<ul>
+<li><strong>비행 상태</strong>: 지상(landed), 공중(airborne)의 구분</li>
+<li><strong>이착륙 절차</strong>: 이륙(takeoff)과 착륙(landing)이 별도의 액션으로 모델링됨</li>
+<li><strong>3차원 공간</strong>: 지상 위치(landing pad)와 공중 위치(airspace)의 구분</li>
+<li><strong>비행 가능 조건</strong>: 기상, 비행 허가, 배터리 등의 추가 전제 조건</li>
+</ul>
+<h2>2. 타입 및 술어 설계</h2>
+<pre><code class="language-pddl">(define (domain drone_operations)
+    (:requirements :strips :typing :durative-actions :numeric-fluents)
+    (:types
+        drone - object
+        location - object
+        landing_pad airspace - location
+    )
+    (:predicates
+        (drone_at ?d - drone ?l - location)
+        (landed ?d - drone)
+        (airborne ?d - drone)
+        (pad_free ?p - landing_pad)
+        (flight_permitted ?a - airspace)
+        (connected_air ?a1 - airspace ?a2 - airspace)
+        (above ?a - airspace ?p - landing_pad)
+    )
+    (:functions
+        (battery_level ?d - drone)
+        (takeoff_energy ?d - drone)
+        (landing_energy ?d - drone)
+        (flight_energy ?a1 - airspace ?a2 - airspace)
+    )
+)
+</code></pre>
+<h2>3. 이륙 액션</h2>
+<pre><code class="language-pddl">(:durative-action takeoff
+    :parameters (?d - drone ?pad - landing_pad ?air - airspace)
+    :duration (= ?duration 10)
+    :condition (and
+        (at start (drone_at ?d ?pad))
+        (at start (landed ?d))
+        (at start (above ?air ?pad))
+        (at start (&gt;= (battery_level ?d) (takeoff_energy ?d)))
+        (over all (flight_permitted ?air))
+    )
+    :effect (and
+        (at start (not (landed ?d)))
+        (at start (not (drone_at ?d ?pad)))
+        (at start (pad_free ?pad))
+        (at end (airborne ?d))
+        (at end (drone_at ?d ?air))
+        (at end (decrease (battery_level ?d) (takeoff_energy ?d)))
+    )
+)
+</code></pre>
+<p>이륙 액션의 핵심 모델링 요소:</p>
+<ul>
+<li>시작 시: 착륙 상태를 해제하고, 착륙 패드를 반환한다.</li>
+<li>이륙 중: 비행 허가 상태가 유지되어야 한다.</li>
+<li>종료 시: 공중 상태로 전환하고, 공역 위치에 도달한다.</li>
+</ul>
+<h2>4. 착륙 액션</h2>
+<pre><code class="language-pddl">(:durative-action land
+    :parameters (?d - drone ?air - airspace ?pad - landing_pad)
+    :duration (= ?duration 15)
+    :condition (and
+        (at start (drone_at ?d ?air))
+        (at start (airborne ?d))
+        (at start (above ?air ?pad))
+        (at start (pad_free ?pad))
+        (at start (&gt;= (battery_level ?d) (landing_energy ?d)))
+        (over all (flight_permitted ?air))
+    )
+    :effect (and
+        (at start (not (airborne ?d)))
+        (at start (not (drone_at ?d ?air)))
+        (at start (not (pad_free ?pad)))
+        (at end (landed ?d))
+        (at end (drone_at ?d ?pad))
+        (at end (decrease (battery_level ?d) (landing_energy ?d)))
+    )
+)
+</code></pre>
+<h2>5. 공중 이동 액션</h2>
+<pre><code class="language-pddl">(:durative-action fly
+    :parameters (?d - drone ?from - airspace ?to - airspace)
+    :duration (= ?duration (/ (air_distance ?from ?to) (flight_speed ?d)))
+    :condition (and
+        (at start (drone_at ?d ?from))
+        (at start (airborne ?d))
+        (at start (connected_air ?from ?to))
+        (at start (&gt;= (battery_level ?d) (flight_energy ?from ?to)))
+        (over all (flight_permitted ?from))
+        (over all (flight_permitted ?to))
+    )
+    :effect (and
+        (at start (not (drone_at ?d ?from)))
+        (at end (drone_at ?d ?to))
+        (at end (decrease (battery_level ?d) (flight_energy ?from ?to)))
+    )
+)
+</code></pre>
+<h2>6. 호버링 액션</h2>
+<p>특정 위치에서 공중 정지하여 임무를 수행하는 액션:</p>
+<pre><code class="language-pddl">(:durative-action hover_survey
+    :parameters (?d - drone ?air - airspace)
+    :duration (= ?duration 30)
+    :condition (and
+        (at start (drone_at ?d ?air))
+        (at start (airborne ?d))
+        (over all (drone_at ?d ?air))
+        (over all (&gt;= (battery_level ?d) 10))
+    )
+    :effect (and
+        (at end (surveyed ?air))
+        (at end (decrease (battery_level ?d) (* ?duration 0.3)))
+    )
+)
+</code></pre>
+<h2>7. 비상 착륙 액션</h2>
+<p>배터리 부족 시 가장 가까운 착륙 패드로의 비상 착륙:</p>
+<pre><code class="language-pddl">(:action emergency_land
+    :parameters (?d - drone ?air - airspace ?pad - landing_pad)
+    :precondition (and
+        (drone_at ?d ?air)
+        (airborne ?d)
+        (above ?air ?pad)
+        (pad_free ?pad)
+        (&lt; (battery_level ?d) 15)
+    )
+    :effect (and
+        (landed ?d)
+        (drone_at ?d ?pad)
+        (not (airborne ?d))
+        (not (drone_at ?d ?air))
+        (not (pad_free ?pad))
+        (emergency_landed ?d)
+    )
+)
+</code></pre>
+<h2>8. 설계 시 고려사항</h2>
+<ol>
+<li><strong>landed와 airborne의 상호 배타성</strong>을 모든 관련 액션에서 유지해야 한다.</li>
+<li><strong>착륙 패드의 가용성</strong>(<code>pad_free</code>)을 다중 드론 환경에서 정확히 관리해야 한다.</li>
+<li><strong>이륙과 착륙의 에너지 비용</strong>을 별도로 모델링하여 현실적인 배터리 관리를 가능하게 한다.</li>
+<li><strong>비행 허가 조건</strong>을 <code>over all</code> 조건으로 배치하여 비행 중 허가 취소 시 계획을 무효화한다.</li>
+</ol>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Fox, M. &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

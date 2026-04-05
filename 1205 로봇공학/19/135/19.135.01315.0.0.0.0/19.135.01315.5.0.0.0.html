@@ -115,6 +115,130 @@
             </header>
             <article>
                 <h1>1315.5 타입 제약을 통한 액션 매개변수 제한</h1>
+<h2>1. 타입 제약의 메커니즘</h2>
+<p>PDDL에서 액션 매개변수에 부여되는 타입 제약은 해당 매개변수에 바인딩될 수 있는 객체의 범위를 해당 타입과 그 하위 타입의 객체로 제한하는 메커니즘이다. 이 제약은 그라운딩 과정에서 적용되어, 타입 호환 바인딩만이 유효한 그라운드 액션으로 생성된다.</p>
+<pre><code class="language-pddl">(:types
+    robot - object
+    ground_robot aerial_robot - robot
+    waypoint airspace - location
+    location - object
+)
+
+;; 지상 로봇 전용 이동 액션
+(:action drive
+    :parameters (?r - ground_robot ?from - waypoint ?to - waypoint)
+    ...)
+;; ?r에는 ground_robot 타입 객체만 바인딩 가능
+;; ?from, ?to에는 waypoint 타입 객체만 바인딩 가능
+
+;; 항공 로봇 전용 비행 액션
+(:action fly
+    :parameters (?d - aerial_robot ?from - airspace ?to - airspace)
+    ...)
+;; ?d에는 aerial_robot 타입 객체만 바인딩 가능
+</code></pre>
+<h2>2. 타입 제약의 효과</h2>
+<h3>2.1 의미론적 안전성</h3>
+<p>타입 제약은 의미론적으로 부적절한 바인딩을 구조적으로 차단한다:</p>
+<pre><code class="language-pddl">;; 타입 제약에 의해 자동 차단되는 바인딩 예시:
+;; (drive drone1 wp1 wp2)  → drone1은 aerial_robot이므로 ground_robot에 불호환
+;; (fly robot1 wp1 wp2)    → wp1은 waypoint이므로 airspace에 불호환
+</code></pre>
+<p>이러한 구조적 차단은 전제 조건에 별도의 타입 검사 술어를 추가할 필요를 제거한다.</p>
+<h3>2.2 그라운딩 공간 감소</h3>
+<p>타입 제약이 그라운딩 공간에 미치는 영향을 정량적으로 분석한다. 도메인에 다음의 객체가 존재한다고 가정한다:</p>
+<ul>
+<li><code>ground_robot</code>: 3개</li>
+<li><code>aerial_robot</code>: 2개</li>
+<li><code>waypoint</code>: 15개</li>
+<li><code>airspace</code>: 10개</li>
+</ul>
+<pre><code>drive 액션 그라운딩 수:
+  타입 없이: (3+2+15+10)^3 = 27,000
+  타입 사용: 3 × 15 × 15 = 675
+
+fly 액션 그라운딩 수:
+  타입 없이: 27,000
+  타입 사용: 2 × 10 × 10 = 200
+</code></pre>
+<p>타입 제약으로 그라운딩 수가 약 40배에서 135배 감소한다.</p>
+<h3>2.3 특화 액션의 자연스러운 정의</h3>
+<p>타입 계층을 활용하면 로봇 유형에 따른 특화 액션을 자연스럽게 분리할 수 있다:</p>
+<pre><code class="language-pddl">;; 모든 로봇에 적용되는 일반 액션
+(:action communicate
+    :parameters (?r - robot ?target - robot ?msg - message)
+    :precondition (and
+        (not (= ?r ?target))
+        (comm_enabled ?r)
+        (comm_enabled ?target)
+    )
+    :effect (received ?target ?msg)
+)
+
+;; 지상 로봇 전용 액션
+(:action navigate_terrain
+    :parameters (?r - ground_robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (terrain_passable ?from ?to)
+    )
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+
+;; 항공 로봇 전용 액션
+(:action hover
+    :parameters (?d - aerial_robot ?pos - airspace)
+    :precondition (and
+        (drone_at ?d ?pos)
+        (airborne ?d)
+    )
+    :effect (hovering ?d ?pos)
+)
+</code></pre>
+<h2>3. 상위 타입을 이용한 일반화</h2>
+<p>매개변수를 상위 타입으로 선언하면, 해당 타입과 모든 하위 타입의 객체가 바인딩 가능하다. 이를 통해 여러 하위 타입에 공통적으로 적용되는 액션을 단일 정의로 표현할 수 있다:</p>
+<pre><code class="language-pddl">;; robot 타입: ground_robot, aerial_robot 모두 바인딩 가능
+(:action report_status
+    :parameters (?r - robot ?base - station)
+    :precondition (comm_link ?r ?base)
+    :effect (status_reported ?r)
+)
+
+;; location 타입: waypoint, airspace, station 모두 바인딩 가능
+(:action mark_visited
+    :parameters (?r - robot ?loc - location)
+    :precondition (at ?r ?loc)
+    :effect (visited ?loc)
+)
+</code></pre>
+<h2>4. 타입 제약과 술어 제약의 상호 보완</h2>
+<p>타입 제약만으로 표현할 수 없는 세밀한 조건은 전제 조건의 술어로 보완한다:</p>
+<pre><code class="language-pddl">;; 타입 제약: 물체가 movable_object 타입이어야 함
+;; 술어 제약: 추가적으로 무게 제한, 호환 그리퍼 등 확인
+(:action pick_up
+    :parameters (?r - robot ?obj - movable_object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+        (compatible_gripper ?r ?obj)    ;; 타입으로 표현 불가한 세부 조건
+        (&lt;= (weight ?obj) (lift_capacity ?r))  ;; 수치 제약
+    )
+    :effect (...)
+)
+</code></pre>
+<h2>5. 설계 지침</h2>
+<ol>
+<li><strong>가능한 한 구체적인 타입을 매개변수에 지정하라.</strong> 넓은 타입은 불필요한 그라운딩을 유발한다.</li>
+<li><strong>동일 액션에서 하위 타입 분기가 필요하면 별도 액션으로 분리하라.</strong> 타입에 따라 효과가 달라지면 단일 액션으로 통합하기보다 타입별 액션을 정의한다.</li>
+<li><strong>타입 제약과 전제 조건의 역할을 구분하라.</strong> 타입은 구조적 분류를, 전제 조건은 상태 의존적 조건을 담당한다.</li>
+</ol>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Helmert, M. (2009). “Concise Finite-Domain Representations for PDDL Planning Tasks.” <em>Artificial Intelligence</em>, 173(5–6), 503–535.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

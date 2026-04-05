@@ -115,6 +115,160 @@
             </header>
             <article>
                 <h1>1315.21 에너지 소비 모델링 사례</h1>
+<h2>1. 에너지 모델링의 필요성</h2>
+<p>자율 로봇 시스템에서 에너지 관리는 임무 지속 가능성의 핵심 요소이다. PDDL의 수치 함수를 활용하면 플래너가 에너지 제약을 고려한 계획을 생성할 수 있으며, 에너지 최적 경로 선택, 충전 시점 결정, 저전력 모드 전환 등의 전략적 의사 결정이 가능해진다.</p>
+<h2>2. 기본 에너지 모델</h2>
+<h3>2.1 도메인 정의</h3>
+<pre><code class="language-pddl">(define (domain energy_aware_robot)
+    (:requirements :strips :typing :numeric-fluents)
+    (:types robot waypoint charging_station - object)
+
+    (:predicates
+        (robot_at ?r - robot ?w - waypoint)
+        (connected ?w1 - waypoint ?w2 - waypoint)
+        (gripper_free ?r - robot)
+        (holding ?r - robot ?obj - object)
+        (object_at ?obj - object ?w - waypoint)
+        (at_charger ?r - robot ?c - charging_station)
+    )
+
+    (:functions
+        (battery_level ?r - robot)
+        (max_battery ?r - robot)
+        (distance ?w1 - waypoint ?w2 - waypoint)
+        (energy_per_meter ?r - robot)
+        (pick_energy ?r - robot)
+        (place_energy ?r - robot)
+        (idle_energy_rate ?r - robot)
+        (total_energy_consumed)
+    )
+)
+</code></pre>
+<h3>2.2 이동 에너지 소모</h3>
+<pre><code class="language-pddl">(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+        (&gt;= (battery_level ?r) (* (distance ?from ?to) (energy_per_meter ?r)))
+    )
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (decrease (battery_level ?r) (* (distance ?from ?to) (energy_per_meter ?r)))
+        (increase (total_energy_consumed) (* (distance ?from ?to) (energy_per_meter ?r)))
+    )
+)
+</code></pre>
+<h3>2.3 조작 에너지 소모</h3>
+<pre><code class="language-pddl">(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+        (&gt;= (battery_level ?r) (pick_energy ?r))
+    )
+    :effect (and
+        (holding ?r ?obj)
+        (not (object_at ?obj ?loc))
+        (not (gripper_free ?r))
+        (decrease (battery_level ?r) (pick_energy ?r))
+        (increase (total_energy_consumed) (pick_energy ?r))
+    )
+)
+</code></pre>
+<h3>2.4 충전 액션</h3>
+<pre><code class="language-pddl">(:action charge_battery
+    :parameters (?r - robot ?station - charging_station)
+    :precondition (and
+        (robot_at ?r ?station)
+        (&lt; (battery_level ?r) (max_battery ?r))
+    )
+    :effect (assign (battery_level ?r) (max_battery ?r))
+)
+</code></pre>
+<h2>3. 적재 무게에 따른 에너지 소모 모델</h2>
+<p>로봇의 적재량에 비례하여 이동 에너지가 증가하는 모���:</p>
+<pre><code class="language-pddl">(:functions
+    (current_load ?r - robot)
+    (base_energy_per_meter ?r - robot)
+    (load_energy_factor ?r - robot)
+)
+
+(:action move_loaded
+    :parameters (?r - robot ?from ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+        (&gt;= (battery_level ?r)
+            (* (distance ?from ?to)
+               (+ (base_energy_per_meter ?r)
+                  (* (current_load ?r) (load_energy_factor ?r)))))
+    )
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (decrease (battery_level ?r)
+            (* (distance ?from ?to)
+               (+ (base_energy_per_meter ?r)
+                  (* (current_load ?r) (load_energy_factor ?r)))))
+    )
+)
+</code></pre>
+<h2>4. 문제 파일 초기화 예시</h2>
+<pre><code class="language-pddl">(define (problem delivery_mission)
+    (:domain energy_aware_robot)
+    (:objects
+        robot1 - robot
+        wp1 wp2 wp3 wp4 - waypoint
+        station1 - charging_station
+        box1 box2 - object
+    )
+    (:init
+        ;; 로봇 에너��� 속성
+        (= (battery_level robot1) 100)
+        (= (max_battery robot1) 100)
+        (= (energy_per_meter robot1) 0.5)
+        (= (pick_energy robot1) 3)
+        (= (place_energy robot1) 2)
+
+        ;; 거리 정보
+        (= (distance wp1 wp2) 20)
+        (= (distance wp2 wp3) 30)
+        (= (distance wp3 wp4) 15)
+        (= (distance wp2 wp1) 20)
+        (= (distance wp3 wp2) 30)
+        (= (distance wp4 wp3) 15)
+
+        ;; 메트릭 초기화
+        (= (total_energy_consumed) 0)
+
+        ;; 초기 상태
+        (robot_at robot1 wp1)
+        (object_at box1 wp2)
+        (object_at box2 wp3)
+        (gripper_free robot1)
+        (connected wp1 wp2) (connected wp2 wp3) (connected wp3 wp4)
+        (connected wp2 wp1) (connected wp3 wp2) (connected wp4 wp3)
+    )
+    (:goal (and (object_at box1 wp4) (object_at box2 wp4)))
+    (:metric minimize (total_energy_consumed))
+)
+</code></pre>
+<h2>5. 에너지 최적 계획의 특성</h2>
+<p>에너지 최소화 메트릭 하에서 플래너는 다음의 전략을 ��동으로 선택한다:</p>
+<ol>
+<li><strong>최단 경로 선택</strong>: 에너지 소모��� 거리에 비례하므로, 최단 경로가 에너지 최적 경로가 된다.</li>
+<li><strong>충전 시�� 최적화</strong>: 에너지가 부족할 때만 충전하며, 충전 스테이션으로의 우회 비용을 고려한다.</li>
+<li><strong>조작 순서 최적화</strong>: 이동을 최소화���는 순서로 물체를 수집하고 배달한다.</li>
+</ol>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Fox, M. &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>Hoffmann, J. (2003). “The Metric-FF Planning System: Translating ‘Ignoring Delete Lists’ to Numeric State Variables.” <em>Journal of Artificial Intelligence Research</em>, 20, 291–341.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

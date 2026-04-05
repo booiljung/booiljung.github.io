@@ -115,6 +115,192 @@
             </header>
             <article>
                 <h1>1314.13 중첩 논리 연산을 이용한 복합 전제 조건</h1>
+<h2>1. 복합 전제 조건의 개념</h2>
+<p>복합 전제 조건(complex precondition)은 다수의 논리 연산자(<code>and</code>, <code>or</code>, <code>not</code>, <code>imply</code>, <code>forall</code>, <code>exists</code>)가 중첩되어 구성된 전제 조건이다. 단순한 리터럴의 접합으로는 표현하기 어려운 복잡한 실행 조건을 형식적으로 명세할 수 있으며, <code>:adl</code> 요구사항의 활성화를 통해 사용할 수 있다.</p>
+<p>복합 전제 조건은 추상 구문 트리(Abstract Syntax Tree, AST)로 표현되며, 트리의 각 내부 노드는 논리 연산자, 잎 노드는 원자 술어 또는 동등성 조건에 해당한다. 트리의 깊이(중첩 수준)와 폭(각 연산자의 피연산자 수)이 전제 조건의 복잡도를 결정한다.</p>
+<h2>2. 중첩 구조의 유형</h2>
+<h3>2.1 and-or 중첩</h3>
+<p>접합과 선언의 교대 중첩은 다양한 조합적 조건을 표현한다:</p>
+<pre><code class="language-pddl">;; and 내부에 or가 중첩된 경우
+:precondition (and
+    (robot_at ?r ?loc)
+    (or
+        (and (has_tool_a ?r) (material_type_a ?obj))
+        (and (has_tool_b ?r) (material_type_b ?obj))
+    )
+    (not (in_error ?r))
+)
+</code></pre>
+<p>이 전제 조건의 논리적 구조는 다음과 같다:</p>
+<p><span class="math math-display">
+P_1 \wedge ((P_2 \wedge P_3) \vee (P_4 \wedge P_5)) \wedge \neg P_6
+</span></p>
+<p>여기서 외부 접합은 필수 조건을 나열하고, 내부 선언은 대안적 도구-재료 조합을 표현한다.</p>
+<h3>2.2 양화사와 논리 연산자의 중첩</h3>
+<p>양화사 내부에 논리 연산자가 포함되거나, 논리 연산자 내부에 양화사가 포함되는 중첩 구조이다:</p>
+<pre><code class="language-pddl">;; forall 내부에 or와 imply가 중첩
+:precondition (and
+    (robot_at ?r ?area)
+    (forall (?zone - safety_zone)
+        (imply (zone_in_area ?zone ?area)
+            (or
+                (zone_cleared ?zone)
+                (and (zone_monitored ?zone) (no_human ?zone))
+            )
+        )
+    )
+)
+</code></pre>
+<p>이 전제 조건은 “작업 영역 내의 모든 안전 구역에 대해, 해당 구역이 확인되었거나 또는 모니터링되면서 사람이 없어야 한다“는 조건을 표현한다.</p>
+<h3>2.3 exists와 forall의 교차 중첩</h3>
+<pre><code class="language-pddl">;; forall 내부에 exists가 중첩
+:precondition (forall (?t - task)
+    (imply (task_critical ?t)
+        (exists (?r - robot)
+            (and
+                (robot_capable ?r ?t)
+                (robot_available ?r)
+            )
+        )
+    )
+)
+</code></pre>
+<p>이 구조는 “모든 중요 태스크에 대해, 그 태스크를 수행할 수 있는 가용 로봇이 적어도 하나 존재해야 한다“는 조건을 표현한다.</p>
+<h2>3. 복합 전제 조건의 평가 과정</h2>
+<p>복합 전제 조건의 평가는 AST의 재귀적 순회(recursive traversal)를 통해 수행된다. 평가 알고리즘의 의사 코드는 다음과 같다:</p>
+<pre><code>EVALUATE(formula, state):
+    IF formula is atomic predicate (p o1 ... on):
+        RETURN (p o1 ... on) ∈ state
+    IF formula is (not φ):
+        RETURN NOT EVALUATE(φ, state)
+    IF formula is (and φ1 ... φn):
+        RETURN ALL(EVALUATE(φi, state) for i = 1..n)
+    IF formula is (or φ1 ... φn):
+        RETURN ANY(EVALUATE(φi, state) for i = 1..n)
+    IF formula is (imply φ ψ):
+        RETURN (NOT EVALUATE(φ, state)) OR EVALUATE(ψ, state)
+    IF formula is (forall (?x - T) φ):
+        RETURN ALL(EVALUATE(φ[?x/o], state) for o ∈ objects(T))
+    IF formula is (exists (?x - T) φ):
+        RETURN ANY(EVALUATE(φ[?x/o], state) for o ∈ objects(T))
+</code></pre>
+<p>이 알고리즘의 시간 복잡도는 AST의 크기와 양화사의 전개 규모에 의존한다. 양화사가 없는 명제 논리 수준의 복합 전제 조건은 AST 크기에 선형적이지만, 양화사의 중첩은 다항식 또는 지수적 복잡도를 초래할 수 있다.</p>
+<h2>4. 복합 전제 조건의 정규 형식 변환</h2>
+<h3>4.1 부정 정규 형식(NNF)</h3>
+<p>부정 정규 형식(Negation Normal Form, NNF)은 <code>not</code> 연산자가 원자 술어에만 적용되는 형태이다. 복합 논리식은 다음의 변환 규칙을 적용하여 NNF로 변환할 수 있다:</p>
+<p><span class="math math-display">
+\neg(\phi \wedge \psi) \equiv \neg\phi \vee \neg\psi \quad \text{(드 모르간 법칙)}
+</span></p>
+<p><span class="math math-display">
+\neg(\phi \vee \psi) \equiv \neg\phi \wedge \neg\psi \quad \text{(드 모르간 법칙)}
+</span></p>
+<p><span class="math math-display">
+\neg(\forall x. \phi(x)) \equiv \exists x. \neg\phi(x)
+</span></p>
+<p><span class="math math-display">
+\neg(\exists x. \phi(x)) \equiv \forall x. \neg\phi(x)
+</span></p>
+<p><span class="math math-display">
+\neg\neg\phi \equiv \phi \quad \text{(이중 부정 제거)}
+</span></p>
+<p>NNF 변환은 플래너의 전처리 단계에서 자주 수행되며, 이후의 분석과 최적화를 용이하게 한다.</p>
+<h3>4.2 선언 정규 형식(DNF)으로의 변환</h3>
+<p>플래너가 STRIPS 수준의 접합적 전제 조건만을 처리할 수 있는 경우, 복합 전제 조건을 DNF로 변환한 후 각 선언 항을 별도의 액션으로 분할하는 기법이 사용된다:</p>
+<p><span class="math math-display">
+\phi \equiv (\phi_{11} \wedge \phi_{12} \wedge \cdots) \vee (\phi_{21} \wedge \phi_{22} \wedge \cdots) \vee \cdots
+</span></p>
+<p>그러나 DNF 변환은 최악의 경우 공식 크기의 지수적 증가를 초래할 수 있다. <span class="math math-inline">n</span>개의 변수에 대한 접합-선언 교대 구조는 DNF로 변환 시 <span class="math math-inline">2^n</span>개의 선언 항을 생성할 수 있다.</p>
+<h2>5. 로봇 도메인에서의 복합 전제 조건 설계 사례</h2>
+<h3>5.1 다중 로봇 협력 태스크 사전 조건</h3>
+<pre><code class="language-pddl">(:action cooperative_lift
+    :parameters (?obj - heavy_object ?loc - waypoint)
+    :precondition (and
+        (object_at ?obj ?loc)
+        (lift_required ?obj)
+        (exists (?r1 ?r2 - robot)
+            (and
+                (not (= ?r1 ?r2))
+                (robot_at ?r1 ?loc)
+                (robot_at ?r2 ?loc)
+                (robot_available ?r1)
+                (robot_available ?r2)
+                (or
+                    (and (has_lifter ?r1) (has_stabilizer ?r2))
+                    (and (has_lifter ?r2) (has_stabilizer ?r1))
+                )
+            )
+        )
+    )
+    :effect (and
+        (lifted ?obj)
+        (not (object_at ?obj ?loc))
+    )
+)
+</code></pre>
+<p>이 전제 조건은 다음의 복합 조건을 표현한다: 동일 위치에 서로 다른 두 로봇이 존재하고, 각각 가용 상태이며, 한 로봇은 리프터를 다른 로봇은 안정화 장치를 보유해야 한다(역할 배정의 순서는 무관).</p>
+<h3>5.2 환경 적응적 행동 선택</h3>
+<pre><code class="language-pddl">(:action navigate_adaptive
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (or
+            (and
+                (direct_path ?from ?to)
+                (not (path_blocked ?from ?to))
+                (forall (?obs - dynamic_obstacle)
+                    (not (obstacle_on_path ?obs ?from ?to))
+                )
+            )
+            (and
+                (exists (?alt - waypoint)
+                    (and
+                        (alternate_route ?from ?alt ?to)
+                        (not (path_blocked ?from ?alt))
+                        (not (path_blocked ?alt ?to))
+                    )
+                )
+            )
+        )
+    )
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+</code></pre>
+<p>이 전제 조건은 직접 경로가 모든 동적 장애물에 대해 안전한 경우이거나, 또는 차단되지 않은 대안 경로가 존재하는 경우에 내비게이션을 허용한다.</p>
+<h2>6. 복합 전제 조건의 계산 복잡도</h2>
+<p>복합 전제 조건의 평가 복잡도는 중첩 구조에 크게 의존한다:</p>
+<table><thead><tr><th>중첩 구조</th><th>평가 복잡도</th><th>비고</th></tr></thead><tbody>
+<tr><td>명제 논리만 (and, or, not)</td><td><span class="math math-inline">O(n)</span></td><td><span class="math math-inline">n</span>: 리터럴 수</td></tr>
+<tr><td>단일 <code>forall</code></td><td><span class="math math-inline">O(m \cdot n)</span></td><td><span class="math math-inline">m</span>: 객체 수</td></tr>
+<tr><td>단일 <code>exists</code></td><td><span class="math math-inline">O(m \cdot n)</span></td><td>최악의 경우</td></tr>
+<tr><td><code>forall</code> 내부 <code>exists</code></td><td><span class="math math-inline">O(m_1 \cdot m_2 \cdot n)</span></td><td><span class="math math-inline">m_1, m_2</span>: 각 타입의 객체 수</td></tr>
+<tr><td><code>forall</code> 내부 <code>forall</code></td><td><span class="math math-inline">O(m^2 \cdot n)</span></td><td>2중 전칭 양화</td></tr>
+</tbody></table>
+<p>로봇 도메인에서 객체 수가 수십에서 수백 개 수준인 경우, 2중 양화까지는 실용적 범위에서 처리 가능하지만, 3중 이상의 양화 중첩은 대부분의 플래너에서 심각한 성능 저하를 초래한다.</p>
+<h2>7. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>중첩 깊이를 최소화하라.</strong> AST의 깊이가 3–4 수준을 초과하면 가독성과 플래닝 효율 모두 저하된다. 중첩이 깊어지면 도메인 모델의 재설계를 고려해야 한다.</p>
+</li>
+<li>
+<p><strong>보조 술어를 활용하여 복합 조건을 분리하라.</strong> 복합 전제 조건의 일부를 별도의 술어로 추상화하고, 해당 술어를 다른 액션의 효과로 설정하여 사전에 달성하도록 할 수 있다.</p>
+</li>
+<li>
+<p><strong>가능하면 STRIPS 수준의 표현을 유지하라.</strong> 액션 분할, 보조 술어 도입 등의 기법을 통해 복합 전제 조건을 단순한 접합으로 변환할 수 있다면, 플래너 호환성과 효율성 측면에서 유리하다.</p>
+</li>
+<li>
+<p><strong>양화사 중첩을 구조적으로 분해하라.</strong> <code>forall</code> 내부의 <code>exists</code>는 보조 술어의 도입을 통해 두 개의 독립적 양화로 분리할 수 있는 경우가 있다.</p>
+</li>
+<li>
+<p><strong>복합 전제 조건을 테스트 케이스로 검증하라.</strong> 중첩된 논리식은 직관적 이해가 어려우므로, 다양한 초기 상태에서 전제 조건의 평가 결과를 확인하여 의도한 의미와 일치하는지 검증해야 한다.</p>
+</li>
+</ol>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Pednault, E. P. D. (1989). “ADL: Exploring the Middle Ground Between STRIPS and the Situation Calculus.” <em>Proceedings of the 1st International Conference on Principles of Knowledge Representation and Reasoning (KR)</em>, 324–332.</li>
+<li>Helmert, M. (2009). “Concise Finite-Domain Representations for PDDL Planning Tasks.” <em>Artificial Intelligence</em>, 173(5–6), 503–535.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

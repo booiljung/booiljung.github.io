@@ -115,6 +115,107 @@
             </header>
             <article>
                 <h1>1315.6 타입 기반 술어 매개변수 제약</h1>
+<h2>1. 술어의 타입 제약</h2>
+<p>PDDL에서 술어(predicate)는 <code>:predicates</code> 절에서 선언되며, 각 매개변수에 타입을 지정하여 해당 술어가 적용될 수 있는 객체의 범위를 제한한다. 이는 액션 매개변수의 타입 제약과 동일한 원리이나, 술어 수준에서 적용된다는 점에서 구별된다.</p>
+<pre><code class="language-pddl">(:predicates
+    (robot_at ?r - robot ?w - waypoint)
+    (holding ?r - robot ?obj - object)
+    (connected ?w1 - waypoint ?w2 - waypoint)
+    (battery_sufficient ?r - robot)
+)
+</code></pre>
+<p>이 선언에서 <code>robot_at</code> 술어의 첫 번째 매개변수는 <code>robot</code> 타입, 두 번째 매개변수는 <code>waypoint</code> 타입으로 제약된다. 이에 따라 <code>(robot_at wp1 robot1)</code>과 같은 인수 순서 오류나 <code>(robot_at box1 wp1)</code>과 같은 타입 불일치는 구조적으로 방지된다.</p>
+<h2>2. 술어 타입 제약의 역할</h2>
+<h3>2.1 인스턴스화 범위의 제한</h3>
+<p>술어의 타입 제약은 해당 술어의 유효한 인스턴스(ground predicate)의 수를 제한한다. 타입이 없으면 모든 객체 조합이 유효한 인스턴스가 되지만, 타입이 있으면 타입 호환 조합만 유효하다:</p>
+<p><span class="math math-display">
+\text{타입 없이}: \lvert\text{instances}(p)\rvert = n^{\text{arity}(p)}
+</span></p>
+<p><span class="math math-display">
+\text{타입 사용}: \lvert\text{instances}(p)\rvert = \prod_{i=1}^{\text{arity}(p)} n_i
+</span></p>
+<p>여기서 <span class="math math-inline">n</span>은 전체 객체 수, <span class="math math-inline">n_i</span>는 <span class="math math-inline">i</span>번째 매개변수 타입의 객체 수이다.</p>
+<h3>2.2 상태 공간의 축소</h3>
+<p>상태는 참인 술어 인스턴스의 집합으로 표현되므로, 유효한 인스턴스 수의 감소는 가능한 상태의 수를 지수적으로 축소한다:</p>
+<p><span class="math math-display">
+\lvert S \rvert = 2^{\sum_p \lvert\text{instances}(p)\rvert}
+</span></p>
+<h3>2.3 액션과의 정합성 보장</h3>
+<p>술어의 타입 제약과 액션 매개변수의 타입 제약이 일관되어야 한다. 액션에서 특정 술어를 참조할 때, 술어의 인수 위치에 전달되는 변수의 타입이 술어 선언의 타입과 호환되어야 한다:</p>
+<pre><code class="language-pddl">;; 술어 선언
+(:predicates (robot_at ?r - robot ?w - waypoint))
+
+;; 액션에서의 참조 (타입 정합)
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (robot_at ?r ?from)  ;; ?r: robot ✓, ?from: waypoint ✓
+    :effect (robot_at ?r ?to)          ;; ?r: robot ✓, ?to: waypoint ✓
+)
+
+;; 타입 부정합 예시 (오류)
+(:action wrong_action
+    :parameters (?obj - object ?loc - waypoint)
+    :precondition (robot_at ?obj ?loc)  ;; ?obj: object, 기대: robot → 부정합
+)
+</code></pre>
+<p>타입 부정합은 엄격한 파서에서 오류로 검출되지만, 느슨한 파서에서는 경고 없이 통과될 수 있어 주의가 필요하다. <code>object</code>는 모든 타입의 상위이므로 형식적으로는 호환되지만, 의미론적으로 부적절한 바인딩을 허용하게 된다.</p>
+<h2>3. 타입 계층과 술어의 상호 작용</h2>
+<p>상위 타입으로 선언된 술어 매개변수에는 하위 타입의 객체도 인스턴스화될 수 있다:</p>
+<pre><code class="language-pddl">;; 술어가 robot 타입을 사용
+(:predicates (robot_active ?r - robot))
+
+;; ground_robot과 aerial_robot 모두 인스턴스화 가능
+(:init
+    (robot_active ground_bot1)     ;; ground_robot ⊂ robot ✓
+    (robot_active aerial_bot1)     ;; aerial_robot ⊂ robot ✓
+)
+</code></pre>
+<p>반대로, 하위 타입으로 선언된 술어 매개변수에는 상위 타입의 객체를 인스턴스화할 수 없다:</p>
+<pre><code class="language-pddl">(:predicates (ground_specific ?r - ground_robot))
+
+;; 오류: aerial_robot 객체를 ground_robot 매개변수에 인스턴스화
+;; (ground_specific aerial_bot1)  ;; aerial_robot ⊄ ground_robot ✗
+</code></pre>
+<h2>4. 술어 설계와 타입 제약의 실용적 지침</h2>
+<h3>4.1 적절한 타입 범위 선택</h3>
+<p>술어의 매개변수 타입은 해당 술어가 적용될 수 있는 가장 넓은 의미론적 범위를 반영하되, 불필요하게 넓지 않아야 한다:</p>
+<pre><code class="language-pddl">;; 너무 넓은 타입 (비권장)
+(:predicates (at ?x - object ?y - object))
+;; 모든 객체 쌍에 대해 인스턴스화 가능 → 무의미한 조합 다수
+
+;; 적절한 타입 (권장)
+(:predicates (robot_at ?r - robot ?w - waypoint))
+;; 로봇-웨이포인트 쌍에만 인스턴스화 → 의미 있는 조합만 허용
+</code></pre>
+<h3>4.2 범용 술어와 특화 술어의 구분</h3>
+<p>여러 타입에 공통적으로 적용되는 술어는 상위 타입으로, 특정 타입에만 적용되는 술어는 하위 타입으로 선언한다:</p>
+<pre><code class="language-pddl">;; 범용 술어: 모든 entity에 적용
+(:predicates
+    (at ?e - entity ?l - location)
+    (active ?e - entity)
+)
+
+;; 특화 술어: 특정 타입에만 적용
+(:predicates
+    (airborne ?d - aerial_robot)
+    (gripper_free ?m - manipulator)
+    (cargo_loaded ?t - transport_robot ?c - cargo)
+)
+</code></pre>
+<h3>4.3 일관된 인수 순서 패턴</h3>
+<p>동일한 의미 범주의 술어에서 인수 순서를 일관되게 유지한다:</p>
+<pre><code class="language-pddl">;; 패턴: 주체(agent) - 대상(target) - 위치(location)
+(robot_at ?r - robot ?w - waypoint)
+(holding ?r - robot ?obj - object)
+(object_at ?obj - object ?w - waypoint)
+(connected ?w1 - waypoint ?w2 - waypoint)
+</code></pre>
+<h2>5. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Helmert, M. (2009). “Concise Finite-Domain Representations for PDDL Planning Tasks.” <em>Artificial Intelligence</em>, 173(5–6), 503–535.</li>
+</ul>
 
             </article>
             <footer>

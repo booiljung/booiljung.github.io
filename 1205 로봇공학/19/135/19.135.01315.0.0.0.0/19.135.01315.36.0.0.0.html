@@ -115,6 +115,109 @@
             </header>
             <article>
                 <h1>1315.36 도달 가능성 분석을 위한 파생 술어</h1>
+<h2>1. 도달 가능성의 개념</h2>
+<p>도달 가능성(reachability)은 특정 에이전트가 현재 상태에서 특정 위치나 상태에 도달할 수 있는지를 판단하는 속성이다. 플래닝 수준에서 도달 가능성은 경로의 존재뿐만 아니라, 에이전트의 능력과 환경 조건을 종합적으로 고려한 개념이다.</p>
+<h2>2. 위치 도달 가능성</h2>
+<p>로봇이 특정 위치에 도달할 수 있는지를 판단하는 파생 술어:</p>
+<pre><code class="language-pddl">;; 기저 조건: 현재 위치에서 직접 이동 가능
+(:derived (location_reachable ?r - robot ?dest - waypoint)
+    (exists (?cur - waypoint)
+        (and (robot_at ?r ?cur) (connected ?cur ?dest) (not (blocked ?dest)))
+    )
+)
+
+;; 재귀 조건: 간접 경로를 통해 도달 가능
+(:derived (location_reachable ?r - robot ?dest - waypoint)
+    (exists (?cur - waypoint ?mid - waypoint)
+        (and (robot_at ?r ?cur)
+             (connected ?cur ?mid)
+             (not (blocked ?mid))
+             (passable_path ?mid ?dest))
+    )
+)
+</code></pre>
+<h2>3. 능력 기반 도달 가능성</h2>
+<p>로봇의 유형과 능력을 고려한 도달 가능성:</p>
+<pre><code class="language-pddl">;; 지상 로봇은 지상 경로만 사용 가능
+(:derived (ground_reachable ?r - ground_robot ?dest - waypoint)
+    (exists (?cur - waypoint)
+        (and (robot_at ?r ?cur)
+             (ground_path ?cur ?dest)
+             (terrain_passable ?cur ?dest ?r))
+    )
+)
+
+;; 항공 로봇은 공역을 통해 도달 가능
+(:derived (air_reachable ?d - aerial_robot ?dest - airspace)
+    (exists (?cur - airspace)
+        (and (drone_at ?d ?cur)
+             (flight_corridor ?cur ?dest)
+             (airspace_clear ?dest))
+    )
+)
+</code></pre>
+<h2>4. 자원 제약 도달 가능성</h2>
+<p>에너지 제약을 고려한 도달 가능성:</p>
+<pre><code class="language-pddl">;; 현재 배터리로 도달 가능한지 확인
+(:derived (energy_reachable ?r - robot ?dest - waypoint)
+    (exists (?cur - waypoint)
+        (and (robot_at ?r ?cur)
+             (reachable ?cur ?dest)
+             (&gt;= (battery_level ?r)
+                  (min_energy_to_reach ?cur ?dest)))
+    )
+)
+</code></pre>
+<p>이 파생 술어는 경로의 존재뿐만 아니라, 해당 경로를 이동하는 데 필요한 최소 에너지가 현재 배터리 잔량 이내인지를 확인한다.</p>
+<h2>5. 태스크 도달 가능성</h2>
+<p>로봇이 특정 태스크를 수행할 수 있는 위치에 도달 가능한지를 종합적으로 판단:</p>
+<pre><code class="language-pddl">(:derived (task_achievable ?r - robot ?t - task)
+    (exists (?loc - waypoint)
+        (and
+            (task_at ?t ?loc)
+            (location_reachable ?r ?loc)
+            (has_capability ?r ?t)
+            (not (task_completed ?t))
+        )
+    )
+)
+</code></pre>
+<h2>6. 도달 불가능 목표의 조기 검출</h2>
+<p>도달 가능성 파생 술어를 활용하면, 목표 상태가 현재 상태에서 도달 불가능한 경우를 조기에 검출할 수 있다:</p>
+<pre><code class="language-pddl">;; 목표 검증용 파생 술어
+(:derived (goal_feasible)
+    (forall (?t - task)
+        (imply (goal_task ?t)
+            (exists (?r - robot) (task_achievable ?r ?t))
+        )
+    )
+)
+</code></pre>
+<p>플래너는 <code>(goal_feasible)</code>이 거짓이면 문제가 해결 불가능함을 즉시 판단할 수 있다.</p>
+<h2>7. 동적 환경에서의 도달 가능성 갱신</h2>
+<p>장애물 추가/제거, 경로 차단/해제 등의 환경 변화가 발생하면, 파생 술어 기반의 도달 가능성은 자동으로 재계산된다:</p>
+<pre><code class="language-pddl">;; 장애물 제거 액션
+(:action clear_obstacle
+    :parameters (?r - robot ?obs - obstacle ?loc - waypoint)
+    :precondition (and (robot_at ?r ?loc) (obstacle_at ?obs ?loc))
+    :effect (and (not (obstacle_at ?obs ?loc)) (not (blocked ?loc)))
+)
+;; → blocked가 해제되면 passable_path, location_reachable 등이 자동 갱신
+</code></pre>
+<p>이는 파생 술어의 핵심적 이점으로, 기반 술어 변경 시 관련된 모든 파생 조건이 일관되게 갱신된다.</p>
+<h2>8. 성능 최적화</h2>
+<p>도달 가능성의 재귀적 계산은 비용이 높을 수 있으므로, 다음의 최적화를 고려한다:</p>
+<ol>
+<li><strong>도달 가능성의 사전 계산</strong>: 정적인 연결 그래프에 대해서는 문제 파일에서 기반 술어로 사전 계산하여 설정한다.</li>
+<li><strong>범위 제한</strong>: 재귀 깊이를 제한하거나, 특정 범위 내의 도달 가능성만 계산한다.</li>
+<li><strong>증분적 갱신</strong>: 변경된 기반 술어에 영향받는 파생 술어만 재계산한다(플래너 내부 최적화).</li>
+</ol>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Thiébaux, S., Hoffmann, J., &amp; Nebel, B. (2005). “In Defense of PDDL Axioms.” <em>Artificial Intelligence</em>, 168(1–2), 38–69.</li>
+<li>Helmert, M. (2009). “Concise Finite-Domain Representations for PDDL Planning Tasks.” <em>Artificial Intelligence</em>, 173(5–6), 503–535.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

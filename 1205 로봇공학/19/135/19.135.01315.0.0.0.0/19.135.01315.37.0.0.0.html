@@ -115,6 +115,132 @@
             </header>
             <article>
                 <h1>1315.37 안전 조건 표현을 위한 파생 술어</h1>
+<h2>1. 안전 조건과 파생 술어</h2>
+<p>로봇 시스템의 안전 조건(safety condition)은 로봇의 행동이 허용되기 위해 충족되어야 하는 필수적 제약이다. 안전 조건은 일반적으로 여러 기반 술어의 복합적 논리 조합으로 표현되므로, 파생 술어를 통한 추상화가 효과적이다. 파생 술어로 안전 조건을 정의하면, 기반 상태가 변경될 때 안전 조건의 충족 여부가 자동으로 재평가된다.</p>
+<h2>2. 구역 안전성</h2>
+<pre><code class="language-pddl">(:derived (zone_safe ?z - zone)
+    (and
+        (not (hazard_detected ?z))
+        (not (gas_leak ?z))
+        (not (structural_damage ?z))
+        (emergency_system_active ?z)
+    )
+)
+
+(:derived (zone_accessible ?z - zone ?r - robot)
+    (and
+        (zone_safe ?z)
+        (not (zone_restricted ?z))
+        (or (zone_public ?z) (has_clearance ?r ?z))
+    )
+)
+</code></pre>
+<h2>3. 로봇 안전 상태</h2>
+<pre><code class="language-pddl">(:derived (robot_safe_to_operate ?r - robot)
+    (and
+        (not (emergency_stopped ?r))
+        (not (motor_overheated ?r))
+        (not (collision_detected ?r))
+        (&gt;= (battery_level ?r) (critical_battery_threshold ?r))
+        (self_test_passed ?r)
+    )
+)
+</code></pre>
+<h2>4. 인간-로봇 안전 조건</h2>
+<p>인간이 존재하는 환경에서의 안전 제약:</p>
+<pre><code class="language-pddl">(:derived (human_safe_operation ?r - robot ?loc - waypoint)
+    (and
+        (forall (?h - human)
+            (imply (human_at ?h ?loc)
+                (and
+                    (safe_distance ?r ?h)
+                    (low_speed_mode ?r)
+                )
+            )
+        )
+        (safety_sensors_active ?r)
+    )
+)
+</code></pre>
+<h2>5. 조작 안전 조건</h2>
+<p>물체를 조작할 때의 안전 제약:</p>
+<pre><code class="language-pddl">(:derived (safe_to_manipulate ?r - robot ?obj - object ?loc - waypoint)
+    (and
+        (robot_safe_to_operate ?r)
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (not (fragile_nearby ?obj ?loc))
+        (workspace_clear ?loc)
+        (imply (hazardous_material ?obj) (hazmat_certified ?r))
+    )
+)
+</code></pre>
+<h2>6. 이동 안전 조건</h2>
+<pre><code class="language-pddl">(:derived (safe_to_move ?r - robot ?from - waypoint ?to - waypoint)
+    (and
+        (robot_safe_to_operate ?r)
+        (connected ?from ?to)
+        (not (path_obstructed ?from ?to))
+        (zone_safe ?to)
+        (imply (human_zone ?to) (human_safe_operation ?r ?to))
+    )
+)
+</code></pre>
+<h2>7. 액션 전제 조건에서의 활용</h2>
+<p>안전 파생 술어를 액션의 전제 조건에 배치하면, 안전하지 않은 행동이 계획에 포함되지 않는다:</p>
+<pre><code class="language-pddl">(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (safe_to_move ?r ?from ?to)
+    )
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+
+(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (safe_to_manipulate ?r ?obj ?loc)
+        (gripper_free ?r)
+    )
+    :effect (...)
+)
+</code></pre>
+<h2>8. 안전 파생 술어의 계층적 구성</h2>
+<pre><code>robot_safe_to_operate        (하드웨어 안전)
+    ├── 비상 정지 확인
+    ├── 과열 확인
+    └── 배터리 임계값 확인
+
+zone_safe                    (환경 안전)
+    ├── 위험 물질 확인
+    └── 비상 시스템 확인
+
+safe_to_move                 (이동 안전, 상위 계층)
+    ├── robot_safe_to_operate
+    ├── zone_safe
+    └── human_safe_operation (인간 공존 안전)
+</code></pre>
+<h2>9. 안전 조건 변경 시의 자동 갱신</h2>
+<p>기반 술어가 변경되면 안전 관련 파생 술어가 자동으로 재계산된다:</p>
+<pre><code class="language-pddl">;; 위험 감지 시: hazard_detected가 참이 되면
+;; → zone_safe 자동 거짓 → safe_to_move 자동 거짓
+;; → 해당 구역으로의 이동 액션이 자동으로 적용 불가
+
+;; 위험 해소 시: hazard_detected가 삭제되면
+;; → zone_safe 자동 참 복원 → safe_to_move 자동 복원
+</code></pre>
+<h2>10. 설계 지침</h2>
+<ol>
+<li><strong>안전 조건을 최상위 전제 조건으로 배치하라.</strong> 안전 조건이 충족되지 않으면 다른 조건의 평가가 무의미하다.</li>
+<li><strong>안전 파생 술어를 계층적으로 구성하라.</strong> 하드웨어 안전, 환경 안전, 인간 안전 등의 범주별 계층을 형성한다.</li>
+<li><strong>안전 조건은 보수적으로 설계하라.</strong> 불확실한 상태에서는 안전하지 않은 것으로 간주하는 것이 원칙이다.</li>
+</ol>
+<h2>11. 참고 문헌</h2>
+<ul>
+<li>Thiébaux, S., Hoffmann, J., &amp; Nebel, B. (2005). “In Defense of PDDL Axioms.” <em>Artificial Intelligence</em>, 168(1–2), 38–69.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

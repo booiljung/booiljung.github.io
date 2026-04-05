@@ -115,6 +115,257 @@
             </header>
             <article>
                 <h1>1313.49 PlanSys2에서의 PDDL 도메인 활용</h1>
+<h2>1. PlanSys2의 PDDL 도메인 통합 개요</h2>
+<p>PlanSys2(Planning System 2)는 ROS2 기반의 태스크 플래닝 프레임워크로서, PDDL 도메인 파일을 핵심 입력으로 사용하여 자율 로봇 시스템의 임무 계획을 수행한다. PlanSys2는 PDDL 도메인에 정의된 타입, 술어, 액션 스키마를 내부적으로 파싱하고, 이를 플래닝 엔진에 전달하여 목표 상태를 달성하기 위한 액션 시퀀스를 도출한다. 이 과정에서 PDDL 도메인은 로봇이 수행할 수 있는 행동의 추상적 모델을 제공하며, PlanSys2의 각 노드가 이 모델을 참조하여 계획 수립과 실행을 조율한다.</p>
+<p>PlanSys2는 PDDL 1.2 및 PDDL 2.1의 주요 기능을 지원하며, 특히 <code>:strips</code>, <code>:typing</code>, <code>:adl</code>, <code>:durative-actions</code> 등의 요구사항을 처리할 수 있다. 도메인 파일은 PlanSys2의 Domain Expert 노드에 로드되어 시스템 전반에서 공유되며, 런타임 중에도 도메인 정보를 조회하고 갱신할 수 있는 인터페이스를 제공한다.</p>
+<h2>2. PlanSys2 아키텍처에서 PDDL 도메인의 위치</h2>
+<p>PlanSys2의 아키텍처는 네 가지 핵심 노드로 구성된다: Domain Expert, Problem Expert, Planner, Executor이다. PDDL 도메인 파일은 이 아키텍처의 최상위 계층에서 시스템에 주입되며, 각 노드는 도메인 정보를 다음과 같이 활용한다.</p>
+<p><strong>Domain Expert 노드</strong>는 PDDL 도메인 파일을 파싱하여 내부 자료 구조로 변환한다. 이 노드는 도메인에 선언된 타입 계층, 술어 목록, 액션 스키마, 상수 등의 메타데이터를 관리하며, 다른 노드가 ROS2 서비스 인터페이스를 통해 이 정보를 조회할 수 있도록 한다.</p>
+<p><strong>Problem Expert 노드</strong>는 Domain Expert로부터 도메인 정보를 참조하여, 현재 세계 상태(초기 상태)와 목표 상태를 PDDL 문제 인스턴스로 구성한다. 객체 선언, 술어 인스턴스의 추가 및 제거, 목표 조건의 설정이 이 노드를 통해 수행된다.</p>
+<p><strong>Planner 노드</strong>는 Domain Expert와 Problem Expert로부터 각각 도메인과 문제 정보를 수신하여, PDDL 플래너(예: POPF, TFD, SMTPlan)에 전달한다. 플래너는 도메인에 정의된 액션의 전제 조건과 효과를 분석하여 목표 달성을 위한 계획을 생성한다.</p>
+<p><strong>Executor 노드</strong>는 생성된 계획의 각 액션을 실제 로봇 행동으로 매핑하여 실행한다. 이때 도메인에 정의된 액션 이름과 매개변수가 ROS2 액션 서버의 식별자로 사용된다.</p>
+<h2>3. PDDL 도메인 파일의 로딩과 파싱</h2>
+<p>PlanSys2에서 PDDL 도메인 파일을 로드하는 방법은 크게 두 가지이다. 첫째, 런치 파일(launch file)의 파라미터로 도메인 파일 경로를 지정하는 방식이다. 둘째, PlanSys2 터미널 클라이언트 또는 프로그래밍 인터페이스를 통해 런타임 중에 도메인을 로드하는 방식이다.</p>
+<p>런치 파일을 통한 로딩 예시는 다음과 같다:</p>
+<pre><code class="language-python">from launch import LaunchDescription
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(
+            package='plansys2_bringup',
+            executable='plansys2_node',
+            name='plansys2',
+            namespace='',
+            output='screen',
+            parameters=[{
+                'model_file': '/path/to/domain.pddl'
+            }]
+        )
+    ])
+</code></pre>
+<p>PlanSys2의 PDDL 파서는 S-Expression 기반의 구문을 분석하여 다음 요소들을 추출한다:</p>
+<table><thead><tr><th>도메인 구성 요소</th><th>파싱 결과</th><th>PlanSys2 내부 표현</th></tr></thead><tbody>
+<tr><td><code>(define (domain ...))</code></td><td>도메인 이름</td><td>문자열 식별자</td></tr>
+<tr><td><code>(:requirements ...)</code></td><td>요구사항 플래그</td><td>열거형 집합</td></tr>
+<tr><td><code>(:types ...)</code></td><td>타입 계층 구조</td><td>트리 자료 구조</td></tr>
+<tr><td><code>(:predicates ...)</code></td><td>술어 시그니처</td><td>매개변수화된 술어 목록</td></tr>
+<tr><td><code>(:action ...)</code></td><td>액션 스키마</td><td>전제 조건-효과 쌍</td></tr>
+<tr><td><code>(:durative-action ...)</code></td><td>지속 액션 스키마</td><td>시간 제약 포함 액션</td></tr>
+<tr><td><code>(:constants ...)</code></td><td>도메인 수준 상수</td><td>타입 부여 객체 목록</td></tr>
+</tbody></table>
+<p>파싱 과정에서 구문 오류가 발견되면 Domain Expert 노드는 ROS2 로그 시스템을 통해 오류 메시지를 출력하고, 해당 도메인의 로딩을 중단한다.</p>
+<h2>4. Domain Expert 노드를 통한 도메인 관리</h2>
+<p>Domain Expert 노드는 다음과 같은 ROS2 서비스를 제공하여 PDDL 도메인 정보에 대한 프로그래밍적 접근을 지원한다:</p>
+<ul>
+<li><code>get_domain</code>: 현재 로드된 전체 도메인을 PDDL 텍스트 형식으로 반환한다.</li>
+<li><code>get_domain_name</code>: 도메인 이름을 반환한다.</li>
+<li><code>get_domain_types</code>: 선언된 모든 타입과 그 계층 구조를 반환한다.</li>
+<li><code>get_domain_actions</code>: 도메인에 정의된 액션 스키마 목록을 반환한다.</li>
+<li><code>get_domain_action_details</code>: 특정 액션의 매개변수, 전제 조건, 효과를 상세히 반환한다.</li>
+<li><code>get_domain_predicates</code>: 선언된 모든 술어의 시그니처를 반환한다.</li>
+<li><code>get_domain_durative_action_details</code>: 지속 액션의 시간 제약과 조건을 반환한다.</li>
+</ul>
+<p>C++ 클라이언트 라이브러리를 사용하여 도메인 정보를 조회하는 코드 예시는 다음과 같다:</p>
+<pre><code class="language-cpp">#include "plansys2_domain_expert/DomainExpertClient.hpp"
+
+auto domain_client = std::make_shared&lt;plansys2::DomainExpertClient&gt;();
+
+// 도메인의 모든 액션 이름 조회
+auto actions = domain_client-&gt;getActions();
+for (const auto &amp; action : actions) {
+    RCLCPP_INFO(node-&gt;get_logger(), "Action: %s", action.c_str());
+}
+
+// 특정 액션의 상세 정보 조회
+auto action_details = domain_client-&gt;getAction("move");
+if (action_details.has_value()) {
+    // 전제 조건과 효과 분석
+}
+
+// 도메인의 모든 술어 조회
+auto predicates = domain_client-&gt;getPredicates();
+</code></pre>
+<h2>5. PDDL 도메인 설계와 PlanSys2 액션 노드의 대응</h2>
+<p>PlanSys2에서 PDDL 도메인의 각 액션은 실제 로봇 행동을 수행하는 ROS2 액션 노드와 일대일로 대응한다. 도메인에 정의된 액션 이름이 PlanSys2 Executor가 실행할 액션 노드를 식별하는 데 직접 사용되므로, 도메인 설계 시 액션 명명 규칙을 일관되게 유지하는 것이 중요하다.</p>
+<p>PDDL 도메인에서 액션을 정의하면, 이에 대응하는 C++ 액션 노드를 구현해야 한다. 액션 노드는 <code>plansys2::ActionExecutorClient</code> 클래스를 상속하여 구현한다:</p>
+<pre><code class="language-pddl">;; PDDL 도메인의 액션 정의
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+    )
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+    )
+)
+</code></pre>
+<p>위 PDDL 액션에 대응하는 PlanSys2 액션 노드는 다음과 같이 구현한다:</p>
+<pre><code class="language-cpp">#include "plansys2_executor/ActionExecutorClient.hpp"
+
+class MoveAction : public plansys2::ActionExecutorClient
+{
+public:
+    MoveAction()
+    : plansys2::ActionExecutorClient("move", 500ms)
+    {
+    }
+
+private:
+    void do_work() override
+    {
+        // 액션 매개변수 추출
+        auto args = get_arguments();
+        std::string robot = args[0];
+        std::string from = args[1];
+        std::string to = args[2];
+
+        // 실제 로봇 이동 로직 수행
+        // Nav2 등의 네비게이션 스택 호출
+
+        if (navigation_complete) {
+            finish(true, 1.0, "Move completed");
+        } else {
+            send_feedback(progress, "Moving from " + from + " to " + to);
+        }
+    }
+};
+</code></pre>
+<p>PDDL 액션의 매개변수 순서와 액션 노드에서 <code>get_arguments()</code>로 반환되는 인수의 순서가 일치한다는 점에 유의해야 한다. PlanSys2는 플래너가 생성한 계획에서 각 액션의 인스턴스화된 매개변수를 추출하여 해당 액션 노드에 전달한다.</p>
+<h2>6. 로봇 도메인 설계 시 PlanSys2 특화 고려사항</h2>
+<p>PlanSys2 환경에서 PDDL 도메인을 설계할 때는 순수 PDDL 이론과 달리 실제 로봇 시스템의 제약을 반영해야 한다. 다음은 PlanSys2에 특화된 도메인 설계 지침이다.</p>
+<h3>6.1 액션 세분화 수준</h3>
+<p>PDDL 도메인의 액션은 PlanSys2 액션 노드로 직접 매핑되므로, 액션의 세분화 수준(granularity)이 실행 가능성에 직접적인 영향을 미친다. 지나치게 추상적인 액션은 구현이 복잡해지고, 지나치게 세분화된 액션은 플래너의 탐색 공간을 불필요하게 확장한다.</p>
+<pre><code class="language-pddl">;; 권장: 적절한 세분화 수준
+(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+    )
+    :effect (and
+        (holding ?r ?obj)
+        (not (object_at ?obj ?loc))
+        (not (gripper_free ?r))
+    )
+)
+</code></pre>
+<h3>6.2 지속 액션의 활용</h3>
+<p>실제 로봇 시스템에서 대부분의 행동은 시간이 소요된다. PlanSys2는 PDDL 2.1의 지속 액션(durative-action)을 지원하므로, 시간 제약이 중요한 임무에서는 지속 액션을 사용하여 병렬 실행 가능성을 플래너에게 명시할 수 있다:</p>
+<pre><code class="language-pddl">(:durative-action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :duration (= ?duration 10)
+    :condition (and
+        (at start (robot_at ?r ?from))
+        (at start (connected ?from ?to))
+    )
+    :effect (and
+        (at start (not (robot_at ?r ?from)))
+        (at end (robot_at ?r ?to))
+    )
+)
+</code></pre>
+<p>지속 액션을 사용할 경우, PlanSys2는 시간적으로 중첩 가능한 액션들을 병렬로 실행하여 전체 임무 수행 시간을 단축할 수 있다. 이는 다중 로봇 시스템이나 복잡한 조작 임무에서 특히 유용하다.</p>
+<h3>6.3 술어 설계와 세계 상태 관리</h3>
+<p>PlanSys2의 Problem Expert 노드는 PDDL 술어 인스턴스를 통해 세계 상태를 관리한다. 따라서 도메인의 술어 설계는 로봇 시스템의 상태 표현 능력에 직접적인 영향을 미친다. 센서 데이터나 인식 결과를 술어로 변환하는 인터페이스 계층이 필요하며, 이 계층에서 연속적인 물리량을 이산적인 술어로 적절히 추상화해야 한다.</p>
+<pre><code class="language-cpp">// 센서 데이터를 PDDL 술어로 변환하는 예시
+auto problem_client = std::make_shared&lt;plansys2::ProblemExpertClient&gt;();
+
+// 객체 인식 결과를 술어로 등록
+problem_client-&gt;addInstance(plansys2::Instance{"box1", "object"});
+problem_client-&gt;addPredicate(plansys2::Predicate("(object_at box1 table1)"));
+
+// 로봇 상태를 술어로 갱신
+problem_client-&gt;removePredicate(plansys2::Predicate("(robot_at robot1 dock)"));
+problem_client-&gt;addPredicate(plansys2::Predicate("(robot_at robot1 table1)"));
+</code></pre>
+<h2>7. PlanSys2 터미널을 통한 PDDL 도메인 검증</h2>
+<p>PlanSys2는 대화형 터미널 인터페이스를 제공하며, 이를 통해 로드된 PDDL 도메인을 검증하고 테스트할 수 있다. 터미널에서 사용 가능한 주요 명령은 다음과 같다:</p>
+<pre><code>&gt; get domain
+    # 현재 로드된 도메인 전체를 출력한다.
+
+&gt; get domain types
+    # 도메인에 선언된 타입 목록을 출력한다.
+
+&gt; get domain predicates
+    # 도메인에 선언된 술어 목록을 출력한다.
+
+&gt; get domain actions
+    # 도메인에 선언된 액션 목록을 출력한다.
+
+&gt; get domain action move
+    # move 액션의 상세 정보를 출력한다.
+
+&gt; set instance robot1 robot
+    # robot 타입의 객체 robot1을 등록한다.
+
+&gt; set predicate (robot_at robot1 wp1)
+    # 술어 인스턴스를 초기 상태에 추가한다.
+
+&gt; set goal (and (robot_at robot1 wp3))
+    # 목표 상태를 설정한다.
+
+&gt; get plan
+    # 현재 도메인, 문제, 목표를 기반으로 계획을 생성한다.
+
+&gt; run
+    # 생성된 계획을 실행한다.
+</code></pre>
+<p>이 터미널 인터페이스는 도메인 개발 초기 단계에서 액션의 전제 조건과 효과가 올바르게 정의되었는지, 플래너가 유효한 계획을 생성하는지를 신속하게 확인하는 데 유용하다.</p>
+<h2>8. 도메인 파일과 런치 시스템의 통합</h2>
+<p>PlanSys2 기반 로봇 시스템에서 PDDL 도메인 파일은 ROS2 패키지의 일부로 관리된다. 일반적으로 도메인 파일은 패키지의 <code>pddl/</code> 디렉터리에 배치하며, <code>CMakeLists.txt</code>에서 설치 경로를 지정한다:</p>
+<pre><code class="language-cmake">install(DIRECTORY pddl/ DESTINATION share/${PROJECT_NAME}/pddl)
+</code></pre>
+<p>런치 파일에서는 패키지 경로를 동적으로 참조하여 도메인 파일을 로드한다:</p>
+<pre><code class="language-python">import os
+from ament_index_python.packages import get_package_share_directory
+
+def generate_launch_description():
+    pkg_dir = get_package_share_directory('my_robot_planning')
+    domain_file = os.path.join(pkg_dir, 'pddl', 'robot_domain.pddl')
+
+    return LaunchDescription([
+        Node(
+            package='plansys2_bringup',
+            executable='plansys2_node',
+            name='plansys2',
+            output='screen',
+            parameters=[{
+                'model_file': domain_file
+            }]
+        )
+    ])
+</code></pre>
+<p>이 방식을 사용하면 도메인 파일이 패키지 빌드 및 배포 과정에 자연스럽게 포함되며, 버전 관리 시스템을 통해 도메인의 변경 이력을 추적할 수 있다.</p>
+<h2>9. PDDL 도메인 활용의 실무적 제약과 해결 방안</h2>
+<p>PlanSys2에서 PDDL 도메인을 활용할 때 직면하는 주요 실무적 제약과 그 해결 방안을 정리하면 다음과 같다.</p>
+<h3>9.1 플래너 호환성 문제</h3>
+<p>PlanSys2가 지원하는 외부 플래너(POPF, TFD 등)는 각각 지원하는 PDDL 기능 범위가 다르다. 도메인 설계 시 사용하고자 하는 플래너의 PDDL 지원 수준을 사전에 확인해야 한다. 예를 들어, POPF는 지속 액션과 수치 플루언트(numeric fluent)를 지원하지만, 일부 ADL 기능에는 제한이 있다.</p>
+<table><thead><tr><th>플래너</th><th>STRIPS</th><th>Typing</th><th>Durative Actions</th><th>Numeric Fluents</th><th>ADL</th></tr></thead><tbody>
+<tr><td>POPF</td><td>지원</td><td>지원</td><td>지원</td><td>지원</td><td>부분 지원</td></tr>
+<tr><td>TFD</td><td>지원</td><td>지원</td><td>지원</td><td>지원</td><td>부분 지원</td></tr>
+<tr><td>SMTPlan</td><td>지원</td><td>지원</td><td>지원</td><td>지원</td><td>제한적</td></tr>
+</tbody></table>
+<h3>9.2 세계 상태 동기화 문제</h3>
+<p>PDDL의 폐쇄 세계 가정(Closed World Assumption)에 따라, 명시적으로 참으로 선언되지 않은 술어는 거짓으로 간주된다. 그러나 실제 로봇 시스템에서는 센서 불확실성으로 인해 세계 상태가 불완전할 수 있다. 이 문제를 해결하기 위해 다음과 같은 접근법을 사용한다:</p>
+<ol>
+<li><strong>상태 모니터링 노드</strong>: 로봇의 센서 데이터를 지속적으로 모니터링하여 Problem Expert의 술어 집합을 갱신하는 전용 노드를 구현한다.</li>
+<li><strong>보수적 상태 추정</strong>: 불확실한 상태에 대해서는 해당 술어를 세계 상태에 포함하지 않음으로써, 플래너가 해당 조건에 의존하는 액션을 선택하지 않도록 유도한다.</li>
+<li><strong>재계획 메커니즘</strong>: 액션 실행 실패 시 현재 세계 상태를 갱신하고 재계획을 수행하는 피드백 루프를 구축한다.</li>
+</ol>
+<h3>9.3 확장성 문제</h3>
+<p>도메인의 객체 수와 술어 인스턴스 수가 증가하면 플래너의 탐색 공간이 기하급수적으로 확장되어 계획 생성 시간이 급증할 수 있다. 이를 완화하기 위해 도메인을 계층적으로 분리하거나, 관련 객체만을 포함하는 부분 문제(sub-problem)를 구성하여 플래닝 복잡도를 관리해야 한다.</p>
+<h2>10. 참고 문헌</h2>
+<ul>
+<li>Cashmore, M., Fox, M., Long, D., Magazzeni, D., Ridder, B., Carrera, A., Palomeras, N., Hurtos, N., &amp; Carreras, M. (2015). “ROSPlan: Planning in the Robot Operating System.” <em>Proceedings of the International Conference on Automated Planning and Scheduling (ICAPS)</em>.</li>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE International Conference on Autonomous Robot Systems and Competitions (ICARSC)</em>.</li>
+<li>Fox, M. &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+</ul>
 
             </article>
             <footer>

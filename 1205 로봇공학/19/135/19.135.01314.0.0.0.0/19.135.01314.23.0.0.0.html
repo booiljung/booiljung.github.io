@@ -115,6 +115,131 @@
             </header>
             <article>
                 <h1>1314.23 전제 조건과 효과의 일관성 검증</h1>
+<h2>1. 일관성의 정의</h2>
+<p>PDDL 도메인에서 전제 조건과 효과의 일관성(consistency)은 도메인 내의 모든 액션이 논리적으로 모순 없이 정의되어 있으며, 액션 간의 상호 작용이 의도한 대로 이루어지는 성질을 의미한다. 일관성 검증은 도메인 모델링의 정확성을 보장하기 위한 필수적 과정이다.</p>
+<p>일관성 검증은 크게 두 가지 수준에서 수행된다:</p>
+<ol>
+<li><strong>액션 내부 일관성</strong>: 개별 액션의 전제 조건과 효과가 논리적으로 모순되지 않는지 확인한다.</li>
+<li><strong>액션 간 일관성</strong>: 다수의 액션이 상호 작용할 때 상태의 논리적 일관성이 유지되는지 확인한다.</li>
+</ol>
+<h2>2. 액션 내부 일관성 검증</h2>
+<h3>2.1 전제 조건과 효과의 관련성 검증</h3>
+<p>전제 조건에서 참조하는 술어가 효과에서 변경되는 술어와 논리적으로 연관되어 있는지를 확인한다. 전제 조건에서 확인한 상태가 효과에 의해 적절히 갱신되어야 한다:</p>
+<pre><code class="language-pddl">;; 일관적: 전제 조건에서 확인한 위치를 효과에서 갱신
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and (robot_at ?r ?from) (connected ?from ?to))
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+
+;; 비일관적: 전제 조건에서 확인한 위치를 효과에서 갱신하지 않음
+(:action move_inconsistent
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and (robot_at ?r ?from) (connected ?from ?to))
+    :effect (robot_at ?r ?to)
+    ;; 문제: (robot_at ?r ?from)이 삭제되지 않아 로봇이 두 위치에 동시 존재
+)
+</code></pre>
+<h3>2.2 효과 내부의 모순 검증</h3>
+<p>동일한 술어 인스턴스에 대해 추가와 삭제가 동시에 명시된 경우, 이것이 의도적인지 오류인지를 확인해야 한다:</p>
+<pre><code class="language-pddl">;; 잠재적 모순: 동일 술어의 추가와 삭제
+:effect (and
+    (status ?r active)
+    (not (status ?r active))    ;; 의도적인가?
+)
+</code></pre>
+<p>STRIPS 의미론에서 삭제 후 추가가 적용되므로, 결과적으로 술어는 상태에 존재하게 된다. 그러나 이러한 패턴은 대부분 설계 오류의 징후이므로 점검이 필요하다.</p>
+<h3>2.3 전제 조건과 효과의 타입 정합성</h3>
+<p>전제 조건과 효과에서 사용되는 술어의 매개변수 타입이 액션의 매개변수 타입과 정합하는지를 확인한다:</p>
+<pre><code class="language-pddl">;; 타입 부정합 예시
+(:types robot waypoint object - entity)
+(:predicates (robot_at ?r - robot ?w - waypoint))
+
+(:action move
+    :parameters (?r - robot ?obj - object ?to - waypoint)
+    :precondition (robot_at ?r ?obj)   ;; 오류: ?obj는 object 타입이나 waypoint 필요
+    :effect (robot_at ?r ?to)
+)
+</code></pre>
+<h2>3. 액션 간 일관성 검증</h2>
+<h3>3.1 전제 조건-효과 연쇄(Precondition-Effect Chain) 검증</h3>
+<p>하나의 액션의 효과가 다른 액션의 전제 조건을 충족하거나 해소하는 관계를 분석한다. 유효한 계획이 존재하려면, 목표 조건을 달성하는 효과 연쇄가 초기 상태로부터 구성 가능해야 한다:</p>
+<pre><code class="language-pddl">;; 액션 A의 효과 -&gt; 액션 B의 전제 조건 연쇄
+(:action move
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+(:action pick_up
+    :precondition (and (robot_at ?r ?loc) (object_at ?obj ?loc) ...)
+)
+;; move의 효과 (robot_at ?r ?to)가 pick_up의 전제 조건 (robot_at ?r ?loc)과 연결됨
+</code></pre>
+<p>이 연쇄가 끊어지면 플래너가 특정 하위 목표를 달성할 수 없게 된다.</p>
+<h3>3.2 상호 배타적 술어의 일관성</h3>
+<p>도메인에 상호 배타적인 술어 쌍이 존재하는 경우, 모든 관련 액션이 이 상호 배타 관계를 유지하도록 효과를 설계해야 한다:</p>
+<pre><code class="language-pddl">;; 상호 배타: robot_idle과 robot_active
+;; 모든 관련 액션에서 하나를 추가할 때 다른 하나를 삭제해야 함
+
+(:action activate_robot
+    :effect (and (robot_active ?r) (not (robot_idle ?r)))
+)
+(:action deactivate_robot
+    :effect (and (robot_idle ?r) (not (robot_active ?r)))
+)
+
+;; 오류: 세 번째 액션이 상호 배타 관계를 위반
+(:action restart_robot
+    :effect (robot_active ?r)
+    ;; 문제: (not (robot_idle ?r)) 누락
+)
+</code></pre>
+<h3>3.3 단일 값 속성의 일관성</h3>
+<p>로봇의 위치처럼 특정 시점에 하나의 값만 가져야 하는 속성에 대해, 새로운 값을 설정하는 모든 액션이 이전 값을 삭제하는지를 확인한다:</p>
+<pre><code class="language-pddl">;; 검증 대상: robot_at 술어는 각 로봇에 대해 단일 값
+;; 모든 robot_at을 추가하는 액션이 이전 값을 삭제하는지 확인
+
+(:action move :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to)))  ;; 정상
+(:action teleport :effect (robot_at ?r ?to))  ;; 오류: 이전 위치 미삭제
+</code></pre>
+<h2>4. 일관성 검증 기법</h2>
+<h3>4.1 정적 분석</h3>
+<p>도메인 파일만을 분석하여 구문적, 의미적 오류를 검출하는 기법이다:</p>
+<ol>
+<li><strong>미선언 술어 검출</strong>: 전제 조건이나 효과에서 사용되는 술어가 <code>:predicates</code>에 선언되어 있는지 확인한다.</li>
+<li><strong>매개변수 불일치 검출</strong>: 술어의 매개변수 수와 타입이 선언과 일치하는지 확인한다.</li>
+<li><strong>미사용 매개변수 검출</strong>: 액션 매개변수 중 전제 조건과 효과 어디에서도 참조되지 않는 변수가 있는지 확인한다.</li>
+<li><strong>비달성 전제 조건 검출</strong>: 도메인 내 어떤 액션의 효과로도 참이 될 수 없는 전제 조건 리터럴을 식별한다.</li>
+</ol>
+<h3>4.2 도달 가능성 분석</h3>
+<p>초기 상태에서 시작하여 적용 가능한 모든 액션의 효과를 누적적으로 적용하면서, 도달 가능한 술어 인스턴스의 집합을 계산한다. 이 분석을 통해:</p>
+<ul>
+<li>도달 불가능한 목표 조건을 사전에 식별할 수 있다.</li>
+<li>불필요한 그라운드 액션을 제거하여 플래닝 효율을 향상시킬 수 있다.</li>
+<li>상호 배타적 관계(mutex)를 자동으로 추론할 수 있다(Blum &amp; Furst, 1997).</li>
+</ul>
+<h3>4.3 시뮬레이션 기반 검증</h3>
+<p>다양한 초기 상태와 목표 조건에 대해 플래너를 실행하고, 생성된 계획을 시뮬레이션하여 기대한 결과가 나오는지를 확인하는 경험적 검증 방법이다:</p>
+<pre><code>검증 절차:
+1. 테스트 시나리오 정의 (초기 상태, 목표)
+2. 플래너로 계획 생성
+3. 계획을 순차 시뮬레이션하여 최종 상태 계산
+4. 최종 상태가 목표 조건을 만족하는지 확인
+5. 중간 상태들의 논리적 일관성 확인
+</code></pre>
+<h2>5. 일반적인 불일치 유형과 해결 방법</h2>
+<table><thead><tr><th>불일치 유형</th><th>증상</th><th>해결 방법</th></tr></thead><tbody>
+<tr><td>삭제 효과 누락</td><td>동시 다중 위치 점유</td><td>이전 상태 삭제 효과 추가</td></tr>
+<tr><td>전제 조건 누락</td><td>비현실적 계획 생성</td><td>필요 조건 추가</td></tr>
+<tr><td>전제 조건-효과 불연결</td><td>플래너가 계획을 찾지 못함</td><td>연결 액션 추가 또는 효과 수정</td></tr>
+<tr><td>타입 불일치</td><td>파싱 오류 또는 비정상 그라운딩</td><td>타입 선언 수정</td></tr>
+<tr><td>상호 배타 위반</td><td>모순적 상태 발생</td><td>모든 관련 액션에서 상호 배타 유지</td></tr>
+</tbody></table>
+<h2>6. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Blum, A. L. &amp; Furst, M. L. (1997). “Fast Planning Through Planning Graph Analysis.” <em>Artificial Intelligence</em>, 90(1–2), 281–300.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Helmert, M. (2009). “Concise Finite-Domain Representations for PDDL Planning Tasks.” <em>Artificial Intelligence</em>, 173(5–6), 503–535.</li>
+</ul>
 
             </article>
             <footer>

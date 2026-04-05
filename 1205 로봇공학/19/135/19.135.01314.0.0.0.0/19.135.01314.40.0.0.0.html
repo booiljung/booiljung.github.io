@@ -115,6 +115,197 @@
             </header>
             <article>
                 <h1>1314.40 객체 집기 및 놓기 액션의 모델링 사례</h1>
+<h2>1. 기본 파지 및 방출 모델</h2>
+<p>객체의 집기(pick)와 놓기(place)는 로봇 조작(manipulation) 도메인의 핵심 액션이다. 이 액션 쌍은 로봇의 그리퍼 상태, 물체의 위치, 적재 상태 등 다수의 상태 요소를 동시에 변경한다.</p>
+<h3>1.1 기본 pick 액션</h3>
+<pre><code class="language-pddl">(:action pick
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+    )
+    :effect (and
+        (holding ?r ?obj)
+        (not (object_at ?obj ?loc))
+        (not (gripper_free ?r))
+    )
+)
+</code></pre>
+<h3>1.2 기본 place 액션</h3>
+<pre><code class="language-pddl">(:action place
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (holding ?r ?obj)
+    )
+    :effect (and
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+        (not (holding ?r ?obj))
+    )
+)
+</code></pre>
+<h2>2. 다중 그리퍼 모델</h2>
+<p>양팔 로봇이나 다중 그리퍼를 가진 로봇의 경우:</p>
+<pre><code class="language-pddl">(:types robot object waypoint gripper - entity)
+
+(:predicates
+    (robot_at ?r - robot ?w - waypoint)
+    (object_at ?o - object ?w - waypoint)
+    (holding ?r - robot ?o - object ?g - gripper)
+    (gripper_free ?r - robot ?g - gripper)
+    (gripper_of ?g - gripper ?r - robot)
+)
+
+(:action pick_with_gripper
+    :parameters (?r - robot ?obj - object ?loc - waypoint ?g - gripper)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r ?g)
+        (gripper_of ?g ?r)
+    )
+    :effect (and
+        (holding ?r ?obj ?g)
+        (not (object_at ?obj ?loc))
+        (not (gripper_free ?r ?g))
+    )
+)
+</code></pre>
+<h2>3. 무게 및 용량 제약이 있는 모델</h2>
+<pre><code class="language-pddl">(:functions
+    (weight ?obj - object)
+    (current_load ?r - robot)
+    (max_load ?r - robot)
+    (grip_strength ?r - robot)
+)
+
+(:action pick_with_weight_check
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+        (&lt;= (weight ?obj) (grip_strength ?r))
+        (&lt;= (+ (current_load ?r) (weight ?obj)) (max_load ?r))
+    )
+    :effect (and
+        (holding ?r ?obj)
+        (not (object_at ?obj ?loc))
+        (not (gripper_free ?r))
+        (increase (current_load ?r) (weight ?obj))
+    )
+)
+
+(:action place_with_weight
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (holding ?r ?obj)
+    )
+    :effect (and
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+        (not (holding ?r ?obj))
+        (decrease (current_load ?r) (weight ?obj))
+    )
+)
+</code></pre>
+<h2>4. 듀레이티브 파지 액션</h2>
+<p>실제 파지 동작은 시간이 소요되므로:</p>
+<pre><code class="language-pddl">(:durative-action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :duration (= ?duration 5)
+    :condition (and
+        (at start (robot_at ?r ?loc))
+        (at start (object_at ?obj ?loc))
+        (at start (gripper_free ?r))
+        (over all (robot_at ?r ?loc))
+    )
+    :effect (and
+        (at start (not (gripper_free ?r)))
+        (at end (holding ?r ?obj))
+        (at end (not (object_at ?obj ?loc)))
+    )
+)
+</code></pre>
+<p><code>over all (robot_at ?r ?loc)</code> 조건은 파지 동작 중 로봇이 해당 위치에 머물러야 함을 보장한다.</p>
+<h2>5. 특수 배치 위치에 대한 모델링</h2>
+<p>특정 표면, 선반, 컨베이어 등에 물체를 배치하는 경우:</p>
+<pre><code class="language-pddl">(:action place_on_surface
+    :parameters (?r - robot ?obj - object ?surface - surface ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (holding ?r ?obj)
+        (surface_at ?surface ?loc)
+        (surface_clear ?surface)
+        (compatible ?obj ?surface)
+    )
+    :effect (and
+        (on ?obj ?surface)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+        (not (holding ?r ?obj))
+        (not (surface_clear ?surface))
+    )
+)
+</code></pre>
+<h2>6. 스택 조작 모델</h2>
+<p>물체를 쌓거나 내리는 블록 세계(blocks world) 유형의 조작:</p>
+<pre><code class="language-pddl">(:action stack
+    :parameters (?r - robot ?upper - block ?lower - block ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (holding ?r ?upper)
+        (block_at ?lower ?loc)
+        (clear ?lower)
+    )
+    :effect (and
+        (on ?upper ?lower)
+        (clear ?upper)
+        (not (clear ?lower))
+        (gripper_free ?r)
+        (not (holding ?r ?upper))
+        (block_at ?upper ?loc)
+    )
+)
+
+(:action unstack
+    :parameters (?r - robot ?upper - block ?lower - block ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (on ?upper ?lower)
+        (clear ?upper)
+        (gripper_free ?r)
+    )
+    :effect (and
+        (holding ?r ?upper)
+        (clear ?lower)
+        (not (on ?upper ?lower))
+        (not (clear ?upper))
+        (not (gripper_free ?r))
+        (not (block_at ?upper ?loc))
+    )
+)
+</code></pre>
+<h2>7. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>pick과 place를 대칭적으로 설계하라.</strong> pick의 효과에서 변경하는 술어는 place의 효과에서 역으로 변경해야 한다.</p>
+</li>
+<li>
+<p><strong>그리퍼 상태를 명시적으로 관리하라.</strong> <code>gripper_free</code> 술어의 추가와 삭제가 일관되지 않으면 로봇이 여러 물체를 동시에 잡는 비현실적 상태가 발생한다.</p>
+</li>
+<li>
+<p><strong>물체의 고유 위치 보장</strong>: 물체가 동시에 여러 위치에 존재하지 않도록 <code>object_at</code> 삭제를 빠짐없이 수행해야 한다.</p>
+</li>
+</ol>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

@@ -115,6 +115,107 @@
             </header>
             <article>
                 <h1>1315.23 시간 기반 비용 모델링 사례</h1>
+<h2>1. 시간 비용 모델의 개요</h2>
+<p>시간 기반 비용 모델은 각 액션의 실행에 소요되는 시간을 비용으로 산정하여, 총 임무 수행 시간(makespan)을 최소화하는 계획을 생성하는 데 사용된다. 로봇 시스템에서 시간은 배터리 소모, 임무 긴급도, 서비스 수준 요구사항 등과 직결되는 핵심 자원이다.</p>
+<h2>2. 순간적 액션에서의 시간 모델링</h2>
+<p>순간적 액션에서는 각 액션의 소요 시간을 수치 함수로 누적한다:</p>
+<pre><code class="language-pddl">(:functions
+    (travel_time ?from - waypoint ?to - waypoint)
+    (task_duration ?t - task)
+    (total_time)
+)
+
+(:action move
+    :parameters (?r - robot ?from ?to - waypoint)
+    :precondition (and (robot_at ?r ?from) (connected ?from ?to))
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (increase (total_time) (travel_time ?from ?to))
+    )
+)
+
+(:action perform_task
+    :parameters (?r - robot ?t - task ?loc - waypoint)
+    :precondition (and (robot_at ?r ?loc) (task_at ?t ?loc))
+    :effect (and
+        (task_completed ?t)
+        (increase (total_time) (task_duration ?t))
+    )
+)
+
+(:metric minimize (total_time))
+</code></pre>
+<h2>3. 거리와 속도를 결합한 이동 시간</h2>
+<pre><code class="language-pddl">(:functions
+    (distance ?from - waypoint ?to - waypoint)
+    (speed ?r - robot)
+    (total_time)
+)
+
+(:action move
+    :parameters (?r - robot ?from ?to - waypoint)
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (increase (total_time) (/ (distance ?from ?to) (speed ?r)))
+    )
+)
+</code></pre>
+<p>이 모델에서 로봇의 속도에 따라 동일 거리에 대한 시간 비용이 달라지므로, 플래너는 빠른 로봇을 먼 거리의 태스크에 우선 배정하는 전략을 선택할 수 있다.</p>
+<h2>4. 듀레이티브 액션에서의 시간 모델링</h2>
+<p>PDDL 2.1의 듀레이티브 액션에서는 <code>:duration</code> 절이 직접 시간을 표현하므로, 별도의 시간 누적 함수 없이도 시간 플래너가 makespan을 최적화할 수 있다:</p>
+<pre><code class="language-pddl">(:durative-action move
+    :parameters (?r - robot ?from ?to - waypoint)
+    :duration (= ?duration (/ (distance ?from ?to) (speed ?r)))
+    :condition (...)
+    :effect (...)
+)
+
+(:durative-action perform_task
+    :parameters (?r - robot ?t - task ?loc - waypoint)
+    :duration (= ?duration (task_duration ?t))
+    :condition (...)
+    :effect (...)
+)
+</code></pre>
+<p>POPF 등의 시간 플래너는 듀레이티브 액션의 병렬 실행을 고려하여 makespan을 최소화한다.</p>
+<h2>5. 다중 로봇 시스템의 시간 최적화</h2>
+<p>다중 로봇 환경에서 makespan은 가장 늦게 완료되는 로봇의 종료 시간에 의해 결정된다:</p>
+<pre><code class="language-pddl">(:functions
+    (robot_finish_time ?r - robot)
+    (makespan)
+)
+
+;; 각 로봇의 누적 시간을 추적하고, 최대값을 makespan으로 설정
+;; (PDDL에서 max 함수는 지원되지 않으므로, 듀레이티브 액션을 사용하여
+;;  시간 플래너가 자동으로 makespan을 계산하도록 하는 것이 표준적 방법)
+</code></pre>
+<p>듀레이티브 액션과 시간 플래너의 조합이 다중 로봇 makespan 최적화의 표준적 접근이다.</p>
+<h2>6. 대기 시간과 충전 시간의 포함</h2>
+<pre><code class="language-pddl">(:action charge_battery
+    :parameters (?r - robot ?station - charging_station)
+    :precondition (and (robot_at ?r ?station) (&lt; (battery_level ?r) (max_battery ?r)))
+    :effect (and
+        (assign (battery_level ?r) (max_battery ?r))
+        (increase (total_time) (/ (- (max_battery ?r) (battery_level ?r)) (charge_rate ?station)))
+    )
+)
+</code></pre>
+<p>충전 시간이 시간 비용에 포함되므로, 플래너는 충전의 필요성�� 시간 비용 사이의 트레이드오프를 고려한다.</p>
+<h2>7. 시간 메트릭과 다른 메트릭의 결합</h2>
+<pre><code class="language-pddl">;; 시간과 에너지의 가중 합 최소화
+(:metric minimize (+ (* 0.6 (total_time)) (* 0.4 (total_energy_consumed))))
+
+;; 시간 최소화 제약 하에서 비용 최소화 (계층적 메트릭은 미지원이므로 가중 합으로 근사)
+(:metric minimize (+ (* 10 (total_time)) (total_monetary_cost)))
+</code></pre>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Fox, M. &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>Coles, A. J., Coles, A. I., Fox, M., &amp; Long, D. (2010). “Forward-Chaining Partial-Order Planning.” <em>Proceedings of ICAPS</em>, 42–49.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

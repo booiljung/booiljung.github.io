@@ -115,6 +115,103 @@
             </header>
             <article>
                 <h1>1314.46 액션 설계 시 일반적인 오류와 해결 방법</h1>
+<h2>1. 개요</h2>
+<p>PDDL 액션 설계에서 발생하는 오류는 구문적 오류와 의미적 오류로 구분된다. 구문적 오류는 PDDL 파서에 의해 즉시 검출되지만, 의미적 오류는 비정상적인 계획 생성이나 실행 실패로 나타나며 진단이 어렵다. 본 절에서는 빈번히 발생하는 의미적 오류와 그 해결 방법을 체계적으로 분류한다.</p>
+<h2>2. 오류 1: 삭제 효과 누락</h2>
+<p><strong>증상</strong>: 로봇이 동시에 여러 위치에 존재하거나, 물체가 복제되는 비일관적 상태가 발생한다.</p>
+<pre><code class="language-pddl">;; 오류: 이전 위치 삭제 누락
+:effect (robot_at ?r ?to)
+;; 결과: robot_at ?r ?from과 robot_at ?r ?to가 동시에 참
+
+;; 해결: 삭제 효과 추가
+:effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+</code></pre>
+<p><strong>진단 방법</strong>: 계획 시뮬레이션 후 단일 값이어야 할 술어가 다중 값을 가지는지 확인한다.</p>
+<h2>3. 오류 2: 전제 조건 누락</h2>
+<p><strong>증상</strong>: 물리적으로 불가능한 액션이 계획에 포함된다.</p>
+<pre><code class="language-pddl">;; 오류: 그리퍼 상태 확인 누락
+(:action pick_up
+    :precondition (and (robot_at ?r ?loc) (object_at ?obj ?loc))
+    ;; gripper_free 누락: 이미 물체를 쥐고 있어도 pick_up 허용
+)
+
+;; 해결: 전제 조건 추가
+(:action pick_up
+    :precondition (and (robot_at ?r ?loc) (object_at ?obj ?loc) (gripper_free ?r))
+)
+</code></pre>
+<h2>4. 오류 3: 전제 조건-효과 불연결</h2>
+<p><strong>증상</strong>: 플래너가 계획을 찾지 못하거나, “문제 해결 불가(unsolvable)” 메시지를 반환한다.</p>
+<p><strong>원인</strong>: 특정 술어를 전제 조건으로 요구하는 액션이 있지만, 해당 술어를 효과로 생성하는 액션이 도메인에 존재하지 않는다.</p>
+<pre><code class="language-pddl">;; 오류: door_unlocked를 참으로 만드는 액션이 없음
+(:action enter_room
+    :precondition (and (robot_at ?r ?door) (door_unlocked ?door))
+    ...)
+;; 해결: unlock_door 액션 추가
+(:action unlock_door
+    :parameters (?r - robot ?d - door)
+    :precondition (and (robot_at ?r ?d) (has_key ?r ?d))
+    :effect (door_unlocked ?d)
+)
+</code></pre>
+<h2>5. 오류 4: 상호 배타적 술어 비일관성</h2>
+<p><strong>증상</strong>: 논리적으로 모순되는 술어가 동시에 참인 상태가 발생한다.</p>
+<pre><code class="language-pddl">;; 오류: robot_idle 삭제 누락
+(:action activate :effect (robot_active ?r))
+;; 결과: robot_idle과 robot_active가 동시에 참
+
+;; 해결: 상호 배타 술어 관리
+(:action activate :effect (and (robot_active ?r) (not (robot_idle ?r))))
+</code></pre>
+<h2>6. 오류 5: 타입 불일치</h2>
+<p><strong>증상</strong>: 파싱 오류 또는 비정상적인 그라운딩 결과가 발생한다.</p>
+<pre><code class="language-pddl">;; 오류: 술어의 매개변수 타입과 액션의 매개변수 타입 불일치
+(:predicates (robot_at ?r - robot ?w - waypoint))
+(:action move
+    :parameters (?r - robot ?from - location ?to - location)
+    :precondition (robot_at ?r ?from)
+    ;; location ≠ waypoint → 타입 불일치
+)
+</code></pre>
+<p><strong>해결</strong>: 타입 계층을 확인하고, 술어 선언과 액션 매개변수의 타입이 호환되는지 검증한다.</p>
+<h2>7. 오류 6: 수치 플루언트 미초기화</h2>
+<p><strong>증상</strong>: 수치 비교 전제 조건이 항상 실패하거나, 예측 불가능한 수치 결과가 발생한다.</p>
+<pre><code class="language-pddl">;; 오류: battery_level 초기화 누락
+(:init (robot_at robot1 wp1))
+;; battery_level 미초기화 → (&gt;= (battery_level robot1) 10) 평가 불가
+
+;; 해결
+(:init (robot_at robot1 wp1) (= (battery_level robot1) 100))
+</code></pre>
+<h2>8. 오류 7: 듀레이티브 액션의 시간 주석 오류</h2>
+<p><strong>증상</strong>: 듀레이티브 액션의 조건과 효과가 의도와 다른 시점에 평가/적용된다.</p>
+<pre><code class="language-pddl">;; 오류: 위치 삭제가 at end에 배치 → 이동 중 출발지에 여전히 있는 것으로 간주
+:effect (at end (not (robot_at ?r ?from)))
+
+;; 해결: at start로 변경
+:effect (at start (not (robot_at ?r ?from)))
+</code></pre>
+<h2>9. 오류 8: 양화사 범위 오류</h2>
+<p><strong>증상</strong>: 양화사가 의도보다 넓거나 좁은 범위의 객체를 대상으로 한다.</p>
+<pre><code class="language-pddl">;; 오류: forall에서 imply 없이 사용 → 모든 문이 열려 있어야 함
+:precondition (forall (?d - door) (door_open ?d))
+
+;; 해결: imply로 관련 문만 제약
+:precondition (forall (?d - door) (imply (door_on_route ?d ?from ?to) (door_open ?d)))
+</code></pre>
+<h2>10. 체계적 오류 진단 절차</h2>
+<ol>
+<li><strong>PDDL 유효성 검증기</strong> 사용: VAL(Plan Validator) 등의 도구로 도메인과 문제의 구문적 정확성을 확인한다.</li>
+<li><strong>소규모 테스트 문제</strong> 생성: 최소한의 객체로 구성된 테스트 문제에서 각 액션의 동작을 개별 확인한다.</li>
+<li><strong>계획 시뮬레이션</strong>: 생성된 계획을 단계별로 시뮬레이션하여 각 상태의 일관성을 확인한다.</li>
+<li><strong>플래너 로그 분석</strong>: 플래너의 탐색 로그를 분석하여 어떤 전제 조건이 만족되지 않는지 식별한다.</li>
+</ol>
+<h2>11. 참고 문헌</h2>
+<ul>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Howey, R., Long, D., &amp; Fox, M. (2004). “VAL: Automatic Plan Validation, Continuous Effects and Mixed Initiative Planning Using AI.” <em>Proceedings of the 16th IEEE International Conference on Tools with Artificial Intelligence (ICTAI)</em>.</li>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+</ul>
 
             </article>
             <footer>

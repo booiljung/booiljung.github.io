@@ -115,6 +115,202 @@
             </header>
             <article>
                 <h1>1314.19 when 구문을 이용한 조건부 효과 구현</h1>
+<h2>1. when 구문의 구조</h2>
+<p>PDDL에서 <code>when</code> 구문은 조건부 효과를 정의하는 핵심 키워드이다. 기본 구조는 다음과 같다:</p>
+<pre><code class="language-pddl">(when &lt;antecedent&gt; &lt;consequent&gt;)
+</code></pre>
+<p>여기서 <code>&lt;antecedent&gt;</code>는 가드 조건(antecedent condition)으로서 액션 실행 직전의 상태에서 평가되는 논리식이고, <code>&lt;consequent&gt;</code>는 가드 조건이 참일 때 적용되는 효과이다.</p>
+<p><code>when</code> 구문은 반드시 <code>:effect</code> 절 내부에서만 사용되며, 일반적으로 <code>and</code> 연산자 내에 다른 무조건적 효과와 함께 배치된다:</p>
+<pre><code class="language-pddl">:effect (and
+    &lt;unconditional-effects&gt;
+    (when &lt;condition-1&gt; &lt;effect-1&gt;)
+    (when &lt;condition-2&gt; &lt;effect-2&gt;)
+)
+</code></pre>
+<h2>2. when 구문의 상세 구문 규칙</h2>
+<h3>2.1 가드 조건의 허용 범위</h3>
+<p>가드 조건에는 전제 조건에 사용 가능한 모든 논리적 구성이 허용된다:</p>
+<pre><code class="language-pddl">;; 단순 술어
+(when (battery_low ?r) (need_charging ?r))
+
+;; 접합 조건
+(when (and (holding ?r ?obj) (fragile ?obj))
+    (handle_with_care ?r)
+)
+
+;; 부정 조건
+(when (not (shield_active ?r))
+    (exposed_to_radiation ?r)
+)
+
+;; 선언 조건 (ADL 필요)
+(when (or (rain_detected) (snow_detected))
+    (weather_hazard_active)
+)
+
+;; 양화 조건
+(when (forall (?s - slot) (slot_filled ?s ?rack))
+    (rack_full ?rack)
+)
+
+;; 존재 양화 조건
+(when (exists (?h - human) (human_near ?h ?r))
+    (reduced_speed_mode ?r)
+)
+</code></pre>
+<h3>2.2 결과 효과의 허용 범위</h3>
+<p>결과 효과에는 긍정적 리터럴, 부정적 리터럴, 또는 이들의 접합이 허용된다:</p>
+<pre><code class="language-pddl">;; 단일 긍정적 효과
+(when (condition) (new_predicate))
+
+;; 단일 부정적 효과
+(when (condition) (not (old_predicate)))
+
+;; 접합적 효과
+(when (condition)
+    (and
+        (new_predicate_1)
+        (new_predicate_2)
+        (not (old_predicate))
+    )
+)
+</code></pre>
+<p>결과 효과 내부에 중첩된 <code>when</code>을 배치하는 것은 표준 PDDL에서 허용되지 않는다. 즉, 조건부 효과의 중첩(nesting)은 불가능하다.</p>
+<h2>3. 실용적 구현 패턴</h2>
+<h3>3.1 패턴 1: 상태 의존적 부수 효과</h3>
+<p>액션의 주요 효과는 무조건적이지만, 현재 상태에 따라 추가적인 부수 효과가 발생하는 패턴이다:</p>
+<pre><code class="language-pddl">(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and (robot_at ?r ?from) (connected ?from ?to))
+    :effect (and
+        ;; 주요 효과 (무조건적)
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+
+        ;; 부수 효과: 화물 동반 이동
+        (when (holding ?r ?cargo)
+            (and
+                (not (cargo_at ?cargo ?from))
+                (cargo_at ?cargo ?to)
+            )
+        )
+
+        ;; 부수 효과: 미탐사 지역 최초 방문
+        (when (not (explored ?to))
+            (explored ?to)
+        )
+    )
+)
+</code></pre>
+<h3>3.2 패턴 2: 환경 반응적 효과</h3>
+<p>동일한 행동이 환경 조건에 따라 다른 결과를 산출하는 패턴이다:</p>
+<pre><code class="language-pddl">(:action deploy_sensor
+    :parameters (?r - robot ?s - sensor ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (carrying_sensor ?r ?s)
+    )
+    :effect (and
+        ;; 무조건적: 센서 배치
+        (sensor_deployed ?s ?loc)
+        (not (carrying_sensor ?r ?s))
+
+        ;; 조건부: 실내 환경에서의 보정
+        (when (indoor ?loc)
+            (sensor_calibrated ?s)
+        )
+
+        ;; 조건부: 실외 환경에서의 보호 커버 필요
+        (when (outdoor ?loc)
+            (needs_weather_protection ?s)
+        )
+    )
+)
+</code></pre>
+<h3>3.3 패턴 3: 자원 소모의 조건부 모델링</h3>
+<p>액션 수행 시 특정 조건에 따라 자원 소모가 달라지는 패턴이다:</p>
+<pre><code class="language-pddl">(:action process_item
+    :parameters (?r - robot ?item - workpiece ?station - workstation)
+    :precondition (and
+        (robot_at ?r ?station)
+        (item_at ?item ?station)
+    )
+    :effect (and
+        (processed ?item)
+
+        ;; 대형 물체는 추가 에너지 소모
+        (when (large_item ?item)
+            (and
+                (not (battery_sufficient ?r))
+                (battery_low ?r)
+            )
+        )
+
+        ;; 정밀 가공품은 도구 마모
+        (when (precision_item ?item)
+            (tool_worn ?r)
+        )
+    )
+)
+</code></pre>
+<h3>3.4 패턴 4: 전칭 양화 조건부 효과</h3>
+<p><code>forall</code>과 <code>when</code>의 결합은 특정 타입의 모든 객체에 대해 조건부 효과를 적용하는 데 사용된다:</p>
+<pre><code class="language-pddl">(:action activate_alarm
+    :parameters (?zone - zone)
+    :precondition (alarm_triggered ?zone)
+    :effect (and
+        (alarm_active ?zone)
+        (forall (?r - robot)
+            (when (robot_in_zone ?r ?zone)
+                (and
+                    (robot_alerted ?r)
+                    (not (robot_idle ?r))
+                )
+            )
+        )
+    )
+)
+</code></pre>
+<p>이 효과는 해당 구역에 있는 모든 로봇에 대해 경보 상태를 설정한다. <code>forall</code>은 모든 로봇에 대해 순회하고, <code>when</code>은 해당 구역에 실제로 위치한 로봇에 대해서만 효과를 적용한다.</p>
+<h2>4. when 구문의 평가 시점</h2>
+<p><code>when</code> 구문의 가드 조건은 액션 실행 직전의 상태에서 평가된다는 점이 핵심이다. 동일 액션의 다른 효과(무조건적 또는 다른 조건부)에 의해 변경된 상태가 아닌, 원래 상태를 기준으로 모든 가드 조건이 독립적으로 평가된다.</p>
+<p>이를 예시로 설명한다:</p>
+<pre><code class="language-pddl">:effect (and
+    (status_b ?r)               ;; 무조건적: status_b 추가
+    (not (status_a ?r))          ;; 무조건적: status_a 삭제
+    (when (status_a ?r)          ;; 가드: 원래 상태에서 status_a 확인
+        (action_recorded ?r)
+    )
+)
+</code></pre>
+<p>원래 상태에서 <code>(status_a ?r)</code>이 참이었다면, 무조건적 효과에 의해 <code>status_a</code>가 삭제되더라도 <code>when</code>의 가드 조건은 원래 상태를 기준으로 평가되므로 <code>(action_recorded ?r)</code>이 추가된다.</p>
+<h2>5. when 구문과 플래너 내부 처리</h2>
+<h3>5.1 삭제 완화에서의 처리</h3>
+<p>삭제 완화 휴리스틱에서 조건부 효과는 다음과 같이 처리된다: 삭제 효과가 무시되므로, 가드 조건이 한번이라도 참이 되면 해당 조건부 효과의 긍정적 부분이 영구적으로 달성된 것으로 간주된다. 이는 조건부 효과를 포함하는 액션에 대해 낙관적인 비용 추정을 생성할 수 있다.</p>
+<h3>5.2 그라운딩 과정에서의 처리</h3>
+<p>그라운딩 과정에서 조건부 효과는 가드 조건에 포함된 자유 변수(매개변수)가 구체적 객체로 대입된 형태로 변환된다. <code>forall</code>과 결합된 조건부 효과는 각 객체에 대한 개별 조건부 효과로 전개된다.</p>
+<h2>6. 설계 시 주의사항</h2>
+<ol>
+<li>
+<p><strong>가드 조건에 액션 매개변수만 참조 가능하다.</strong> <code>when</code>의 가드 조건에서 사용되는 변수는 해당 액션의 매개변수이거나 <code>forall</code>/<code>exists</code> 양화사에 의해 바인딩된 변수여야 한다.</p>
+</li>
+<li>
+<p><strong>결과 효과에서 새로운 변수를 도입할 수 없다.</strong> 결과 효과의 술어에 사용되는 변수는 가드 조건 또는 액션 매개변수에 이미 등장한 변수여야 한다.</p>
+</li>
+<li>
+<p><strong>중첩된 when은 허용되지 않는다.</strong> <code>when</code>의 결과 효과 내부에 또 다른 <code>when</code>을 배치하는 것은 표준 PDDL에서 지원되지 않는다.</p>
+</li>
+<li>
+<p><strong>조건부 효과의 상호 간섭을 점검하라.</strong> 다수의 조건부 효과가 동일한 술어에 대해 상충하는 변경을 시도하는 경우, 결과의 예측이 어려워지므로 설계 시 주의가 필요하다.</p>
+</li>
+</ol>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Pednault, E. P. D. (1989). “ADL: Exploring the Middle Ground Between STRIPS and the Situation Calculus.” <em>Proceedings of the 1st International Conference on Principles of Knowledge Representation and Reasoning (KR)</em>, 324–332.</li>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Nebel, B. (2000). “On the Compilability and Expressive Power of Propositional Planning Formalisms.” <em>Journal of Artificial Intelligence Research</em>, 12, 271–315.</li>
+</ul>
 
             </article>
             <footer>

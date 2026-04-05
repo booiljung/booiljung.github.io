@@ -115,6 +115,171 @@
             </header>
             <article>
                 <h1>1314.49 PDDL 액션과 ROS2 액션 서버의 매핑</h1>
+<h2>1. 매핑의 개념적 기초</h2>
+<p>PDDL 액션과 ROS2 액션 서버의 매핑은 추상적 계획 수준과 구체적 실행 수준을 연결하는 핵심 메커니즘이다. PDDL 액션은 전제 조건과 효과로 정의된 논리적 행동 모델인 반면, ROS2 액션 서버는 목표(goal), 피드백(feedback), 결과(result)의 통신 패턴을 기반으로 실제 로봇 행동을 수행하는 실행 인프라이다. 이 두 계층 사이의 매핑이 정확해야 계획된 임무가 실제 로봇 시스템에서 성공적으로 실행된다.</p>
+<p>PlanSys2 프레임워크에서 이 매핑은 <code>ActionExecutorClient</code> 클래스를 통해 구현되며, PDDL 액션 이름이 ROS2 액션 노드의 식별자로 직접 사용된다(Gonzalez et al., 2021).</p>
+<h2>2. PDDL 액션과 ROS2 액션의 구조적 대응</h2>
+<p>두 계층의 구성 요소 사이의 대응 관계는 다음과 같다:</p>
+<table><thead><tr><th>PDDL 액션 구성 요소</th><th>ROS2 액션 대응 요소</th><th>역할</th></tr></thead><tbody>
+<tr><td>액션 이름</td><td>액션 서버 이름 / 노드 이름</td><td>식별 및 라우팅</td></tr>
+<tr><td><code>:parameters</code></td><td>Goal 메시지의 필드</td><td>실행 대상 지정</td></tr>
+<tr><td><code>:precondition</code></td><td>Goal 수락 조건 (서버 측)</td><td>실행 가능성 판단</td></tr>
+<tr><td><code>:effect</code></td><td>Result 메시지 및 상태 갱신</td><td>실행 결과 반영</td></tr>
+<tr><td><code>:duration</code> (듀레이티브)</td><td>실행 소요 시간</td><td>시간적 제약 관리</td></tr>
+<tr><td>없음</td><td>Feedback 메시지</td><td>진행 상황 보고</td></tr>
+</tbody></table>
+<h2>3. 이름 기반 매핑 메커니즘</h2>
+<p>PlanSys2에서 PDDL 액션과 ROS2 액션 노드의 매핑은 이름 기반(name-based)으로 수행된다. PDDL 도메인에 정의된 액션 이름이 <code>ActionExecutorClient</code> 생성자에 전달되는 이름과 정확히 일치해야 한다:</p>
+<pre><code class="language-pddl">;; PDDL 도메인에서의 액션 정의
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and (robot_at ?r ?from) (connected ?from ?to))
+    :effect (and (not (robot_at ?r ?from)) (robot_at ?r ?to))
+)
+</code></pre>
+<pre><code class="language-cpp">// 대응하는 ROS2 액션 노드
+class MoveAction : public plansys2::ActionExecutorClient
+{
+public:
+    MoveAction()
+    : plansys2::ActionExecutorClient("move", 500ms)  // "move"가 PDDL 액션 이름과 일치
+    {
+    }
+};
+</code></pre>
+<p>Executor 노드는 플래너가 생성한 계획에서 각 액션의 이름을 추출하고, 해당 이름으로 등록된 액션 노드에 실행을 위임한다. 이름이 일치하지 않으면 실행이 실패한다.</p>
+<h2>4. 매개변수 매핑</h2>
+<p>PDDL 액션의 매개변수는 플래너에 의해 그라운딩된 후, 문자열 벡터 형태로 액션 노드에 전달된다. 전달 순서는 PDDL <code>:parameters</code> 절의 선언 순서와 동일하다:</p>
+<pre><code class="language-pddl">;; PDDL 매개변수 선언
+(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    ...)
+</code></pre>
+<pre><code class="language-cpp">// ROS2 액션 노드에서의 매개변수 접근
+void do_work() override
+{
+    auto args = get_arguments();
+    std::string robot_name = args[0];   // ?r에 바인딩된 객체
+    std::string object_name = args[1];  // ?obj에 바인딩된 객체
+    std::string location = args[2];     // ?loc에 바인딩된 객체
+}
+</code></pre>
+<p>PDDL 매개변수의 타입 정보는 ROS2 측에 전달되지 않으며, 오직 바인딩된 객체의 이름(문자열)만이 전달된다. 따라서 액션 노드는 객체 이름을 기반으로 해당 로봇, 물체, 위치 등의 실체를 독자적으로 식별해야 한다.</p>
+<h2>5. 전제 조건과 실행 가능성의 이중 검증</h2>
+<p>PDDL 전제 조건은 플래닝 시점에 논리적으로 검증되지만, 실행 시점에서는 실제 환경 상태가 계획 시점과 다를 수 있다. 이에 따라 실행 가능성의 이중 검증이 필요하다:</p>
+<p><strong>1차 검증 (플래닝 시점)</strong>: 플래너가 PDDL 전제 조건을 세계 모델에서 논리적으로 평가한다. 이 검증은 추상적 상태 모델에 기반한다.</p>
+<p><strong>2차 검증 (실행 시점)</strong>: 액션 노드가 실제 센서 데이터와 로봇 상태를 기반으로 행동의 실행 가능성을 검증한다:</p>
+<pre><code class="language-cpp">void do_work() override
+{
+    // 2차 검증: 실제 환경 상태 확인
+    if (!isRobotAtLocation(robot_name_, target_from_)) {
+        finish(false, 0.0, "Robot not at expected location");
+        return;
+    }
+    if (isPathBlocked(target_from_, target_to_)) {
+        finish(false, 0.0, "Path is blocked");
+        return;
+    }
+    // 실제 실행 로직
+}
+</code></pre>
+<h2>6. 효과의 매핑과 상태 갱신</h2>
+<p>PDDL 효과는 액션 완료 시 PlanSys2의 Problem Expert 노드에 자동으로 반영된다. 액션 노드가 <code>finish(true, ...)</code>를 호출하면, Executor는 해당 액션의 PDDL 효과에 따라 세계 상태를 갱신한다:</p>
+<pre><code>실행 흐름:
+1. 액션 노드가 finish(true, 1.0, "Success") 호출
+2. Executor가 PDDL 효과를 해석
+3. 추가 효과: Problem Expert에 술어 추가
+4. 삭제 효과: Problem Expert에서 술어 제거
+5. 수치 효과: Problem Expert에서 수치 플루언트 갱신
+</code></pre>
+<p>이 자동 갱신 메커니즘은 PDDL 모델과 실행 시스템의 상태를 동기화하는 핵심 요소이다.</p>
+<h2>7. ROS2 액션 인터페이스와의 통합</h2>
+<p>PlanSys2의 <code>ActionExecutorClient</code>는 내부적으로 ROS2의 액션 통신 패턴을 활용한다. 그러나 개발자가 직접 ROS2 액션 인터페이스(<code>rclcpp_action</code>)를 사용하여 외부 시스템과 통신할 수도 있다:</p>
+<pre><code class="language-cpp">class NavigateAction : public plansys2::ActionExecutorClient
+{
+public:
+    NavigateAction()
+    : plansys2::ActionExecutorClient("navigate", 500ms)
+    {
+        // Nav2 액션 클라이언트 생성
+        nav_client_ = rclcpp_action::create_client&lt;nav2_msgs::action::NavigateToPose&gt;(
+            shared_from_this(), "navigate_to_pose");
+    }
+
+private:
+    void do_work() override
+    {
+        if (!goal_sent_) {
+            // Nav2에 목표 전송
+            auto goal = nav2_msgs::action::NavigateToPose::Goal();
+            goal.pose = getWaypointPose(get_arguments()[2]);
+            nav_client_-&gt;async_send_goal(goal);
+            goal_sent_ = true;
+        }
+
+        // Nav2 피드백을 PlanSys2 피드백으로 변환
+        send_feedback(navigation_progress_, "Navigating...");
+
+        if (navigation_complete_) {
+            finish(true, 1.0, "Navigation completed");
+        }
+    }
+
+    rclcpp_action::Client&lt;nav2_msgs::action::NavigateToPose&gt;::SharedPtr nav_client_;
+    bool goal_sent_ = false;
+};
+</code></pre>
+<p>이 패턴에서 PlanSys2의 액션 노드는 PDDL 액션과 ROS2 하위 시스템(Nav2, MoveIt2 등) 사이의 어댑터(adapter) 역할을 수행한다.</p>
+<h2>8. 듀레이티브 액션의 매핑</h2>
+<p>PDDL 듀레이티브 액션에서 <code>at start</code>, <code>over all</code>, <code>at end</code>의 시간적 구분은 실행 수준에서 다음과 같이 매핑된다:</p>
+<table><thead><tr><th>PDDL 시간 주석</th><th>실행 수준의 대응</th><th>PlanSys2 처리</th></tr></thead><tbody>
+<tr><td><code>at start</code> 효과</td><td>액션 시작 시 즉시 적용</td><td>Executor가 시작 시 상태 갱신</td></tr>
+<tr><td><code>over all</code> 조건</td><td>실행 중 모니터링</td><td>액션 노드가 주기적 확인</td></tr>
+<tr><td><code>at end</code> 효과</td><td>액션 완료 시 적용</td><td><code>finish(true)</code> 호출 시 상태 갱신</td></tr>
+</tbody></table>
+<pre><code class="language-cpp">// 듀레이티브 액션의 over all 조건 모니터링 예시
+void do_work() override
+{
+    // over all 조건 검증: 배터리 충분성
+    if (battery_level_ &lt; minimum_threshold_) {
+        finish(false, progress_, "Battery insufficient during execution");
+        return;
+    }
+    // 정상 실행 계속
+}
+</code></pre>
+<h2>9. 매핑 시 일반적인 문제와 해결</h2>
+<h3>9.1 이름 불일치</h3>
+<p>PDDL 액션 이름과 <code>ActionExecutorClient</code>의 이름이 불일치하면 실행이 실패한다. 대소문자 차이, 하이픈과 밑줄 혼용 등이 원인이 될 수 있다.</p>
+<h3>9.2 매개변수 순서 혼동</h3>
+<p>PDDL <code>:parameters</code>의 선언 순서와 <code>get_arguments()</code>의 인수 순서가 일치하지 않으면 잘못된 객체에 대해 행동이 수행된다. 매개변수 순서를 변경할 때는 액션 노드의 인수 처리 코드도 반드시 함께 수정해야 한다.</p>
+<h3>9.3 추상 모델과 실행의 불일치</h3>
+<p>PDDL 모델에서는 즉시 완료되는 것으로 간주되는 행동이 실제로는 시간이 소요되거나 실패할 수 있다. 이 간극은 재계획 메커니즘과 실행 모니터링을 통해 보완한다.</p>
+<h2>10. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>PDDL 액션 이름과 ROS2 노드 이름의 일관성을 엄격히 유지하라.</strong> 명명 규칙(소문자, 밑줄 구분)을 도메인 전체에서 통일한다.</p>
+</li>
+<li>
+<p><strong>매개변수-인수 매핑을 문서화하라.</strong> 각 PDDL 매개변수가 <code>get_arguments()</code>의 몇 번째 인수에 대응하는지를 명시적으로 기록한다.</p>
+</li>
+<li>
+<p><strong>실행 수준의 검증을 반드시 포함하라.</strong> PDDL 전제 조건의 플래닝 시점 검증만으로는 충분하지 않으며, 액션 노드에서의 실시간 검증이 필수적이다.</p>
+</li>
+<li>
+<p><strong>실패 시 의미 있는 메시지를 반환하라.</strong> <code>finish(false, progress, message)</code>의 메시지는 재계획과 디버깅에 중요한 정보를 제공한다.</p>
+</li>
+<li>
+<p><strong>PlanSys2의 자동 상태 갱신 메커니즘을 이해하고 활용하라.</strong> 액션 성공 시 PDDL 효과가 자동으로 적용되므로, 액션 노드에서 별도의 상태 갱신이 필요하지 않다.</p>
+</li>
+</ol>
+<h2>11. 참고 문헌</h2>
+<ul>
+<li>Gonzalez, F., Martin, F., Matellán, V., &amp; Rodriguez, F. J. (2021). “PlanSys2: A Planning System Framework for ROS2.” <em>IEEE International Conference on Autonomous Robot Systems and Competitions (ICARSC)</em>.</li>
+<li>Macenski, S., Foote, T., Gerkey, B., Lalancette, C., &amp; Woodall, W. (2022). “Robot Operating System 2: Design, Architecture, and Uses in the Wild.” <em>Science Robotics</em>, 7(66), eabm6074.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Cashmore, M., Fox, M., Long, D., Magazzeni, D., Ridder, B., Carrera, A., Palomeras, N., Hurtos, N., &amp; Carreras, M. (2015). “ROSPlan: Planning in the Robot Operating System.” <em>Proceedings of the International Conference on Automated Planning and Scheduling (ICAPS)</em>.</li>
+</ul>
 
             </article>
             <footer>

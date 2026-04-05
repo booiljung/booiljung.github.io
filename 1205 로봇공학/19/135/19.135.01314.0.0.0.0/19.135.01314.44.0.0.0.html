@@ -115,6 +115,171 @@
             </header>
             <article>
                 <h1>1314.44 충전 및 에너지 관리 액션의 모델링</h1>
+<h2>1. 에너지 관리의 중요성</h2>
+<p>자율 로봇 시스템에서 에너지 관리는 임무 지속 가능성을 결정하는 핵심 요소이다. PDDL 도메인에서 에너지 관리 액션은 배터리 충전, 에너지 소모 추적, 저전력 모드 전환 등을 모델링하며, 플래너가 에너지 제약을 고려한 계획을 생성할 수 있도록 한다.</p>
+<h2>2. 이진 배터리 모델</h2>
+<p>가장 단순한 형태로, 배터리 상태를 이진(충분/부족)으로 추상화한다:</p>
+<pre><code class="language-pddl">(:predicates
+    (battery_sufficient ?r - robot)
+    (battery_low ?r - robot)
+    (at_charger ?r - robot ?c - charger)
+)
+
+(:action charge
+    :parameters (?r - robot ?c - charger)
+    :precondition (and
+        (robot_at ?r ?c)
+        (battery_low ?r)
+        (charger_available ?c)
+    )
+    :effect (and
+        (battery_sufficient ?r)
+        (not (battery_low ?r))
+    )
+)
+</code></pre>
+<h2>3. 수치 배터리 모델</h2>
+<p>수치 플루언트를 사용한 정밀 에너지 관리:</p>
+<pre><code class="language-pddl">(:functions
+    (battery_level ?r - robot)
+    (max_battery ?r - robot)
+    (charge_rate ?c - charger)
+)
+
+(:action full_charge
+    :parameters (?r - robot ?c - charger)
+    :precondition (and
+        (robot_at ?r ?c)
+        (charger_available ?c)
+        (&lt; (battery_level ?r) (max_battery ?r))
+    )
+    :effect (and
+        (assign (battery_level ?r) (max_battery ?r))
+        (not (charger_available ?c))
+    )
+)
+
+(:action release_charger
+    :parameters (?r - robot ?c - charger)
+    :precondition (and
+        (robot_at ?r ?c)
+        (using_charger ?r ?c)
+    )
+    :effect (charger_available ?c)
+)
+</code></pre>
+<h2>4. 듀레이티브 충전 액션</h2>
+<p>실제 충전은 시간이 소요되므로:</p>
+<pre><code class="language-pddl">(:durative-action charge_battery
+    :parameters (?r - robot ?station - charging_station)
+    :duration (= ?duration
+        (/ (- (max_battery ?r) (battery_level ?r)) (charge_rate ?station)))
+    :condition (and
+        (at start (robot_at ?r ?station))
+        (at start (&lt; (battery_level ?r) (max_battery ?r)))
+        (at start (station_available ?station))
+        (over all (robot_at ?r ?station))
+    )
+    :effect (and
+        (at start (not (station_available ?station)))
+        (at start (charging ?r))
+        (at end (assign (battery_level ?r) (max_battery ?r)))
+        (at end (not (charging ?r)))
+        (at end (station_available ?station))
+    )
+)
+</code></pre>
+<h2>5. 에너지 소모 모델링</h2>
+<p>각 액션에서의 에너지 소모를 체계적으로 반영한다:</p>
+<pre><code class="language-pddl">;; 이동 시 에너지 소모
+(:action move
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+        (&gt;= (battery_level ?r) (* (distance ?from ?to) (energy_per_meter ?r)))
+    )
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (decrease (battery_level ?r) (* (distance ?from ?to) (energy_per_meter ?r)))
+    )
+)
+
+;; 조작 시 에너지 소모
+(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+        (&gt;= (battery_level ?r) (pick_energy ?r))
+    )
+    :effect (and
+        (holding ?r ?obj)
+        (not (object_at ?obj ?loc))
+        (not (gripper_free ?r))
+        (decrease (battery_level ?r) (pick_energy ?r))
+    )
+)
+</code></pre>
+<h2>6. 저전력 모드 전환</h2>
+<pre><code class="language-pddl">(:action enter_power_save
+    :parameters (?r - robot)
+    :precondition (and
+        (robot_active ?r)
+        (&lt;= (battery_level ?r) 20)
+    )
+    :effect (and
+        (not (robot_active ?r))
+        (power_save_mode ?r)
+        (not (sensor_active ?r))
+    )
+)
+
+(:action exit_power_save
+    :parameters (?r - robot)
+    :precondition (and
+        (power_save_mode ?r)
+        (&gt;= (battery_level ?r) 50)
+    )
+    :effect (and
+        (robot_active ?r)
+        (not (power_save_mode ?r))
+        (sensor_active ?r)
+    )
+)
+</code></pre>
+<h2>7. 배터리 교환 모델</h2>
+<pre><code class="language-pddl">(:action swap_battery
+    :parameters (?r - robot ?old_bat ?new_bat - battery ?station - swap_station)
+    :precondition (and
+        (robot_at ?r ?station)
+        (installed ?old_bat ?r)
+        (battery_at ?new_bat ?station)
+        (battery_charged ?new_bat)
+    )
+    :effect (and
+        (not (installed ?old_bat ?r))
+        (battery_at ?old_bat ?station)
+        (installed ?new_bat ?r)
+        (not (battery_at ?new_bat ?station))
+        (assign (battery_level ?r) (capacity ?new_bat))
+    )
+)
+</code></pre>
+<h2>8. 설계 지침</h2>
+<ol>
+<li><strong>에너지 소모를 모든 관련 액션에서 일관되게 반영하라.</strong> 이동, 조작, 통신, 센싱 등 에너지를 소모하는 모든 액션에 <code>decrease</code> 효과를 포함해야 한다.</li>
+<li><strong>충전 액션의 가용성을 관리하라.</strong> 충전 스테이션의 동시 사용 제한을 술어로 모델링한다.</li>
+<li><strong>안전 마진을 전제 조건에 포함하라.</strong> 귀환 에너지를 확보하기 위해 최소 배터리 잔량을 전제 조건으로 설정하는 것이 실용적이다.</li>
+</ol>
+<h2>9. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Fox, M. &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

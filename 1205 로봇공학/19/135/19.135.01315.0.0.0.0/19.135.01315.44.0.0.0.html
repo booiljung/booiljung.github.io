@@ -115,6 +115,153 @@
             </header>
             <article>
                 <h1>1315.44 타입, 함수, 파생 술어의 결합 활용</h1>
+<h2>1. 결합 활용의 의의</h2>
+<p>PDDL의 고급 기능인 타입 시스템, 수치 함수, 파생 술어는 각각 독립적으로도 유용하지만, 세 기능을 결합하면 복잡한 로봇 도메인을 보다 정확하고 효율적으로 모델링할 수 있다. 타입은 객체의 구조적 분류를, 함수는 정량적 속성을, 파생 술어는 복합 조건의 추상화를 담당하며, 이들의 결합이 도메인 모델의 표현력을 극대화한다.</p>
+<h2>2. 타입과 함수의 결합</h2>
+<p>타입 계층에 따라 서로 다른 수치 속성을 가진 객체를 모델링한다:</p>
+<pre><code class="language-pddl">(:types
+    robot - object
+    ground_robot aerial_robot - robot
+)
+
+(:functions
+    (battery_level ?r - robot)           ;; 모든 로봇 공통
+    (max_battery ?r - robot)
+    (speed ?r - robot)
+    (max_altitude ?d - aerial_robot)     ;; 항공 로봇 전용
+    (terrain_capability ?g - ground_robot) ;; 지상 로봇 전용
+)
+</code></pre>
+<p>상위 타입으로 선언된 함수는 모든 하위 타입 객체에 대해 정의되며, 하위 타입 전용 함수는 해당 타입의 객체에만 적용된다.</p>
+<h2>3. 함수와 파생 술어의 결합</h2>
+<p>수치 조건을 파생 술어로 추상화한다:</p>
+<pre><code class="language-pddl">;; 수치 함수 기반 파생 술어
+(:derived (battery_sufficient ?r - robot)
+    (&gt;= (battery_level ?r) 20))
+
+(:derived (overloaded ?r - robot)
+    (&gt; (current_load ?r) (max_load ?r)))
+
+(:derived (energy_for_trip ?r - robot ?from - waypoint ?to - waypoint)
+    (&gt;= (battery_level ?r) (* (distance ?from ?to) (energy_per_meter ?r))))
+</code></pre>
+<p>이를 통해 수치 비교 표현식을 매 액션의 전제 조건에 반복하는 대신, 의미 있는 이름의 파생 술어로 한 번 정의하고 재사용할 수 있다.</p>
+<h2>4. 타입과 파생 술어의 결합</h2>
+<p>타입 계층에 따른 능력 기반 파생 술어를 정의한다:</p>
+<pre><code class="language-pddl">(:derived (can_fly ?r - robot)
+    (exists (?d - aerial_robot) (= ?r ?d)))
+
+(:derived (suitable_for_task ?r - robot ?t - task)
+    (and
+        (has_capability ?r ?t)
+        (battery_sufficient ?r)
+        (not (robot_busy ?r))
+    )
+)
+</code></pre>
+<h2>5. 세 기능의 종합 결합 예시</h2>
+<pre><code class="language-pddl">(define (domain integrated_robot_domain)
+    (:requirements :strips :typing :numeric-fluents :derived-predicates)
+
+    ;; 타입 계층
+    (:types
+        entity - object
+        robot human - entity
+        ground_robot aerial_robot - robot
+        location - object
+        waypoint charging_station - location
+        cargo - object
+        package hazardous_material - cargo
+    )
+
+    ;; 기반 술어
+    (:predicates
+        (robot_at ?r - robot ?l - location)
+        (connected ?l1 - location ?l2 - location)
+        (holding ?r - robot ?c - cargo)
+        (gripper_free ?r - robot)
+        (blocked ?l - location)
+        (hazmat_certified ?r - robot)
+    )
+
+    ;; 수치 함수
+    (:functions
+        (battery_level ?r - robot)
+        (max_battery ?r - robot)
+        (distance ?l1 - location ?l2 - location)
+        (energy_per_meter ?r - robot)
+        (weight ?c - cargo)
+        (current_load ?r - robot)
+        (max_load ?r - robot)
+        (total_cost)
+    )
+
+    ;; 파생 술어: 수치 + 논리 결합
+    (:derived (robot_operational ?r - robot)
+        (and (not (blocked (current_location ?r)))
+             (&gt;= (battery_level ?r) 10)))
+
+    (:derived (can_carry ?r - robot ?c - cargo)
+        (and (gripper_free ?r)
+             (&lt;= (+ (current_load ?r) (weight ?c)) (max_load ?r))
+             (imply (hazardous_material ?c) (hazmat_certified ?r))))
+
+    (:derived (energy_sufficient ?r - robot ?from - location ?to - location)
+        (&gt;= (battery_level ?r)
+            (* (distance ?from ?to) (energy_per_meter ?r))))
+
+    ;; 액션: 파생 술어를 활용한 간결한 전제 조건
+    (:action move
+        :parameters (?r - robot ?from - location ?to - location)
+        :precondition (and
+            (robot_at ?r ?from)
+            (connected ?from ?to)
+            (robot_operational ?r)
+            (energy_sufficient ?r ?from ?to)
+        )
+        :effect (and
+            (not (robot_at ?r ?from))
+            (robot_at ?r ?to)
+            (decrease (battery_level ?r)
+                (* (distance ?from ?to) (energy_per_meter ?r)))
+            (increase (total_cost) (distance ?from ?to))
+        )
+    )
+
+    (:action pick_up
+        :parameters (?r - robot ?c - cargo ?l - location)
+        :precondition (and
+            (robot_at ?r ?l)
+            (robot_operational ?r)
+            (can_carry ?r ?c)
+        )
+        :effect (and
+            (holding ?r ?c)
+            (not (gripper_free ?r))
+            (increase (current_load ?r) (weight ?c))
+        )
+    )
+)
+</code></pre>
+<p>이 예시에서:</p>
+<ul>
+<li><strong>타입 계층</strong>: 로봇, 위치, 화물의 구조적 분류</li>
+<li><strong>수치 함수</strong>: 배터리, 거리, 무게, 적재량, 비용의 정량적 관리</li>
+<li><strong>파생 술어</strong>: <code>robot_operational</code>, <code>can_carry</code>, <code>energy_sufficient</code>가 복합 조건을 추상화</li>
+</ul>
+<h2>6. 결합 활용의 이점</h2>
+<ol>
+<li><strong>표현력 극대화</strong>: 단일 기능으로는 불가능한 복합 모델링이 가능하다.</li>
+<li><strong>도메인 간결화</strong>: 반복적 복합 조건이 파생 술어로 추상화되어 액션 정의가 간결해진다.</li>
+<li><strong>유지 보수성 향상</strong>: 조건 변경 시 파생 술어 규칙 하나만 수정하면 모든 관련 액션에 반영된다.</li>
+<li><strong>타입 안전성</strong>: 타입 제약이 무의미한 바인딩을 구조적으로 차단한다.</li>
+</ol>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Fox, M. &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>Thiébaux, S., Hoffmann, J., &amp; Nebel, B. (2005). “In Defense of PDDL Axioms.” <em>Artificial Intelligence</em>, 168(1–2), 38–69.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>

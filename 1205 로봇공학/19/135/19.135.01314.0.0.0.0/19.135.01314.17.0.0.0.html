@@ -115,6 +115,169 @@
             </header>
             <article>
                 <h1>1314.17 접합적 효과와 다중 상태 변경</h1>
+<h2>1. 접합적 효과의 정의</h2>
+<p>접합적 효과(conjunctive effect)는 <code>and</code> 연산자를 사용하여 다수의 개별 효과를 하나의 효과 절에 결합한 구성이다. 이는 단일 액션이 세계 상태의 여러 측면을 동시에 변경하는 것을 표현한다.</p>
+<pre><code class="language-pddl">:effect (and
+    &lt;effect_1&gt;
+    &lt;effect_2&gt;
+    ...
+    &lt;effect_n&gt;
+)
+</code></pre>
+<p>형식적으로, 접합적 효과는 개별 효과들의 합집합으로 해석된다:</p>
+<p><span class="math math-display">
+\text{eff}^+(a) = \bigcup_{i=1}^{n} \text{eff}^+_i(a), \quad \text{eff}^-(a) = \bigcup_{i=1}^{n} \text{eff}^-_i(a)
+</span></p>
+<p>접합적 효과의 모든 구성 요소는 원자적(atomic)으로, 즉 동시에 적용되는 것으로 간주된다. 효과의 나열 순서는 의미론적으로 무관하다.</p>
+<h2>2. 다중 상태 변경의 필요성</h2>
+<p>실제 로봇의 물리적 행동은 대부분 세계 상태의 여러 측면을 동시에 변경한다. 로봇이 물체를 집는 행동 하나만 해도, 로봇의 그리퍼 상태, 물체의 위치, 적재 상태 등이 동시에 바뀐다. 접합적 효과는 이러한 다중 상태 변경을 단일 액션 내에서 일관되게 표현하는 유일한 방법이다.</p>
+<p>단일 효과만으로 구성된 액션의 예시와 접합적 효과를 사용한 예시를 비교한다:</p>
+<pre><code class="language-pddl">;; 단일 효과만 사용 (불완전: 관련 상태 변경 누락)
+(:action pick_up_incomplete
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (...)
+    :effect (holding ?r ?obj)
+    ;; 문제: object_at, gripper_free 등의 변경이 누락됨
+)
+
+;; 접합적 효과 사용 (완전한 상태 변경)
+(:action pick_up
+    :parameters (?r - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r ?loc)
+        (object_at ?obj ?loc)
+        (gripper_free ?r)
+    )
+    :effect (and
+        (holding ?r ?obj)             ;; 파지 상태 설정
+        (not (object_at ?obj ?loc))   ;; 물체 위치 해제
+        (not (gripper_free ?r))       ;; 그리퍼 가용성 해제
+    )
+)
+</code></pre>
+<h2>3. 접합적 효과의 동시성 의미론</h2>
+<p>접합적 효과의 핵심적 특성은 모든 구성 요소가 동시에 적용된다는 것이다. 이는 순차적 적용(sequential application)과는 다른 의미를 갖는다. 동시 적용에서는 각 효과가 액션 실행 직전의 상태를 기준으로 평가되며, 다른 효과의 결과를 참조하지 않는다.</p>
+<p>이 성질은 특히 조건부 효과가 포함된 접합에서 중요하다:</p>
+<pre><code class="language-pddl">:effect (and
+    (not (robot_at ?r ?from))
+    (robot_at ?r ?to)
+    (when (carrying ?r ?cargo)
+        (and
+            (not (cargo_at ?cargo ?from))
+            (cargo_at ?cargo ?to)
+        )
+    )
+)
+</code></pre>
+<p>여기서 <code>when</code> 조건 <code>(carrying ?r ?cargo)</code>는 액션 실행 직전의 상태에서 평가된다. 접합 내의 다른 효과가 <code>carrying</code> 술어를 변경하더라도, 조건부 효과의 가드 조건은 이전 상태를 기준으로 판단된다.</p>
+<h2>4. 로봇 도메인에서의 다중 상태 변경 패턴</h2>
+<h3>4.1 이동 액션의 다중 상태 변경</h3>
+<pre><code class="language-pddl">(:action move_with_cargo
+    :parameters (?r - robot ?from - waypoint ?to - waypoint)
+    :precondition (and
+        (robot_at ?r ?from)
+        (connected ?from ?to)
+    )
+    :effect (and
+        ;; 로봇 위치 변경
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        ;; 위치 점유 상태 변경
+        (not (occupied ?from))
+        (occupied ?to)
+        ;; 방문 기록
+        (visited ?to)
+    )
+)
+</code></pre>
+<p>이 액션은 로봇 위치, 위치 점유 상태, 방문 기록의 세 가지 상태 측면을 동시에 변경한다.</p>
+<h3>4.2 도킹 액션의 복합 상태 변경</h3>
+<pre><code class="language-pddl">(:action dock_for_charging
+    :parameters (?r - robot ?dock - docking_station)
+    :precondition (and
+        (robot_at ?r ?dock)
+        (dock_available ?dock)
+        (battery_low ?r)
+    )
+    :effect (and
+        ;; 도킹 상태 설정
+        (docked ?r ?dock)
+        (not (dock_available ?dock))
+        ;; 로봇 상태 변경
+        (not (robot_mobile ?r))
+        (charging ?r)
+        ;; 배터리 상태 변경
+        (not (battery_low ?r))
+    )
+)
+</code></pre>
+<h3>4.3 물체 전달 액션의 상태 변경</h3>
+<pre><code class="language-pddl">(:action handover
+    :parameters (?r1 ?r2 - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r1 ?loc)
+        (robot_at ?r2 ?loc)
+        (holding ?r1 ?obj)
+        (gripper_free ?r2)
+    )
+    :effect (and
+        ;; 물체 소유권 이전
+        (not (holding ?r1 ?obj))
+        (holding ?r2 ?obj)
+        ;; 그리퍼 상태 변경
+        (gripper_free ?r1)
+        (not (gripper_free ?r2))
+    )
+)
+</code></pre>
+<p>이 액션은 두 로봇의 파지 상태와 그리퍼 가용성을 동시에 변경하여 물체 전달을 모델링한다.</p>
+<h2>5. 접합적 효과의 크기와 플래닝 효율성</h2>
+<p>접합적 효과의 크기(구성 요소 수)는 플래닝의 여러 측면에 영향을 미친다.</p>
+<h3>5.1 상태 전이 계산 비용</h3>
+<p>효과의 구성 요소 수를 <span class="math math-inline">k</span>라 하면, 하나의 액션 적용에 의한 상태 전이 계산 비용은 <span class="math math-inline">O(k)</span>이다. 이는 전방 탐색에서 각 노드 확장 시 발생하는 비용에 직접적으로 기여한다.</p>
+<h3>5.2 휴리스틱에의 영향</h3>
+<p>접합적 효과에 포함된 긍정적 효과의 수가 많을수록, 해당 액션은 더 많은 하위 목표를 한 번에 달성할 수 있으므로 휴리스틱 추정에서 유리한 위치를 차지할 수 있다. 반면, 삭제 효과가 많은 액션은 삭제 완화 휴리스틱에서 과소 평가되는 경향이 있다.</p>
+<h3>5.3 상태 표현 크기</h3>
+<p>접합적 효과에 의해 변경되는 술어의 수가 많으면, 각 상태의 표현 크기가 커지고 상태 간 비교(중복 상태 검출)의 비용이 증가한다.</p>
+<h2>6. 효과의 원자성과 분해 가능성</h2>
+<p>접합적 효과를 가진 단일 액션을 여러 개의 소규모 액션으로 분해할 수 있는지는 도메인 설계의 중요한 결정 사���이다.</p>
+<pre><code class="language-pddl">;; 통합 액션: 단일 액션에서 다중 상태 변경
+(:action transport
+    :parameters (?r - robot ?obj - object ?from - waypoint ?to - waypoint)
+    :precondition (...)
+    :effect (and
+        (not (robot_at ?r ?from)) (robot_at ?r ?to)
+        (not (object_at ?obj ?from)) (object_at ?obj ?to)
+    )
+)
+
+;; 분해 액션: 각 상태 변경을 별도 액션으로
+(:action pick :parameters (...) :effect (...))
+(:action move :parameters (...) :effect (...))
+(:action place :parameters (...) :effect (...))
+</code></pre>
+<p>분해된 설계는 플래너에게 더 많은 유연성을 제공하지만, 계획의 길이가 증가하고 탐색 비용이 커질 수 있다. 통합된 설계는 계획이 짧아지지만, 행동의 조합 가능성이 제한된다. 적절한 세분화 수준은 도메인의 특성과 플래닝 목표에 따라 ��정해야 한다.</p>
+<h2>7. 설계 지침</h2>
+<ol>
+<li>
+<p><strong>물리적으로 불가분한 상태 변경은 하나의 접합적 효과로 표현하라.</strong> 예를 들어, 이동 시 이전 위치의 해제와 새 위치의 설정은 물리적으로 동시에 발생하므로 분리하지 않는다.</p>
+</li>
+<li>
+<p><strong>효과의 완전성을 보장하라.</strong> 액션에 의해 변경되는 모든 관련 술어가 접합적 효과에 포함되어야 한다. 프레임 가정에 의해 효과에 명시되지 않은 술어는 변경되지 않는 것으로 간주되므로, 변경되어야 하는 술어의 누락은 비일관적 상태를 초래한다.</p>
+</li>
+<li>
+<p><strong>접합적 효과의 크기를 합리적으로 유지하라.</strong> 하나의 액션이 10개 이상의 술어를 동시에 변경해야 한다면, 액션의 추상화 수준이 지나치게 높거나 술어 구조가 비효율적일 가능성이 있다.</p>
+</li>
+<li>
+<p><strong>효과 간의 일관성을 점검하라.</strong> 접합적 효과 내에서 동일한 술어를 추가하면서 동시에 삭제하는 경우, 의도한 동작인지 설계 오류인지를 검증해야 한다.</p>
+</li>
+</ol>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Fikes, R. E. &amp; Nilsson, N. J. (1971). “STRIPS: A New Approach to the Application of Theorem Proving to Problem Solving.” <em>Artificial Intelligence</em>, 2(3–4), 189–208.</li>
+</ul>
 
             </article>
             <footer>

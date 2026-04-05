@@ -115,6 +115,154 @@
             </header>
             <article>
                 <h1>1315.22 이동 거리 기반 비용 계산 사례</h1>
+<h2>1. 거리 기반 비용 모델의 개요</h2>
+<p>이동 거리 기반 비용 모델은 로봇의 이동 경로 길이에 비례하여 비용을 산정하는 모델이다. 물류 로봇, 순찰 로봇, 배송 드론 등 이동이 주요 행동인 도메인에서 가장 직관적이고 널리 사용되는 비용 모델이다.</p>
+<h2>2. 기본 거리 비용 모델</h2>
+<h3>2.1 도메인 정의</h3>
+<pre><code class="language-pddl">(define (domain distance_cost_planning)
+    (:requirements :strips :typing :numeric-fluents)
+    (:types robot waypoint cargo - object)
+
+    (:predicates
+        (robot_at ?r - robot ?w - waypoint)
+        (cargo_at ?c - cargo ?w - waypoint)
+        (holding ?r - robot ?c - cargo)
+        (connected ?w1 - waypoint ?w2 - waypoint)
+        (gripper_free ?r - robot)
+        (delivered ?c - cargo ?dest - waypoint)
+    )
+
+    (:functions
+        (distance ?w1 - waypoint ?w2 - waypoint)
+        (total_distance)
+    )
+
+    (:action move
+        :parameters (?r - robot ?from - waypoint ?to - waypoint)
+        :precondition (and
+            (robot_at ?r ?from)
+            (connected ?from ?to)
+        )
+        :effect (and
+            (not (robot_at ?r ?from))
+            (robot_at ?r ?to)
+            (increase (total_distance) (distance ?from ?to))
+        )
+    )
+
+    (:action pick_up
+        :parameters (?r - robot ?c - cargo ?loc - waypoint)
+        :precondition (and
+            (robot_at ?r ?loc)
+            (cargo_at ?c ?loc)
+            (gripper_free ?r)
+        )
+        :effect (and
+            (holding ?r ?c)
+            (not (cargo_at ?c ?loc))
+            (not (gripper_free ?r))
+        )
+    )
+
+    (:action deliver
+        :parameters (?r - robot ?c - cargo ?dest - waypoint)
+        :precondition (and
+            (robot_at ?r ?dest)
+            (holding ?r ?c)
+        )
+        :effect (and
+            (delivered ?c ?dest)
+            (gripper_free ?r)
+            (not (holding ?r ?c))
+        )
+    )
+)
+</code></pre>
+<h3>2.2 문제 정의</h3>
+<pre><code class="language-pddl">(define (problem delivery_task)
+    (:domain distance_cost_planning)
+    (:objects
+        robot1 - robot
+        wp_depot wp_A wp_B wp_C wp_customer - waypoint
+        pkg1 pkg2 - cargo
+    )
+    (:init
+        (robot_at robot1 wp_depot)
+        (cargo_at pkg1 wp_A)
+        (cargo_at pkg2 wp_B)
+        (gripper_free robot1)
+
+        ;; 연결 및 거리 정보
+        (connected wp_depot wp_A) (= (distance wp_depot wp_A) 10)
+        (connected wp_A wp_depot) (= (distance wp_A wp_depot) 10)
+        (connected wp_depot wp_B) (= (distance wp_depot wp_B) 15)
+        (connected wp_B wp_depot) (= (distance wp_B wp_depot) 15)
+        (connected wp_A wp_B) (= (distance wp_A wp_B) 8)
+        (connected wp_B wp_A) (= (distance wp_B wp_A) 8)
+        (connected wp_B wp_customer) (= (distance wp_B wp_customer) 12)
+        (connected wp_customer wp_B) (= (distance wp_customer wp_B) 12)
+        (connected wp_A wp_customer) (= (distance wp_A wp_customer) 20)
+        (connected wp_customer wp_A) (= (distance wp_customer wp_A) 20)
+
+        (= (total_distance) 0)
+    )
+    (:goal (and (delivered pkg1 wp_customer) (delivered pkg2 wp_customer)))
+    (:metric minimize (total_distance))
+)
+</code></pre>
+<h2>3. 비대칭 거리 모델</h2>
+<p>경사 지형, 일방통행 등으로 양방향 거리가 다른 경우:</p>
+<pre><code class="language-pddl">;; 오르막 방향이 더 비용이 큼
+(connected wp_valley wp_hill) (= (distance wp_valley wp_hill) 25)
+(connected wp_hill wp_valley) (= (distance wp_hill wp_valley) 15)
+</code></pre>
+<h2>4. 가중 거리 모델</h2>
+<p>거리에 추가 요소(도로 상태, 교통 혼잡 등)를 곱하여 실효 비용을 산출한다:</p>
+<pre><code class="language-pddl">(:functions
+    (distance ?w1 - waypoint ?w2 - waypoint)
+    (road_condition_factor ?w1 - waypoint ?w2 - waypoint)
+    (total_weighted_distance)
+)
+
+(:action move
+    :parameters (?r - robot ?from ?to - waypoint)
+    :precondition (and (robot_at ?r ?from) (connected ?from ?to))
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (increase (total_weighted_distance)
+            (* (distance ?from ?to) (road_condition_factor ?from ?to)))
+    )
+)
+</code></pre>
+<h2>5. 다중 로봇 총 이동 거리 최소화</h2>
+<pre><code class="language-pddl">(:functions (total_fleet_distance))
+
+(:action move
+    :parameters (?r - robot ?from ?to - waypoint)
+    :effect (and
+        (not (robot_at ?r ?from))
+        (robot_at ?r ?to)
+        (increase (total_fleet_distance) (distance ?from ?to))
+    )
+)
+
+(:metric minimize (total_fleet_distance))
+</code></pre>
+<p>이 모델에서 플래너는 모든 로봇의 총 이동 거리 합을 최소화하는 계획을 생성한다. 이는 가장 가까운 로봇을 태스크에 배정하고, 이동 경로를 최적화하는 효과를 가진다.</p>
+<h2>6. 거리 기반 비용 최적화의 특성</h2>
+<p>거리 비용 최적화 하에서 플래너가 자동으로 선택하는 전략:</p>
+<ol>
+<li><strong>최단 경로 선택</strong>: 동일 목적지로의 여러 경로 중 가장 짧은 경로를 선택한다.</li>
+<li><strong>방문 순서 최적화</strong>: 여러 지점을 방문해야 할 때 총 이동 거리를 최소화하는 순서를 선택한다(외판원 문제의 근사 해).</li>
+<li><strong>불필요한 이동 제거</strong>: 귀환 이동 등 목표 달성에 불필요한 이동을 배제한다.</li>
+</ol>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Fox, M. &amp; Long, D. (2003). “PDDL2.1: An Extension to PDDL for Expressing Temporal Planning Domains.” <em>Journal of Artificial Intelligence Research</em>, 20, 61–124.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+<li>Hoffmann, J. (2003). “The Metric-FF Planning System: Translating ‘Ignoring Delete Lists’ to Numeric State Variables.” <em>Journal of Artificial Intelligence Research</em>, 20, 291–341.</li>
+</ul>
 
             </article>
             <footer>

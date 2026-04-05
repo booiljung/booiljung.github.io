@@ -115,6 +115,128 @@
             </header>
             <article>
                 <h1>1314.45 다중 로봇 협력 액션의 모델링 기법</h1>
+<h2>1. 다중 로봇 협력의 PDDL 모델링</h2>
+<p>다중 로봇 시스템에서 협력 액션(cooperative action)은 두 대 이상의 로봇이 동시에 참여하여 단일 로봇으로는 수행 불가능한 태스크를 완료하는 행동이다. PDDL에서 이러한 협력 액션을 모델링하는 주요 기법을 분석한다.</p>
+<h2>2. 동기화 기반 협력</h2>
+<p>두 로봇이 동일한 위치에서 동시에 작업하는 모델:</p>
+<pre><code class="language-pddl">(:action cooperative_lift
+    :parameters (?r1 ?r2 - robot ?obj - heavy_object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?r1 ?loc)
+        (robot_at ?r2 ?loc)
+        (not (= ?r1 ?r2))
+        (object_at ?obj ?loc)
+        (gripper_free ?r1)
+        (gripper_free ?r2)
+        (requires_two_robots ?obj)
+    )
+    :effect (and
+        (lifted ?obj)
+        (not (object_at ?obj ?loc))
+        (not (gripper_free ?r1))
+        (not (gripper_free ?r2))
+        (co_holding ?r1 ?r2 ?obj)
+    )
+)
+</code></pre>
+<p>이 모델에서 두 로봇이 동일 위치에 있고 양쪽 모두 그리퍼가 비어 있어야 협력 들기가 가능하다. 플래너는 두 로봇을 해당 위치로 이동시키는 계획을 자동으로 생성한다.</p>
+<h2>3. 역할 분담 기반 협력</h2>
+<p>로봇들이 서로 다른 역할을 수행하여 협력하는 모델:</p>
+<pre><code class="language-pddl">(:action assisted_inspection
+    :parameters (?inspector - robot ?illuminator - robot ?target - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?inspector ?loc)
+        (robot_at ?illuminator ?loc)
+        (not (= ?inspector ?illuminator))
+        (has_camera ?inspector)
+        (has_light ?illuminator)
+        (object_at ?target ?loc)
+    )
+    :effect (and
+        (inspected ?target)
+        (inspection_data_collected ?inspector ?target)
+    )
+)
+</code></pre>
+<h2>4. 릴레이 기반 협력</h2>
+<p>물체를 여러 로봇이 릴레이 방식으로 전달하는 모델:</p>
+<pre><code class="language-pddl">(:action handover
+    :parameters (?giver ?receiver - robot ?obj - object ?loc - waypoint)
+    :precondition (and
+        (robot_at ?giver ?loc)
+        (robot_at ?receiver ?loc)
+        (not (= ?giver ?receiver))
+        (holding ?giver ?obj)
+        (gripper_free ?receiver)
+    )
+    :effect (and
+        (not (holding ?giver ?obj))
+        (holding ?receiver ?obj)
+        (gripper_free ?giver)
+        (not (gripper_free ?receiver))
+    )
+)
+</code></pre>
+<h2>5. 듀레이티브 협력 액션</h2>
+<p>시간적 중첩을 활용한 병렬 협력:</p>
+<pre><code class="language-pddl">(:durative-action collaborative_transport
+    :parameters (?r1 ?r2 - robot ?obj - heavy_object ?from ?to - waypoint)
+    :duration (= ?duration (/ (distance ?from ?to) (cooperative_speed)))
+    :condition (and
+        (at start (co_holding ?r1 ?r2 ?obj))
+        (at start (robot_at ?r1 ?from))
+        (at start (robot_at ?r2 ?from))
+        (at start (connected ?from ?to))
+        (over all (co_holding ?r1 ?r2 ?obj))
+    )
+    :effect (and
+        (at start (not (robot_at ?r1 ?from)))
+        (at start (not (robot_at ?r2 ?from)))
+        (at end (robot_at ?r1 ?to))
+        (at end (robot_at ?r2 ?to))
+    )
+)
+</code></pre>
+<h2>6. 타입 계층을 활용한 역할 모델링</h2>
+<pre><code class="language-pddl">(:types
+    robot - object
+    ground_robot aerial_robot - robot
+    scout transport_robot - ground_robot
+)
+
+(:action scout_and_report
+    :parameters (?scout - scout ?loc - waypoint)
+    :precondition (and (robot_at ?scout ?loc) (not (area_scouted ?loc)))
+    :effect (area_scouted ?loc)
+)
+
+(:action transport_to_scouted
+    :parameters (?transport - transport_robot ?cargo - object ?from ?to - waypoint)
+    :precondition (and
+        (robot_at ?transport ?from)
+        (holding ?transport ?cargo)
+        (area_scouted ?to)
+        (connected ?from ?to)
+    )
+    :effect (and
+        (not (robot_at ?transport ?from))
+        (robot_at ?transport ?to)
+    )
+)
+</code></pre>
+<p>정찰 로봇이 먼저 구역을 확인한 후, 운송 로봇이 안전하게 이동하는 순차적 협력을 모델링한다.</p>
+<h2>7. 설계 지침</h2>
+<ol>
+<li><strong>로봇 간 구별 조건</strong>(<code>not (= ?r1 ?r2)</code>)을 반드시 포함하여 자기 자신과의 협력을 방지하라.</li>
+<li><strong>협력 전제 조건의 동시 충족</strong>을 명확히 정의하라. 고전적 PDDL에서는 순차적 계획이므로, 두 로봇이 동시에 특정 위치에 도달하는 것은 순서대로 이동한 후 협력 액션을 수행하는 것으로 구현된다.</li>
+<li><strong>협력 상태의 해제</strong>를 반드시 모델링하라. <code>co_holding</code> 등의 협력 술어는 협력 완료 시 적절히 해제해야 한다.</li>
+</ol>
+<h2>8. 참고 문헌</h2>
+<ul>
+<li>Ghallab, M., Nau, D., &amp; Traverso, P. (2004). <em>Automated Planning: Theory and Practice</em>. Morgan Kaufmann.</li>
+<li>Brafman, R. I. &amp; Domshlak, C. (2008). “From One to Many: Planning for Loosely Coupled Multi-Agent Systems.” <em>Proceedings of ICAPS</em>.</li>
+<li>Haslum, P., Lipovetzky, N., Magazzeni, D., &amp; Muise, C. (2019). <em>An Introduction to the Planning Domain Definition Language</em>. Morgan &amp; Claypool Publishers.</li>
+</ul>
 
             </article>
             <footer>
