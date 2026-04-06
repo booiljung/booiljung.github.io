@@ -115,6 +115,50 @@
             </header>
             <article>
                 <h1>27.38 딥러닝 프레임워크에서의 행렬 연산 구현과 하드웨어 가속</h1>
+<h2>1. 딥러닝 프레임워크의 행렬 연산 체계</h2>
+<p>현대 딥러닝 프레임워크(PyTorch, TensorFlow, JAX 등)에서 행렬 연산은 텐서(tensor) 연산의 특수한 경우로 구현된다. 텐서는 다차원 배열의 일반화이며, 행렬은 2차원 텐서에 해당한다. 프레임워크는 텐서에 대한 연산을 정의하고, 이를 하드웨어 가속기에 효율적으로 디스패치(dispatch)하는 계층적 구조를 가진다.</p>
+<p>프레임워크의 연산 실행 흐름은 다음과 같다. 사용자가 고수준 API(예: <code>torch.matmul</code>)를 호출하면, 프레임워크는 텐서의 장치(CPU/GPU), 데이터 타입(float32, float16 등), 크기를 확인하고, 적절한 하위 라이브러리의 커널(kernel)로 연산을 디스패치한다. CPU에서는 BLAS 라이브러리(Intel MKL, OpenBLAS 등)의 <code>sgemm</code>(single precision general matrix multiply) 또는 <code>dgemm</code>(double precision) 루틴이 호출되고, GPU에서는 cuBLAS의 <code>cublasSgemm</code> 등이 호출된다.</p>
+<h2>2. CPU에서의 행렬 연산 최적화</h2>
+<p>CPU에서의 고성능 행렬 곱셈은 메모리 계층 구조(memory hierarchy)를 최대한 활용하는 데 초점을 맞춘다.</p>
+<p><strong>블록 분할(Tiling):</strong> 행렬을 캐시에 적합한 크기의 블록으로 분할하여, 각 블록이 L1/L2 캐시에 상주하는 동안 최대한의 연산을 수행한다. <span class="math math-inline">n \times n</span> 행렬 곱셈에서 블록 크기 <span class="math math-inline">b</span>를 적절히 설정하면, 데이터 재사용률이 <span class="math math-inline">O(b)</span>로 증가하여 메모리 대역폭 병목이 완화된다.</p>
+<p><strong>SIMD 벡터화(Vectorization):</strong> SSE, AVX, AVX-512 등의 SIMD(Single Instruction, Multiple Data) 명령어를 통해 하나의 명령어로 여러 부동소수점 연산을 동시에 수행한다. AVX-512는 16개의 32비트 부동소수점 수를 동시에 처리할 수 있으므로, 이론적으로 스칼라 연산 대비 16배의 처리량이 가능하다.</p>
+<p><strong>루프 언롤링(Loop Unrolling):</strong> 내부 루프를 펼쳐 분기(branch) 오버헤드를 줄이고, 명령어 파이프라인의 효율을 극대화한다.</p>
+<p><strong>멀티스레딩:</strong> OpenMP 등을 통해 블록 단위 연산을 여러 CPU 코어에 분배한다.</p>
+<p>이러한 최적화의 결과, 최적화된 BLAS 구현은 이론적 최대 성능(peak FLOPS)의 90% 이상을 달성할 수 있다.</p>
+<h2>3. GPU에서의 행렬 연산</h2>
+<p>GPU는 수천 개의 연산 코어와 높은 메모리 대역폭을 통해 대규모 병렬 연산에 특화되어 있다. 행렬 곱셈은 높은 데이터 병렬성과 규칙적인 메모리 접근 패턴을 가지므로 GPU 가속에 이상적인 연산이다.</p>
+<p><strong>CUDA와 cuBLAS:</strong> NVIDIA GPU에서 행렬 연산은 cuBLAS 라이브러리를 통해 수행된다. cuBLAS는 GPU의 스트리밍 멀티프로세서(SM)에서 스레드 블록(thread block) 단위로 연산을 분배하며, 공유 메모리(shared memory)를 활용한 타일링을 적용한다. 행렬 <span class="math math-inline">\mathbf{A} \in \mathbb{R}^{m \times k}</span>와 <span class="math math-inline">\mathbf{B} \in \mathbb{R}^{k \times n}</span>의 곱에서 각 스레드 블록은 결과 행렬의 한 타일을 담당하고, <span class="math math-inline">\mathbf{A}</span>와 <span class="math math-inline">\mathbf{B}</span>의 대응하는 타일을 공유 메모리에 적재하여 재사용한다.</p>
+<p><strong>Tensor Core:</strong> NVIDIA의 Volta 아키텍처(2017) 이후 도입된 Tensor Core는 행렬 곱셈에 특화된 하드웨어 유닛이다. 한 번의 연산으로 <span class="math math-inline">4 \times 4</span> 행렬의 곱-누적(multiply-accumulate) <span class="math math-inline">\mathbf{D} = \mathbf{A}\mathbf{B} + \mathbf{C}</span>를 수행한다. FP16 입력과 FP32 누적을 사용하는 혼합 정밀도(mixed precision) 연산을 지원하며, A100 GPU는 FP16에서 312 TFLOPS, H100은 989 TFLOPS의 이론적 성능을 제공한다.</p>
+<p><strong>메모리 대역폭과 산술 강도:</strong> 행렬 곱셈의 산술 강도(arithmetic intensity)는 <span class="math math-inline">O(n)</span>으로, 행렬 크기가 충분히 크면 연산 바운드(compute-bound)가 된다. 산술 강도는 부동소수점 연산 수를 메모리 전송 바이트 수로 나눈 값이다.</p>
+<p><span class="math math-display">
+\text{산술 강도} = \frac{2mnk}{(mk + kn + mn) \times \text{바이트 크기}}
+</span></p>
+<p>산술 강도가 GPU의 연산-메모리 비(ops:byte ratio)를 초과하면 연산 바운드이고, 그렇지 않으면 메모리 바운드이다.</p>
+<h2>4. 혼합 정밀도 학습</h2>
+<p>혼합 정밀도(mixed precision) 학습은 모델의 정밀도를 요구하는 부분에는 FP32를 사용하고, 행렬 곱셈 등 대규모 연산에는 FP16 또는 BF16을 사용하여 학습 속도를 높이는 기법이다.</p>
+<p><span class="math math-display">
+\text{FP32: } s \cdot 2^{e-127} \cdot (1 + m \cdot 2^{-23}), \quad \text{FP16: } s \cdot 2^{e-15} \cdot (1 + m \cdot 2^{-10})
+</span></p>
+<p>FP16은 FP32에 비해 절반의 메모리를 사용하고 Tensor Core에서 2배 이상의 처리량을 달성한다. 그러나 동적 범위(dynamic range)가 좁아 기울기 언더플로(gradient underflow)가 발생할 수 있으므로, 손실 스케일링(loss scaling) 기법을 병행한다. 손실 함수에 큰 상수 <span class="math math-inline">S</span>를 곱하여 기울기의 크기를 FP16의 표현 가능 범위 내로 유지하고, 매개변수 갱신 시 <span class="math math-inline">S</span>로 나누어 원래 스케일을 복원한다.</p>
+<p>BF16(Brain Floating Point 16)은 FP32와 동일한 8비트 지수부를 가져 동적 범위가 같으면서 가수부를 7비트로 줄인 형식으로, 별도의 손실 스케일링 없이도 안정적인 학습이 가능하다.</p>
+<h2>5. 자동 미분과 행렬 연산</h2>
+<p>딥러닝 프레임워크의 자동 미분(automatic differentiation) 시스템은 행렬 연산의 기울기를 효율적으로 계산한다.</p>
+<p>행렬 곱셈 <span class="math math-inline">\mathbf{C} = \mathbf{A}\mathbf{B}</span>에 대한 역전파 규칙은 다음과 같다.</p>
+<p><span class="math math-display">
+\frac{\partial \mathcal{L}}{\partial \mathbf{A}} = \frac{\partial \mathcal{L}}{\partial \mathbf{C}}\mathbf{B}^\top, \quad \frac{\partial \mathcal{L}}{\partial \mathbf{B}} = \mathbf{A}^\top\frac{\partial \mathcal{L}}{\partial \mathbf{C}}
+</span></p>
+<p>여기서 <span class="math math-inline">\frac{\partial \mathcal{L}}{\partial \mathbf{C}}</span>는 상위 계층에서 전파된 기울기이다. 따라서 하나의 행렬 곱셈에 대한 역전파에는 두 번의 추가적인 행렬 곱셈이 필요하다. 순전파에서 <span class="math math-inline">\mathbf{A}</span>와 <span class="math math-inline">\mathbf{B}</span>를 메모리에 저장해야 하므로, 기울기 계산을 위한 메모리 소비는 순전파의 약 2배이다.</p>
+<p>기울기 체크포인팅(gradient checkpointing)은 메모리와 재계산 사이의 트레이드오프를 활용하는 기법이다. 순전파의 중간 결과를 저장하지 않고, 역전파 시 필요한 시점에 재계산한다. <span class="math math-inline">L</span>개의 계층에 대해 <span class="math math-inline">O(\sqrt{L})</span>개의 체크포인트를 설정하면 메모리를 <span class="math math-inline">O(\sqrt{L})</span>로 줄이면서 재계산 비용은 최대 1회 추가 순전파에 해당한다.</p>
+<h2>6. 분산 행렬 연산</h2>
+<p>대규모 모델의 학습에서는 단일 GPU의 메모리와 연산 능력이 부족하므로, 여러 GPU에 걸쳐 행렬 연산을 분산해야 한다.</p>
+<p><strong>데이터 병렬화(Data Parallelism):</strong> 동일한 모델을 여러 GPU에 복제하고, 미니 배치를 분할하여 각 GPU에서 독립적으로 순전파와 역전파를 수행한 후, 기울기를 AllReduce 통신으로 동기화한다.</p>
+<p><strong>모델 병렬화(Model Parallelism):</strong> 하나의 대규모 행렬 곱셈을 여러 GPU에 분할한다. 열 분할(column-wise partitioning)에서는 가중치 행렬 <span class="math math-inline">\mathbf{W}</span>를 열 방향으로 분할하여 <span class="math math-inline">\mathbf{W} = [\mathbf{W}_1 \mid \mathbf{W}_2]</span>로 나누고, 각 GPU에서 <span class="math math-inline">\mathbf{W}_i\mathbf{x}</span>를 계산한 후 결과를 결합한다. Megatron-LM (Shoeybi et al., 2019)은 트랜스포머 계층의 행렬 연산을 텐서 병렬화하는 기법을 제시하였다.</p>
+<p><strong>파이프라인 병렬화(Pipeline Parallelism):</strong> 모델의 계층을 여러 GPU에 순차적으로 배치하고, 마이크로 배치(micro-batch)를 파이프라인 방식으로 처리하여 GPU 유휴 시간(bubble)을 최소화한다.</p>
+<h2>7. 커널 융합과 그래프 최적화</h2>
+<p>딥러닝 프레임워크는 연산 그래프의 최적화를 통해 행렬 연산의 효율을 높인다.</p>
+<p><strong>커널 융합(Kernel Fusion):</strong> 연속된 여러 연산을 하나의 GPU 커널로 합쳐 중간 결과의 메모리 저장과 읽기를 제거한다. 예를 들어, 행렬 곱셈 후 편향 덧셈과 ReLU 활성화를 하나의 커널로 융합하면 <span class="math math-inline">\mathbf{y} = \text{ReLU}(\mathbf{W}\mathbf{x} + \mathbf{b})</span> 전체가 한 번의 커널 호출로 완료된다.</p>
+<p><strong>FlashAttention:</strong> Dao et al. (2022)의 “FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness“는 어텐션 연산의 IO 복잡도를 분석하고, 타일링과 온라인 소프트맥스(online softmax)를 결합하여 GPU SRAM 내에서 어텐션을 완결하는 기법이다. 이를 통해 HBM 접근 횟수가 <span class="math math-inline">O(N^2d/M)</span> (<span class="math math-inline">M</span>은 SRAM 크기)으로 감소하여, 표준 구현 대비 2-4배의 속도 향상이 달성된다.</p>
+<p><strong>컴파일러 기반 최적화:</strong> TorchScript, XLA(Accelerated Linear Algebra), Triton 등의 컴파일러 기술은 연산 그래프를 분석하여 자동으로 커널 융합, 메모리 할당 최적화, 연산 순서 변경 등을 수행한다. 특히 Triton은 사용자가 Python으로 GPU 커널을 작성할 수 있게 하여, 맞춤형 행렬 연산의 구현 장벽을 크게 낮추었다.</p>
 
             </article>
             <footer>
