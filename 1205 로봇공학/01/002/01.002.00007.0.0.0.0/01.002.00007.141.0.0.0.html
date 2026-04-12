@@ -115,6 +115,60 @@
             </header>
             <article>
                 <h1>7.141 실시간 로봇 시스템에서의 수렴 보장 전략</h1>
+<h2>1. 실시간 최적화의 요구 사항</h2>
+<p>실시간 로봇 제어에서 최적화 문제는 제어 주기 <span class="math math-inline">T_{ctrl}</span> (통상 1~10ms) 내에 반드시 해를 산출해야 한다. 최적화 알고리즘이 주어진 시간 내에 수렴하지 못하면, 제어 명령의 지연이 발생하여 시스템의 안정성과 성능이 저하된다. 따라서 실시간 시스템에서의 최적화는 “최적의 해를 구하는 것“보다 “주어진 시간 내에 충분히 양호한 해를 보장하는 것“이 우선이다.</p>
+<h2>2. 웜 스타트 전략</h2>
+<h3>2.1 이전 해의 이동(Shifting)</h3>
+<p>모델 예측 제어(MPC)에서 이전 시간 단계의 최적 제어 시퀀스를 한 단계 이동(shift)하고, 마지막 요소를 외삽(extrapolation)으로 채워 초기 추정으로 사용한다.</p>
+<p><span class="math math-display">
+\mathbf{u}_0^{init} = [\mathbf{u}_1^{*,prev}, \mathbf{u}_2^{*,prev}, \ldots, \mathbf{u}_{N-1}^{*,prev}, \hat{\mathbf{u}}_N]
+</span></p>
+<p>연속 시간 단계 사이의 최적 해 변화가 <span class="math math-inline">O(T_{ctrl})</span>이므로, 웜 스타트에 의한 초기 오차가 작아 소수의 반복(1~5회)으로 수렴한다.</p>
+<h3>2.2 능동 집합 예측</h3>
+<p>이차 계획법(QP)에서 이전 해의 능동 집합(active set)을 다음 문제의 초기 작업 집합으로 사용한다. 능동 집합의 변화가 소수에 그치면, 소수의 기저 교환(pivot)만으로 최적해에 도달한다. qpOASES의 매개변수적 능동집합법이 이 전략을 체계적으로 구현한다.</p>
+<h2>3. 부분 최적화(Suboptimal MPC)</h2>
+<h3>3.1 고정 반복 횟수</h3>
+<p>최적화 반복 횟수를 사전에 고정하고, 수렴 여부와 무관하게 해당 반복 후의 해를 사용한다. <span class="math math-inline">N_{iter}</span> 반복 후의 해가 최적이 아닐 수 있지만, 웜 스타트와 결합하면 실용적으로 충분한 성능을 달성하는 경우가 많다.</p>
+<h3>3.2 실시간 반복법(Real-Time Iteration, RTI)</h3>
+<p>비선형 MPC를 위해 디엘(Diehl) 등이 제안한 방법으로, SQP의 단일 반복만을 수행한다. 각 제어 주기에서 다음의 두 단계를 실행한다.</p>
+<p><strong>준비 단계(Preparation phase)</strong>: 다음 상태 측정이 도착하기 전에 선형화, 축약(condensing), QP 구성 등 상태에 무관한 계산을 미리 수행한다.</p>
+<p><strong>피드백 단계(Feedback phase)</strong>: 상태 측정이 도착하면 QP의 우변만 갱신하고 즉시 풀어 제어 입력을 결정한다.</p>
+<p>RTI에서 각 제어 주기의 SQP 반복은 최적해에서의 한 스텝 개선에 해당하며, 반복이 누적되면서 최적 궤적에 점근적으로 수렴한다. 이 접근법은 비선형 MPC의 실시간 구현에서 표준으로 사용된다.</p>
+<h2>4. 확정적 실행 시간의 보장</h2>
+<p>실시간 시스템에서는 최악 경우 실행 시간(Worst-Case Execution Time, WCET)의 보장이 필수적이다.</p>
+<h3>4.1 코드 생성</h3>
+<p>CVXGEN, FORCES Pro, acados 등의 도구가 특정 최적화 문제의 구조에 맞춘 C 코드를 자동 생성한다. 분기(branch)가 없는 루프 전개(loop unrolling)와 인라인(inline) 행렬 연산에 의해 실행 경로가 결정론적(deterministic)이 되어 WCET 분석이 용이하다.</p>
+<h3>4.2 반복 횟수의 상한 보장</h3>
+<p>내점법의 반복 횟수는 이론적으로 <span class="math math-inline">O(\sqrt{m}\log(1/\epsilon))</span>으로 상한이 보장된다. 능동집합법은 최악 경우 지수적 반복이 가능하지만, 실용적으로 발생하지 않는 경우가 대부분이며, 최대 반복 횟수를 설정하여 시간 제한을 부과한다.</p>
+<h3>4.3 ADMM의 결정론적 비용</h3>
+<p>ADMM(OSQP 등)에서 각 반복의 계산 비용은 일정하다(행렬 분해가 사전 수행된 후 행렬-벡터 곱만 반복). 반복 횟수를 고정하면 총 실행 시간이 확정적이다.</p>
+<h2>5. 안정성 보장과 부분 최적화</h2>
+<p>부분 최적화에 의한 비최적 해가 폐루프 시스템의 안정성에 미치는 영향은 이론적으로 분석되어야 한다.</p>
+<h3>5.1 MPC의 안정성과 최적성의 분리</h3>
+<p>MPC의 폐루프 안정성은 최적해의 정확한 달성을 반드시 요구하지 않는다. 리아프노프 함수로서의 비용 함수가 반복에 걸쳐 단조 감소하면 안정성이 보장된다. 즉, <span class="math math-inline">V(\mathbf{x}_{k+1}) \leq V(\mathbf{x}_k) - \alpha \lVert \mathbf{x}_k \rVert^2</span> (<span class="math math-inline">\alpha &gt; 0</span>)의 조건이 핵심이다.</p>
+<p>부분 최적화가 이 감소 조건을 만족하면, 최적해를 정확히 구하지 않아도 안정성이 유지된다. 웜 스타트에 의한 초기점이 이미 양호하면, 단일 SQP 반복이 충분한 감소를 보장하는 경우가 많다.</p>
+<h3>5.2 안전 보장 전략</h3>
+<ul>
+<li><strong>허용 가능 대안(feasible fallback)</strong>: 최적화가 실패하면 이전 해를 유지하거나 사전 계산된 안전 궤적으로 전환한다.</li>
+<li><strong>보수적 제약</strong>: 안전 마진을 확대하여, 부분 최적 해에서도 물리적 제약이 만족되도록 보장한다.</li>
+<li><strong>감시 계층(watchdog)</strong>: 최적화 결과가 안전 기준을 위반하면 즉시 비상 정지를 발동한다.</li>
+</ul>
+<h2>6. 임베디드 시스템에서의 구현</h2>
+<p>로봇 제어기는 임베디드 프로세서(ARM Cortex-M/A, FPGA 등)에서 실행되는 경우가 많다. 제한된 계산 자원과 메모리에서 최적화를 수행하기 위해 다음의 기법이 활용된다.</p>
+<ul>
+<li><strong>고정 소수점 산술</strong>: 부동 소수점 하드웨어가 없는 프로세서에서 고정 소수점 연산으로 QP를 풀 수 있다.</li>
+<li><strong>메모리 효율적 알고리즘</strong>: L-BFGS, ADMM 등 <span class="math math-inline">O(n)</span> 저장량의 알고리즘이 선호된다.</li>
+<li><strong>병렬화</strong>: GPU나 다중 코어를 활용한 행렬 연산의 병렬 처리가 실시간 성능을 향상시킨다.</li>
+</ul>
+<h2>7. 참고 문헌</h2>
+<ul>
+<li>Diehl, M., Bock, H. G., &amp; Schlöder, J. P. (2005). “A Real-Time Iteration Scheme for Nonlinear Optimization in Optimal Feedback Control.” <em>SIAM Journal on Control and Optimization</em>, 43(5), 1714–1736.</li>
+<li>Rawlings, J. B., Mayne, D. Q., &amp; Diehl, M. (2017). <em>Model Predictive Control: Theory, Computation, and Design</em> (2nd ed.). Nob Hill Publishing.</li>
+<li>Verschueren, R., et al. (2022). “acados — A Modular Open-Source Framework for Fast Embedded Optimal Control.” <em>Mathematical Programming Computation</em>, 14, 147–183.</li>
+<li>Stellato, B., et al. (2020). “OSQP: An Operator Splitting Solver for Quadratic Programs.” <em>Mathematical Programming Computation</em>, 12(4), 637–672.</li>
+</ul>
+<hr />
+<p><em>version: 1.0</em></p>
 
             </article>
             <footer>

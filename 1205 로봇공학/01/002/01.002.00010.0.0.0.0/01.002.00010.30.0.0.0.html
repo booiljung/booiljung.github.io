@@ -115,6 +115,235 @@
             </header>
             <article>
                 <h1>10.30 SLERP의 구현과 수치적 안정성</h1>
+<h2>1. SLERP 구현의 중요 고려 사항</h2>
+<p>SLERP의 수학적 공식은 단순하지만, 수치적으로 안정적인 구현을 위해서는 몇 가지 중요한 고려 사항이 있다. 부호 이중성 처리, 작은 각도에서의 수치 안정성, 효율적 계산 등이 주요 이슈이다.</p>
+<p>본 절에서는 SLERP의 견고한 구현을 위한 단계별 알고리즘과 고려 사항을 다룬다.</p>
+<h2>2. 기본 SLERP 알고리즘</h2>
+<h3>2.1 수학적 공식</h3>
+<p><span class="math math-display">
+\mathrm{SLERP}(\mathbf{q}_0, \mathbf{q}_1, t) = \frac{\sin((1-t)\Omega)}{\sin\Omega}\mathbf{q}_0 + \frac{\sin(t\Omega)}{\sin\Omega}\mathbf{q}_1
+</span></p>
+<p>여기서 <span class="math math-inline">\cos\Omega = \mathbf{q}_0\cdot\mathbf{q}_1</span>이다.</p>
+<h3>2.2 단순 구현 (수치적 문제 있음)</h3>
+<pre><code class="language-text">function slerp_naive(q0, q1, t):
+    cos_omega = dot(q0, q1)
+    omega = acos(cos_omega)
+    sin_omega = sin(omega)
+    
+    a = sin((1 - t) * omega) / sin_omega
+    b = sin(t * omega) / sin_omega
+    
+    return a * q0 + b * q1
+</code></pre>
+<p>이 구현은 수치적 문제를 가지며, 실제 시스템에서 사용하기에 부적절하다.</p>
+<h2>3. 수치적 문제와 해결</h2>
+<h3>3.1 문제 1: 부호 이중성</h3>
+<p>쿼터니언 <span class="math math-inline">\mathbf{q}</span>와 <span class="math math-inline">-\mathbf{q}</span>가 같은 회전을 나타내므로, 보간이 긴 경로를 따를 수 있다. 이는 시각적으로 부자연스러운 회전을 만든다.</p>
+<h3>3.2 해결 1: 부호 보정</h3>
+<p>내적의 부호를 확인하고, 음수이면 한 쿼터니언의 부호를 반전한다.</p>
+<pre><code class="language-text">cos_omega = dot(q0, q1)
+if cos_omega &lt; 0:
+    q1 = -q1
+    cos_omega = -cos_omega
+</code></pre>
+<p>이후 <span class="math math-inline">\cos\Omega</span>가 항상 양수이므로 <span class="math math-inline">\Omega \in [0, \pi/2]</span>가 된다. 이는 짧은 경로를 보장한다.</p>
+<h3>3.3 문제 2: 작은 각도에서의 수치 불안정성</h3>
+<p><span class="math math-inline">\Omega</span>가 0에 가까우면(즉, 두 쿼터니언이 거의 같으면) <span class="math math-inline">\sin\Omega</span>가 0에 가까워 분모가 매우 작아진다. 이는 수치 오차를 증폭시킨다.</p>
+<h3>3.4 해결 2: LERP로의 대체</h3>
+<p>작은 각도에서는 LERP와 SLERP의 차이가 무시할 수 있으므로, LERP로 대체하고 정규화한다.</p>
+<pre><code class="language-text">if cos_omega &gt; 0.9995:
+    # 작은 각도 - LERP 사용
+    result = (1 - t) * q0 + t * q1
+    return normalize(result)
+</code></pre>
+<p>임계값 <code>0.9995</code>는 <span class="math math-inline">\Omega &lt; 1.8°</span>에 해당한다. 이 각도 이하에서는 LERP와 SLERP의 차이가 <span class="math math-inline">10^{-5}</span> 이하로 무시할 수 있다.</p>
+<h3>3.5 문제 3: <span class="math math-inline">\arccos</span>의 정확도</h3>
+<p><span class="math math-inline">\cos\Omega</span>가 <span class="math math-inline">1</span>에 가까울 때 <span class="math math-inline">\arccos</span>의 도함수가 발산하여 수치 오차가 크다.</p>
+<h3>3.6 해결 3: <span class="math math-inline">\mathrm{atan2}</span> 사용</h3>
+<p><span class="math math-inline">\arccos</span> 대신 <span class="math math-inline">\mathrm{atan2}</span>를 사용하여 더 안정적으로 <span class="math math-inline">\Omega</span>를 계산할 수 있다.</p>
+<pre><code class="language-text">sin_omega_approx = sqrt(1 - cos_omega * cos_omega)
+omega = atan2(sin_omega_approx, cos_omega)
+</code></pre>
+<p>이는 <span class="math math-inline">\arccos</span>보다 수치적으로 안정적이다.</p>
+<h3>3.7 문제 4: 부동 소수점 오차</h3>
+<p>부동 소수점 연산으로 <span class="math math-inline">\cos\Omega</span>가 정확히 <span class="math math-inline">\pm 1</span>을 약간 벗어날 수 있다. 이 경우 <span class="math math-inline">\arccos</span>가 NaN을 반환한다.</p>
+<h3>3.8 해결 4: 클램핑</h3>
+<p><span class="math math-inline">\cos\Omega</span>를 <span class="math math-inline">[-1, 1]</span>로 클램핑한다.</p>
+<pre><code class="language-text">cos_omega = max(-1, min(1, cos_omega))
+</code></pre>
+<h2>4. 견고한 SLERP 구현</h2>
+<p>위의 문제와 해결을 통합한 견고한 SLERP 알고리즘은 다음과 같다.</p>
+<pre><code class="language-text">function slerp(q0, q1, t):
+    # 1. 내적 계산
+    cos_omega = dot(q0, q1)
+    
+    # 2. 부호 보정 (짧은 경로 선택)
+    if cos_omega &lt; 0:
+        q1 = -q1
+        cos_omega = -cos_omega
+    
+    # 3. 작은 각도 처리 (LERP로 대체)
+    if cos_omega &gt; 0.9995:
+        result = (1 - t) * q0 + t * q1
+        return normalize(result)
+    
+    # 4. 안전을 위한 클램핑
+    cos_omega = min(1.0, cos_omega)
+    
+    # 5. 각도 계산 (atan2 사용 권장)
+    sin_omega_sq = 1 - cos_omega * cos_omega
+    sin_omega = sqrt(sin_omega_sq)
+    omega = atan2(sin_omega, cos_omega)
+    
+    # 6. 계수 계산
+    inv_sin_omega = 1.0 / sin_omega
+    a = sin((1 - t) * omega) * inv_sin_omega
+    b = sin(t * omega) * inv_sin_omega
+    
+    # 7. 결과 조합
+    return a * q0 + b * q1
+</code></pre>
+<p>이 알고리즘은 모든 일반적 경우에서 안정적으로 작동한다.</p>
+<h2>5. 성능 최적화</h2>
+<h3>5.1  사전 계산</h3>
+<p>같은 <span class="math math-inline">\mathbf{q}_0</span>와 <span class="math math-inline">\mathbf{q}_1</span>에 대해 여러 <span class="math math-inline">t</span> 값으로 보간하는 경우, <span class="math math-inline">\Omega</span>와 <span class="math math-inline">\sin\Omega</span>를 한 번만 계산한다.</p>
+<pre><code class="language-text">function precompute_slerp(q0, q1):
+    cos_omega = dot(q0, q1)
+    if cos_omega &lt; 0:
+        q1 = -q1
+        cos_omega = -cos_omega
+    
+    if cos_omega &gt; 0.9995:
+        return (q0, q1, None, None)  # LERP 사용
+    
+    omega = acos(cos_omega)
+    sin_omega = sin(omega)
+    return (q0, q1, omega, sin_omega)
+
+function evaluate_slerp(precomputed, t):
+    q0, q1, omega, sin_omega = precomputed
+    if omega is None:
+        # LERP
+        return normalize((1 - t) * q0 + t * q1)
+    
+    a = sin((1 - t) * omega) / sin_omega
+    b = sin(t * omega) / sin_omega
+    return a * q0 + b * q1
+</code></pre>
+<h3>5.2  SIMD 최적화</h3>
+<p>쿼터니언의 4 성분 연산은 SIMD 명령으로 가속된다. Eigen 등의 라이브러리가 자동으로 활용한다.</p>
+<h3>5.3  룩업 테이블</h3>
+<p><span class="math math-inline">t</span>의 값이 미리 알려진 경우(예: 애니메이션의 프레임), <span class="math math-inline">\sin(t\Omega)</span>를 룩업 테이블에 저장하여 삼각 함수 호출을 피할 수 있다.</p>
+<h2>6. 특수한 경우의 처리</h2>
+<h3>6.1 동일한 쿼터니언</h3>
+<p><span class="math math-inline">\mathbf{q}_0 = \mathbf{q}_1</span>인 경우 <span class="math math-inline">\cos\Omega = 1</span>이므로, 작은 각도 분기가 활성화되고 결과가 <span class="math math-inline">\mathbf{q}_0</span>(또는 <span class="math math-inline">\mathbf{q}_1</span>)이 된다. 이는 올바른 결과이다.</p>
+<h3>6.2 대척점</h3>
+<p><span class="math math-inline">\mathbf{q}_1 = -\mathbf{q}_0</span>인 경우 <span class="math math-inline">\cos\Omega = -1</span>이다. 부호 보정 후 <span class="math math-inline">\cos\Omega = 1</span>이 되고, 작은 각도 분기가 활성화된다. 그러나 이 경우 <span class="math math-inline">\mathbf{q}_0</span>과 <span class="math math-inline">-\mathbf{q}_0</span>이 같은 회전을 나타내므로 보간이 의미 없다(항상 같은 회전).</p>
+<h3>6.3 정확히 대척점 (부호 보정 후)</h3>
+<p>드문 경우지만, 부호 보정 후에도 두 쿼터니언이 여전히 대척점에 가까울 수 있다(즉, 회전 각이 <span class="math math-inline">180°</span> 근처). 이 경우 측지선이 여러 개 존재할 수 있어 보간 결과가 모호할 수 있다.</p>
+<h3>6.4 완전한 180도 차이</h3>
+<p><span class="math math-inline">\mathbf{q}_0</span>과 <span class="math math-inline">\mathbf{q}_1</span>이 정확히 180도 차이를 나타내면(<span class="math math-inline">\cos\Omega = 0</span>), 측지선은 두 대원 중 하나로 선택될 수 있다. 이 경우 SLERP 공식이 여전히 작동하지만, 구체적으로 어느 경로가 선택되는지는 부호 관례에 따른다.</p>
+<h2>7. 테스트와 검증</h2>
+<h3>7.1  끝점 검증</h3>
+<pre><code class="language-text">assert slerp(q0, q1, 0) == q0
+assert slerp(q0, q1, 1) == q1  # 또는 -q1 (부호 보정 후)
+</code></pre>
+<h3>7.2  단위 노름 검증</h3>
+<p>모든 <span class="math math-inline">t</span>에 대해 결과가 단위 쿼터니언인지 확인한다.</p>
+<pre><code class="language-text">for t in range(0, 1, 0.01):
+    q = slerp(q0, q1, t)
+    assert abs(norm(q) - 1) &lt; 1e-10
+</code></pre>
+<h3>7.3  일정한 각속도 검증</h3>
+<p><span class="math math-inline">t</span>가 균일하게 증가할 때 <span class="math math-inline">\mathbf{q}_0</span>로부터의 각도가 균일하게 증가하는지 확인한다.</p>
+<pre><code class="language-text">for t in range(0, 1, 0.01):
+    q = slerp(q0, q1, t)
+    angle = 2 * acos(abs(dot(q0, q)))
+    # angle이 t에 선형적으로 증가해야 함
+</code></pre>
+<h3>7.4  역방향 보간</h3>
+<p><span class="math math-inline">\mathrm{SLERP}(\mathbf{q}_0, \mathbf{q}_1, t) = \mathrm{SLERP}(\mathbf{q}_1, \mathbf{q}_0, 1 - t)</span>가 성립해야 한다.</p>
+<h3>7.5  대칭성</h3>
+<p><span class="math math-inline">\mathrm{SLERP}(\mathbf{q}_0, \mathbf{q}_1, 0.5)</span>가 <span class="math math-inline">\mathbf{q}_0</span>과 <span class="math math-inline">\mathbf{q}_1</span>에서 같은 거리에 있는지 확인한다.</p>
+<h2>8. 알고리즘의 변형</h2>
+<h3>8.1 짧은 경로 vs. 긴 경로</h3>
+<p>일반적으로 짧은 경로를 선택한다. 특정 응용에서 긴 경로가 필요하면 부호 보정을 생략한다.</p>
+<h3>8.2 시간 매개변수의 비선형</h3>
+<p>매개변수 <span class="math math-inline">t</span>를 비선형 함수로 변환하여 가속/감속 효과를 만들 수 있다.</p>
+<pre><code class="language-text">function slerp_with_ease_in_out(q0, q1, t):
+    # t를 ease-in-out으로 변환
+    t_eased = 3 * t * t - 2 * t * t * t
+    return slerp(q0, q1, t_eased)
+</code></pre>
+<h3>8.3 경로 조절</h3>
+<p>SLERP는 측지선을 따르지만, 제어점을 추가하여 경로를 조절할 수 있다. 이는 Squad(10.31)로 일반화된다.</p>
+<h2>9. 라이브러리의 SLERP</h2>
+<h3>9.1 Eigen</h3>
+<pre><code class="language-text">Eigen::Quaterniond q = q0.slerp(t, q1);
+</code></pre>
+<p>Eigen의 <code>slerp</code> 함수는 부호 보정과 작은 각도 처리를 포함한다.</p>
+<h3>9.2 SciPy</h3>
+<pre><code class="language-text">from scipy.spatial.transform import Slerp
+slerp_obj = Slerp([0, 1], Rotation.from_quat([q0, q1]))
+q = slerp_obj(t).as_quat()
+</code></pre>
+<h3>9.3 ROS의 tf2</h3>
+<pre><code class="language-text">tf2::Quaternion q = q0.slerp(q1, t);
+</code></pre>
+<p>이러한 라이브러리의 구현은 대체로 견고하지만, 세부 사항은 라이브러리마다 다르다.</p>
+<h2>10. 부동 소수점 정밀도의 영향</h2>
+<h3>10.1 단일 정밀도 (float)</h3>
+<p>32-bit float에서는 약 7 자리수의 정확도를 가진다. 대부분의 그래픽스 응용에서 충분하다.</p>
+<h3>10.2 더블 정밀도 (double)</h3>
+<p>64-bit double에서는 약 15 자리수의 정확도를 가진다. 자세 추정과 정밀 응용에 권장된다.</p>
+<h3>10.3 임계값 조정</h3>
+<p>정밀도에 따라 작은 각도 임계값을 조정한다. 더블 정밀도에서는 더 작은 임계값을 사용할 수 있다.</p>
+<h2>11. SLERP와 다른 보간법의 비교</h2>
+<h3>11.1 SLERP vs. LERP</h3>
+<table><thead><tr><th style="text-align: left">특성</th><th style="text-align: center">SLERP</th><th style="text-align: center">LERP</th></tr></thead><tbody>
+<tr><td style="text-align: left">단위 노름</td><td style="text-align: center">보존</td><td style="text-align: center">미보존</td></tr>
+<tr><td style="text-align: left">일정한 각속도</td><td style="text-align: center">보장</td><td style="text-align: center">보장 안 함</td></tr>
+<tr><td style="text-align: left">측지선</td><td style="text-align: center">예</td><td style="text-align: center">아니오</td></tr>
+<tr><td style="text-align: left">계산 비용</td><td style="text-align: center">중간</td><td style="text-align: center">낮음</td></tr>
+</tbody></table>
+<h3>11.2 SLERP vs. NLERP</h3>
+<table><thead><tr><th style="text-align: left">특성</th><th style="text-align: center">SLERP</th><th style="text-align: center">NLERP</th></tr></thead><tbody>
+<tr><td style="text-align: left">단위 노름</td><td style="text-align: center">보존</td><td style="text-align: center">보존</td></tr>
+<tr><td style="text-align: left">일정한 각속도</td><td style="text-align: center">보장</td><td style="text-align: center">보장 안 함</td></tr>
+<tr><td style="text-align: left">측지선</td><td style="text-align: center">예</td><td style="text-align: center">예 (같은 경로)</td></tr>
+<tr><td style="text-align: left">계산 비용</td><td style="text-align: center">중간</td><td style="text-align: center">낮음</td></tr>
+</tbody></table>
+<p>NLERP는 SLERP와 같은 경로를 따르지만 매개변수화가 다르다. 일정한 각속도가 필요하면 SLERP, 그렇지 않으면 NLERP가 선택된다.</p>
+<h2>12. 실시간 구현의 고려</h2>
+<h3>12.1 계산 예산</h3>
+<p>게임 엔진 등 실시간 시스템에서 SLERP는 매 프레임마다 많이 호출될 수 있다. 각 호출의 비용이 중요하다.</p>
+<h3>12.2 최적화 전략</h3>
+<ol>
+<li>중복 계산 방지 (사전 계산)</li>
+<li>SIMD 활용</li>
+<li>룩업 테이블 사용</li>
+<li>작은 각도에서 LERP 대체</li>
+</ol>
+<h3>12.3 병렬화</h3>
+<p>여러 SLERP 계산을 병렬로 수행할 수 있다. GPU나 멀티코어 CPU에서 효율적이다.</p>
+<h2>13. 시각화를 통한 검증</h2>
+<p>SLERP의 정확성을 시각화로 확인할 수 있다.</p>
+<h3>13.1 D 회전 시각화</h3>
+<p><span class="math math-inline">S^2</span> 상의 단위 벡터(예: 기준 축 <span class="math math-inline">(1, 0, 0)</span>)를 SLERP된 쿼터니언으로 회전한 결과를 그린다. <span class="math math-inline">t</span>가 증가함에 따라 벡터가 구면 위의 매끄러운 경로를 그려야 한다.</p>
+<h3>13.2 각속도 플롯</h3>
+<p><span class="math math-inline">t</span>에 대한 회전 각 그래프가 직선이어야 한다. 이는 일정한 각속도의 증거이다.</p>
+<h2>14. 결론</h2>
+<p>SLERP의 견고한 구현은 부호 보정, 작은 각도 처리, 수치 안정성 등 여러 요소를 고려해야 한다. 위에서 제시한 알고리즘은 대부분의 응용에서 잘 작동하며, 검증된 라이브러리(Eigen, SciPy 등)의 사용이 권장된다. 성능이 매우 중요한 응용에서는 NLERP가 대안으로 고려될 수 있다.</p>
+<h2>15. 참고 문헌</h2>
+<ul>
+<li>Shoemake, K. (1985). “Animating Rotation with Quaternion Curves.” <em>SIGGRAPH Computer Graphics</em>, 19(3), 245–254.</li>
+<li>Kuipers, J. B. (1999). <em>Quaternions and Rotation Sequences</em>. Princeton University Press.</li>
+<li>Diebel, J. (2006). “Representing Attitude: Euler Angles, Unit Quaternions, and Rotation Vectors.” Stanford University Technical Report.</li>
+<li>Sola, J. (2017). “Quaternion Kinematics for the Error-State Kalman Filter.” arXiv:1711.02508.</li>
+<li>Watt, A., &amp; Watt, M. (1992). <em>Advanced Animation and Rendering Techniques</em>. Addison-Wesley.</li>
+</ul>
+<hr />
+<p><em>version: 1.0</em></p>
 
             </article>
             <footer>
